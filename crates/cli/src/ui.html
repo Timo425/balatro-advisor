@@ -147,7 +147,7 @@ function render(d) {
         <div class="jn">${esc(j.name)}</div>
         <div class="tags">${edTag(j.edition)}${j.roles.map((r) => `<span class="tag">${r}</span>`).join("")}${j.eternal ? '<span class="tag">eternal</span>' : ""}${j.debuff ? '<span class="tag" style="color:var(--bad)">debuffed</span>' : ""}</div>
         ${scoring ? `<div class="big">${Math.round(j.score_share * 100)}%</div>` : `<div class="big muted" title="No direct score">—</div>`}
-        <div class="lbl">sold: ${sold}</div>
+        <div class="lbl">without it: ${sold}</div>
       </div>`;
     }).join("") + `</div>`;
     if (a.order && !a.order.is_current) {
