@@ -24,7 +24,20 @@ if ADVISOR_BEAT_T > 2 and G and G.SETTINGS and G.SETTINGS.profile then
 end
 if G and G.STAGE == G.STAGES.RUN and G.GAME and G.GAME.blind and G.jokers and G.SETTINGS then
     ADVISOR_LIVE_T = (ADVISOR_LIVE_T or 0) + dt
-    if ADVISOR_LIVE_T > 0.5 then
+    -- Only settled moments: a screen that waits for the player, the state change done,
+    -- and no animations queued (mid-play states show cards in flight and no score yet).
+    local s = G.STATES
+    local waiting = G.STATE == s.SELECTING_HAND or G.STATE == s.SHOP or G.STATE == s.BLIND_SELECT
+        or G.STATE == s.ROUND_EVAL or G.STATE == s.TAROT_PACK or G.STATE == s.PLANET_PACK
+        or G.STATE == s.SPECTRAL_PACK or G.STATE == s.STANDARD_PACK or G.STATE == s.BUFFOON_PACK
+    -- Some jokers keep cosmetic events queued forever, so only blocking ones count.
+    local idle = G.STATE_COMPLETE and G.E_MANAGER and G.E_MANAGER.queues and true
+    if idle then
+        for _, ev in ipairs(G.E_MANAGER.queues.base or {}) do
+            if ev.blocking then idle = false break end
+        end
+    end
+    if ADVISOR_LIVE_T > 0.5 and waiting and idle then
         ADVISOR_LIVE_T = 0
         pcall(function()
             local cardAreas = {}
