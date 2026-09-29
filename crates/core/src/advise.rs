@@ -209,6 +209,11 @@ pub struct ShopOption {
     pub interest_after: i64,
     /// You don't have the money for it right now.
     pub unaffordable: bool,
+    /// For jokers: the key (style tags in the page) and the game text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub desc: Option<String>,
 }
 
 /// Interest the game pays on `money` (`$1` per `$5`, capped; state_events.lua end of round).
@@ -784,7 +789,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     fill(&mut pool_entries);
     fill(&mut shop);
     fill(&mut rescue);
-    let options = shop_options(&ctx, run, data, &pool_entries, &base_odds, key_round, per_rarity, joker_share);
+    let options = shop_options(&ctx, run, data, &pool_entries, &base_odds, key_round, per_rarity, joker_share, &shop);
     lap("shop options");
     let shares: Vec<f64> = jokers.iter().map(|j| j.score_share).collect();
     let outlook = archetype_outlook(&ctx, run, data, &pool_entries, &shares, &hand_mix);
@@ -1132,6 +1137,7 @@ fn shop_options(
     round: usize,
     per_rarity: [usize; 4],
     joker_share: f64,
+    shop_jokers: &[Candidate],
 ) -> Vec<ShopOption> {
     use crate::engine::HandType;
     let now = base_odds.get(round).map_or(0.0, |o| o.0);
@@ -1160,12 +1166,12 @@ fn shop_options(
     let shop_cards = run.shop.as_ref().map(|s| s.other_cards.clone()).unwrap_or_default();
     for c in shop_cards.iter().filter(|c| c.set == "Planet") {
         if let Some(p) = p_of(&c.key) {
-            out.push(ShopOption { label: c.name.clone(), kind: "planet".into(), cost: c.cost, money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, p_win: p, note: format!("levels up {}", data.center(&c.key).and_then(|x| x.config.get("hand_type")).and_then(|v| v.as_str()).unwrap_or("")) });
+            out.push(ShopOption { label: c.name.clone(), kind: "planet".into(), cost: c.cost, money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, key: None, desc: None, p_win: p, note: format!("levels up {}", data.center(&c.key).and_then(|x| x.config.get("hand_type")).and_then(|v| v.as_str()).unwrap_or("")) });
         }
     }
     for c in run.consumables.iter().filter(|c| c.set == "Planet") {
         if let Some(p) = p_of(&c.key) {
-            out.push(ShopOption { label: format!("{} (you have it)", c.name), kind: "planet".into(), cost: 0, p_win: p, note: "use it before the blind".into(), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false });
+            out.push(ShopOption { label: format!("{} (you have it)", c.name), kind: "planet".into(), cost: 0, p_win: p, note: "use it before the blind".into(), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, key: None, desc: None });
         }
     }
 
@@ -1207,6 +1213,8 @@ fn shop_options(
                 interest_now: 0,
                 interest_after: 0,
                 unaffordable: false,
+                key: None,
+                desc: None,
                 label: pk.name.clone(),
                 kind: "pack".into(),
                 cost: pk.cost,
@@ -1216,7 +1224,7 @@ fn shop_options(
         } else if pk.key.starts_with("p_buffoon") {
             // Jokers picked from a pack are free: no budget limit on what's inside.
             let e = expected_best(pool, round, now, extra, 1.0, f64::INFINITY, per_rarity, &mut rng);
-            out.push(ShopOption { label: pk.name.clone(), kind: "pack".into(), cost: pk.cost, p_win: e, note: format!("{extra} jokers{pick_note}"), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false });
+            out.push(ShopOption { label: pk.name.clone(), kind: "pack".into(), cost: pk.cost, p_win: e, note: format!("{extra} jokers{pick_note}"), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, key: None, desc: None });
         }
     }
 
@@ -1236,6 +1244,8 @@ fn shop_options(
                 interest_now: 0,
                 interest_after: 0,
                 unaffordable: false,
+                key: None,
+                desc: None,
                 label: format!("{k} reroll{}", if k > 1 { "s" } else { "" }),
                 kind: "reroll".into(),
                 cost: spent,
@@ -1278,8 +1288,42 @@ fn shop_options(
                 _ => (false, "not valued".into()),
             };
             let p = if sim { ctx.odds_one(&ctx.base, &sp, ctx.opts.sims).0 } else { now };
-            out.push(ShopOption { label: v.name.clone(), kind: "voucher".into(), cost: v.cost, p_win: p, note, money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false });
+            out.push(ShopOption { label: v.name.clone(), kind: "voucher".into(), cost: v.cost, p_win: p, note, money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, key: None, desc: None });
         }
+    }
+    // Jokers in the shop (and an open Buffoon pack) are options like any other.
+    for c in shop_jokers {
+        let action = if c.action.starts_with("replace ") { c.action.replacen("replace ", "sells ", 1) } else { String::new() };
+        let later = c.reach.iter().zip(&c.reach_delta).zip(&ctx.specs).find(|(_, sp)| sp.horizon).map(|((r, d), sp)| {
+            format!("{} reach {:.0}% → {:.0}%", sp.label, (r - d) * 100.0, r * 100.0)
+        });
+        let stickers = run.shop.as_ref().and_then(|sh| sh.jokers.iter().find(|j| j.key == c.key)).map(|j| {
+            let mut v = Vec::new();
+            if let Some(n) = j.perishable {
+                v.push(format!("perishable: {n} rounds"));
+            }
+            if j.rental {
+                v.push("rental $3/round".into());
+            }
+            if j.eternal {
+                v.push("eternal: can't sell".into());
+            }
+            v.join(", ")
+        }).filter(|s| !s.is_empty());
+        let note = [stickers, Some(action).filter(|a| !a.is_empty()), later].into_iter().flatten().collect::<Vec<_>>().join(" · ");
+        out.push(ShopOption {
+            label: c.name.clone(),
+            kind: "joker".into(),
+            cost: c.cost,
+            p_win: c.p_win.get(round).copied().unwrap_or(now),
+            note,
+            money_after: 0.0,
+            interest_now: 0,
+            interest_after: 0,
+            unaffordable: false,
+            key: Some(c.key.clone()),
+            desc: c.desc.clone(),
+        });
     }
     for o in &mut out {
         o.unaffordable = o.cost as f64 > run.dollars;
