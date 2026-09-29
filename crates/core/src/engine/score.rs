@@ -230,8 +230,20 @@ struct Pass<'a, R: Rolls + ?Sized> {
 
 /// Scores `played` (in play order) with `held` staying in hand.
 pub fn score<R: Rolls + ?Sized>(b: &Board, played: &[Card], held: &[Card], rolls: &mut R, trace: bool) -> Outcome {
+    let info = hand::detect(played, b.rule_flags());
+    score_detected(b, played, held, info, rolls, trace)
+}
+
+/// `score` with the hand already detected (`hand::detect(played, b.rule_flags())`).
+pub fn score_detected<R: Rolls + ?Sized>(
+    b: &Board,
+    played: &[Card],
+    held: &[Card],
+    info: HandInfo,
+    rolls: &mut R,
+    trace: bool,
+) -> Outcome {
     let flags = b.rule_flags();
-    let info = hand::detect(played, flags);
     let mut level = b.levels[info.hand as usize];
     level.played += 1;
     level.played_this_round += 1;
@@ -374,14 +386,26 @@ impl<R: Rolls + ?Sized> Pass<'_, R> {
                 if !c.debuff && c.enhancement == Some(Enhancement::Steel) {
                     own_x = 1.5;
                 }
-                let mut effects: Vec<(usize, Eff)> = Vec::new();
+                // The card's own effect, then each joker's, in order (same as building the
+                // game's effects list first and applying it after).
+                if own_x != 1.0 {
+                    mult *= own_x;
+                    self.rec(|_| format!("{} held (steel)", c.label()), chips, mult);
+                }
+                let mut any_joker = false;
                 for j in 0..self.b.jokers.len() {
                     if let Some(e) = self.calc(j, Ctx::HeldIndividual(hi), 0) {
-                        effects.push((j, e));
+                        any_joker = true;
+                        self.earned += e.dollars;
+                        mult += e.h_mult;
+                        mult *= e.x;
+                        if e.h_mult != 0.0 || e.x != 1.0 {
+                            self.rec(|p| format!("{} on held {}", p.joker_name(j), c.label()), chips, mult);
+                        }
                     }
                 }
                 if k == 0 {
-                    let any = own_x != 1.0 || !effects.is_empty();
+                    let any = own_x != 1.0 || any_joker;
                     if any && !c.debuff && c.seal == Some(Seal::Red) {
                         reps += 1;
                     }
@@ -389,18 +413,6 @@ impl<R: Rolls + ?Sized> Pass<'_, R> {
                         if let Some(e) = self.calc(j, Ctx::HeldRepetition(any), 0) {
                             reps += e.reps;
                         }
-                    }
-                }
-                if own_x != 1.0 {
-                    mult *= own_x;
-                    self.rec(|_| format!("{} held (steel)", c.label()), chips, mult);
-                }
-                for (j, e) in effects {
-                    self.earned += e.dollars;
-                    mult += e.h_mult;
-                    mult *= e.x;
-                    if e.h_mult != 0.0 || e.x != 1.0 {
-                        self.rec(|p| format!("{} on held {}", p.joker_name(j), c.label()), chips, mult);
                     }
                 }
                 k += 1;
@@ -489,15 +501,8 @@ impl<R: Rolls + ?Sized> Pass<'_, R> {
         }
         self.earned += dollars;
 
-        let mut effects: Vec<(usize, Eff)> = Vec::new();
-        for j in 0..self.b.jokers.len() {
-            if let Some(e) = self.calc(j, Ctx::PlayIndividual(ci), 0) {
-                effects.push((j, e));
-            }
-        }
-        self.lucky_trigger = false;
-
-        // The card's own effect table
+        // The card's own effect table, then each joker's individual effect as it comes
+        // (the game collects them first, but none depends on the running chips/mult).
         *chips += bonus;
         *mult += enh_mult;
         if enh_x > 0.0 {
@@ -511,15 +516,18 @@ impl<R: Rolls + ?Sized> Pass<'_, R> {
         }
         let tag = if retrigger { " (retrigger)" } else { "" };
         self.rec(|_| format!("{}{tag}", c.label()), *chips, *mult);
-        for (j, e) in effects {
-            *chips += e.chips;
-            *mult += e.mult;
-            self.earned += e.dollars;
-            *mult *= e.x;
-            if e.chips != 0.0 || e.mult != 0.0 || e.x != 1.0 {
-                self.rec(|p| format!("{} on {}", p.joker_name(j), c.label()), *chips, *mult);
+        for j in 0..self.b.jokers.len() {
+            if let Some(e) = self.calc(j, Ctx::PlayIndividual(ci), 0) {
+                *chips += e.chips;
+                *mult += e.mult;
+                self.earned += e.dollars;
+                *mult *= e.x;
+                if e.chips != 0.0 || e.mult != 0.0 || e.x != 1.0 {
+                    self.rec(|p| format!("{} on {}", p.joker_name(j), c.label()), *chips, *mult);
+                }
             }
         }
+        self.lucky_trigger = false;
     }
 
     fn face(&self, c: &Card, idx: usize) -> bool {

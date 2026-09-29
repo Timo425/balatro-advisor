@@ -30,6 +30,15 @@ pub struct Center {
     pub eternal_compat: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub perishable_compat: Option<bool>,
+    /// Only offered when the deck has a card with this enhancement (Steel Joker, Lucky Cat, …).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enhancement_gate: Option<String>,
+    /// Only offered once this pool flag is set (Cavendish after Gros Michel dies).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub yes_pool_flag: Option<String>,
+    /// Not offered once this pool flag is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_pool_flag: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -136,6 +145,9 @@ pub fn extract_from_game_lua(src: &str, game_version: &str) -> Result<GameData, 
                 blueprint_compat: v.get("blueprint_compat").bool(),
                 eternal_compat: v.get("eternal_compat").bool(),
                 perishable_compat: v.get("perishable_compat").bool(),
+                enhancement_gate: v.get("enhancement_gate").str().map(str::to_string),
+                yes_pool_flag: v.get("yes_pool_flag").str().map(str::to_string),
+                no_pool_flag: v.get("no_pool_flag").str().map(str::to_string),
             }),
             _ => blinds.push(Blind {
                 key: key.to_string(),

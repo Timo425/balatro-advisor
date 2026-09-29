@@ -138,48 +138,76 @@ fn nominal(c: &Card) -> f64 {
     c.rank.chips() + suit_nominal * mult + suit_orig * 0.0001 * mult + face
 }
 
-/// Groups of exactly `num` cards sharing an id, highest id first.
-fn x_same(num: usize, cards: &[Card]) -> Vec<Vec<usize>> {
-    let mut by_id: [Vec<usize>; 15] = Default::default();
+/// Cards as bitmasks (bit i = played card i). Played hands are at most a handful of
+/// cards, so everything below works on `u32` masks with no allocation.
+type Mask = u32;
+
+fn bits(m: Mask) -> impl Iterator<Item = usize> {
+    (0..32).filter(move |i| m & (1 << i) != 0)
+}
+
+/// `get_X_same`: for each group size, the highest-id group and how many groups there are.
+struct Groups {
+    first: [Mask; 6],
+    second: [Mask; 6],
+    count: [u8; 6],
+}
+
+fn groups(cards: &[Card]) -> Groups {
+    let mut by_id = [0 as Mask; 15];
     for (i, c) in cards.iter().enumerate() {
         let id = card_id(c, i);
         if id > 0 {
-            by_id[id as usize].push(i);
+            by_id[id as usize] |= 1 << i;
         }
     }
-    (1..15).rev().filter(|&id| by_id[id].len() == num).map(|id| by_id[id].clone()).collect()
+    let mut g = Groups { first: [0; 6], second: [0; 6], count: [0; 6] };
+    for id in (1..15).rev() {
+        let n = by_id[id].count_ones() as usize;
+        if (2..=5).contains(&n) {
+            match g.count[n] {
+                0 => g.first[n] = by_id[id],
+                1 => g.second[n] = by_id[id],
+                _ => {}
+            }
+            g.count[n] += 1;
+        }
+    }
+    g
 }
 
-fn flush(cards: &[Card], f: RuleFlags) -> Option<Vec<usize>> {
+/// `get_flush`
+fn flush(cards: &[Card], f: RuleFlags) -> Option<Mask> {
     let need = if f.four_fingers { 4 } else { 5 };
     if cards.len() > 5 || cards.len() < need {
         return None;
     }
     Suit::ALL.iter().find_map(|&suit| {
-        let t: Vec<usize> = (0..cards.len()).filter(|&i| is_suit(&cards[i], suit, false, true, f.smeared)).collect();
-        (t.len() >= need).then_some(t)
+        let t: Mask = cards.iter().enumerate().filter(|(_, c)| is_suit(c, suit, false, true, f.smeared)).fold(0, |m, (i, _)| m | 1 << i);
+        (t.count_ones() as usize >= need).then_some(t)
     })
 }
 
-fn straight(cards: &[Card], f: RuleFlags) -> Option<Vec<usize>> {
+/// `get_straight`
+fn straight(cards: &[Card], f: RuleFlags) -> Option<Mask> {
     let need = if f.four_fingers { 4 } else { 5 };
     if cards.len() > 5 || cards.len() < need {
         return None;
     }
-    let mut ids: [Vec<usize>; 15] = Default::default();
+    let mut ids = [0 as Mask; 15];
     for (i, c) in cards.iter().enumerate() {
         let id = card_id(c, i);
         if (2..15).contains(&id) {
-            ids[id as usize].push(i);
+            ids[id as usize] |= 1 << i;
         }
     }
-    let (mut t, mut length, mut found, mut skipped) = (Vec::new(), 0, false, false);
+    let (mut t, mut length, mut found, mut skipped) = (0 as Mask, 0, false, false);
     for j in 1..=14usize {
         let id = if j == 1 { 14 } else { j };
-        if !ids[id].is_empty() {
+        if ids[id] != 0 {
             length += 1;
             skipped = false;
-            t.extend(&ids[id]);
+            t |= ids[id];
         } else if f.shortcut && !skipped && j != 14 {
             skipped = true;
         } else {
@@ -188,20 +216,16 @@ fn straight(cards: &[Card], f: RuleFlags) -> Option<Vec<usize>> {
             if found {
                 break;
             }
-            t.clear();
+            t = 0;
         }
         if length >= need {
             found = true;
         }
     }
-    if !found {
-        return None;
-    }
-    t.sort_unstable();
-    t.dedup();
-    Some(t)
+    found.then_some(t)
 }
 
+/// `get_highest`
 fn highest(cards: &[Card]) -> Option<usize> {
     let mut best: Option<(usize, f64)> = None;
     for (i, c) in cards.iter().enumerate() {
@@ -216,85 +240,79 @@ fn highest(cards: &[Card]) -> Option<usize> {
 /// Identifies the played hand. `played` is in play order (left to right).
 pub fn detect(played: &[Card], f: RuleFlags) -> HandInfo {
     use HandType::*;
-    let p5 = x_same(5, played);
-    let p4 = x_same(4, played);
-    let p3 = x_same(3, played);
-    let p2 = x_same(2, played);
+    let g = groups(played);
+    let (p5, p4, p3, p2) = (g.count[5] > 0, g.count[4] > 0, g.count[3] > 0, g.count[2] > 0);
     let pf = flush(played, f);
     let ps = straight(played, f);
     let ph = highest(played);
 
-    let mut found: [Option<Vec<usize>>; 12] = Default::default();
-    let cat = |a: &[usize], b: &[usize]| a.iter().chain(b).copied().collect::<Vec<_>>();
-    if !p5.is_empty() && pf.is_some() {
-        found[FlushFive as usize] = Some(p5[0].clone());
+    // found[h] = the cards of hand h, if the play contains it
+    let mut found: [Option<Mask>; 12] = [None; 12];
+    if p5 && pf.is_some() {
+        found[FlushFive as usize] = Some(g.first[5]);
     }
-    if !p3.is_empty() && !p2.is_empty() && pf.is_some() {
-        found[FlushHouse as usize] = Some(cat(&p3[0], &p2[0]));
+    if p3 && p2 && pf.is_some() {
+        found[FlushHouse as usize] = Some(g.first[3] | g.first[2]);
     }
-    if !p5.is_empty() {
-        found[FiveOfAKind as usize] = Some(p5[0].clone());
+    if p5 {
+        found[FiveOfAKind as usize] = Some(g.first[5]);
     }
-    if let (Some(fl), Some(st)) = (&pf, &ps) {
-        let mut v = fl.clone();
-        v.extend(st.iter().filter(|i| !fl.contains(i)));
-        found[StraightFlush as usize] = Some(v);
+    if let (Some(fl), Some(st)) = (pf, ps) {
+        found[StraightFlush as usize] = Some(fl | st);
     }
-    if !p4.is_empty() {
-        found[FourOfAKind as usize] = Some(p4[0].clone());
+    if p4 {
+        found[FourOfAKind as usize] = Some(g.first[4]);
     }
-    if !p3.is_empty() && !p2.is_empty() {
-        found[FullHouse as usize] = Some(cat(&p3[0], &p2[0]));
+    if p3 && p2 {
+        found[FullHouse as usize] = Some(g.first[3] | g.first[2]);
     }
-    if let Some(fl) = &pf {
-        found[Flush as usize] = Some(fl.clone());
+    if let Some(fl) = pf {
+        found[Flush as usize] = Some(fl);
     }
-    if let Some(st) = &ps {
-        found[Straight as usize] = Some(st.clone());
+    if let Some(st) = ps {
+        found[Straight as usize] = Some(st);
     }
-    if !p3.is_empty() {
-        found[ThreeOfAKind as usize] = Some(p3[0].clone());
+    if p3 {
+        found[ThreeOfAKind as usize] = Some(g.first[3]);
     }
-    if p2.len() == 2 || (p3.len() == 1 && p2.len() == 1) {
-        let b = if p2.len() == 2 { &p2[1] } else { &p3[0] };
-        found[TwoPair as usize] = Some(cat(&p2[0], b));
+    if g.count[2] == 2 || (g.count[3] == 1 && g.count[2] == 1) {
+        let b = if g.count[2] == 2 { g.second[2] } else { g.first[3] };
+        found[TwoPair as usize] = Some(g.first[2] | b);
     }
-    if !p2.is_empty() {
-        found[Pair as usize] = Some(p2[0].clone());
+    if p2 {
+        found[Pair as usize] = Some(g.first[2]);
     }
     if let Some(h) = ph {
-        found[HighCard as usize] = Some(vec![h]);
+        found[HighCard as usize] = Some(1 << h);
     }
     // "Contains" propagation at the end of evaluate_poker_hand: 5oak → 4oak → 3oak → pair.
     // The game fills these with group lists; only non-emptiness matters for `contains`.
-    if found[FiveOfAKind as usize].is_some() {
-        found[FourOfAKind as usize].get_or_insert_with(Vec::new);
+    if found[FiveOfAKind as usize].is_some() && found[FourOfAKind as usize].is_none() {
+        found[FourOfAKind as usize] = Some(0);
     }
-    if found[FourOfAKind as usize].is_some() {
-        found[ThreeOfAKind as usize].get_or_insert_with(Vec::new);
+    if found[FourOfAKind as usize].is_some() && found[ThreeOfAKind as usize].is_none() {
+        found[ThreeOfAKind as usize] = Some(0);
     }
-    if found[ThreeOfAKind as usize].is_some() {
-        found[Pair as usize].get_or_insert_with(Vec::new);
+    if found[ThreeOfAKind as usize].is_some() && found[Pair as usize].is_none() {
+        found[Pair as usize] = Some(0);
     }
 
     let contains = HandType::ALL.iter().filter(|h| found[**h as usize].is_some()).fold(0, |m, h| m | h.bit());
     let hand = HandType::ALL.into_iter().find(|h| found[*h as usize].is_some()).unwrap_or(HighCard);
-    let mut scoring = found[hand as usize].clone().unwrap_or_default();
+    let mut scoring = found[hand as usize].unwrap_or(0);
 
     // evaluate_play: Splash makes every played card score; Stone cards always score.
     if f.splash {
-        scoring = (0..played.len()).collect();
+        scoring = if played.len() >= 32 { Mask::MAX } else { (1 << played.len()) - 1 };
     } else {
         for (i, c) in played.iter().enumerate() {
-            if c.enhancement == Some(Enhancement::Stone) && !scoring.contains(&i) {
-                scoring.push(i);
+            if c.enhancement == Some(Enhancement::Stone) {
+                scoring |= 1 << i;
             }
         }
     }
-    // table.sort(scoring_hand, by screen x) → play order
-    scoring.sort_unstable();
-    scoring.dedup();
-    HandInfo { hand, contains, scoring }
+    // table.sort(scoring_hand, by screen x) → play order, which is bit order
+    HandInfo { hand, contains, scoring: bits(scoring).filter(|&i| i < played.len()).collect() }
 }
 
 #[cfg(test)]

@@ -1,5 +1,7 @@
 //! balatro-advisor: read a vanilla Balatro save, score hands, value jokers.
 
+pub mod advise;
+pub mod bench;
 pub mod data;
 pub mod engine;
 pub mod gold;
@@ -9,6 +11,7 @@ pub mod lua;
 pub mod model;
 pub mod paths;
 pub mod save;
+pub mod sim;
 
 use std::path::PathBuf;
 

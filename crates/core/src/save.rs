@@ -39,6 +39,9 @@ pub struct RunState {
     pub most_played_hand: String,
     pub hands_left: i64,
     pub discards_left: i64,
+    /// Hands and discards a fresh round starts with.
+    pub round_hands: i64,
+    pub round_discards: i64,
     pub hand_size: i64,
     pub joker_slots: i64,
     pub consumable_slots: i64,
@@ -57,7 +60,31 @@ pub struct RunState {
     pub vouchers: Vec<String>,
     pub tags: Vec<String>,
     pub round_targets: RoundTargets,
+    /// Jokers seen this run (`GAME.used_jokers`): the shop won't offer them again without Showman.
+    pub used_jokers: Vec<String>,
+    pub pool_flags: Vec<String>,
+    pub banned_keys: Vec<String>,
+    pub shop_rates: ShopRates,
     pub snapshot: Snapshot,
+}
+
+/// Weights the shop uses to pick what each card slot is (`create_card_for_shop`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShopRates {
+    pub joker: f64,
+    pub tarot: f64,
+    pub planet: f64,
+    pub spectral: f64,
+    pub playing_card: f64,
+    /// Card slots per shop (`GAME.shop.joker_max`).
+    pub slots: i64,
+}
+
+impl ShopRates {
+    pub fn joker_share(&self) -> f64 {
+        let total = self.joker + self.tarot + self.planet + self.spectral + self.playing_card;
+        if total > 0.0 { self.joker / total } else { 0.0 }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -320,6 +347,20 @@ pub fn blind_amount(ante: i64, scaling: i64) -> f64 {
     amount - amount % unit
 }
 
+/// Keys of a `{key = true}` set table.
+fn true_keys(v: &Value) -> Vec<String> {
+    v.table().map_or_else(Vec::new, |t| {
+        t.entries
+            .iter()
+            .filter(|(_, v)| v.truthy())
+            .filter_map(|(k, _)| match k {
+                crate::lua::Key::Str(s) => Some(s.clone()),
+                crate::lua::Key::Int(_) => None,
+            })
+            .collect()
+    })
+}
+
 fn suit_at(v: &Value) -> Option<Suit> {
     v.get("suit").str().and_then(Suit::from_name)
 }
@@ -459,6 +500,8 @@ pub fn from_value(g: &Value, data: &GameData, path: &Path, age_secs: Option<u64>
         most_played_hand: cr.get("most_played_poker_hand").str().unwrap_or_default().to_string(),
         hands_left: int(cr.get("hands_left")),
         discards_left: int(cr.get("discards_left")),
+        round_hands: int(rr.get("hands")),
+        round_discards: int(rr.get("discards")),
         hand_size: limit("hand"),
         joker_slots: limit("jokers"),
         consumable_slots: limit("consumeables"),
@@ -489,6 +532,17 @@ pub fn from_value(g: &Value, data: &GameData, path: &Path, age_secs: Option<u64>
             castle_suit: suit_at(cr.get("castle_card")),
             idol: rank_at(cr.get("idol_card")).zip(suit_at(cr.get("idol_card"))),
             mail_rank: rank_at(cr.get("mail_card")),
+        },
+        used_jokers: true_keys(game.get("used_jokers")),
+        pool_flags: true_keys(game.get("pool_flags")),
+        banned_keys: true_keys(game.get("banned_keys")),
+        shop_rates: ShopRates {
+            joker: game.get("joker_rate").num().unwrap_or(20.0),
+            tarot: game.get("tarot_rate").num().unwrap_or(4.0),
+            planet: game.get("planet_rate").num().unwrap_or(4.0),
+            spectral: num(game.get("spectral_rate")),
+            playing_card: num(game.get("playing_card_rate")),
+            slots: game.at("shop.joker_max").int().unwrap_or(2),
         },
         snapshot: Snapshot { path: path.to_path_buf(), age_secs, caveats: caveats(g, screen) },
     };

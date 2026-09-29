@@ -1158,7 +1158,8 @@
       },
       "blueprint_compat": true,
       "eternal_compat": true,
-      "perishable_compat": true
+      "perishable_compat": true,
+      "enhancement_gate": "m_steel"
     },
     {
       "key": "j_scary_face",
@@ -1243,7 +1244,8 @@
       },
       "blueprint_compat": true,
       "eternal_compat": false,
-      "perishable_compat": true
+      "perishable_compat": true,
+      "no_pool_flag": "gros_michel_extinct"
     },
     {
       "key": "j_even_steven",
@@ -1579,7 +1581,8 @@
       },
       "blueprint_compat": true,
       "eternal_compat": false,
-      "perishable_compat": true
+      "perishable_compat": true,
+      "yes_pool_flag": "gros_michel_extinct"
     },
     {
       "key": "j_card_sharp",
@@ -1984,7 +1987,8 @@
       },
       "blueprint_compat": true,
       "eternal_compat": true,
-      "perishable_compat": true
+      "perishable_compat": true,
+      "enhancement_gate": "m_stone"
     },
     {
       "key": "j_golden",
@@ -2013,7 +2017,8 @@
       },
       "blueprint_compat": true,
       "eternal_compat": true,
-      "perishable_compat": false
+      "perishable_compat": false,
+      "enhancement_gate": "m_lucky"
     },
     {
       "key": "j_baseball",
@@ -2230,7 +2235,8 @@
       },
       "blueprint_compat": true,
       "eternal_compat": true,
-      "perishable_compat": true
+      "perishable_compat": true,
+      "enhancement_gate": "m_gold"
     },
     {
       "key": "j_mr_bones",
@@ -2427,7 +2433,8 @@
       },
       "blueprint_compat": true,
       "eternal_compat": true,
-      "perishable_compat": false
+      "perishable_compat": false,
+      "enhancement_gate": "m_glass"
     },
     {
       "key": "j_ring_master",

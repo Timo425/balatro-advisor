@@ -49,6 +49,16 @@ enum Cmd {
         #[arg(long)]
         golden: Option<String>,
     },
+    /// Full analysis of the current run: joker values, order, shop, rescue jokers, blind odds
+    Analyze {
+        /// Round simulations per board
+        #[arg(long, default_value_t = 300)]
+        sims: usize,
+        #[arg(long, default_value_t = 42)]
+        seed: u64,
+    },
+    /// Time the engine on fixed synthetic boards
+    Bench,
     /// Golden cases: real hands with the in-game score
     Golden {
         #[command(subcommand)]
@@ -120,6 +130,9 @@ fn main() -> Result<()> {
             let (played, held) = match (hand, cards) {
                 (Some(idx), _) => {
                     let r = run.as_ref().context("--hand needs a save")?;
+                    if r.hand.is_empty() {
+                        anyhow::bail!("the save has no hand right now ({:?}); --hand works while you're in a blind", r.screen);
+                    }
                     let picks: Vec<usize> = idx
                         .split(',')
                         .map(|n| n.trim().parse::<usize>().context("--hand takes positions like 1,3,4"))
@@ -176,6 +189,20 @@ fn main() -> Result<()> {
                 };
                 let p = case.save(std::path::Path::new(GOLDEN_DIR)).map_err(anyhow::Error::msg)?;
                 println!("\nSaved {}. After playing it: balatro-advisor golden set {name} <score the game showed>", p.display());
+            }
+        }
+        Cmd::Analyze { sims, seed } => {
+            let dir = dir()?;
+            let p = profile(&dir);
+            let run = save::load(&save::save_path(&dir, p), data)?;
+            let g = gold::load(&dir, p, data).ok();
+            let opts = balatro_advisor::advise::Options { sims: *sims, seed: *seed, ..Default::default() };
+            let a = balatro_advisor::advise::analyze(&run, data, g.as_ref(), &opts);
+            println!("{}", serde_json::to_string_pretty(&a)?);
+        }
+        Cmd::Bench => {
+            for t in balatro_advisor::bench::run() {
+                println!("{:<44} {:>9.1} ms  ({:.1} µs each)", t.name, t.ms, t.per_item_us);
             }
         }
         Cmd::Golden { cmd } => {
