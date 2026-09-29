@@ -4,63 +4,68 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Balatro Advisor</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect x='2' y='1' width='12' height='14' rx='2' fill='%23e8c547'/></svg>">
 <style>
   :root {
     --bg: #11201d; --panel: #1a2e2a; --panel2: #213833; --line: #2f4a44;
-    --text: #e9f0ee; --muted: #93aba5; --chips: #3b9cff; --mult: #ff4d4d;
+    --text: #e9f0ee; --muted: #93aba5; --chips: #3b9cff;
     --good: #37d17a; --warn: #f2b33d; --bad: #ff5c5c; --gold: #e8c547;
     --common: #5fa8ff; --uncommon: #3fce8f; --rare: #ff6b6b; --legendary: #b57bff;
   }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
-  header { position: sticky; top: 0; z-index: 2; background: #0c1715ee; backdrop-filter: blur(6px); border-bottom: 1px solid var(--line); padding: 10px 20px; display: flex; gap: 18px; align-items: center; flex-wrap: wrap; }
-  header .title { font-weight: 800; letter-spacing: .5px; color: var(--gold); }
+  html, body { margin: 0; background: var(--bg); color: var(--text); font: 13px/1.35 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; gap: 14px; align-items: center; padding: 7px 14px; background: #0c1715; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  header .title { font-weight: 800; color: var(--gold); letter-spacing: .5px; }
   header .chip { color: var(--muted); } header .chip b { color: var(--text); }
-  .status { margin-left: auto; font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 8px; }
-  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--good); }
+  .status { margin-left: auto; color: var(--muted); display: flex; align-items: center; gap: 6px; font-size: 12px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--good); }
   .dot.busy { background: var(--warn); animation: pulse 1s infinite; }
   @keyframes pulse { 50% { opacity: .3 } }
-  main { max-width: 1200px; margin: 0 auto; padding: 18px 20px 60px; display: grid; gap: 18px; }
-  section { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; }
-  h2 { margin: 0 0 12px; font-size: 13px; text-transform: uppercase; letter-spacing: 1.2px; color: var(--muted); font-weight: 700; }
-  h2 small { text-transform: none; letter-spacing: 0; font-weight: 400; margin-left: 8px; }
-  .caveat { background: #3a2f12; border: 1px solid #6b5520; color: #f5dc9b; padding: 8px 12px; border-radius: 8px; font-size: 13px; }
-  .rounds { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
-  .round { background: var(--panel2); border-radius: 10px; padding: 12px 14px; }
-  .round .name { font-weight: 700; } .round .sub { color: var(--muted); font-size: 13px; }
-  .round .pct { font-size: 38px; font-weight: 800; margin: 4px 0; }
-  .bar { height: 8px; background: #0e1b18; border-radius: 99px; overflow: hidden; }
+  .caveat { color: #f5dc9b; font-size: 12px; cursor: help; }
+  main { padding: 10px 14px 12px; display: grid; gap: 10px; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; min-width: 0; }
+  h2 { margin: 0 0 8px; font-size: 11px; text-transform: uppercase; letter-spacing: 1.1px; color: var(--muted); font-weight: 700; }
+  h2 small { text-transform: none; letter-spacing: 0; font-weight: 400; margin-left: 6px; }
+  .rounds { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+  .round { background: var(--panel2); border-radius: 8px; padding: 8px 12px; display: grid; grid-template-columns: auto 1fr; gap: 2px 14px; align-items: center; }
+  .round .pct { grid-row: span 2; font-size: 30px; font-weight: 800; min-width: 80px; }
+  .round .name { font-weight: 700; } .round .sub { color: var(--muted); font-size: 12px; }
+  .round .bar { grid-column: 1 / -1; margin-top: 4px; }
+  .bar { height: 6px; background: #0e1b18; border-radius: 99px; overflow: hidden; }
   .bar > i { display: block; height: 100%; border-radius: 99px; }
-  .jokers { display: flex; gap: 12px; flex-wrap: wrap; }
-  .joker { width: 190px; background: var(--panel2); border-radius: 10px; padding: 12px; border-top: 4px solid var(--common); position: relative; }
-  .joker .slot { position: absolute; top: 8px; right: 10px; color: var(--muted); font-size: 12px; }
-  .joker .jn { font-weight: 700; padding-right: 20px; }
-  .joker .big { font-size: 26px; font-weight: 800; margin-top: 6px; }
-  .joker .lbl { font-size: 12px; color: var(--muted); }
-  .tags { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 6px; }
-  .tag { font-size: 11px; padding: 1px 7px; border-radius: 99px; background: #0e1b18; color: var(--muted); border: 1px solid var(--line); }
+  .cols { display: grid; grid-template-columns: minmax(320px, 5fr) 7fr; gap: 10px; align-items: start; }
+  @media (max-width: 900px) { .cols { grid-template-columns: 1fr; } }
+  .stack { display: grid; gap: 10px; min-width: 0; }
+  .jokers { display: grid; grid-template-columns: repeat(auto-fill, minmax(135px, 1fr)); gap: 8px; }
+  .joker { background: var(--panel2); border-radius: 8px; padding: 8px; border-top: 3px solid var(--common); position: relative; }
+  .joker .slot { position: absolute; top: 5px; right: 7px; color: var(--muted); font-size: 11px; }
+  .joker .jn { font-weight: 700; padding-right: 14px; }
+  .joker .big { font-size: 20px; font-weight: 800; margin-top: 3px; }
+  .lbl { font-size: 11px; color: var(--muted); }
+  .tags { display: flex; gap: 3px; flex-wrap: wrap; margin-top: 4px; }
+  .tag { font-size: 10px; padding: 0 6px; border-radius: 99px; background: #0e1b18; color: var(--muted); border: 1px solid var(--line); }
   .tag.ed { color: #fff; border: none; background: linear-gradient(90deg, #ff6b6b, #f2b33d, #37d17a, #3b9cff, #b57bff); }
   .tag.foil { background: #4a6f9a; color: #fff; border: none; } .tag.holo { background: #b04a6a; color: #fff; border: none; }
   .tag.neg { background: #333; color: #ddd; }
-  .note { font-size: 12px; color: var(--muted); margin-top: 6px; }
-  .order { margin-top: 12px; padding: 10px 12px; border-radius: 8px; background: #0e1b18; }
+  .order { margin-top: 8px; padding: 6px 9px; border-radius: 6px; background: #0e1b18; font-size: 12px; }
   table { width: 100%; border-collapse: collapse; }
-  th { text-align: left; font-size: 12px; color: var(--muted); font-weight: 600; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
-  td { padding: 8px; border-bottom: 1px solid #243d37; vertical-align: middle; }
+  th { text-align: left; font-size: 11px; color: var(--muted); font-weight: 600; padding: 3px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  td { padding: 4px 6px; border-bottom: 1px solid #243d37; vertical-align: middle; white-space: nowrap; }
+  td.name { white-space: normal; }
   tr:last-child td { border-bottom: none; }
-  .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
   .up { color: var(--good); } .down { color: var(--bad); } .flat { color: var(--muted); }
-  .mini { display: inline-block; width: 70px; vertical-align: middle; margin-left: 6px; }
   .star { color: var(--gold); font-weight: 700; }
   .rar-Common { color: var(--common); } .rar-Uncommon { color: var(--uncommon); } .rar-Rare { color: var(--rare); } .rar-Legendary { color: var(--legendary); }
-  .play { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-  .card { background: #f4efe4; color: #222; border-radius: 6px; padding: 6px 9px; font-weight: 700; font-size: 14px; }
+  .play { display: flex; gap: 5px; flex-wrap: wrap; align-items: center; }
+  .card { background: #f4efe4; color: #222; border-radius: 5px; padding: 3px 7px; font-weight: 700; }
   .muted { color: var(--muted); }
-  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
-  @media (max-width: 860px) { .grid2 { grid-template-columns: 1fr; } }
-  footer { color: var(--muted); font-size: 12px; }
-  .empty { color: var(--muted); padding: 30px; text-align: center; }
-  .mix td { padding: 5px 8px; }
+  .mix td { padding: 2px 6px; border: none; }
+  details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+  details summary b { color: var(--text); }
+  footer { color: var(--muted); font-size: 11px; }
+  .empty { color: var(--muted); padding: 24px; text-align: center; }
+  [title] { cursor: help; }
 </style>
 </head>
 <body>
@@ -70,6 +75,7 @@
   <span class="chip" id="h-ante"></span>
   <span class="chip" id="h-money"></span>
   <span class="chip" id="h-screen"></span>
+  <span class="caveat" id="h-caveat"></span>
   <span class="status"><span class="dot" id="dot"></span><span id="status">connecting…</span></span>
 </header>
 <main id="main"><div class="empty">Waiting for the first analysis…</div></main>
@@ -77,109 +83,92 @@
 <script>
 const $ = (s) => document.querySelector(s);
 const pct = (x) => (x * 100).toFixed(x > 0 && x < 0.1 ? 1 : 0) + "%";
-const pp = (d) => {
-  const v = Math.round(d * 100);
-  if (Math.abs(d) < 0.005) return '<span class="flat">±0</span>';
-  return `<span class="${d > 0 ? "up" : "down"}">${d > 0 ? "+" : ""}${v}</span>`;
-};
-const gainTxt = (g) => {
-  if (Math.abs(g) < 0.005) return '<span class="flat">±0%</span>';
-  return `<span class="${g > 0 ? "up" : "down"}">${g > 0 ? "+" : ""}${Math.round(g * 100)}%</span>`;
-};
+const pp = (d) => Math.abs(d) < 0.005 ? '<span class="flat">±0</span>'
+  : `<span class="${d > 0 ? "up" : "down"}">${d > 0 ? "+" : ""}${Math.round(d * 100)}</span>`;
+const gainTxt = (g) => Math.abs(g) < 0.005 ? '<span class="flat">±0%</span>'
+  : `<span class="${g > 0 ? "up" : "down"}">${g > 0 ? "+" : ""}${Math.round(g * 100)}%</span>`;
 const color = (p) => p >= 0.85 ? "var(--good)" : p >= 0.5 ? "var(--warn)" : "var(--bad)";
 const num = (x) => x >= 1e6 ? x.toExponential(2) : Math.round(x).toLocaleString("en-US");
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const rarColor = { Common: "var(--common)", Uncommon: "var(--uncommon)", Rare: "var(--rare)", Legendary: "var(--legendary)" };
-const edTag = (e) => !e ? "" : e === "polychrome" ? '<span class="tag ed">polychrome</span>' : e === "foil" ? '<span class="tag foil">foil</span>' : e === "holo" ? '<span class="tag holo">holo</span>' : '<span class="tag neg">negative</span>';
+const edTag = (e) => !e ? "" : e === "polychrome" ? '<span class="tag ed">poly</span>' : e === "foil" ? '<span class="tag foil">foil</span>' : e === "holo" ? '<span class="tag holo">holo</span>' : '<span class="tag neg">negative</span>';
+const roundName = (r) => r.label === "Boss" ? r.blind : r.label.replace("Next: ", "");
+const STAKES = ["", "White", "Red", "Green", "Black", "Blue", "Purple", "Orange", "Gold"];
 
-function roundBars(a, ps) {
-  return a.rounds.map((r, i) => {
-    const p = ps[i] ?? 0;
-    return `<div title="${esc(r.label)}: ${pct(p)}"><span class="muted" style="font-size:11px">${esc(r.label === "Boss" ? r.blind : r.label)}</span> <b>${pct(p)}</b><span class="mini bar"><i style="width:${p * 100}%;background:${color(p)}"></i></span></div>`;
-  }).join("");
+function candTable(a, list, withFind) {
+  return `<table><tr><th>Joker</th><th>Action</th><th class="num">$</th>${a.rounds.map((r) => `<th class="num">${esc(roundName(r))}</th>`).join("")}<th class="num" title="Change in the best hand you can make from a fresh deal">Hand</th>${withFind ? '<th class="num" title="Chance a given shop shows it, before rerolls">Shop</th>' : ""}</tr>` +
+    list.map((c) => `<tr>
+      <td class="name" ${c.note ? `title="${esc(c.note)}"` : ""}><span class="rar-${c.rarity}">●</span> <b>${esc(c.name)}</b> ${edTag(c.edition)}${c.missing_gold ? ' <span class="star" title="No Gold sticker yet">★</span>' : ""}</td>
+      <td class="muted">${esc(c.action.replace("replace ", "→ "))}</td>
+      <td class="num">${c.cost}</td>
+      ${c.p_win.map((p, i) => { const was = p - c.p_win_delta[i], d = c.p_win_delta[i];
+        const cls = Math.abs(d) < 0.005 ? "flat" : d > 0 ? "up" : "down";
+        return `<td class="num" title="now ${pct(was)}, with it ${pct(p)}"><span class="muted">${pct(was).replace("%", "")}→</span><span class="${cls}">${pct(p)}</span></td>`; }).join("")}
+      <td class="num">${gainTxt(c.score_gain)}</td>
+      ${withFind ? `<td class="num muted">${c.per_shop != null ? pct(c.per_shop) : ""}</td>` : ""}
+    </tr>`).join("") + `</table>`;
 }
 
 function render(d) {
   if (d.status === "no_run") {
-    $("#main").innerHTML = `<section><div class="empty">No run in progress (${esc(d.message)}).<br>Start or continue a run and this page updates by itself.</div></section>` + goldSection(d.gold);
+    $("#main").innerHTML = `<section><div class="empty">No run in progress (${esc(d.message)}).<br>Start or continue a run and this updates by itself.</div></section>` + goldSection(d.gold);
     return;
   }
   if (d.status !== "ok") return;
   const a = d.analysis;
   $("#h-deck").innerHTML = `<b>${esc(a.deck)}</b>`;
-  $("#h-ante").innerHTML = `Ante <b>${a.ante}</b> · stake <b>${["", "White", "Red", "Green", "Black", "Blue", "Purple", "Orange", "Gold"][a.stake] || a.stake}</b>`;
+  $("#h-ante").innerHTML = `Ante <b>${a.ante}</b> · <b>${STAKES[a.stake] || a.stake}</b>`;
   $("#h-money").innerHTML = `<b>$${a.dollars}</b>`;
   $("#h-screen").innerHTML = esc(a.screen.replace(/([a-z])([A-Z])/g, "$1 $2"));
+  $("#h-caveat").innerHTML = a.caveats.length ? "⚠ snapshot" : "";
+  $("#h-caveat").title = a.caveats.join("\n");
 
-  let html = "";
-  if (a.caveats.length) html += `<div class="caveat">⚠ ${a.caveats.map(esc).join("<br>")}</div>`;
-
-  // Blinds
-  html += `<section><h2>Chance to beat <small>simulated rounds with your deck and jokers</small></h2><div class="rounds">` +
-    a.rounds.map((r) => `<div class="round">
-      <div class="name">${esc(r.label)} · ${esc(r.blind)}</div>
-      <div class="sub">${num(r.target)} chips${r.in_progress ? " · in progress" : ""}</div>
+  let html = `<section style="padding:8px"><div class="rounds">` + a.rounds.map((r) => `
+    <div class="round" ${r.unmodelled ? `title="${esc(r.unmodelled)}"` : ""}>
       <div class="pct" style="color:${color(r.p_win)}">${pct(r.p_win)}</div>
+      <div class="name">${esc(r.label.replace("Next: ", ""))}${r.label === "Boss" ? " · " + esc(r.blind) : ""}${r.unmodelled ? ' <span class="caveat">⚠</span>' : ""}</div>
+      <div class="sub">${num(r.target)} chips${r.in_progress ? " · in progress" : ""} · typical ${num(r.total.p50)} (${num(r.total.p10)}–${num(r.total.p90)})</div>
       <div class="bar"><i style="width:${r.p_win * 100}%;background:${color(r.p_win)}"></i></div>
-      <div class="sub" style="margin-top:6px">typical total ${num(r.total.p50)} (bad luck ${num(r.total.p10)}, good ${num(r.total.p90)})</div>
-      ${r.unmodelled ? `<div class="note">${esc(r.unmodelled)}</div>` : ""}
     </div>`).join("") + `</div></section>`;
 
-  // Jokers
-  html += `<section><h2>Your jokers <small>left to right · share of your best-hand score each one carries · "if sold" = change in win chance</small></h2>`;
-  if (!a.jokers.length) html += `<div class="muted">No jokers yet.</div>`;
+  // Left: jokers, hand mix, best play
+  let left = `<section><h2>Your jokers <small>share of best-hand score · if sold</small></h2>`;
+  if (!a.jokers.length) left += `<div class="muted">No jokers yet.</div>`;
   else {
-    html += `<div class="jokers">` + a.jokers.map((j, i) => {
-      const scoring = j.roles.some((r) => ["scoring", "retrigger", "rule"].includes(r));
-      const main = scoring || Math.abs(j.score_share) > 0.005
-        ? `<div class="big">${Math.round(j.score_share * 100)}%</div><div class="lbl">of your best-hand score</div>`
-        : `<div class="big muted">—</div><div class="lbl">no direct score</div>`;
-      const sold = j.p_win_if_removed.map((d, k) => `${esc(a.rounds[k].label === "Boss" ? a.rounds[k].blind : a.rounds[k].label)} ${pp(d)}`).join(" · ");
-      return `<div class="joker" style="border-top-color:${rarColor[j.rarity] || "var(--line)"}">
+    left += `<div class="jokers">` + a.jokers.map((j, i) => {
+      const scoring = j.roles.some((r) => ["scoring", "retrigger", "rule"].includes(r)) || Math.abs(j.score_share) > 0.005;
+      const sold = j.p_win_if_removed.map((d, k) => `${esc(roundName(a.rounds[k]))} ${pp(d)}`).join(" · ");
+      return `<div class="joker" style="border-top-color:${rarColor[j.rarity] || "var(--line)"}" ${j.note ? `title="${esc(j.note)}"` : ""}>
         <span class="slot">${i + 1}</span>
         <div class="jn">${esc(j.name)}</div>
         <div class="tags">${edTag(j.edition)}${j.roles.map((r) => `<span class="tag">${r}</span>`).join("")}${j.eternal ? '<span class="tag">eternal</span>' : ""}${j.debuff ? '<span class="tag" style="color:var(--bad)">debuffed</span>' : ""}</div>
-        ${main}
-        <div class="note">if sold: ${sold}</div>
-        ${j.note ? `<div class="note">${esc(j.note)}</div>` : ""}
+        ${scoring ? `<div class="big">${Math.round(j.score_share * 100)}%</div>` : `<div class="big muted" title="No direct score">—</div>`}
+        <div class="lbl">sold: ${sold}</div>
       </div>`;
     }).join("") + `</div>`;
-    if (a.order) {
-      html += a.order.is_current
-        ? `<div class="order"><span class="up">✓</span> Order is already the best one found.</div>`
-        : `<div class="order">Better order: <b>${a.order.order.map(esc).join(" → ")}</b> <span class="up">(+${Math.round(a.order.gain * 100)}% typical hand)</span></div>`;
+    if (a.order && !a.order.is_current) {
+      left += `<div class="order">Better order: <b>${a.order.order.map(esc).join(" → ")}</b> <span class="up">+${Math.round(a.order.gain * 100)}%</span></div>`;
+    } else if (a.order) {
+      left += `<div class="order muted"><span class="up">✓</span> Order is already the best found.</div>`;
     }
   }
   if (a.hand_mix && a.hand_mix.length) {
-    html += `<div style="margin-top:14px"><div class="lbl" style="margin-bottom:4px">Which hands score your points (simulated ${esc(a.rounds[a.rounds.length - 1].label === "Boss" ? a.rounds[a.rounds.length - 1].blind : a.rounds[a.rounds.length - 1].label)} rounds; junk hands played to dig left out)</div><table class="mix">` +
-      a.hand_mix.slice(0, 6).map((h) => `<tr><td>${esc(h.hand)}</td><td class="num" style="width:120px">${pct(h.share)} <span class="muted">of pts</span></td><td style="width:40%"><div class="bar"><i style="width:${h.share * 100}%;background:var(--chips)"></i></div></td><td class="num muted">${pct(h.played)} of hands · avg ${num(h.mean)}</td></tr>`).join("") + `</table></div>`;
+    left += `<div style="margin-top:8px"><div class="lbl" title="From simulated ${esc(roundName(a.rounds[a.rounds.length - 1]))} rounds; junk hands played to dig are left out">Hands that score your points</div><table class="mix">` +
+      a.hand_mix.slice(0, 4).map((h) => `<tr><td>${esc(h.hand)}</td><td class="num" style="width:44px">${pct(h.share)}</td><td style="width:38%"><div class="bar"><i style="width:${h.share * 100}%;background:var(--chips)"></i></div></td><td class="num muted">avg ${num(h.mean)}</td></tr>`).join("") + `</table></div>`;
   }
-  html += `</section>`;
-
-  // Shop + best play
-  const cand = (list, withFind) => `<table><tr><th>Joker</th><th>Action</th><th class="num">Cost</th>${a.rounds.map((r) => `<th class="num">${esc(r.label === "Boss" ? r.blind : r.label)}</th>`).join("")}<th class="num" title="Change in the best hand you can make from a fresh deal">Best hand</th>${withFind ? '<th class="num">Per shop</th>' : ""}</tr>` +
-    list.map((c) => `<tr>
-      <td><span class="rar-${c.rarity}">●</span> <b>${esc(c.name)}</b> ${edTag(c.edition)} ${c.missing_gold ? '<span class="star" title="No Gold sticker yet">★</span>' : ""}${c.note ? `<div class="note">${esc(c.note)}</div>` : ""}</td>
-      <td class="muted">${esc(c.action)}</td>
-      <td class="num">$${c.cost}</td>
-      ${c.p_win.map((p, i) => `<td class="num">${pct(p)} ${pp(c.p_win_delta[i])}</td>`).join("")}
-      <td class="num">${gainTxt(c.score_gain)}</td>
-      ${withFind ? `<td class="num muted">${c.per_shop != null ? pct(c.per_shop) : ""}</td>` : ""}
-    </tr>`).join("") + `</table>`;
-
-  // Shop and best play only appear when there is something in them
-  if (a.shop.length) {
-    html += `<section><h2>Shop <small>buy it? chance to win with it, and the change</small></h2>${cand(a.shop, false)}</section>`;
-  }
+  left += `</section>`;
   if (a.best_play) {
-    html += `<section><h2>Best play now</h2><div class="play">${a.best_play.cards.map((c) => `<span class="card">${esc(c)}</span>`).join("")}</div><div style="margin-top:8px"><b>${esc(a.best_play.hand)}</b> for <b>${num(a.best_play.score)}</b> (without lucky rolls)</div></section>`;
+    left += `<section><h2>Best play now</h2><div class="play">${a.best_play.cards.map((c) => `<span class="card">${esc(c)}</span>`).join("")}<span style="margin-left:6px"><b>${esc(a.best_play.hand)}</b> · ${num(a.best_play.score)}</span></div></section>`;
   }
 
-  html += `<section><h2>Jokers worth digging for <small>everything the shop can still offer, ranked by how much it raises your chances · ★ = no Gold sticker yet${a.gold && a.gold.this_run_counts ? " (this Gold Stake run can earn it)" : ""}</small></h2>${cand(a.rescue, true)}
-    <div class="note">"Per shop" = chance a given shop shows it in one of its joker slots, before rerolls. Buffoon packs are extra chances.</div></section>`;
+  // Right: shop, dig list
+  let right = "";
+  if (a.shop.length) right += `<section><h2>Shop <small>win chance now → with it</small></h2>${candTable(a, a.shop, false)}</section>`;
+  right += `<section><h2>Worth digging for <small>win chance now → with it · still in the shop pool · ★ no Gold sticker${a.gold && a.gold.this_run_counts ? " (this run can earn it)" : ""}</small></h2>${candTable(a, a.rescue.slice(0, 10), true)}</section>`;
 
+  html += `<div class="cols"><div class="stack">${left}</div><div class="stack">${right}</div></div>`;
   html += goldSection(d.gold);
-  html += `<footer>Heuristics: ${a.heuristics.map(esc).join(" · ")}<br>Analysed in ${a.elapsed_ms} ms · save written ${a.save_age_secs ?? "?"} s before analysis.</footer>`;
+  html += `<footer title="${esc(a.heuristics.join("\n"))}">Heuristic play/discard policy · analysed in ${a.elapsed_ms} ms · save ${a.save_age_secs ?? "?"} s old</footer>`;
   $("#main").innerHTML = html;
 }
 
@@ -187,11 +176,11 @@ function goldSection(g) {
   if (!g) return "";
   const byR = {};
   g.missing.forEach((j) => (byR[j.rarity] ||= []).push(j));
-  return `<section><h2>Gold Stake stickers <small>${g.have_gold}/${g.total} · ${g.missing.length} missing</small></h2>` +
+  const open = localStorage.getItem("goldOpen") === "1" ? " open" : "";
+  return `<section style="padding:7px 12px"><details${open} ontoggle="try{localStorage.setItem('goldOpen', this.open ? '1' : '0')}catch(e){}"><summary>Gold Stake stickers <b>${g.have_gold}/${g.total}</b> · ${g.missing.length} missing${g.tally_in_file != null && g.tally_in_file !== g.tally_computed ? ' · <span class="down">tally mismatch, format may have changed</span>' : ""}</summary>` +
     ["Common", "Uncommon", "Rare", "Legendary"].filter((r) => byR[r]).map((r) =>
-      `<div style="margin:6px 0"><span class="rar-${r}"><b>${r}</b></span> <span class="muted">${byR[r].map((j) => esc(j.name)).join(", ")}</span></div>`).join("") +
-    (g.tally_in_file != null && g.tally_in_file !== g.tally_computed ? `<div class="caveat">Sticker count disagrees with the game's own tally: the profile format may have changed.</div>` : "") +
-    `</section>`;
+      `<div style="margin:4px 0"><span class="rar-${r}"><b>${r}</b></span> <span class="muted">${byR[r].map((j) => esc(j.name)).join(", ")}</span></div>`).join("") +
+    `</details></section>`;
 }
 
 let version = -1;
@@ -200,7 +189,7 @@ async function poll() {
     const r = await fetch("/api/analysis", { cache: "no-store" });
     const j = await r.json();
     $("#dot").className = "dot" + (j.busy ? " busy" : "");
-    $("#status").textContent = j.busy ? "analysing…" : "live · updates when the game saves";
+    $("#status").textContent = j.busy ? "analysing…" : "live";
     if (j.version !== version) { version = j.version; render(j.data); }
   } catch (e) {
     $("#dot").className = "dot busy";
