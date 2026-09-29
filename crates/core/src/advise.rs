@@ -116,6 +116,18 @@ pub struct Candidate {
     pub note: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub desc: Option<String>,
+    /// For jokers that grow or fade: their value one ante from now, under a stated assumption.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub growth: Option<Growth>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Growth {
+    /// e.g. "+6 Mult after 1 ante (2 skipped packs)"
+    pub assumption: String,
+    /// Next-ante reach at the grown size (compare with `reach` at today's size).
+    pub reach: f64,
+    pub fades: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -754,7 +766,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     }
     rescue.sort_by(|a, b| rank_value(b, key_round).total_cmp(&rank_value(a, key_round)));
     lap("refine top");
-    let pool_entries: Vec<Candidate> = screened
+    let mut pool_entries: Vec<Candidate> = screened
         .iter()
         .map(|c| {
             let mut c = rescue.iter().find(|r| r.key == c.key).cloned().unwrap_or_else(|| c.clone());
@@ -765,6 +777,27 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             c
         })
         .collect();
+    // Growing / fading jokers: re-simulated at their size one ante from now
+    let growth_models: Vec<(usize, Joker, String, bool)> = pool_entries
+        .iter()
+        .enumerate()
+        .filter_map(|(i, c)| {
+            let j = Joker::from_key(&c.key, data)?;
+            let (grown, label, fades) = grow_one_ante(&j, &hand_mix, run.dollars)?;
+            Some((i, grown, label, fades))
+        })
+        .collect();
+    let hz_idx = ctx.specs.iter().position(|x| x.horizon);
+    let grown: Vec<Option<f64>> = par_map(&growth_models, |(_, j, _, _)| {
+        let h = hz_idx?;
+        let c = evaluate_candidate(&ctx, j.clone(), 0, &base_odds, screen_base, opts.screen_sims, false);
+        c.reach.get(h).copied()
+    });
+    for ((i, _, label, fades), r) in growth_models.into_iter().zip(grown) {
+        if let Some(r) = r {
+            pool_entries[i].growth = Some(Growth { assumption: label, reach: r, fades });
+        }
+    }
     let blind_views: Vec<BlindView> = run
         .blinds
         .iter()
@@ -990,6 +1023,7 @@ fn evaluate_candidate(ctx: &Ctx, j: Joker, cost: i64, base_odds: &[(f64, Stats)]
             roles: roles(&j),
             note: None,
             desc: None,
+            growth: None,
         };
     };
     let r: Vec<&Joker> = removed.iter().collect();
@@ -1018,6 +1052,7 @@ fn evaluate_candidate(ctx: &Ctx, j: Joker, cost: i64, base_odds: &[(f64, Stats)]
         roles: roles(&j),
         note: non_scoring_note(&j.key).map(str::to_string),
         desc: None,
+        growth: None,
     }
 }
 
@@ -1971,4 +2006,89 @@ fn rank_name(r: crate::model::Rank) -> String {
 
 fn describe(key: &str, ability: &serde_json::Value, ctx: &crate::describe::DescCtx) -> Option<String> {
     crate::describe::texts()?.describe(key, ability, ctx)
+}
+
+/// A joker's size one ante (3 rounds, ~12 hands) from now, under a simple stated
+/// assumption; `None` for jokers that don't grow or fade. Labelled everywhere it shows.
+fn grow_one_ante(j: &Joker, hand_mix: &[HandShare], dollars: f64) -> Option<(Joker, String, bool)> {
+    // Growth you pay for (skipping packs, rerolling) scales with the money you have:
+    // about one per $6, between 1 and 6 in an ante.
+    let buys = (dollars / 6.0).floor().clamp(1.0, 6.0);
+    let share = |hands: &[&str]| hand_mix.iter().filter(|h| hands.contains(&h.hand.as_str())).map(|h| h.played).sum::<f64>();
+    let hands_per_ante = 12.0;
+    let mut g = j.clone();
+    let (label, fades) = match j.key.as_str() {
+        "j_red_card" => {
+            g.mult += 3.0 * buys;
+            (format!("+{} Mult after 1 ante if you skip {buys:.0} booster packs (about what ${dollars:.0} allows)", 3.0 * buys), false)
+        }
+        "j_green_joker" => {
+            g.mult += 4.0;
+            ("+4 Mult after 1 ante (+1 per hand, −1 per discard)".to_string(), false)
+        }
+        "j_ride_the_bus" => {
+            g.mult += 3.0;
+            ("~+3 Mult after 1 ante (resets whenever a face card scores)".to_string(), false)
+        }
+        "j_trousers" => {
+            let n = (hands_per_ante * share(&["Two Pair", "Full House"])).round();
+            g.mult += 2.0 * n;
+            (format!("+{} Mult after 1 ante (~{n:.0} two pairs/full houses in your hands)", 2.0 * n), false)
+        }
+        "j_runner" => {
+            let n = (hands_per_ante * share(&["Straight", "Straight Flush"])).round();
+            g.extra.chips += 15.0 * n;
+            (format!("+{} Chips after 1 ante (~{n:.0} straights in your hands)", 15.0 * n), false)
+        }
+        "j_square" => {
+            g.extra.chips += 4.0 * 3.0;
+            ("+12 Chips after 1 ante (3 hands of exactly 4 cards)".to_string(), false)
+        }
+        "j_flash" => {
+            g.mult += 2.0 * buys;
+            (format!("+{} Mult after 1 ante if you reroll {buys:.0} times (about what ${dollars:.0} allows)", 2.0 * buys), false)
+        }
+        "j_castle" => {
+            g.extra.chips += 3.0 * 7.0;
+            ("+21 Chips after 1 ante (~7 discarded cards of its suit)".to_string(), false)
+        }
+        "j_wee" => {
+            g.extra.chips += 8.0 * 4.0;
+            ("+32 Chips after 1 ante (~4 scored 2s)".to_string(), false)
+        }
+        "j_hologram" => {
+            g.x_mult += 0.25;
+            ("+×0.25 after 1 ante, if 1 card is added to your deck".to_string(), false)
+        }
+        "j_constellation" => {
+            g.x_mult += 0.2;
+            ("+×0.2 after 1 ante, if you use 2 planets".to_string(), false)
+        }
+        "j_madness" => {
+            g.x_mult += 1.0;
+            ("+×1 after 1 ante (2 small/big blinds), but destroys a joker each time".to_string(), false)
+        }
+        "j_campfire" => {
+            g.x_mult += 0.5;
+            ("+×0.5 if you sell 2 cards before the boss (resets after it)".to_string(), false)
+        }
+        "j_popcorn" => {
+            g.mult = (g.mult - 12.0).max(0.0);
+            (format!("fades: {} Mult after 1 ante (−4 per round)", g.mult), true)
+        }
+        "j_ice_cream" => {
+            g.extra.chips = (g.extra.chips - 5.0 * hands_per_ante).max(0.0);
+            (format!("fades: {} Chips after 1 ante (−5 per hand)", g.extra.chips), true)
+        }
+        "j_ramen" => {
+            g.x_mult = (g.x_mult - 0.3).max(1.0);
+            (format!("fades: ×{:.1} after 1 ante (−×0.01 per discarded card)", g.x_mult), true)
+        }
+        "j_selzer" => {
+            g.kind = Kind::Other;
+            ("fades: used up after 10 hands (about 1 ante)".to_string(), true)
+        }
+        _ => return None,
+    };
+    Some((g, label, fades))
 }
