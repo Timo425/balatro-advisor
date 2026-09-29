@@ -65,6 +65,10 @@ pub struct JokerReport {
     /// Change in the chance to beat each round if the joker were sold.
     pub p_win_if_removed: Vec<f64>,
     pub eternal: bool,
+    /// Rounds left if perishable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub perishable: Option<i64>,
+    pub rental: bool,
     pub debuff: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
@@ -573,6 +577,8 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                 score_share: share,
                 p_win_if_removed: o.iter().zip(&base_odds).map(|((p, _), (bp, _))| p - bp).collect(),
                 eternal: sj.eternal,
+                perishable: sj.perishable,
+                rental: sj.rental,
                 debuff: j.debuff,
                 note: non_scoring_note(&j.key).map(str::to_string),
             }

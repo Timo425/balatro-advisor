@@ -33,6 +33,7 @@
   .round .name { font-weight: 700; } .round .sub { color: var(--muted); font-size: 12px; }
   .round .bar { grid-column: 1 / -1; margin-top: 4px; }
   .round.done { opacity: .55; }
+  .arr { margin: 0 3px; color: var(--muted); font-size: 1.1em; }
   .round .effect { font-weight: 400; font-size: 12px; color: var(--warn); }
   .round .skip { grid-column: 1 / -1; font-size: 12px; margin-top: 3px; padding: 3px 7px; border-radius: 6px; background: #0e1b18; }
   .dig { font-size: 12px; margin-bottom: 8px; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
@@ -113,13 +114,13 @@ function candTable(a, list, withFind, odds) {
   return `<table><tr><th>Joker</th><th>Action</th><th class="num">$</th>${a.rounds.map((r) => `<th class="num" ${r.horizon ? 'title="Share of that boss target reached (win chance is ~0 this far out)"' : ""}>${esc(r.horizon ? r.label + " reach" : roundName(r))}</th>`).join("")}<th class="num" title="Change in the best hand you can make from a fresh deal">Hand</th>${withFind ? '<th class="num" title="Chance a given shop shows it, before rerolls">Shop</th>' : ""}</tr>` +
     list.map((c) => `<tr${odds && (c.p_win[odds.round] ?? 0) >= odds.t ? ' class="hit"' : ""}>
       <td class="name" ${c.note ? `title="${esc(c.note)}"` : ""}><span class="rar-${c.rarity}">●</span> <b>${esc(c.name)}</b>${c.precise === false ? ' <span class="muted" title="Quicker, rougher estimate">~</span>' : ""} ${edTag(c.edition)}${c.missing_gold ? ' <span class="star" title="No Gold sticker yet">★</span>' : ""}</td>
-      <td class="muted">${esc(c.action.replace("replace ", "→ "))}</td>
+      <td class="muted">${esc(c.action.replace("replace ", "sell "))}</td>
       <td class="num">${c.cost}</td>
       ${c.p_win.map((p, i) => { if (a.rounds[i].horizon) { const r = Math.min(c.reach[i], 9), was = Math.min(c.reach[i] - c.reach_delta[i], 9);
-          return `<td class="num" title="Share of the ${esc(a.rounds[i].label)} boss target you reach on average: now ${pct(was)}, with it ${pct(r)}"><span class="muted">${pct(was).replace("%", "")}→</span><span class="${c.reach_delta[i] > NOISE ? "up" : c.reach_delta[i] < -NOISE ? "down" : "flat"}">${pct(r)}</span></td>`; }
+          return `<td class="num" title="Share of the ${esc(a.rounds[i].label)} boss target you reach on average: now ${pct(was)}, with it ${pct(r)}"><span class="muted">${pct(was)}</span><span class="arr">→</span><span class="${c.reach_delta[i] > NOISE ? "up" : c.reach_delta[i] < -NOISE ? "down" : "flat"}">${pct(r)}</span></td>`; }
         const was = p - c.p_win_delta[i], d = c.p_win_delta[i];
         const cls = Math.abs(d) < NOISE ? "flat" : d > 0 ? "up" : "down";
-        return `<td class="num" title="now ${pct(was)}, with it ${pct(p)}"><span class="muted">${pct(was).replace("%", "")}→</span><span class="${cls}">${pct(p)}</span></td>`; }).join("")}
+        return `<td class="num" title="now ${pct(was)}, with it ${pct(p)}"><span class="muted">${pct(was)}</span><span class="arr">→</span><span class="${cls}">${pct(p)}</span></td>`; }).join("")}
       <td class="num">${gainTxt(c.score_gain)}</td>
       ${withFind ? `<td class="num muted">${c.per_shop != null ? pct(c.per_shop) : ""}</td>` : ""}
     </tr>`).join("") + `</table>`;
@@ -234,7 +235,7 @@ function render(d) {
     `</section>`;
 
   // Left: jokers, hand mix, best play
-  let left = `<section><h2>Your jokers <small>share of best-hand score · win chance now → without it</small></h2>`;
+  let left = `<section><h2>Your jokers ${a.jokers.length}/${a.joker_slots} <small>share of best-hand score · win chance now → without it</small></h2>`;
   if (!a.jokers.length) left += `<div class="muted">No jokers yet.</div>`;
   else {
     left += `<div class="jokers">` + a.jokers.map((j, i) => {
@@ -244,12 +245,12 @@ function render(d) {
         const r = a.rounds[k];
         if (r.horizon) return "";
         const cls = Math.abs(d) < NOISE ? "flat" : d < 0 ? "down" : "up";
-        return `${esc(roundName(r))} <span class="muted">${pct(r.p_win).replace("%", "")}→</span><span class="${cls}">${pct(Math.max(0, r.p_win + d))}</span>`;
+        return `${esc(roundName(r))} <span class="muted">${pct(r.p_win)}</span><span class="arr">→</span><span class="${cls}">${pct(Math.max(0, r.p_win + d))}</span>`;
       }).filter(Boolean).join(" · ");
       return `<div class="joker" style="border-top-color:${rarColor[j.rarity] || "var(--line)"}" ${j.note ? `title="${esc(j.note)}"` : ""}>
         <span class="slot">${i + 1}</span>
         <div class="jn">${esc(j.name)}</div>
-        <div class="tags">${edTag(j.edition)}${j.roles.map((r) => `<span class="tag">${r}</span>`).join("")}${j.eternal ? '<span class="tag">eternal</span>' : ""}${j.debuff ? '<span class="tag" style="color:var(--bad)">debuffed</span>' : ""}</div>
+        <div class="tags">${edTag(j.edition)}${j.roles.map((r) => `<span class="tag">${r}</span>`).join("")}${j.eternal ? '<span class="tag">eternal</span>' : ""}${j.perishable != null ? `<span class="tag" style="color:var(--warn)" title="Debuffed after this many more rounds">perishable ${j.perishable}</span>` : ""}${j.rental ? '<span class="tag" style="color:var(--warn)" title="Costs $3 at the end of every round">rental $3</span>' : ""}${j.debuff ? '<span class="tag" style="color:var(--bad)">debuffed</span>' : ""}</div>
         ${scoring ? `<div class="big">${Math.round(j.score_share * 100)}%</div>` : `<div class="big muted" title="No direct score">—</div>`}
         <div class="lbl">without it: ${sold}</div>
       </div>`;
@@ -275,7 +276,7 @@ function render(d) {
     const r = a.rounds[a.options_round];
     right += `<section><h2>Your options vs ${esc(roundName(r))} <small>win chance after each, now ${pct(r.p_win)} · packs and rerolls are averages over what they can show</small></h2><table>` +
       a.options.map((o) => `<tr><td class="name"><b>${esc(o.label)}</b> <span class="muted">${esc(o.note)}</span></td><td class="num">$${o.cost}</td>
-        <td class="num"><span class="muted">${pct(r.p_win).replace("%", "")}→</span><span class="${o.p_win > r.p_win + NOISE ? "up" : "flat"}">${pct(o.p_win)}</span></td></tr>`).join("") + `</table></section>`;
+        <td class="num"><span class="muted">${pct(r.p_win)}</span><span class="arr">→</span><span class="${o.p_win > r.p_win + NOISE ? "up" : "flat"}">${pct(o.p_win)}</span></td></tr>`).join("") + `</table></section>`;
   }
   if (a.shop.length) right += `<section><h2>Shop jokers <small>win chance now → with it</small></h2>${candTable(a, a.shop, false)}</section>`;
   const roundOpts = a.rounds.map((r, i) => r.horizon ? "" : `<option value="${i}" ${i === odds.round ? "selected" : ""}>${esc(roundName(r))}</option>`).join("");
@@ -283,7 +284,7 @@ function render(d) {
     <div class="dig">I need <select id="dig-round">${roundOpts}</select> at <input id="dig-t" type="range" min="30" max="100" step="5" value="${Math.round(odds.t * 100)}"> <b>${Math.round(odds.t * 100)}%</b> ·
       <span title="${odds.good.map((g) => esc(g.name)).join(", ")}"><b>${odds.good.length}</b> jokers get you there</span> ·
       ${a.screen === "Shop"
-        ? `chance to see one: ${[1, 2, 3].map((k) => `${k} reroll${k > 1 ? "s" : ""} ($${odds.rerollCost(k)}) <b>${pct(odds.shop(k - 1))}</b>`).join(" · ")} <span class="muted" title="A reroll redraws only the card slots, not packs or vouchers">(each redraws ${a.shop_odds.slots} cards)</span>`
+        ? `chance to see one: ${[1, 2, 3].filter((k) => odds.rerollCost(k) <= a.dollars).map((k) => `${k} reroll${k > 1 ? "s" : ""} ($${odds.rerollCost(k)}) <b>${pct(odds.shop(k - 1))}</b>`).join(" · ")} <span class="muted" title="A reroll redraws only the card slots, not packs or vouchers">(each redraws ${a.shop_odds.slots} cards)</span>`
         : `chance to see one in the shop after this blind: <b>${pct(odds.shop(0))}</b> · +1 reroll <b>${pct(odds.shop(1))}</b> · +3 rerolls <b>${pct(odds.shop(3))}</b>`}</div>
     ${digTable(a, odds)}</section>`;
 
