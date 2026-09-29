@@ -1,0 +1,17 @@
+[package]
+name = "balatro-advisor"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Balatro save reader, scoring engine and joker advisor"
+
+[lib]
+name = "balatro_advisor"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+flate2 = "1"
+thiserror = "2"
+toml = "0.9"

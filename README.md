@@ -15,10 +15,18 @@ Carlo over your remaining deck, with fixed seeds, so the results are
 reproducible. Jokers that aren't modelled yet are shown as **not modelled**,
 never silently left out.
 
-> **Status: phase 1 (research and plan).** No code yet. See
-> [docs/plan.md](docs/plan.md) for the design,
-> [docs/decisions.md](docs/decisions.md) for the language and dependency
-> choices, and [docs/formats.md](docs/formats.md) for the save/profile layout.
+> **Status:** save/profile reader and `gold` work; the scoring engine is next.
+> Design notes: [docs/plan.md](docs/plan.md), [docs/formats.md](docs/formats.md).
+
+```bash
+cargo build --release
+./target/release/balatro-advisor gold          # Gold Stake stickers missing
+./target/release/balatro-advisor state         # parsed run (add --json for everything)
+cargo test                                     # ~1 s
+```
+
+`data/game.json` (joker/blind numbers) is generated from your own install:
+`unzip -p ~/.steam/debian-installation/steamapps/common/Balatro/Balatro.exe game.lua > /tmp/game.lua && cargo run -- extract-data /tmp/game.lua`
 
 ## Planned interfaces
 
