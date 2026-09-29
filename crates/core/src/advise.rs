@@ -189,12 +189,25 @@ pub struct Style {
 #[derive(Debug, Clone, Serialize)]
 pub struct ShopOption {
     pub label: String,
-    /// planet | pack | reroll
+    /// planet | pack | reroll | voucher
     pub kind: String,
     pub cost: i64,
     /// Win chance for `round` after taking this option (expected value for packs and rerolls).
+    /// Equal to the current chance for options that don't change this round (economy vouchers).
     pub p_win: f64,
     pub note: String,
+    /// Money left after paying, and the interest that money earns per round (before payouts).
+    pub money_after: f64,
+    pub interest_now: i64,
+    pub interest_after: i64,
+}
+
+/// Interest the game pays on `money` (`$1` per `$5`, capped; state_events.lua end of round).
+pub fn interest(money: f64, amount: i64, cap: i64) -> i64 {
+    if money < 5.0 {
+        return 0;
+    }
+    amount * ((money / 5.0).floor() as i64).min(cap / 5)
 }
 
 /// One of this ante's three blinds.
@@ -1117,12 +1130,12 @@ fn shop_options(
     let shop_cards = run.shop.as_ref().map(|s| s.other_cards.clone()).unwrap_or_default();
     for c in shop_cards.iter().filter(|c| c.set == "Planet") {
         if let Some(p) = p_of(&c.key) {
-            out.push(ShopOption { label: c.name.clone(), kind: "planet".into(), cost: c.cost, p_win: p, note: format!("levels up {}", data.center(&c.key).and_then(|x| x.config.get("hand_type")).and_then(|v| v.as_str()).unwrap_or("")) });
+            out.push(ShopOption { label: c.name.clone(), kind: "planet".into(), cost: c.cost, money_after: 0.0, interest_now: 0, interest_after: 0, p_win: p, note: format!("levels up {}", data.center(&c.key).and_then(|x| x.config.get("hand_type")).and_then(|v| v.as_str()).unwrap_or("")) });
         }
     }
     for c in run.consumables.iter().filter(|c| c.set == "Planet") {
         if let Some(p) = p_of(&c.key) {
-            out.push(ShopOption { label: format!("{} (you have it)", c.name), kind: "planet".into(), cost: 0, p_win: p, note: "use it before the blind".into() });
+            out.push(ShopOption { label: format!("{} (you have it)", c.name), kind: "planet".into(), cost: 0, p_win: p, note: "use it before the blind".into(), money_after: 0.0, interest_now: 0, interest_after: 0 });
         }
     }
 
@@ -1160,6 +1173,9 @@ fn shop_options(
             }
             let top = (0..n).max_by_key(|&i| best_counts[i]).unwrap_or(0);
             out.push(ShopOption {
+                money_after: 0.0,
+                interest_now: 0,
+                interest_after: 0,
                 label: pk.name.clone(),
                 kind: "pack".into(),
                 cost: pk.cost,
@@ -1169,7 +1185,7 @@ fn shop_options(
         } else if pk.key.starts_with("p_buffoon") {
             let budget = run.dollars - pk.cost as f64;
             let e = expected_best(pool, round, now, extra, 1.0, budget, per_rarity, &mut rng);
-            out.push(ShopOption { label: pk.name.clone(), kind: "pack".into(), cost: pk.cost, p_win: e, note: format!("{extra} jokers{pick_note}") });
+            out.push(ShopOption { label: pk.name.clone(), kind: "pack".into(), cost: pk.cost, p_win: e, note: format!("{extra} jokers{pick_note}"), money_after: 0.0, interest_now: 0, interest_after: 0 });
         }
     }
 
@@ -1185,6 +1201,9 @@ fn shop_options(
             let budget = run.dollars - spent as f64;
             let e = expected_best(pool, round, now, slots * k, joker_share, budget, per_rarity, &mut rng);
             out.push(ShopOption {
+                money_after: 0.0,
+                interest_now: 0,
+                interest_after: 0,
                 label: format!("{k} reroll{}", if k > 1 { "s" } else { "" }),
                 kind: "reroll".into(),
                 cost: spent,
@@ -1192,6 +1211,48 @@ fn shop_options(
                 note: format!("{} new cards; buy the best joker if it helps and fits the ${budget:.0} left", slots * k),
             });
         }
+    }
+    // Vouchers: the ones that change a round are re-simulated; economy ones get exact notes.
+    if let Some(shop) = &run.shop {
+        for v in &shop.vouchers {
+            let mut sp = spec.clone();
+            let (sim, note): (bool, String) = match v.key.as_str() {
+                "v_grabber" | "v_nacho_tong" => {
+                    sp.start.hands += 1;
+                    (true, "+1 hand every round".into())
+                }
+                "v_wasteful" | "v_recyclomancy" => {
+                    sp.start.discards += 1;
+                    (true, "+1 discard every round".into())
+                }
+                "v_paint_brush" | "v_palette" => {
+                    sp.start.hand_size += 1;
+                    (true, "+1 hand size".into())
+                }
+                "v_antimatter" => (false, "+1 joker slot: add jokers instead of selling one".into()),
+                "v_seed_money" => (false, format!("interest cap ${} → $10 per round", run.interest_cap / 5)),
+                "v_money_tree" => (false, format!("interest cap ${} → $20 per round", run.interest_cap / 5)),
+                "v_overstock_norm" | "v_overstock_plus" => (false, format!("+1 shop card slot ({} → {} per shop and reroll)", run.shop_rates.slots, run.shop_rates.slots + 1)),
+                "v_reroll_surplus" | "v_reroll_glut" => (false, "rerolls cost $2 less".into()),
+                "v_clearance_sale" => (false, "everything in the shop 25% off".into()),
+                "v_liquidation" => (false, "everything in the shop 50% off".into()),
+                "v_hieroglyph" => (false, "−1 ante, but −1 hand every round".into()),
+                "v_petroglyph" => (false, "−1 ante, but −1 discard every round".into()),
+                "v_crystal_ball" => (false, "+1 consumable slot".into()),
+                "v_tarot_merchant" | "v_tarot_tycoon" => (false, "more tarots in the shop, so fewer jokers per slot".into()),
+                "v_planet_merchant" | "v_planet_tycoon" => (false, "more planets in the shop, so fewer jokers per slot".into()),
+                "v_observatory" => (false, "planets you hold give ×1.5 mult for their hand".into()),
+                "v_telescope" => (false, "Celestial packs always contain your most played hand's planet".into()),
+                _ => (false, "not valued".into()),
+            };
+            let p = if sim { ctx.odds_one(&ctx.base, &sp, ctx.opts.sims).0 } else { now };
+            out.push(ShopOption { label: v.name.clone(), kind: "voucher".into(), cost: v.cost, p_win: p, note, money_after: 0.0, interest_now: 0, interest_after: 0 });
+        }
+    }
+    for o in &mut out {
+        o.money_after = run.dollars - o.cost as f64;
+        o.interest_now = interest(run.dollars, run.interest_amount, run.interest_cap);
+        o.interest_after = interest(o.money_after, run.interest_amount, run.interest_cap);
     }
     out.sort_by(|a, b| b.p_win.total_cmp(&a.p_win));
     out
