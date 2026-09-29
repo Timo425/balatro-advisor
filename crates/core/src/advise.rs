@@ -146,6 +146,8 @@ pub struct Analysis {
     /// Planets, packs and rerolls, valued against `options_round`.
     pub options: Vec<ShopOption>,
     pub options_round: usize,
+    /// Every tarot, valued for this run (the dig list's Tarots tab).
+    pub tarots: Vec<TarotValue>,
     pub outlook: Option<Outlook>,
     /// Style groups (name → joker keys), for tagging jokers in the page.
     pub style_groups: Vec<(String, Vec<String>)>,
@@ -222,6 +224,24 @@ pub fn interest(money: f64, amount: i64, cap: i64) -> i64 {
         return 0;
     }
     amount * ((money / 5.0).floor() as i64).min(cap / 5)
+}
+
+/// A tarot's value for this run: used the way a player sensibly would, on your real deck.
+#[derive(Debug, Clone, Serialize)]
+pub struct TarotValue {
+    pub key: String,
+    pub name: String,
+    /// Win chance for the options round after using it (= now when not simulated).
+    pub p_win: f64,
+    /// What it was assumed to do, or why it isn't simulated.
+    pub note: String,
+    pub simulated: bool,
+    /// Chance a given shop shows it in a card slot.
+    pub per_shop: f64,
+    /// Share of the next ante's boss target reached after using it (card changes are
+    /// subtle, so this is the ranking; win chances saturate).
+    pub reach: f64,
+    pub reach_now: f64,
 }
 
 /// One of this ante's three blinds.
@@ -789,7 +809,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     fill(&mut pool_entries);
     fill(&mut shop);
     fill(&mut rescue);
-    let options = shop_options(&ctx, run, data, &pool_entries, &base_odds, key_round, per_rarity, joker_share, &shop);
+    let (options, tarots) = shop_options(&ctx, run, data, &pool_entries, &base_odds, key_round, per_rarity, joker_share, &shop);
     lap("shop options");
     let shares: Vec<f64> = jokers.iter().map(|j| j.score_share).collect();
     let outlook = archetype_outlook(&ctx, run, data, &pool_entries, &shares, &hand_mix);
@@ -825,6 +845,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         blinds: blind_views,
         options,
         options_round: key_round,
+        tarots,
         outlook,
         style_groups: archetypes().into_iter().map(|(n, m, _)| (n.to_string(), m.iter().map(|k| k.to_string()).collect())).collect(),
         pool: pool_entries,
@@ -1138,10 +1159,10 @@ fn shop_options(
     per_rarity: [usize; 4],
     joker_share: f64,
     shop_jokers: &[Candidate],
-) -> Vec<ShopOption> {
+) -> (Vec<ShopOption>, Vec<TarotValue>) {
     use crate::engine::HandType;
     let now = base_odds.get(round).map_or(0.0, |o| o.0);
-    let Some(spec) = ctx.specs.get(round) else { return vec![] };
+    let Some(spec) = ctx.specs.get(round) else { return (vec![], vec![]) };
     let mut out = Vec::new();
 
     // Planets the game can offer now (Planet X, Ceres, Eris only once their hand was played)
@@ -1167,6 +1188,11 @@ fn shop_options(
     for c in shop_cards.iter().filter(|c| c.set == "Planet") {
         if let Some(p) = p_of(&c.key) {
             out.push(ShopOption { label: c.name.clone(), kind: "planet".into(), cost: c.cost, money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, key: None, desc: None, p_win: p, note: format!("levels up {}", data.center(&c.key).and_then(|x| x.config.get("hand_type")).and_then(|v| v.as_str()).unwrap_or("")) });
+        }
+    }
+    for c in run.open_pack.iter().filter(|c| c.set == "Planet") {
+        if let Some(p) = p_of(&c.key) {
+            out.push(ShopOption { label: format!("pick {}", c.name), kind: "planet".into(), cost: 0, p_win: p, note: format!("levels up {}", data.center(&c.key).and_then(|x| x.config.get("hand_type")).and_then(|v| v.as_str()).unwrap_or("")), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, key: None, desc: None });
         }
     }
     for c in run.consumables.iter().filter(|c| c.set == "Planet") {
@@ -1291,6 +1317,46 @@ fn shop_options(
             out.push(ShopOption { label: v.name.clone(), kind: "voucher".into(), cost: v.cost, p_win: p, note, money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, key: None, desc: None });
         }
     }
+    // Tarots: applied to the deck the way a player sensibly would, then the round re-simulated.
+    let tarots = tarot_values(ctx, run, data, spec, round, now, pool, per_rarity, &planet_p);
+    let tarot_p = |key: &str| tarots.iter().find(|t| t.key == key);
+    let shop_cards = run.shop.as_ref().map(|s| s.other_cards.clone()).unwrap_or_default();
+    for c in shop_cards.iter().filter(|c| c.set == "Tarot") {
+        if let Some(t) = tarot_p(&c.key) {
+            out.push(ShopOption { label: c.name.clone(), kind: "tarot".into(), cost: c.cost, p_win: t.p_win, note: t.note.clone(), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, key: None, desc: None });
+        }
+    }
+    for c in run.open_pack.iter().filter(|c| c.set == "Tarot") {
+        if let Some(t) = tarot_p(&c.key) {
+            out.push(ShopOption { label: format!("pick {}", c.name), kind: "tarot".into(), cost: 0, p_win: t.p_win, note: format!("{} · next ante reach {:.0}% → {:.0}%", t.note, t.reach_now * 100.0, t.reach * 100.0), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, key: None, desc: None });
+        }
+    }
+    for c in run.consumables.iter().filter(|c| c.set == "Tarot") {
+        if let Some(t) = tarot_p(&c.key) {
+            out.push(ShopOption { label: format!("{} (you have it)", c.name), kind: "tarot".into(), cost: 0, p_win: t.p_win, note: format!("{} · use it during a blind", t.note), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, key: None, desc: None });
+        }
+    }
+    for pk in run.shop.as_ref().map(|s| s.boosters.clone()).unwrap_or_default().iter().filter(|p| p.key.starts_with("p_arcana")) {
+        let Some(center) = data.center(&pk.key) else { continue };
+        let extra = center.config.get("extra").and_then(|v| v.as_u64()).unwrap_or(3) as usize;
+        let choose = center.config.get("choose").and_then(|v| v.as_u64()).unwrap_or(1);
+        let vals: Vec<f64> = tarots.iter().map(|t| t.p_win.max(now)).collect();
+        let (avg, top) = best_of_subsets(&vals, extra);
+        out.push(ShopOption {
+            label: pk.name.clone(),
+            kind: "pack".into(),
+            cost: pk.cost,
+            p_win: avg,
+            note: format!("{extra} tarots, best is usually {}{}", tarots.get(top).map_or("?", |t| t.name.as_str()), if choose > 1 { " (you pick 2; counted as your best 1)" } else { "" }),
+            money_after: 0.0,
+            interest_now: 0,
+            interest_after: 0,
+            unaffordable: false,
+            key: None,
+            desc: None,
+        });
+    }
+
     // Jokers in the shop (and an open Buffoon pack) are options like any other.
     for c in shop_jokers {
         let action = if c.action.starts_with("replace ") { c.action.replacen("replace ", "sells ", 1) } else { String::new() };
@@ -1311,8 +1377,9 @@ fn shop_options(
             v.join(", ")
         }).filter(|s| !s.is_empty());
         let note = [stickers, Some(action).filter(|a| !a.is_empty()), later].into_iter().flatten().collect::<Vec<_>>().join(" · ");
+        let from_pack = run.open_pack.iter().any(|p| p.key == c.key);
         out.push(ShopOption {
-            label: c.name.clone(),
+            label: if from_pack { format!("pick {}", c.name) } else { c.name.clone() },
             kind: "joker".into(),
             cost: c.cost,
             p_win: c.p_win.get(round).copied().unwrap_or(now),
@@ -1332,7 +1399,220 @@ fn shop_options(
         o.interest_after = interest(o.money_after, run.interest_amount, run.interest_cap);
     }
     out.sort_by(|a, b| b.p_win.total_cmp(&a.p_win));
-    out
+    (out, tarots)
+}
+
+/// Average over every `k`-subset of `vals` of its maximum, and the index most often best.
+fn best_of_subsets(vals: &[f64], k: usize) -> (f64, usize) {
+    let n = vals.len();
+    let k = k.min(n);
+    if k == 0 {
+        return (0.0, 0);
+    }
+    let (mut sum, mut count) = (0.0f64, 0.0f64);
+    let mut wins = vec![0usize; n];
+    let mut idx: Vec<usize> = (0..k).collect();
+    loop {
+        let bi = *idx.iter().max_by(|&&a, &&b| vals[a].total_cmp(&vals[b])).unwrap();
+        sum += vals[bi];
+        wins[bi] += 1;
+        count += 1.0;
+        let mut i = k;
+        while i > 0 && idx[i - 1] == n - k + i - 1 {
+            i -= 1;
+        }
+        if i == 0 {
+            break;
+        }
+        idx[i - 1] += 1;
+        for j in i..k {
+            idx[j] = idx[j - 1] + 1;
+        }
+    }
+    (sum / count.max(1.0), (0..n).max_by_key(|&i| wins[i]).unwrap_or(0))
+}
+
+/// Values every tarot for this run. Card-targeting ones pick targets the way a player
+/// sensibly would (heuristic, and in the game only among the cards in hand).
+#[allow(clippy::too_many_arguments)]
+fn tarot_values(
+    ctx: &Ctx,
+    run: &RunState,
+    data: &GameData,
+    spec: &Spec,
+    round: usize,
+    now: f64,
+    pool: &[Candidate],
+    per_rarity: [usize; 4],
+    planet_p: &[f64],
+) -> Vec<TarotValue> {
+    use crate::model::{Enhancement, Rank, Suit};
+    let tarots: Vec<&crate::data::Center> = data.centers.iter().filter(|c| c.set == "Tarot").collect();
+    let total_rate = run.shop_rates.joker + run.shop_rates.tarot + run.shop_rates.planet + run.shop_rates.spectral + run.shop_rates.playing_card;
+    let per_card = if total_rate > 0.0 { run.shop_rates.tarot / total_rate / tarots.len().max(1) as f64 } else { 0.0 };
+    let per_shop = 1.0 - (1.0 - per_card).powi(run.shop_rates.slots.max(1) as i32);
+
+    // A fresh version of the round to re-simulate with the changed deck
+    let mut fresh = spec.clone();
+    if fresh.in_progress {
+        fresh.in_progress = false;
+        fresh.start.hand.clear();
+        fresh.start.scored = 0.0;
+        fresh.start.hands = run.round_hands;
+        fresh.start.discards = run.round_discards;
+    }
+    fresh.start.deck = ctx.fresh_deck.clone();
+    let deck = &ctx.fresh_deck;
+    let count = |s: Suit| deck.iter().filter(|c| c.suit == s && c.enhancement != Some(Enhancement::Stone)).count();
+    let main = Suit::ALL.into_iter().max_by_key(|&s| count(s)).unwrap_or(Suit::Spades);
+    let weakest_suit = Suit::ALL.into_iter().filter(|&s| s != main).min_by_key(|&s| count(s)).unwrap_or(Suit::Clubs);
+    // Card-targeting tarots only reach the cards in hand. When a hand is on screen (a blind or
+    // an opened pack), targets are limited to those cards; otherwise any card is assumed.
+    let mut in_hand = vec![run.hand.is_empty(); deck.len()];
+    if !run.hand.is_empty() {
+        for h in &run.hand {
+            if let Some(i) = (0..deck.len()).find(|&i| !in_hand[i] && deck[i].rank == h.rank && deck[i].suit == h.suit && deck[i].enhancement == h.enhancement) {
+                in_hand[i] = true;
+            }
+        }
+    }
+    let from_hand = !run.hand.is_empty();
+    // Indices of plain cards (in hand, when one is shown), best (high rank) first / worst first
+    let plain = |pred: &dyn Fn(&Card) -> bool, best_first: bool| -> Vec<usize> {
+        let mut v: Vec<usize> = (0..deck.len()).filter(|&i| in_hand[i] && deck[i].enhancement.is_none() && pred(&deck[i])).collect();
+        v.sort_by_key(|&i| deck[i].rank.0);
+        if best_first {
+            v.reverse();
+        }
+        v
+    };
+
+    let horizon = ctx.specs.iter().find(|x| x.horizon).cloned();
+    let sims = (ctx.opts.sims / 2).max(100);
+    let board_for_deck = |d: &[Card]| {
+        let mut b = ctx.base.clone();
+        let tally = |e: Enhancement| d.iter().filter(|c| c.enhancement == Some(e)).count() as i64;
+        b.steel_tally = tally(Enhancement::Steel);
+        b.stone_tally = tally(Enhancement::Stone);
+        b.driver_tally = d.iter().filter(|c| c.enhancement.is_some()).count() as i64;
+        b.playing_cards = d.len() as i64;
+        b
+    };
+    let reach_of = |d: &[Card]| -> f64 {
+        let Some(h) = &horizon else { return 0.0 };
+        let mut sp = h.clone();
+        sp.start.deck = d.to_vec();
+        ctx.odds_one(&board_for_deck(d), &sp, sims).1.mean / sp.start.target.max(1.0)
+    };
+    let reach_now = reach_of(deck);
+    let simulate = |d: Vec<Card>| -> (f64, f64) {
+        let mut sp = fresh.clone();
+        sp.start.deck = d.clone();
+        (ctx.odds_one(&board_for_deck(&d), &sp, sims).0, reach_of(&d))
+    };
+
+    par_map(&tarots, |t| {
+        let cfg = &t.config;
+        let n = cfg.get("max_highlighted").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+        let mut d = deck.clone();
+        let (sim, note): (bool, String) = if let Some(suit) = cfg.get("suit_conv").and_then(|v| v.as_str()).and_then(Suit::from_name) {
+            // 3 cards of your least-used suit (lowest first) become this suit
+            // Take from your least-used suit (or the next one, if that's the target suit)
+            let source = Suit::ALL.into_iter().filter(|&x| x != suit && x != main).min_by_key(|&x| count(x))
+                .or_else(|| Suit::ALL.into_iter().filter(|&x| x != suit).min_by_key(|&x| count(x)))
+                .unwrap_or(weakest_suit);
+            for &i in plain(&|c: &Card| c.suit == source, false).iter().take(n) {
+                d[i].suit = suit;
+            }
+            (true, format!("{n} {} → {}", source.name(), suit.name()))
+        } else if let Some(m) = cfg.get("mod_conv").and_then(|v| v.as_str()) {
+            match m {
+                "up_rank" => {
+                    for &i in plain(&|c: &Card| c.suit == main, false).iter().take(n) {
+                        d[i].rank = Rank(if d[i].rank.0 >= 14 { 2 } else { d[i].rank.0 + 1 });
+                    }
+                    (true, format!("+1 rank on your {n} lowest {}", main.name()))
+                }
+                "card" => {
+                    // Death: the worst card becomes a copy of the best one
+                    let best = plain(&|c: &Card| c.suit == main, true).first().copied();
+                    let worst = plain(&|c: &Card| c.suit == weakest_suit, false).first().copied();
+                    if let (Some(b), Some(w)) = (best, worst) {
+                        d[w] = d[b];
+                    }
+                    (true, format!("a low {} becomes a copy of your best {}", weakest_suit.name(), main.name()))
+                }
+                "m_gold" => (false, "Gold card: $3 per round while held (economy)".into()),
+                _ => {
+                    let e = Enhancement::from_key(m);
+                    // Steel and Stone go on cards you'd hold or throw in; the rest on your main suit's high cards
+                    let targets = match e {
+                        Some(Enhancement::Steel) => plain(&|c: &Card| c.suit != main, true),
+                        Some(Enhancement::Stone) => plain(&|c: &Card| c.suit == weakest_suit, false),
+                        _ => plain(&|c: &Card| c.suit == main, true),
+                    };
+                    for &i in targets.iter().take(n) {
+                        d[i].enhancement = e;
+                    }
+                    (true, format!("{} on {n} card{}", m.trim_start_matches("m_"), if n > 1 { "s" } else { "" }))
+                }
+            }
+        } else if cfg.get("remove_card").and_then(|v| v.as_bool()).unwrap_or(false) {
+            for i in plain(&|c: &Card| c.suit == weakest_suit, false).into_iter().take(n).collect::<Vec<_>>().into_iter().rev() {
+                d.remove(i);
+            }
+            (true, format!("destroys {n} low {}", weakest_suit.name()))
+        } else {
+            let note = match t.key.as_str() {
+                "c_hermit" => format!("doubles money: +${:.0}", run.dollars.clamp(0.0, 20.0)),
+                "c_temperance" => {
+                    let v: i64 = run.jokers.iter().map(|j| j.sell_value).sum();
+                    format!("+${} (your jokers' sell value, max $50)", v.min(50))
+                }
+                "c_judgement" => "creates a random joker".into(),
+                "c_high_priestess" => "creates 2 random planets".into(),
+                "c_emperor" => "creates 2 random tarots".into(),
+                "c_fool" => "copies the last tarot or planet used".into(),
+                "c_wheel_of_fortune" => "1 in 4: a random joker gets Foil/Holo/Polychrome".into(),
+                _ => "not valued".into(),
+            };
+            let p = match t.key.as_str() {
+                "c_judgement" => {
+                    let mut rng = crate::engine::Rng::new(ctx.opts.seed ^ 0x7a70);
+                    let reach = pool_reach(pool, 1, &mut rng).unwrap_or(reach_now).max(reach_now);
+                    return TarotValue { key: t.key.clone(), name: t.name.clone(), p_win: expected_best(pool, round, now, 1, 1.0, f64::INFINITY, per_rarity, &mut rng).max(now), note, simulated: true, per_shop, reach, reach_now };
+                }
+                "c_high_priestess" if !planet_p.is_empty() => best_of_subsets(planet_p, 2).0.max(now),
+                _ => now,
+            };
+            return TarotValue { key: t.key.clone(), name: t.name.clone(), p_win: p, note, simulated: p != now, per_shop, reach: reach_now, reach_now };
+        };
+        let (p, reach) = if sim { simulate(d) } else { (now, reach_now) };
+        // Card-targeting tarots only work on cards in hand (in a blind or an opened pack)
+        let note = if n > 0 && !from_hand { format!("{note}, if you hold suitable cards") } else if n > 0 { format!("{note} (from your hand)") } else { note };
+        TarotValue { key: t.key.clone(), name: t.name.clone(), p_win: p, note, simulated: sim, per_shop, reach, reach_now }
+    })
+}
+
+/// Expected next-ante reach from `cards` free random jokers (the horizon column of the pool).
+fn pool_reach(pool: &[Candidate], cards: usize, rng: &mut crate::engine::Rng) -> Option<f64> {
+    use crate::engine::Rolls;
+    let hz = |c: &Candidate| c.reach.last().copied();
+    let by: [Vec<f64>; 4] = [0u8, 1, 2, 3].map(|r| pool.iter().filter(|c| c.rarity_n == r).filter_map(hz).collect());
+    let trials = 2000;
+    let mut total = 0.0;
+    for _ in 0..trials {
+        let mut best: f64 = 0.0;
+        for _ in 0..cards {
+            let u = rng.unit();
+            let r = if u > 0.95 { 3 } else if u > 0.7 { 2 } else { 1 };
+            if !by[r].is_empty() {
+                best = best.max(by[r][rng.below(by[r].len())]);
+            }
+        }
+        total += best;
+    }
+    Some(total / trials as f64)
 }
 
 /// Expected win chance after seeing `cards` random shop/pack cards (each a joker with

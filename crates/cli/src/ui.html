@@ -41,6 +41,9 @@
   .scroll { max-height: 360px; overflow-y: auto; border: 1px solid var(--line); border-radius: 6px; }
   .scroll th { position: sticky; top: 0; background: var(--panel); }
   .more { margin-top: 6px; font-size: 12px; } .more a { color: var(--chips); }
+  .tabs { margin-left: 8px; text-transform: none; letter-spacing: 0; }
+  .tabs a { color: var(--muted); text-decoration: none; padding: 1px 8px; border-radius: 99px; border: 1px solid var(--line); margin-right: 4px; font-weight: 600; }
+  .tabs a.on { color: #0c1715; background: var(--gold); border-color: var(--gold); }
   tr.hit td { background: #1a4533; }
   tr.broke td { opacity: .5; }
   tr.hit td:first-child { box-shadow: inset 3px 0 0 var(--good); }
@@ -301,19 +304,43 @@ function render(d) {
   let right = "";
   if (a.options && a.options.length) {
     const r = a.rounds[a.options_round];
-    right += `<section><h2>Your options vs ${esc(roundName(r))} <small>everything you can buy now, by win chance after it (now ${pct(r.p_win)}) · packs and rerolls are averages over what they can show</small></h2><table>` +
-      a.options.map((o) => `<tr${o.unaffordable ? ' class="broke" title="You can\'t afford this right now"' : ""}><td class="name"${o.desc ? ` title="${esc(o.desc)}"` : ""}>${o.kind === "joker" ? '<span class="muted">🃏</span> ' : ""}<b>${esc(o.label)}</b>${o.key ? styleTags(a, o.key) : ""}${o.unaffordable ? ' <span class="down">can\'t afford</span>' : ""} <span class="muted">${esc(o.note)}</span></td><td class="num">$${o.cost}</td>
+    // While a pack is open, only its picks (and skipping) are possible
+    const inPack = a.screen.endsWith("Pack");
+    const picks = a.options.filter((o) => o.label.startsWith("pick "));
+    const rows = inPack && picks.length ? [...picks, { label: "skip", kind: "skip", cost: 0, p_win: r.p_win, note: "keep things as they are", money_after: a.dollars, interest_now: 0, interest_after: 0 }]
+      : a.options.filter((o) => !o.label.startsWith("pick "));
+    const title = inPack && picks.length ? `Pick from the pack vs ${esc(roundName(r))} <small>win chance after each pick (now ${pct(r.p_win)}) · money isn't turned into win chance</small>`
+      : `Your options vs ${esc(roundName(r))} <small>everything you can buy now, by win chance after it (now ${pct(r.p_win)}) · packs and rerolls are averages over what they can show</small>`;
+    right += `<section><h2>${title}</h2><table>` +
+      rows.map((o) => `<tr${o.unaffordable ? ' class="broke" title="You can\'t afford this right now"' : ""}><td class="name"${o.desc ? ` title="${esc(o.desc)}"` : ""}>${o.kind === "joker" ? '<span class="muted">🃏</span> ' : ""}<b>${esc(o.label)}</b>${o.key ? styleTags(a, o.key) : ""}${o.unaffordable ? ' <span class="down">can\'t afford</span>' : ""} <span class="muted">${esc(o.note)}</span></td><td class="num">$${o.cost}</td>
         <td class="num" title="Money left, and the interest it earns per round ($1 per $5, before payouts)"><span class="${o.interest_after < o.interest_now ? "down" : "muted"}">$${Math.round(o.money_after)} · int $${o.interest_after}${o.interest_after < o.interest_now ? ` (−$${o.interest_now - o.interest_after})` : ""}</span></td>
         <td class="num"><span class="muted">${pct(r.p_win)}</span><span class="arr">→</span><span class="${o.p_win > r.p_win + NOISE ? "up" : "flat"}">${pct(o.p_win)}</span></td></tr>`).join("") + `</table></section>`;
   }
   const roundOpts = a.rounds.map((r, i) => r.horizon ? "" : `<option value="${i}" ${i === odds.round ? "selected" : ""}>${esc(roundName(r))}</option>`).join("");
-  right += `<section><h2>Worth digging for <small>win chance now → with it · still in the shop pool · ★ no Gold sticker${a.gold && a.gold.this_run_counts ? " (this run can earn it)" : ""}</small></h2>
+  let tab = "jokers";
+  try { tab = localStorage.getItem("digTab") || "jokers"; } catch (e) {}
+  const tabs = `<span class="tabs">${["jokers", "tarots"].map((t) => `<a href="#" class="${t === tab ? "on" : ""}" onclick="try{localStorage.setItem('digTab','${t}')}catch(e){};render(last);return false">${t === "jokers" ? "Jokers" : "Tarots"}</a>`).join("")}</span>`;
+  if (tab === "tarots") {
+    const hz = a.rounds.find((r) => r.horizon);
+    const tr = [...(a.tarots || [])].sort((x, y) => y.reach - x.reach);
+    right += `<section><h2>Worth digging for ${tabs} <small>every tarot, used the way you sensibly would · ranked by share of the ${esc(hz ? hz.label + " boss" : "next ante boss")} reached</small></h2>
+      <table><tr><th>Tarot</th><th>What it does here</th><th class="num">${esc(hz ? hz.label : "Next ante")} reach</th><th class="num">${esc(roundName(a.rounds[a.options_round]))}</th><th class="num">Shop</th></tr>` +
+      tr.map((t) => {
+        const d = t.reach - t.reach_now, dp = t.p_win - a.rounds[a.options_round].p_win;
+        return `<tr><td class="name"><b>${esc(t.name)}</b></td><td class="muted">${esc(t.note)}</td>
+          <td class="num"><span class="muted">${pct(t.reach_now)}</span><span class="arr">→</span><span class="${d > NOISE ? "up" : d < -NOISE ? "down" : "flat"}">${pct(t.reach)}</span></td>
+          <td class="num"><span class="${dp > NOISE ? "up" : dp < -NOISE ? "down" : "flat"}">${pct(t.p_win)}</span></td>
+          <td class="num muted">${pct(t.per_shop)}</td></tr>`;
+      }).join("") + `</table><div class="more muted">Card-changing tarots only work on cards in your hand (during a blind or in an opened pack), so these assume you hold suitable ones.</div></section>`;
+  } else {
+    right += `<section><h2>Worth digging for ${tabs} <small>win chance now → with it · still in the shop pool · ★ no Gold sticker${a.gold && a.gold.this_run_counts ? " (this run can earn it)" : ""}</small></h2>
     <div class="dig">I need <select id="dig-round">${roundOpts}</select> at <input id="dig-t" type="range" min="30" max="100" step="5" value="${Math.round(odds.t * 100)}"> <b>${Math.round(odds.t * 100)}%</b> ·
       <span title="${odds.good.map((g) => esc(g.name)).join(", ")}"><b>${odds.good.length}</b> jokers get you there</span> ·
       ${a.screen === "Shop"
         ? `chance to see one: ${[1, 2, 3].filter((k) => odds.rerollCost(k) <= a.dollars).map((k) => `${k} reroll${k > 1 ? "s" : ""} ($${odds.rerollCost(k)}) <b>${pct(odds.shop(k - 1))}</b>`).join(" · ")} <span class="muted" title="A reroll redraws only the card slots, not packs or vouchers">(each redraws ${a.shop_odds.slots} cards)</span>`
         : `chance to see one in the shop after this blind: <b>${pct(odds.shop(0))}</b> · +1 reroll <b>${pct(odds.shop(1))}</b> · +3 rerolls <b>${pct(odds.shop(3))}</b>`}</div>
     ${digTable(a, odds)}</section>`;
+  }
 
   html += `<div class="cols"><div class="stack">${left}</div><div class="stack">${right}</div></div>`;
   html += goldSection(d.gold);
