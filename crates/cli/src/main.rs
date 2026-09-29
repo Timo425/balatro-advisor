@@ -39,6 +39,11 @@ enum Cmd {
 }
 
 fn main() -> Result<()> {
+    // `balatro-advisor gold | head` should end quietly, not panic on a closed pipe.
+    #[cfg(unix)]
+    unsafe {
+        libc_sigpipe_default();
+    }
     let cli = Cli::parse();
     let data = GameData::bundled();
     let dir = || -> Result<PathBuf> { Ok(paths::resolve_save_dir(cli.save_dir.as_deref())?) };
@@ -96,6 +101,26 @@ fn print_gold(r: &gold::GoldReport) {
     }
 }
 
+fn joker_label(j: &save::JokerCard) -> String {
+    let mut tags: Vec<String> = Vec::new();
+    if let Some(e) = j.edition {
+        tags.push(format!("{e:?}").to_lowercase());
+    }
+    if j.eternal {
+        tags.push("eternal".into());
+    }
+    if let Some(n) = j.perishable {
+        tags.push(format!("perishable {n} rounds"));
+    }
+    if j.rental {
+        tags.push("rental".into());
+    }
+    if j.debuff {
+        tags.push("DEBUFFED".into());
+    }
+    if tags.is_empty() { j.name.clone() } else { format!("{} ({})", j.name, tags.join(", ")) }
+}
+
 fn print_state(s: &save::RunState) {
     let age = s.snapshot.age_secs.map_or(String::new(), |a| format!(" (saved {}m {}s ago)", a / 60, a % 60));
     println!("{} | stake {} | ante {}/{} round {} | {:?}{age}", s.deck, s.stake, s.ante, s.win_ante, s.round, s.screen);
@@ -119,7 +144,7 @@ fn print_state(s: &save::RunState) {
     }
     println!("Jokers:");
     for j in &s.jokers {
-        println!("  {}{} {}", j.name, j.edition.map_or(String::new(), |e| format!(" ({e:?})")), j.ability);
+        println!("  {}", joker_label(j));
     }
     if !s.hand.is_empty() {
         println!("Hand: {}", s.hand.iter().map(|c| c.label()).collect::<Vec<_>>().join("  "));
@@ -129,10 +154,20 @@ fn print_state(s: &save::RunState) {
         println!("Shop:");
         for j in &shop.jokers {
             let tag = j.pending_tag_edition.map_or(String::new(), |e| format!(" → {e:?} from tag"));
-            println!("  {} ${}{tag}", j.name, j.cost);
+            println!("  {} ${}{tag}", joker_label(j), j.cost);
         }
         for c in shop.other_cards.iter().chain(&shop.boosters).chain(&shop.vouchers) {
             println!("  {} ${}", c.name, c.cost);
         }
     }
+}
+
+#[cfg(unix)]
+unsafe fn libc_sigpipe_default() {
+    unsafe extern "C" {
+        fn signal(sig: i32, handler: usize) -> usize;
+    }
+    const SIGPIPE: i32 = 13;
+    const SIG_DFL: usize = 0;
+    unsafe { signal(SIGPIPE, SIG_DFL) };
 }
