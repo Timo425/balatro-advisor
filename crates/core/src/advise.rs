@@ -115,6 +115,8 @@ pub struct Analysis {
     pub joker_slots: i64,
     pub rounds: Vec<Round>,
     pub typical_hand: Stats,
+    /// Which hands the board ends up playing, best hand per fresh deal.
+    pub hand_mix: Vec<HandShare>,
     pub jokers: Vec<JokerReport>,
     pub order: Option<OrderAdvice>,
     pub shop: Vec<Candidate>,
@@ -125,6 +127,16 @@ pub struct Analysis {
     pub heuristics: Vec<&'static str>,
     pub save_age_secs: Option<u64>,
     pub elapsed_ms: u128,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HandShare {
+    pub hand: String,
+    /// Share of the points scored in simulated rounds.
+    pub share: f64,
+    /// Share of the hands played.
+    pub played: f64,
+    pub mean: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -458,6 +470,19 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         .collect();
 
     let order = best_order(&ctx, base_typical.mean);
+    // Which hands carry the points, from the hardest round (usually the boss)
+    let hand_mix = ctx
+        .specs
+        .last()
+        .map(|spec| {
+            let bb = ctx.board_for(&ctx.base, spec);
+            let start = ctx.start_for(spec, &bb);
+            sim::round_hand_mix(&bb, &start, opts.sims.min(200), opts.seed)
+                .into_iter()
+                .map(|(h, share, played, mean)| HandShare { hand: h.name().to_string(), share, played, mean })
+                .collect()
+        })
+        .unwrap_or_default();
     let missing = |k: &str| gold.is_some_and(|g| g.is_missing(k));
 
     // Shop jokers (and an open Buffoon pack)
@@ -524,6 +549,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         joker_slots: run.joker_slots,
         rounds,
         typical_hand: base_typical,
+        hand_mix,
         jokers,
         order,
         shop,

@@ -7,6 +7,8 @@ use balatro_advisor::model::Card;
 use balatro_advisor::{gold, golden, paths, save};
 use clap::{Parser, Subcommand};
 
+mod ui;
+
 #[derive(Parser)]
 #[command(name = "balatro-advisor", version, about = "Joker values, ordering and shop advice from your Balatro save")]
 struct Cli {
@@ -56,6 +58,14 @@ enum Cmd {
         sims: usize,
         #[arg(long, default_value_t = 42)]
         seed: u64,
+    },
+    /// Live advisor page in your browser, updating whenever the game saves
+    Ui {
+        #[arg(long, default_value_t = 7777)]
+        port: u16,
+        /// Don't open the browser
+        #[arg(long)]
+        no_open: bool,
     },
     /// Time the engine on fixed synthetic boards
     Bench,
@@ -199,6 +209,11 @@ fn main() -> Result<()> {
             let opts = balatro_advisor::advise::Options { sims: *sims, seed: *seed, ..Default::default() };
             let a = balatro_advisor::advise::analyze(&run, data, g.as_ref(), &opts);
             println!("{}", serde_json::to_string_pretty(&a)?);
+        }
+        Cmd::Ui { port, no_open } => {
+            let dir = dir()?;
+            let p = profile(&dir);
+            ui::run(dir, p, *port, !*no_open)?;
         }
         Cmd::Bench => {
             for t in balatro_advisor::bench::run() {

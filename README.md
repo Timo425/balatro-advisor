@@ -17,12 +17,14 @@ never silently left out.
 
 > **Status:** save reader, `gold` and the scoring engine (`score`) work. The
 > engine is a line-by-line port of the game's `evaluate_play` and covers the
-> scoring effects of all 150 jokers. Monte Carlo (`analyze`/`shop`) is next.
+> scoring effects of all 150 jokers. `ui` shows joker values, blind odds, shop and rescue jokers live.
 > Design notes: [docs/plan.md](docs/plan.md), [docs/formats.md](docs/formats.md).
 
 ```bash
 cargo build --release
 B=./target/release/balatro-advisor
+$B ui                             # live page in your browser (http://127.0.0.1:7777), updates when the game saves
+$B analyze                        # the same analysis as JSON
 $B gold                           # Gold Stake stickers missing
 $B state                          # parsed run (add --json for everything)
 $B score --hand 1,2,5 --trace     # score cards from your hand, step by step

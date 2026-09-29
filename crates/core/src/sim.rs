@@ -127,11 +127,13 @@ pub struct RoundStart {
     pub target: f64,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct RoundResult {
     pub total: f64,
     pub won: bool,
     pub best_hand: f64,
+    /// Hands played (type, score, whether it was a junk hand played to dig).
+    pub plays: Vec<(HandType, f64, bool)>,
 }
 
 fn draw(hand: &mut Vec<Card>, deck: &mut Vec<Card>, size: usize) {
@@ -179,7 +181,8 @@ pub fn flush_odds(hold: usize, deck_suit: usize, deck_size: usize, hand_size: us
 
 /// What the round simulation decided to do with the current hand.
 enum Action {
-    Play(Vec<usize>),
+    /// cards, and whether this is a junk hand played only to dig
+    Play(Vec<usize>, bool),
     Discard(Vec<usize>),
 }
 
@@ -190,8 +193,8 @@ enum Action {
 ///   playing them as a junk hand once discards are gone;
 /// - otherwise discard the cards outside the best play and hope to improve it.
 fn decide(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i64, need: f64, size: usize) -> Action {
-    let Some(best) = best_play(b, hand) else { return Action::Play(vec![]) };
-    let play_best = Action::Play(best.cards.clone());
+    let Some(best) = best_play(b, hand) else { return Action::Play(vec![], false) };
+    let play_best = Action::Play(best.cards.clone(), false);
     if best.floor >= need || hands <= 1 || deck.is_empty() || best.floor * hands as f64 >= need {
         return play_best;
     }
@@ -222,7 +225,7 @@ fn decide(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i64, ne
                 toss.sort_by(|&a, &c| hand[a].rank.chips().total_cmp(&hand[c].rank.chips()));
                 toss.truncate(5);
                 if !toss.is_empty() {
-                    return if discards > 0 { Action::Discard(toss) } else { Action::Play(toss) };
+                    return if discards > 0 { Action::Discard(toss) } else { Action::Play(toss, true) };
                 }
             }
         }
@@ -249,12 +252,13 @@ pub fn sim_round(board: &Board, start: &RoundStart, rng: &mut Rng) -> RoundResul
     let (mut hands, mut discards) = (start.hands, start.discards);
     let mut total = start.scored;
     let mut best_hand: f64 = 0.0;
+    let mut plays = Vec::new();
     while hands > 0 && !hand.is_empty() {
         b.hands_left = hands;
         b.discards_left = discards;
         b.deck_remaining = deck.len() as i64;
         match decide(&b, &hand, &deck, hands, discards, start.target - total, size) {
-            Action::Play(mut idx) => {
+            Action::Play(mut idx, dig) => {
                 if idx.is_empty() {
                     break;
                 }
@@ -264,6 +268,7 @@ pub fn sim_round(board: &Board, start: &RoundStart, rng: &mut Rng) -> RoundResul
                 let o = score::score(&b, &played, &held, rng, false);
                 total += o.score;
                 best_hand = best_hand.max(o.score);
+                plays.push((o.hand, o.score, dig));
                 if b.blind.key == "bl_eye" {
                     b.blind.eye_seen |= o.hand.bit();
                 }
@@ -277,7 +282,7 @@ pub fn sim_round(board: &Board, start: &RoundStart, rng: &mut Rng) -> RoundResul
                 hand = held;
                 hands -= 1;
                 if total >= start.target {
-                    return RoundResult { total, won: true, best_hand };
+                    return RoundResult { total, won: true, best_hand, plays };
                 }
                 draw(&mut hand, &mut deck, size);
             }
@@ -288,7 +293,7 @@ pub fn sim_round(board: &Board, start: &RoundStart, rng: &mut Rng) -> RoundResul
             }
         }
     }
-    RoundResult { total, won: total >= start.target, best_hand }
+    RoundResult { total, won: total >= start.target, best_hand, plays }
 }
 
 /// Mean and quantiles of a sample.
@@ -314,18 +319,23 @@ impl Stats {
 
 /// Best-hand score on fresh deals from `deck` (the "how strong is this board" number).
 pub fn typical_hands(b: &Board, deck: &[Card], hand_size: usize, samples: usize, seed: u64) -> Vec<f64> {
+    typical_hands_detail(b, deck, hand_size, samples, seed).into_iter().map(|(s, _)| s).collect()
+}
+
+/// Like `typical_hands`, with the hand type each deal's best play was.
+pub fn typical_hands_detail(b: &Board, deck: &[Card], hand_size: usize, samples: usize, seed: u64) -> Vec<(f64, HandType)> {
     let mut rng = Rng::new(seed);
     let mut d = deck.to_vec();
     let mut b = b.clone();
     b.deck_remaining = (deck.len().saturating_sub(hand_size)) as i64;
     (0..samples)
-        .map(|_| {
+        .filter_map(|_| {
             shuffle(&mut d, &mut rng);
             let hand = &d[..hand_size.min(d.len())];
-            best_play(&b, hand).map_or(0.0, |p| {
+            best_play(&b, hand).map(|p| {
                 let played: Vec<Card> = p.cards.iter().map(|&i| hand[i]).collect();
                 let held: Vec<Card> = (0..hand.len()).filter(|i| !p.cards.contains(i)).map(|i| hand[i]).collect();
-                score::score(&b, &played, &held, &mut rng, false).score
+                (score::score(&b, &played, &held, &mut rng, false).score, p.hand)
             })
         })
         .collect()
@@ -342,6 +352,30 @@ pub fn round_odds(b: &Board, start: &RoundStart, sims: usize, seed: u64) -> (f64
         totals.push(r.total);
     }
     (wins as f64 / sims.max(1) as f64, Stats::of(totals))
+}
+
+/// Which hands score the points in simulated rounds: (hand, share of points, share of
+/// hands played, mean score). Junk hands played to dig are left out.
+pub fn round_hand_mix(b: &Board, start: &RoundStart, sims: usize, seed: u64) -> Vec<(HandType, f64, f64, f64)> {
+    let mut pts = [0.0f64; 12];
+    let mut cnt = [0usize; 12];
+    for i in 0..sims {
+        let mut rng = Rng::new(seed.wrapping_add(i as u64 * 7919));
+        for (h, s, dig) in sim_round(b, start, &mut rng).plays {
+            if !dig {
+                pts[h as usize] += s;
+                cnt[h as usize] += 1;
+            }
+        }
+    }
+    let (tp, tc) = (pts.iter().sum::<f64>().max(1.0), cnt.iter().sum::<usize>().max(1) as f64);
+    let mut out: Vec<_> = HandType::ALL
+        .iter()
+        .filter(|h| cnt[**h as usize] > 0)
+        .map(|&h| (h, pts[h as usize] / tp, cnt[h as usize] as f64 / tc, pts[h as usize] / cnt[h as usize] as f64))
+        .collect();
+    out.sort_by(|a, b| b.1.total_cmp(&a.1));
+    out
 }
 
 /// Rolls helper so callers don't need the trait in scope.
