@@ -1300,7 +1300,8 @@ fn shop_options(
     if let Some(shop) = &run.shop {
         let slots = run.shop_rates.slots.max(1) as usize;
         let mut spent = 0i64;
-        for k in 1..=3usize {
+        // Only the next reroll: the advisor re-evaluates after each one anyway.
+        for k in 1..=1usize {
             spent += shop.reroll_cost + k as i64 - 1;
             if spent as f64 > run.dollars {
                 break;
@@ -1315,7 +1316,7 @@ fn shop_options(
                 money_gain: 0.0,
                 key: None,
                 desc: None,
-                label: format!("{k} reroll{}", if k > 1 { "s" } else { "" }),
+                label: "reroll".to_string(),
                 kind: "reroll".into(),
                 cost: spent,
                 p_win: e,
