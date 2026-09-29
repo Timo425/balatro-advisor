@@ -783,7 +783,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         .enumerate()
         .filter_map(|(i, c)| {
             let j = Joker::from_key(&c.key, data)?;
-            let (grown, label, fades) = grow_one_ante(&j, &hand_mix, run.dollars)?;
+            let (grown, label, fades) = grow_one_ante(&j, &hand_mix, run.dollars, run.interest_cap as f64)?;
             Some((i, grown, label, fades))
         })
         .collect();
@@ -2010,17 +2010,18 @@ fn describe(key: &str, ability: &serde_json::Value, ctx: &crate::describe::DescC
 
 /// A joker's size one ante (3 rounds, ~12 hands) from now, under a simple stated
 /// assumption; `None` for jokers that don't grow or fade. Labelled everywhere it shows.
-fn grow_one_ante(j: &Joker, hand_mix: &[HandShare], dollars: f64) -> Option<(Joker, String, bool)> {
-    // Growth you pay for (skipping packs, rerolling) scales with the money you have:
-    // about one per $6, between 1 and 6 in an ante.
-    let buys = (dollars / 6.0).floor().clamp(1.0, 6.0);
+fn grow_one_ante(j: &Joker, hand_mix: &[HandShare], dollars: f64, interest_line: f64) -> Option<(Joker, String, bool)> {
+    // Growth you pay for (skipping packs, rerolling): one per ante you'd do anyway, plus
+    // one per $5 of money above the interest line (cash that isn't earning anything).
+    let spare = (dollars - interest_line).max(0.0);
+    let buys = (1.0 + (spare / 5.0).floor()).min(6.0);
     let share = |hands: &[&str]| hand_mix.iter().filter(|h| hands.contains(&h.hand.as_str())).map(|h| h.played).sum::<f64>();
     let hands_per_ante = 12.0;
     let mut g = j.clone();
     let (label, fades) = match j.key.as_str() {
         "j_red_card" => {
             g.mult += 3.0 * buys;
-            (format!("+{} Mult after 1 ante if you skip {buys:.0} booster packs (about what ${dollars:.0} allows)", 3.0 * buys), false)
+            (format!("+{} Mult after 1 ante if you skip {buys:.0} booster pack{} (1 you'd open anyway, plus 1 per $5 above the ${interest_line:.0} interest line)", 3.0 * buys, if buys > 1.0 { "s" } else { "" }), false)
         }
         "j_green_joker" => {
             g.mult += 4.0;
@@ -2046,7 +2047,7 @@ fn grow_one_ante(j: &Joker, hand_mix: &[HandShare], dollars: f64) -> Option<(Jok
         }
         "j_flash" => {
             g.mult += 2.0 * buys;
-            (format!("+{} Mult after 1 ante if you reroll {buys:.0} times (about what ${dollars:.0} allows)", 2.0 * buys), false)
+            (format!("+{} Mult after 1 ante if you reroll {buys:.0} time{} (1 anyway, plus 1 per $5 above the ${interest_line:.0} interest line)", 2.0 * buys, if buys > 1.0 { "s" } else { "" }), false)
         }
         "j_castle" => {
             g.extra.chips += 3.0 * 7.0;
