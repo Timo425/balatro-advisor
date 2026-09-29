@@ -72,6 +72,9 @@ pub struct JokerReport {
     pub debuff: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// The game's own text for it, from the local install, with its current values.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub desc: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -111,6 +114,8 @@ pub struct Candidate {
     pub roles: Vec<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub desc: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -508,6 +513,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         }
     };
     let base = Board::from_run(run, data);
+    let dctx = desc_ctx(run);
     let mut fresh_deck = run.full_deck();
     for c in &mut fresh_deck {
         c.debuff = false;
@@ -644,6 +650,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                 rental: sj.rental,
                 debuff: j.debuff,
                 note: non_scoring_note(&j.key).map(str::to_string),
+                desc: describe(&j.key, &sj.ability, &dctx),
             }
         })
         .collect();
@@ -759,6 +766,22 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         .collect();
 
     lap("blind views");
+    // Game text for every joker shown: the shop's own copies, else a fresh one from its config
+    let shop_ability = |key: &str| run.shop.as_ref().and_then(|s| s.jokers.iter().find(|j| j.key == key)).map(|j| j.ability.clone());
+    let fill = |list: &mut Vec<Candidate>| {
+        for c in list.iter_mut() {
+            let ab = shop_ability(&c.key)
+                .or_else(|| data.center(&c.key).map(|x| crate::engine::joker::ability_from_config(&x.config)))
+                .unwrap_or_default();
+            c.desc = describe(&c.key, &ab, &dctx);
+        }
+    };
+    let mut pool_entries = pool_entries;
+    let mut shop = shop;
+    let mut rescue = rescue;
+    fill(&mut pool_entries);
+    fill(&mut shop);
+    fill(&mut rescue);
     let options = shop_options(&ctx, run, data, &pool_entries, &base_odds, key_round, per_rarity, joker_share);
     lap("shop options");
     let shares: Vec<f64> = jokers.iter().map(|j| j.score_share).collect();
@@ -933,6 +956,7 @@ fn evaluate_candidate(ctx: &Ctx, j: Joker, cost: i64, base_odds: &[(f64, Stats)]
             per_shop: None,
             roles: roles(&j),
             note: None,
+            desc: None,
         };
     };
     let r: Vec<&Joker> = removed.iter().collect();
@@ -960,6 +984,7 @@ fn evaluate_candidate(ctx: &Ctx, j: Joker, cost: i64, base_odds: &[(f64, Stats)]
         per_shop: None,
         roles: roles(&j),
         note: non_scoring_note(&j.key).map(str::to_string),
+        desc: None,
     }
 }
 
@@ -1314,7 +1339,7 @@ pub fn archetypes() -> Vec<(&'static str, &'static [&'static str], &'static [cra
         ("Held cards", &["j_raised_fist", "j_baron", "j_mime", "j_shoot_the_moon", "j_steel_joker", "j_blackboard"], &[HighCard]),
         ("Face cards", &["j_scary_face", "j_smiley", "j_sock_and_buskin", "j_photograph", "j_pareidolia", "j_triboulet"], &[]),
         ("Small hands", &["j_half", "j_hanging_chad", "j_splash", "j_square"], &[]),
-        ("Low ranks", &["j_fibonacci", "j_hack", "j_wee", "j_walkie_talkie", "j_even_steven", "j_odd_todd", "j_scholar"], &[]),
+        ("Card ranks", &["j_fibonacci", "j_hack", "j_wee", "j_walkie_talkie", "j_even_steven", "j_odd_todd", "j_scholar"], &[]),
     ]
 }
 
@@ -1431,4 +1456,38 @@ fn archetype_outlook(
     let mut styles = styles;
     styles.sort_by(|a, b| b.reach.total_cmp(&a.reach));
     Some(Outlook { target_label: format!("Ante {ante} boss"), target, now_reach, styles })
+}
+
+fn desc_ctx(run: &RunState) -> crate::describe::DescCtx {
+    let t = &run.round_targets;
+    let full = run.full_deck().len() as i64;
+    crate::describe::DescCtx {
+        probability: run.probability_normal,
+        dollars: run.dollars,
+        starting_deck_size: run.starting_deck_size,
+        playing_cards: full,
+        deck_cards: run.draw_pile.len() as i64,
+        jokers: run.jokers.len() as i64,
+        tarots_used: run.tarots_used,
+        skips: run.skips,
+        idol_rank: t.idol.map_or(String::new(), |(r, _)| rank_name(r)),
+        idol_suit: t.idol.map_or(String::new(), |(_, s)| s.name().to_string()),
+        castle_suit: t.castle_suit.map_or(String::new(), |s| s.name().to_string()),
+        ancient_suit: t.ancient_suit.map_or(String::new(), |s| s.name().to_string()),
+        mail_rank: t.mail_rank.map_or(String::new(), rank_name),
+    }
+}
+
+fn rank_name(r: crate::model::Rank) -> String {
+    match r.0 {
+        11 => "Jack".into(),
+        12 => "Queen".into(),
+        13 => "King".into(),
+        14 => "Ace".into(),
+        n => n.to_string(),
+    }
+}
+
+fn describe(key: &str, ability: &serde_json::Value, ctx: &crate::describe::DescCtx) -> Option<String> {
+    crate::describe::texts()?.describe(key, ability, ctx)
 }

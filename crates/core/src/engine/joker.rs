@@ -282,17 +282,7 @@ impl Joker {
 
     /// A fresh copy as it would come out of the shop (`Card:set_ability` defaults).
     pub fn from_config(key: &str, config: &serde_json::Value, rarity: u8) -> Joker {
-        let mut ab = serde_json::json!({
-            "mult": config.get("mult").cloned().unwrap_or(0.into()),
-            "t_mult": config.get("t_mult").cloned().unwrap_or(0.into()),
-            "t_chips": config.get("t_chips").cloned().unwrap_or(0.into()),
-            "x_mult": config.get("Xmult").cloned().unwrap_or(1.into()),
-            "type": config.get("type").cloned().unwrap_or("".into()),
-        });
-        if let Some(e) = config.get("extra") {
-            ab["extra"] = e.clone();
-        }
-        Joker::from_ability(key, &ab, rarity)
+        Joker::from_ability(key, &ability_from_config(config), rarity)
     }
 
     /// From the save, with edition/debuff/sell value filled in.
@@ -313,4 +303,26 @@ impl Joker {
         j.sell_value = ((c.cost as f64) / 2.0).floor().max(1.0);
         Some(j)
     }
+}
+
+/// The `ability` table `Card:set_ability` builds from a center's config (card.lua).
+pub fn ability_from_config(config: &serde_json::Value) -> serde_json::Value {
+    let g = |k: &str, d: serde_json::Value| config.get(k).cloned().unwrap_or(d);
+    let mut ab = serde_json::json!({
+        "mult": g("mult", 0.into()),
+        "h_mult": g("h_mult", 0.into()),
+        "h_x_mult": g("h_x_mult", 0.into()),
+        "h_dollars": g("h_dollars", 0.into()),
+        "p_dollars": g("p_dollars", 0.into()),
+        "t_mult": g("t_mult", 0.into()),
+        "t_chips": g("t_chips", 0.into()),
+        "x_mult": g("Xmult", 1.into()),
+        "h_size": g("h_size", 0.into()),
+        "d_size": g("d_size", 0.into()),
+        "type": g("type", "".into()),
+    });
+    if let Some(e) = config.get("extra") {
+        ab["extra"] = e.clone();
+    }
+    ab
 }

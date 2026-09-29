@@ -3,6 +3,7 @@
 pub mod advise;
 pub mod bench;
 pub mod data;
+pub mod describe;
 pub mod engine;
 pub mod gold;
 pub mod golden;
