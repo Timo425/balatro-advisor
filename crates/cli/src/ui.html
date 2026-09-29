@@ -93,15 +93,18 @@ const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&l
 const rarColor = { Common: "var(--common)", Uncommon: "var(--uncommon)", Rare: "var(--rare)", Legendary: "var(--legendary)" };
 const edTag = (e) => !e ? "" : e === "polychrome" ? '<span class="tag ed">poly</span>' : e === "foil" ? '<span class="tag foil">foil</span>' : e === "holo" ? '<span class="tag holo">holo</span>' : '<span class="tag neg">negative</span>';
 const roundName = (r) => r.label === "Boss" ? r.blind : r.label.replace("Next: ", "");
+const nowRounds = (a) => a.rounds.filter((r) => !r.horizon);
 const STAKES = ["", "White", "Red", "Green", "Black", "Blue", "Purple", "Orange", "Gold"];
 
 function candTable(a, list, withFind) {
-  return `<table><tr><th>Joker</th><th>Action</th><th class="num">$</th>${a.rounds.map((r) => `<th class="num">${esc(roundName(r))}</th>`).join("")}<th class="num" title="Change in the best hand you can make from a fresh deal">Hand</th>${withFind ? '<th class="num" title="Chance a given shop shows it, before rerolls">Shop</th>' : ""}</tr>` +
+  return `<table><tr><th>Joker</th><th>Action</th><th class="num">$</th>${a.rounds.map((r) => `<th class="num" ${r.horizon ? 'title="Share of that boss target reached (win chance is ~0 this far out)"' : ""}>${esc(r.horizon ? r.label + " reach" : roundName(r))}</th>`).join("")}<th class="num" title="Change in the best hand you can make from a fresh deal">Hand</th>${withFind ? '<th class="num" title="Chance a given shop shows it, before rerolls">Shop</th>' : ""}</tr>` +
     list.map((c) => `<tr>
       <td class="name" ${c.note ? `title="${esc(c.note)}"` : ""}><span class="rar-${c.rarity}">●</span> <b>${esc(c.name)}</b> ${edTag(c.edition)}${c.missing_gold ? ' <span class="star" title="No Gold sticker yet">★</span>' : ""}</td>
       <td class="muted">${esc(c.action.replace("replace ", "→ "))}</td>
       <td class="num">${c.cost}</td>
-      ${c.p_win.map((p, i) => { const was = p - c.p_win_delta[i], d = c.p_win_delta[i];
+      ${c.p_win.map((p, i) => { if (a.rounds[i].horizon) { const r = Math.min(c.reach[i], 9), was = Math.min(c.reach[i] - c.reach_delta[i], 9);
+          return `<td class="num" title="Share of the ${esc(a.rounds[i].label)} boss target you reach on average: now ${pct(was)}, with it ${pct(r)}"><span class="muted">${pct(was).replace("%", "")}→</span><span class="${c.reach_delta[i] > 0.005 ? "up" : c.reach_delta[i] < -0.005 ? "down" : "flat"}">${pct(r)}</span></td>`; }
+        const was = p - c.p_win_delta[i], d = c.p_win_delta[i];
         const cls = Math.abs(d) < 0.005 ? "flat" : d > 0 ? "up" : "down";
         return `<td class="num" title="now ${pct(was)}, with it ${pct(p)}"><span class="muted">${pct(was).replace("%", "")}→</span><span class="${cls}">${pct(p)}</span></td>`; }).join("")}
       <td class="num">${gainTxt(c.score_gain)}</td>
@@ -123,13 +126,14 @@ function render(d) {
   $("#h-caveat").innerHTML = a.caveats.length ? "⚠ snapshot" : "";
   $("#h-caveat").title = a.caveats.join("\n");
 
-  let html = `<section style="padding:8px"><div class="rounds">` + a.rounds.map((r) => `
+  let html = `<section style="padding:8px"><div class="rounds">` + nowRounds(a).map((r) => `
     <div class="round" ${r.unmodelled ? `title="${esc(r.unmodelled)}"` : ""}>
       <div class="pct" style="color:${color(r.p_win)}">${pct(r.p_win)}</div>
       <div class="name">${esc(r.label.replace("Next: ", ""))}${r.label === "Boss" ? " · " + esc(r.blind) : ""}${r.unmodelled ? ' <span class="caveat">⚠</span>' : ""}</div>
       <div class="sub">${num(r.target)} chips${r.in_progress ? " · in progress" : ""} · typical ${num(r.total.p50)} (${num(r.total.p10)}–${num(r.total.p90)})</div>
       <div class="bar"><i style="width:${r.p_win * 100}%;background:${color(r.p_win)}"></i></div>
-    </div>`).join("") + `</div></section>`;
+    </div>`).join("") + `</div>` +
+    `<div class="lbl" style="margin-top:6px" title="Your current jokers against a plain boss in later antes: how far this board carries without new jokers">Later, with these jokers: ${a.rounds.filter((r) => r.horizon).map((r) => `${esc(r.label)} boss (${num(r.target)}) <b style="color:${color(r.p_win)}">${pct(r.p_win)}</b>`).join(" · ")}</div></section>`;
 
   // Left: jokers, hand mix, best play
   let left = `<section><h2>Your jokers <small>share of best-hand score · if sold</small></h2>`;
@@ -137,7 +141,7 @@ function render(d) {
   else {
     left += `<div class="jokers">` + a.jokers.map((j, i) => {
       const scoring = j.roles.some((r) => ["scoring", "retrigger", "rule"].includes(r)) || Math.abs(j.score_share) > 0.005;
-      const sold = j.p_win_if_removed.map((d, k) => `${esc(roundName(a.rounds[k]))} ${pp(d)}`).join(" · ");
+      const sold = j.p_win_if_removed.map((d, k) => a.rounds[k].horizon ? "" : `${esc(roundName(a.rounds[k]))} ${pp(d)}`).filter(Boolean).join(" · ");
       return `<div class="joker" style="border-top-color:${rarColor[j.rarity] || "var(--line)"}" ${j.note ? `title="${esc(j.note)}"` : ""}>
         <span class="slot">${i + 1}</span>
         <div class="jn">${esc(j.name)}</div>
@@ -153,7 +157,7 @@ function render(d) {
     }
   }
   if (a.hand_mix && a.hand_mix.length) {
-    left += `<div style="margin-top:8px"><div class="lbl" title="From simulated ${esc(roundName(a.rounds[a.rounds.length - 1]))} rounds; junk hands played to dig are left out">Hands that score your points</div><table class="mix">` +
+    left += `<div style="margin-top:8px"><div class="lbl" title="From simulated ${esc(roundName(nowRounds(a)[nowRounds(a).length - 1]))} rounds; junk hands played to dig are left out">Hands that score your points</div><table class="mix">` +
       a.hand_mix.slice(0, 4).map((h) => `<tr><td>${esc(h.hand)}</td><td class="num" style="width:44px">${pct(h.share)}</td><td style="width:38%"><div class="bar"><i style="width:${h.share * 100}%;background:var(--chips)"></i></div></td><td class="num muted">avg ${num(h.mean)}</td></tr>`).join("") + `</table></div>`;
   }
   left += `</section>`;

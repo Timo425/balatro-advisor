@@ -44,6 +44,10 @@ pub struct Round {
     pub p_win: f64,
     pub total: Stats,
     pub in_progress: bool,
+    /// A plain boss in a later ante: "how far does this board carry".
+    pub horizon: bool,
+    /// Mean round total as a share of the target.
+    pub reach: f64,
     /// Boss effects this simulation does not model.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unmodelled: Option<String>,
@@ -86,6 +90,10 @@ pub struct Candidate {
     pub action: String,
     pub p_win: Vec<f64>,
     pub p_win_delta: Vec<f64>,
+    /// Per round: mean round total as a share of the target (useful where the win
+    /// chance is ~0, e.g. the next ante), and the change from adding this joker.
+    pub reach: Vec<f64>,
+    pub reach_delta: Vec<f64>,
     /// Typical best hand change (0.3 = +30%).
     pub score_gain: f64,
     pub missing_gold: bool,
@@ -249,6 +257,7 @@ struct Spec {
     start: RoundStart,
     rules: RoundRules,
     in_progress: bool,
+    horizon: bool,
 }
 
 fn apply_mods(start: &RoundStart, added: &[&Joker], removed: &[&Joker], fresh: bool) -> RoundStart {
@@ -311,7 +320,8 @@ impl Ctx<'_> {
             .map(|spec| {
                 let bb = self.board_for(b, spec);
                 let start = apply_mods(&self.start_for(spec, &bb), added, removed, !spec.in_progress);
-                sim::round_odds(&bb, &start, sims, self.opts.seed)
+                let n = if spec.horizon { (sims / 3).max(20) } else { sims };
+                sim::round_odds(&bb, &start, n, self.opts.seed)
             })
             .collect()
     }
@@ -386,6 +396,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             },
             rules: RoundRules::default(),
             in_progress: true,
+            horizon: false,
         });
     }
     let upcoming: Vec<_> = run.blinds.iter().filter(|b| matches!(b.state.as_str(), "Select" | "Upcoming")).collect();
@@ -417,6 +428,29 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             start,
             rules,
             in_progress: false,
+            horizon: false,
+        });
+    }
+    // Next ante: a plain boss (2x base, no effect), to see how far the board carries.
+    for k in 1..=1 {
+        let ante = run.ante + k;
+        let target = crate::save::blind_amount(ante, run.blind_scaling) * 2.0 * run.ante_scaling;
+        specs.push(Spec {
+            label: format!("Ante {ante}"),
+            blind_key: String::new(),
+            blind_name: "plain boss".into(),
+            start: RoundStart {
+                hand: vec![],
+                deck: fresh_deck.clone(),
+                hand_size: run.hand_size,
+                hands: run.round_hands,
+                discards: run.round_discards,
+                scored: 0.0,
+                target,
+            },
+            rules: RoundRules::default(),
+            in_progress: false,
+            horizon: true,
         });
     }
     let ctx = Ctx { run, data, base, specs, fresh_deck, opts: opts.clone() };
@@ -434,6 +468,8 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             p_win: *p,
             total: *st,
             in_progress: s.in_progress,
+            horizon: s.horizon,
+            reach: st.mean / s.start.target.max(1.0),
             unmodelled: unmodelled_boss(&s.blind_key),
         })
         .collect();
@@ -473,7 +509,8 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     // Which hands carry the points, from the hardest round (usually the boss)
     let hand_mix = ctx
         .specs
-        .last()
+        .iter()
+        .rfind(|s| !s.horizon)
         .map(|spec| {
             let bb = ctx.board_for(&ctx.base, spec);
             let start = ctx.start_for(spec, &bb);
@@ -514,7 +551,8 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     let candidates: Vec<Joker> = pool.iter().filter_map(|k| Joker::from_key(k, data)).collect();
     let screened = par_map(&candidates, |j| evaluate_candidate(&ctx, j.clone(), cost(data, &j.key), &base_odds, base_typical.mean, opts.screen_sims, false));
     let mut order_idx: Vec<usize> = (0..screened.len()).collect();
-    let key_round = rounds.len().saturating_sub(1);
+    // The hardest round of this ante (the last non-horizon one)
+    let key_round = rounds.iter().rposition(|r| !r.horizon).unwrap_or(0);
     order_idx.sort_by(|&a, &b| rank_value(&screened[b], key_round).total_cmp(&rank_value(&screened[a], key_round)));
     let top: Vec<Joker> = order_idx.iter().take(opts.rescue_top).map(|&i| candidates[i].clone()).collect();
     let mut rescue: Vec<Candidate> = par_map(&top, |j| evaluate_candidate(&ctx, j.clone(), cost(data, &j.key), &base_odds, base_typical.mean, opts.sims, false));
@@ -568,8 +606,13 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
 }
 
 /// What matters most: the chance to beat the hardest upcoming round, then the score gain.
-fn rank_value(c: &Candidate, key_round: usize) -> f64 {
-    c.p_win_delta.get(key_round).copied().unwrap_or(0.0) * 10.0 + c.score_gain.min(5.0) * 0.1
+/// Ranking: gain in win chance for this ante's hardest round, plus how much closer the
+/// board gets to the next ante's boss, so a joker that only scrapes past this blind
+/// doesn't top the list.
+fn rank_value(c: &Candidate, now_round: usize) -> f64 {
+    let now = c.p_win_delta.get(now_round).copied().unwrap_or(0.0);
+    let later = c.reach_delta.iter().skip(now_round + 1).copied().fold(0.0, f64::max);
+    now * 10.0 + later.min(1.0) * 5.0 + c.score_gain.min(5.0) * 0.1
 }
 
 fn rarity(data: &GameData, key: &str) -> String {
@@ -658,6 +701,8 @@ fn evaluate_candidate(ctx: &Ctx, j: Joker, cost: i64, base_odds: &[(f64, Stats)]
             action: "no slot (all eternal)".into(),
             p_win: vec![],
             p_win_delta: vec![],
+            reach: vec![],
+            reach_delta: vec![],
             score_gain: 0.0,
             missing_gold: false,
             per_shop: None,
@@ -676,6 +721,13 @@ fn evaluate_candidate(ctx: &Ctx, j: Joker, cost: i64, base_odds: &[(f64, Stats)]
         action,
         p_win_delta: odds.iter().zip(base_odds).map(|((p, _), (bp, _))| p - bp).collect(),
         p_win: odds.iter().map(|(p, _)| *p).collect(),
+        reach: odds.iter().zip(&ctx.specs).map(|((_, st), sp)| st.mean / sp.start.target.max(1.0)).collect(),
+        reach_delta: odds
+            .iter()
+            .zip(base_odds)
+            .zip(&ctx.specs)
+            .map(|(((_, st), (_, bst)), sp)| (st.mean - bst.mean) / sp.start.target.max(1.0))
+            .collect(),
         score_gain: if base_mean > 0.0 { t.mean / base_mean - 1.0 } else { 0.0 },
         missing_gold: false,
         per_shop: None,

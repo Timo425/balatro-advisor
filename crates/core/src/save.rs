@@ -24,6 +24,9 @@ pub struct RunState {
     pub deck: String,
     pub ante: i64,
     pub win_ante: i64,
+    /// `GAME.modifiers.scaling` (blind size table) and the deck's `ante_scaling`.
+    pub blind_scaling: i64,
+    pub ante_scaling: f64,
     pub round: i64,
     pub dollars: f64,
     pub interest_amount: i64,
@@ -489,6 +492,8 @@ pub fn from_value(g: &Value, data: &GameData, path: &Path, age_secs: Option<u64>
         deck: g.at("BACK.name").str().unwrap_or_default().to_string(),
         ante,
         win_ante: int(game.get("win_ante")),
+        blind_scaling: scaling,
+        ante_scaling,
         round: int(game.get("round")),
         dollars: num(game.get("dollars")),
         interest_amount: int(game.get("interest_amount")),
