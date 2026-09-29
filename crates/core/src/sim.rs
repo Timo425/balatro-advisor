@@ -195,9 +195,10 @@ enum Action {
 fn decide(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i64, need: f64, size: usize) -> Action {
     let Some(best) = best_play(b, hand) else { return Action::Play(vec![], false) };
     let play_best = Action::Play(best.cards.clone(), false);
-    if best.floor >= need || hands <= 1 || deck.is_empty() || best.floor * hands as f64 >= need {
+    if best.floor >= need || hands <= 1 || deck.is_empty() {
         return play_best;
     }
+    let on_pace = best.floor * hands as f64 >= need;
     let f = b.rule_flags();
     let need_f = if f.four_fingers { 4 } else { 5 };
     let suited = |c: &Card, s: Suit| hand::is_suit(c, s, false, true, f.smeared);
@@ -206,29 +207,55 @@ fn decide(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i64, ne
         .map(|&s| (s, (0..hand.len()).filter(|&i| suited(&hand[i], s)).collect::<Vec<usize>>()))
         .max_by_key(|(_, g)| g.len())
         .unwrap_or((Suit::Spades, vec![]));
+    let off: Vec<usize> = (0..hand.len()).filter(|i| !group.contains(i)).collect();
+
+    // Flush plan: exact odds of completing it with the digs left × what it would score.
     if group.len() < need_f && group.len() >= 2 {
         let in_deck: Vec<&Card> = deck.iter().filter(|c| suited(c, suit)).collect();
         let digs = (discards + hands - 1).max(0) as usize;
         let p = flush_odds(group.len(), in_deck.len(), deck.len(), size, need_f, digs);
         if p > 0.1 && in_deck.len() + group.len() >= need_f {
-            // What the flush would score: the suited cards held plus the best suited ones still in the deck.
             let mut cards: Vec<Card> = group.iter().map(|&i| hand[i]).collect();
             let mut extra: Vec<Card> = in_deck.iter().map(|c| **c).collect();
             extra.sort_by(|a, c| c.rank.chips().total_cmp(&a.rank.chips()));
             cards.extend(extra.into_iter().take(need_f - group.len()));
             cards.truncate(5);
             let est = score::score(b, &cards, &[], &mut Unlucky, false).score;
-            let flush_plan = p * est * (hands as f64 - 1.0).clamp(1.0, 2.0);
-            let best_plan = best.floor * hands as f64;
-            if flush_plan > best_plan {
-                let mut toss: Vec<usize> = (0..hand.len()).filter(|i| !group.contains(i)).collect();
+            // When on pace, only chase if the flush is clearly better AND the best hand
+            // would spend 2+ of the suited cards (playing it would break the draw).
+            let breaks_draw = best.hand != HandType::Flush && best.cards.iter().filter(|i| group.contains(i)).count() >= 2;
+            let chase = if on_pace {
+                breaks_draw && group.len() + 1 >= need_f && p * est > 1.5 * best.floor
+            } else {
+                p * est * (hands as f64 - 1.0).clamp(1.0, 2.0) > best.floor * hands as f64
+            };
+            if chase {
+                let mut toss = off.clone();
                 toss.sort_by(|&a, &c| hand[a].rank.chips().total_cmp(&hand[c].rank.chips()));
                 toss.truncate(5);
                 if !toss.is_empty() {
-                    return if discards > 0 { Action::Discard(toss) } else { Action::Play(toss, true) };
+                    if discards > 0 {
+                        return Action::Discard(toss);
+                    }
+                    // No discards: dig with the best hand the off-suit cards make (so it still
+                    // scores), topped up with off-suit kickers to throw away 5 cards.
+                    let cards: Vec<Card> = off.iter().map(|&i| hand[i]).collect();
+                    let mut dig: Vec<usize> = best_play(b, &cards).map(|p| p.cards.iter().map(|&k| off[k]).collect()).unwrap_or_default();
+                    for i in toss {
+                        if dig.len() >= 5 {
+                            break;
+                        }
+                        if !dig.contains(&i) {
+                            dig.push(i);
+                        }
+                    }
+                    return Action::Play(dig, true);
                 }
             }
         }
+    }
+    if on_pace {
+        return play_best;
     }
     if discards > 0 {
         let mut toss: Vec<usize> = (0..hand.len()).filter(|i| !best.cards.contains(i)).collect();
