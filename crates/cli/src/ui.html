@@ -72,7 +72,7 @@
   td.name { white-space: normal; }
   tr:last-child td { border-bottom: none; }
   .num { text-align: right; font-variant-numeric: tabular-nums; }
-  .up { color: var(--good); } .down { color: var(--bad); } .flat { color: var(--muted); }
+  .up { color: var(--good); } .down { color: var(--bad); } .flat { color: var(--muted); opacity: .5; }
   .star { color: var(--gold); font-weight: 700; }
   .rar-Common { color: var(--common); } .rar-Uncommon { color: var(--uncommon); } .rar-Rare { color: var(--rare); } .rar-Legendary { color: var(--legendary); }
   .play { display: flex; gap: 5px; flex-wrap: wrap; align-items: center; }
@@ -319,7 +319,7 @@ function render(d) {
     for (const [title, rows] of sections) {
     right += `<section><h2>${title}</h2><table>` +
       rows.map((o) => `<tr${o.unaffordable ? ' class="broke" title="You can\'t afford this right now"' : ""}><td class="name"${o.desc ? ` title="${esc(o.desc)}"` : ""}>${o.kind === "joker" ? '<span class="muted">🃏</span> ' : ""}<b>${esc(o.label)}</b>${o.key ? styleTags(a, o.key) : ""}${o.unaffordable ? ' <span class="down">can\'t afford</span>' : ""} <span class="muted">${esc(o.note)}</span></td><td class="num">$${o.cost}</td>
-        <td class="num" title="Money left, and the interest it earns per round ($1 per $5, before payouts)"><span class="${o.interest_after < o.interest_now ? "down" : "muted"}">$${Math.round(o.money_after)} · int $${o.interest_after}${o.interest_after < o.interest_now ? ` (−$${o.interest_now - o.interest_after})` : ""}</span></td>
+        <td class="num" title="Money left, and the interest it earns per round ($1 per $5, before payouts)"><span class="${o.interest_after < o.interest_now ? "down" : o.interest_after > o.interest_now || o.money_gain ? "up" : "muted"}">$${Math.round(o.money_after)} · int $${o.interest_after}${o.interest_after < o.interest_now ? ` (−$${o.interest_now - o.interest_after})` : o.interest_after > o.interest_now ? ` (+$${o.interest_after - o.interest_now})` : ""}</span></td>
         <td class="num"><span class="muted">${pct(r.p_win)}</span><span class="arr">→</span>${Math.abs(o.p_win - r.p_win) < NOISE ? `<span class="flat" title="Within simulation noise">±0</span>` : `<span class="${o.p_win > r.p_win ? "up" : "down"}">${pct(o.p_win)}</span>`}</td></tr>`).join("") + `</table></section>`;
     }
   }
