@@ -31,6 +31,8 @@ pub struct RunState {
     pub dollars: f64,
     pub interest_amount: i64,
     pub interest_cap: i64,
+    /// Cash per unused hand at cash-out (`modifiers.money_per_hand`, default 1).
+    pub money_per_hand: f64,
     pub skips: i64,
     /// Hands played this run (`GAME.hands_played`, Loyalty Card).
     pub hands_played: i64,
@@ -198,6 +200,8 @@ pub struct BlindSlot {
     /// `Select`, `Upcoming`, `Current`, `Defeated`, `Skipped`.
     pub state: String,
     pub target: f64,
+    /// Cash for beating it (0 for the Small Blind from Red Stake up).
+    pub reward: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skip_tag: Option<String>,
 }
@@ -408,6 +412,11 @@ pub fn from_value(g: &Value, data: &GameData, path: &Path, age_secs: Option<u64>
                 name: info.map_or_else(|| key.clone(), |b| b.name.clone()),
                 target: blind_amount(ante, scaling) * info.map_or(1.0, |b| b.mult) * ante_scaling,
                 state: rr.at("blind_states").get(slot).str().unwrap_or_default().to_string(),
+                reward: if game.at("modifiers.no_blind_reward").get(slot).truthy() {
+                    0
+                } else {
+                    info.map_or(0, |b| b.dollars)
+                },
                 skip_tag: rr.at("blind_tags").get(slot).str().map(str::to_string),
                 key,
             })
@@ -512,6 +521,7 @@ pub fn from_value(g: &Value, data: &GameData, path: &Path, age_secs: Option<u64>
         dollars: num(game.get("dollars")),
         interest_amount: int(game.get("interest_amount")),
         interest_cap: int(game.get("interest_cap")),
+        money_per_hand: game.at("modifiers.money_per_hand").num().unwrap_or(1.0),
         skips: int(game.get("skips")),
         hands_played: int(game.get("hands_played")),
         tarots_used: int(game.at("consumeable_usage_total.tarot")),

@@ -54,10 +54,22 @@ pub struct Blind {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Tag {
+    pub key: String,
+    pub name: String,
+    #[serde(default)]
+    pub config: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_ante: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GameData {
     pub game_version: String,
     pub centers: Vec<Center>,
     pub blinds: Vec<Blind>,
+    #[serde(default)]
+    pub tags: Vec<Tag>,
     #[serde(skip)]
     index: HashMap<String, usize>,
 }
@@ -87,6 +99,10 @@ impl GameData {
         self.index.get(key).map(|&i| &self.centers[i])
     }
 
+    pub fn tag(&self, key: &str) -> Option<&Tag> {
+        self.tags.iter().find(|t| t.key == key)
+    }
+
     pub fn blind(&self, key: &str) -> Option<&Blind> {
         self.blinds.iter().find(|b| b.key == key)
     }
@@ -107,6 +123,7 @@ impl GameData {
 pub fn extract_from_game_lua(src: &str, game_version: &str) -> Result<GameData, String> {
     let mut centers = Vec::new();
     let mut blinds = Vec::new();
+    let mut tags = Vec::new();
     let mut section = "";
     for (lineno, line) in src.lines().enumerate() {
         let t = line.trim();
@@ -116,6 +133,10 @@ pub fn extract_from_game_lua(src: &str, game_version: &str) -> Result<GameData, 
         }
         if t.starts_with("self.P_BLINDS = {") {
             section = "blinds";
+            continue;
+        }
+        if t.starts_with("self.P_TAGS = {") {
+            section = "tags";
             continue;
         }
         if section.is_empty() {
@@ -149,6 +170,12 @@ pub fn extract_from_game_lua(src: &str, game_version: &str) -> Result<GameData, 
                 yes_pool_flag: v.get("yes_pool_flag").str().map(str::to_string),
                 no_pool_flag: v.get("no_pool_flag").str().map(str::to_string),
             }),
+            "tags" => tags.push(Tag {
+                key: key.to_string(),
+                name: s("name"),
+                config: v.get("config").to_json(),
+                min_ante: v.get("min_ante").int(),
+            }),
             _ => blinds.push(Blind {
                 key: key.to_string(),
                 name: s("name"),
@@ -160,7 +187,7 @@ pub fn extract_from_game_lua(src: &str, game_version: &str) -> Result<GameData, 
         }
     }
     centers.sort_by(|a, b| (a.set.as_str(), a.order).cmp(&(b.set.as_str(), b.order)));
-    let mut d = GameData { game_version: game_version.to_string(), centers, blinds, index: HashMap::new() };
+    let mut d = GameData { game_version: game_version.to_string(), centers, blinds, tags, index: HashMap::new() };
     d.reindex();
     Ok(d)
 }

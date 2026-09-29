@@ -4055,5 +4055,201 @@
       },
       "debuff": {}
     }
+  ],
+  "tags": [
+    {
+      "key": "tag_uncommon",
+      "name": "Uncommon Tag",
+      "config": {
+        "type": "store_joker_create"
+      }
+    },
+    {
+      "key": "tag_rare",
+      "name": "Rare Tag",
+      "config": {
+        "odds": 3,
+        "type": "store_joker_create"
+      }
+    },
+    {
+      "key": "tag_negative",
+      "name": "Negative Tag",
+      "config": {
+        "edition": "negative",
+        "odds": 5,
+        "type": "store_joker_modify"
+      },
+      "min_ante": 2
+    },
+    {
+      "key": "tag_foil",
+      "name": "Foil Tag",
+      "config": {
+        "edition": "foil",
+        "odds": 2,
+        "type": "store_joker_modify"
+      }
+    },
+    {
+      "key": "tag_holo",
+      "name": "Holographic Tag",
+      "config": {
+        "edition": "holo",
+        "odds": 3,
+        "type": "store_joker_modify"
+      }
+    },
+    {
+      "key": "tag_polychrome",
+      "name": "Polychrome Tag",
+      "config": {
+        "edition": "polychrome",
+        "odds": 4,
+        "type": "store_joker_modify"
+      }
+    },
+    {
+      "key": "tag_investment",
+      "name": "Investment Tag",
+      "config": {
+        "dollars": 25,
+        "type": "eval"
+      }
+    },
+    {
+      "key": "tag_voucher",
+      "name": "Voucher Tag",
+      "config": {
+        "type": "voucher_add"
+      }
+    },
+    {
+      "key": "tag_boss",
+      "name": "Boss Tag",
+      "config": {
+        "type": "new_blind_choice"
+      }
+    },
+    {
+      "key": "tag_standard",
+      "name": "Standard Tag",
+      "config": {
+        "type": "new_blind_choice"
+      },
+      "min_ante": 2
+    },
+    {
+      "key": "tag_charm",
+      "name": "Charm Tag",
+      "config": {
+        "type": "new_blind_choice"
+      }
+    },
+    {
+      "key": "tag_meteor",
+      "name": "Meteor Tag",
+      "config": {
+        "type": "new_blind_choice"
+      },
+      "min_ante": 2
+    },
+    {
+      "key": "tag_buffoon",
+      "name": "Buffoon Tag",
+      "config": {
+        "type": "new_blind_choice"
+      },
+      "min_ante": 2
+    },
+    {
+      "key": "tag_handy",
+      "name": "Handy Tag",
+      "config": {
+        "dollars_per_hand": 1,
+        "type": "immediate"
+      },
+      "min_ante": 2
+    },
+    {
+      "key": "tag_garbage",
+      "name": "Garbage Tag",
+      "config": {
+        "dollars_per_discard": 1,
+        "type": "immediate"
+      },
+      "min_ante": 2
+    },
+    {
+      "key": "tag_ethereal",
+      "name": "Ethereal Tag",
+      "config": {
+        "type": "new_blind_choice"
+      },
+      "min_ante": 2
+    },
+    {
+      "key": "tag_coupon",
+      "name": "Coupon Tag",
+      "config": {
+        "type": "shop_final_pass"
+      }
+    },
+    {
+      "key": "tag_double",
+      "name": "Double Tag",
+      "config": {
+        "type": "tag_add"
+      }
+    },
+    {
+      "key": "tag_juggle",
+      "name": "Juggle Tag",
+      "config": {
+        "h_size": 3,
+        "type": "round_start_bonus"
+      }
+    },
+    {
+      "key": "tag_d_six",
+      "name": "D6 Tag",
+      "config": {
+        "type": "shop_start"
+      }
+    },
+    {
+      "key": "tag_top_up",
+      "name": "Top-up Tag",
+      "config": {
+        "spawn_jokers": 2,
+        "type": "immediate"
+      },
+      "min_ante": 2
+    },
+    {
+      "key": "tag_skip",
+      "name": "Skip Tag",
+      "config": {
+        "skip_bonus": 5,
+        "type": "immediate"
+      }
+    },
+    {
+      "key": "tag_orbital",
+      "name": "Orbital Tag",
+      "config": {
+        "levels": 3,
+        "type": "immediate"
+      },
+      "min_ante": 2
+    },
+    {
+      "key": "tag_economy",
+      "name": "Economy Tag",
+      "config": {
+        "max": 40,
+        "type": "immediate"
+      }
+    }
   ]
 }

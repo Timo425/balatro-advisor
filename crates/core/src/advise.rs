@@ -129,6 +129,9 @@ pub struct Analysis {
     pub order: Option<OrderAdvice>,
     pub shop: Vec<Candidate>,
     pub rescue: Vec<Candidate>,
+    pub blinds: Vec<BlindView>,
+    pub pool: Vec<PoolEntry>,
+    pub shop_odds: ShopOdds,
     pub best_play: Option<PlayAdvice>,
     pub gold: Option<GoldSummary>,
     pub caveats: Vec<String>,
@@ -137,6 +140,50 @@ pub struct Analysis {
     /// Read from the live mod rather than the checkpoint save.
     pub live: bool,
     pub elapsed_ms: u128,
+}
+
+/// One of this ante's three blinds.
+#[derive(Debug, Clone, Serialize)]
+pub struct BlindView {
+    pub slot: String,
+    pub name: String,
+    pub state: String,
+    pub target: f64,
+    /// Chance to beat it now (None once defeated/skipped).
+    pub p_win: Option<f64>,
+    /// Cash for beating it, before unused-hand money and interest.
+    pub reward: i64,
+    pub skip_tag: Option<TagView>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TagView {
+    pub key: String,
+    pub name: String,
+}
+
+/// Every joker the shop can still offer, with its (screening-quality) odds.
+#[derive(Debug, Clone, Serialize)]
+pub struct PoolEntry {
+    pub key: String,
+    pub name: String,
+    pub rarity: u8,
+    pub p_win: Vec<f64>,
+}
+
+/// What the page needs to turn pool odds into "chance the next shop shows one".
+#[derive(Debug, Clone, Serialize)]
+pub struct ShopOdds {
+    /// Chance a shop card slot is a joker.
+    pub joker_share: f64,
+    pub slots: i64,
+    pub reroll_cost: i64,
+    /// Jokers still in the pool per rarity (index 1..=3).
+    pub pool_by_rarity: [usize; 4],
+    pub rarity_weight: [f64; 4],
+    pub money_per_hand: f64,
+    pub interest_amount: i64,
+    pub interest_cap: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -328,6 +375,11 @@ impl Ctx<'_> {
             .collect()
     }
 
+    fn odds_one(&self, b: &Board, spec: &Spec, sims: usize) -> (f64, Stats) {
+        let bb = self.board_for(b, spec);
+        sim::round_odds(&bb, &self.start_for(spec, &bb), sims, self.opts.seed)
+    }
+
     fn typical(&self, b: &Board, added: &[&Joker], removed: &[&Joker]) -> Stats {
         let size = apply_mods(
             &RoundStart { hand: vec![], deck: vec![], hand_size: self.run.hand_size, hands: 1, discards: 0, scored: 0.0, target: 0.0 },
@@ -401,12 +453,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             horizon: false,
         });
     }
-    let upcoming: Vec<_> = run.blinds.iter().filter(|b| matches!(b.state.as_str(), "Select" | "Upcoming")).collect();
-    for (i, bl) in upcoming.iter().enumerate() {
-        let is_boss = bl.slot == "Boss";
-        if !(specs.is_empty() && i == 0) && !is_boss {
-            continue;
-        }
+    let blind_spec = |bl: &crate::save::BlindSlot| -> Spec {
         let mut start = RoundStart {
             hand: vec![],
             deck: fresh_deck.clone(),
@@ -423,16 +470,25 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             "bl_water" => start.discards = 0,
             _ => {}
         }
-        specs.push(Spec {
-            label: if is_boss { "Boss".into() } else { format!("Next: {}", bl.slot) },
+        Spec {
+            label: if bl.slot == "Boss" { "Boss".into() } else { format!("Next: {}", bl.slot) },
             blind_key: bl.key.clone(),
             blind_name: bl.name.clone(),
             start,
             rules,
             in_progress: false,
             horizon: false,
-        });
+        }
+    };
+    let upcoming: Vec<_> = run.blinds.iter().filter(|b| matches!(b.state.as_str(), "Select" | "Upcoming")).collect();
+    for (i, bl) in upcoming.iter().enumerate() {
+        if !(specs.is_empty() && i == 0) && bl.slot != "Boss" {
+            continue;
+        }
+        specs.push(blind_spec(bl));
     }
+    // Every upcoming blind, for the blind overview (base board only, so it's cheap)
+    let overview_specs: Vec<(String, Spec)> = upcoming.iter().map(|bl| (bl.slot.clone(), blind_spec(bl))).collect();
     // Next ante: a plain boss (2x base, no effect), to see how far the board carries.
     for k in 1..=1 {
         let ante = run.ante + k;
@@ -566,6 +622,41 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         c.per_shop = Some(1.0 - (1.0 - per_card).powi(slots));
     }
     rescue.sort_by(|a, b| rank_value(b, key_round).total_cmp(&rank_value(a, key_round)));
+    let pool_entries: Vec<PoolEntry> = screened
+        .iter()
+        .map(|c| rescue.iter().find(|r| r.key == c.key).unwrap_or(c))
+        .map(|c| PoolEntry {
+            key: c.key.clone(),
+            name: c.name.clone(),
+            rarity: data.center(&c.key).and_then(|x| x.rarity).unwrap_or(1),
+            p_win: c.p_win.clone(),
+        })
+        .collect();
+    let blind_views: Vec<BlindView> = run
+        .blinds
+        .iter()
+        .map(|bl| {
+            let spec = overview_specs.iter().find(|(slot, _)| *slot == bl.slot).map(|(_, s)| s);
+            BlindView {
+                slot: bl.slot.clone(),
+                name: bl.name.clone(),
+                state: bl.state.clone(),
+                target: bl.target,
+                p_win: spec.map(|s| {
+                    // reuse the main simulation where it's the same round
+                    ctx.specs
+                        .iter()
+                        .position(|m| !m.horizon && !m.in_progress && m.blind_key == s.blind_key && m.start.target == s.start.target)
+                        .map_or_else(|| ctx.odds_one(&ctx.base, s, opts.sims).0, |i| base_odds[i].0)
+                }),
+                reward: bl.reward,
+                skip_tag: bl.skip_tag.as_ref().map(|k| TagView {
+                    key: k.clone(),
+                    name: data.tag(k).map_or_else(|| k.clone(), |t| t.name.clone()),
+                }),
+            }
+        })
+        .collect();
 
     let best_play = if run.screen.in_blind() && !run.hand.is_empty() {
         let mut b = ctx.base.clone();
@@ -594,6 +685,18 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         order,
         shop,
         rescue,
+        blinds: blind_views,
+        pool: pool_entries,
+        shop_odds: ShopOdds {
+            joker_share,
+            slots: run.shop_rates.slots,
+            reroll_cost: run.shop.as_ref().map_or(5, |s| s.reroll_cost),
+            pool_by_rarity: per_rarity,
+            rarity_weight: [0.0, 0.7, 0.25, 0.05],
+            money_per_hand: run.money_per_hand,
+            interest_amount: run.interest_amount,
+            interest_cap: run.interest_cap,
+        },
         best_play,
         gold: gold.map(|g| GoldSummary { have: g.have_gold, total: g.total, this_run_counts: run.stake >= 8 }),
         caveats: run.snapshot.caveats.clone(),
