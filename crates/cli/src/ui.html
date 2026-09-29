@@ -33,6 +33,7 @@
   .round .name { font-weight: 700; } .round .sub { color: var(--muted); font-size: 12px; }
   .round .bar { grid-column: 1 / -1; margin-top: 4px; }
   .round.done { opacity: .55; }
+  .round .effect { font-weight: 400; font-size: 12px; color: var(--warn); }
   .round .skip { grid-column: 1 / -1; font-size: 12px; margin-top: 3px; padding: 3px 7px; border-radius: 6px; background: #0e1b18; }
   .dig { font-size: 12px; margin-bottom: 8px; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
   .dig select, .dig input { background: #0e1b18; color: var(--text); border: 1px solid var(--line); border-radius: 5px; font: inherit; }
@@ -222,7 +223,7 @@ function render(d) {
     const tag = bl.skip_tag ? tagInfo(bl.skip_tag, a, odds) : null;
     return `<div class="round${done ? " done" : ""}" ${round && round.unmodelled ? `title="${esc(round.unmodelled)}"` : ""}>
       <div class="pct" style="color:${done ? "var(--muted)" : color(p)}">${done ? (bl.state === "Skipped" ? "skip" : "✓") : pct(p)}</div>
-      <div class="name">${esc(bl.slot)}${bl.slot === "Boss" ? " · " + esc(bl.name) : ""}${round && round.unmodelled ? ' <span class="caveat">⚠</span>' : ""}</div>
+      <div class="name">${esc(bl.slot)}${bl.slot === "Boss" ? " · " + esc(bl.name) : ""}${round && round.unmodelled ? ' <span class="caveat">⚠</span>' : ""}${bl.effect ? `<div class="effect">${esc(bl.effect)}</div>` : ""}</div>
       <div class="sub">${bl.state === "Current" ? "<b>in progress</b>, from your hand and draw pile · " : ""}${num(bl.target)} chips · reward ${bl.reward ? "$" + bl.reward : "none"} + $${a.shop_odds.money_per_hand}/hand left + interest</div>
       ${tag && !done ? `<div class="skip" title="${esc(tag.why)}">Skip → <b>${esc(bl.skip_tag.name)}</b>: ${tag.text}</div>` : ""}
       ${!done ? `<div class="bar"><i style="width:${p * 100}%;background:${color(p)}"></i></div>` : ""}
@@ -269,13 +270,20 @@ function render(d) {
 
   // Right: shop, dig list
   let right = "";
-  if (a.shop.length) right += `<section><h2>Shop <small>win chance now → with it</small></h2>${candTable(a, a.shop, false)}</section>`;
+  if (a.options && a.options.length) {
+    const r = a.rounds[a.options_round];
+    right += `<section><h2>Your options vs ${esc(roundName(r))} <small>win chance after each, now ${pct(r.p_win)} · packs and rerolls are averages over what they can show</small></h2><table>` +
+      a.options.map((o) => `<tr><td class="name"><b>${esc(o.label)}</b> <span class="muted">${esc(o.note)}</span></td><td class="num">$${o.cost}</td>
+        <td class="num"><span class="muted">${pct(r.p_win).replace("%", "")}→</span><span class="${o.p_win > r.p_win + 0.005 ? "up" : "flat"}">${pct(o.p_win)}</span></td></tr>`).join("") + `</table></section>`;
+  }
+  if (a.shop.length) right += `<section><h2>Shop jokers <small>win chance now → with it</small></h2>${candTable(a, a.shop, false)}</section>`;
   const roundOpts = a.rounds.map((r, i) => r.horizon ? "" : `<option value="${i}" ${i === odds.round ? "selected" : ""}>${esc(roundName(r))}</option>`).join("");
   right += `<section><h2>Worth digging for <small>win chance now → with it · still in the shop pool · ★ no Gold sticker${a.gold && a.gold.this_run_counts ? " (this run can earn it)" : ""}</small></h2>
     <div class="dig">I need <select id="dig-round">${roundOpts}</select> at <input id="dig-t" type="range" min="30" max="100" step="5" value="${Math.round(odds.t * 100)}"> <b>${Math.round(odds.t * 100)}%</b> ·
       <span title="${odds.good.map((g) => esc(g.name)).join(", ")}"><b>${odds.good.length}</b> jokers get you there</span> ·
-      next shop <b>${pct(odds.shop(0))}</b>${[1, 3].map((k) => ` · ${k} reroll${k > 1 ? "s" : ""} ($${odds.rerollCost(k)}) <b>${pct(odds.shop(k))}</b>`).join("")} ·
-      Mega Buffoon pack <b>${pct(odds.buffoon(4))}</b></div>
+      ${a.screen === "Shop"
+        ? `chance to see one: ${[1, 2, 3].map((k) => `${k} reroll${k > 1 ? "s" : ""} ($${odds.rerollCost(k)}) <b>${pct(odds.shop(k - 1))}</b>`).join(" · ")} <span class="muted" title="A reroll redraws only the card slots, not packs or vouchers">(each redraws ${a.shop_odds.slots} cards)</span>`
+        : `chance to see one in the shop after this blind: <b>${pct(odds.shop(0))}</b> · +1 reroll <b>${pct(odds.shop(1))}</b> · +3 rerolls <b>${pct(odds.shop(3))}</b>`}</div>
     ${digTable(a, odds)}</section>`;
 
   html += `<div class="cols"><div class="stack">${left}</div><div class="stack">${right}</div></div>`;
@@ -314,7 +322,7 @@ async function poll() {
     const gameUp = seen != null && seen < 6;
     $("#dot").className = "dot" + (j.busy ? " busy" : gameUp ? "" : " off");
     $("#status").textContent = j.busy ? "analysing…"
-      : gameUp ? "● live from the game"
+      : gameUp ? "live from the game"
       : seen != null ? `game not running (last seen ${seen < 120 ? seen + " s" : Math.round(seen / 60) + " min"} ago)`
       : "reading checkpoint saves (live mod not active)";
     const hc = j.high_contrast !== false;

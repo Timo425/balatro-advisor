@@ -134,6 +134,9 @@ pub struct Analysis {
     pub shop: Vec<Candidate>,
     pub rescue: Vec<Candidate>,
     pub blinds: Vec<BlindView>,
+    /// Planets, packs and rerolls, valued against `options_round`.
+    pub options: Vec<ShopOption>,
+    pub options_round: usize,
     /// Every joker the shop can still offer. The top ones carry full-precision odds,
     /// the rest screening-quality ones (fewer simulations).
     pub pool: Vec<Candidate>,
@@ -148,11 +151,26 @@ pub struct Analysis {
     pub elapsed_ms: u128,
 }
 
+/// Something in (or from) the shop, valued as the win chance for one round afterwards.
+#[derive(Debug, Clone, Serialize)]
+pub struct ShopOption {
+    pub label: String,
+    /// planet | pack | reroll
+    pub kind: String,
+    pub cost: i64,
+    /// Win chance for `round` after taking this option (expected value for packs and rerolls).
+    pub p_win: f64,
+    pub note: String,
+}
+
 /// One of this ante's three blinds.
 #[derive(Debug, Clone, Serialize)]
 pub struct BlindView {
     pub slot: String,
     pub name: String,
+    /// What the boss does.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effect: Option<String>,
     pub state: String,
     pub target: f64,
     /// Chance to beat it now (None once defeated/skipped).
@@ -639,6 +657,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             BlindView {
                 slot: bl.slot.clone(),
                 name: bl.name.clone(),
+                effect: boss_effect(&bl.key).map(str::to_string),
                 state: bl.state.clone(),
                 target: bl.target,
                 p_win: if bl.state == "Current" {
@@ -661,6 +680,8 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             }
         })
         .collect();
+
+    let options = shop_options(&ctx, run, data, &pool_entries, &base_odds, key_round, per_rarity, joker_share);
 
     let best_play = if run.screen.in_blind() && !run.hand.is_empty() {
         let mut b = ctx.base.clone();
@@ -690,6 +711,8 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         shop,
         rescue,
         blinds: blind_views,
+        options,
+        options_round: key_round,
         pool: pool_entries,
         shop_odds: ShopOdds {
             joker_share,
@@ -942,4 +965,199 @@ fn permute(v: &mut Vec<usize>, k: usize, out: &mut Vec<Vec<usize>>) {
         permute(v, k + 1, out);
         v.swap(k, i);
     }
+}
+
+/// Boss effects (texts adapted from balatro-agent's `tools/balatro_state.py` BOSSES).
+pub fn boss_effect(key: &str) -> Option<&'static str> {
+    Some(match key {
+        "bl_hook" => "Discards 2 random held cards after every hand played",
+        "bl_ox" => "Playing your most played hand sets money to $0",
+        "bl_house" => "First hand is drawn face down",
+        "bl_wall" => "Extra large blind (4× base)",
+        "bl_wheel" => "1 in 7 cards drawn face down",
+        "bl_arm" => "Lowers the level of the hand you play by 1",
+        "bl_club" => "All Clubs are debuffed",
+        "bl_fish" => "Cards drawn face down after each hand",
+        "bl_psychic" => "Must play exactly 5 cards",
+        "bl_goad" => "All Spades are debuffed",
+        "bl_water" => "Start with 0 discards",
+        "bl_window" => "All Diamonds are debuffed",
+        "bl_manacle" => "−1 hand size",
+        "bl_eye" => "No repeat hand types this round",
+        "bl_mouth" => "Only one hand type can be played this round",
+        "bl_plant" => "All face cards are debuffed",
+        "bl_serpent" => "After a play or discard, always draw exactly 3 cards",
+        "bl_pillar" => "Cards played earlier this ante are debuffed",
+        "bl_needle" => "Only 1 hand (blind is 1× base)",
+        "bl_head" => "All Hearts are debuffed",
+        "bl_tooth" => "Lose $1 per card played",
+        "bl_flint" => "Base chips and mult are halved",
+        "bl_mark" => "All face cards are drawn face down",
+        "bl_final_acorn" => "Flips and shuffles all jokers",
+        "bl_final_leaf" => "All cards debuffed until 1 joker is sold",
+        "bl_final_vessel" => "Very large blind (6× base)",
+        "bl_final_heart" => "One random joker disabled every hand",
+        "bl_final_bell" => "Forces 1 card to always be selected",
+        _ => return None,
+    })
+}
+
+/// Planets (bought, held or from Celestial packs), Buffoon packs and rerolls, all valued as
+/// the win chance for `round` afterwards. Packs and rerolls are expected values: you take
+/// the best thing offered, if it beats what you have and you can pay for it.
+#[allow(clippy::too_many_arguments)]
+fn shop_options(
+    ctx: &Ctx,
+    run: &RunState,
+    data: &GameData,
+    pool: &[Candidate],
+    base_odds: &[(f64, Stats)],
+    round: usize,
+    per_rarity: [usize; 4],
+    joker_share: f64,
+) -> Vec<ShopOption> {
+    use crate::engine::HandType;
+    let now = base_odds.get(round).map_or(0.0, |o| o.0);
+    let Some(spec) = ctx.specs.get(round) else { return vec![] };
+    let mut out = Vec::new();
+
+    // Planets the game can offer now (Planet X, Ceres, Eris only once their hand was played)
+    let planets: Vec<(&crate::data::Center, HandType)> = data
+        .centers
+        .iter()
+        .filter(|c| c.set == "Planet")
+        .filter_map(|c| {
+            let h = HandType::from_name(c.config.get("hand_type")?.as_str()?)?;
+            let softlock = c.config.get("softlock").and_then(|v| v.as_bool()).unwrap_or(false);
+            (!softlock || ctx.base.levels[h as usize].played > 0).then_some((c, h))
+        })
+        .collect();
+    let planet_p: Vec<f64> = par_map(&planets, |(_, h)| {
+        let mut b = ctx.base.clone();
+        let l = b.levels[*h as usize];
+        b.levels[*h as usize] = l.with_level(l.level + 1);
+        ctx.odds_one(&b, spec, ctx.opts.sims).0
+    });
+    let p_of = |key: &str| planets.iter().position(|(c, _)| c.key == key).map(|i| planet_p[i]);
+
+    let shop_cards = run.shop.as_ref().map(|s| s.other_cards.clone()).unwrap_or_default();
+    for c in shop_cards.iter().filter(|c| c.set == "Planet") {
+        if let Some(p) = p_of(&c.key) {
+            out.push(ShopOption { label: c.name.clone(), kind: "planet".into(), cost: c.cost, p_win: p, note: format!("levels up {}", data.center(&c.key).and_then(|x| x.config.get("hand_type")).and_then(|v| v.as_str()).unwrap_or("")) });
+        }
+    }
+    for c in run.consumables.iter().filter(|c| c.set == "Planet") {
+        if let Some(p) = p_of(&c.key) {
+            out.push(ShopOption { label: format!("{} (you have it)", c.name), kind: "planet".into(), cost: 0, p_win: p, note: "use it before the blind".into() });
+        }
+    }
+
+    let mut rng = crate::engine::Rng::new(ctx.opts.seed ^ 0x5eed);
+    let packs = run.shop.as_ref().map(|s| s.boosters.clone()).unwrap_or_default();
+    for pk in &packs {
+        let Some(center) = data.center(&pk.key) else { continue };
+        let extra = center.config.get("extra").and_then(|v| v.as_u64()).unwrap_or(3) as usize;
+        let choose = center.config.get("choose").and_then(|v| v.as_u64()).unwrap_or(1);
+        let pick_note = if choose > 1 { " (you pick 2; counted as your best 1)" } else { "" };
+        if pk.key.starts_with("p_celestial") && !planets.is_empty() {
+            // Exact: average over every set of `extra` distinct planets of the best one in it.
+            let n = planets.len();
+            let k = extra.min(n);
+            let (mut sum, mut count): (f64, f64) = (0.0, 0.0);
+            let mut best_counts = vec![0usize; n];
+            let mut idx: Vec<usize> = (0..k).collect();
+            loop {
+                let bi = *idx.iter().max_by(|&&a, &&b| planet_p[a].total_cmp(&planet_p[b])).unwrap();
+                sum += planet_p[bi].max(now);
+                best_counts[bi] += 1;
+                count += 1.0;
+                // next combination
+                let mut i = k;
+                while i > 0 && idx[i - 1] == n - k + i - 1 {
+                    i -= 1;
+                }
+                if i == 0 {
+                    break;
+                }
+                idx[i - 1] += 1;
+                for j in i..k {
+                    idx[j] = idx[j - 1] + 1;
+                }
+            }
+            let top = (0..n).max_by_key(|&i| best_counts[i]).unwrap_or(0);
+            out.push(ShopOption {
+                label: pk.name.clone(),
+                kind: "pack".into(),
+                cost: pk.cost,
+                p_win: sum / count.max(1.0),
+                note: format!("{extra} planets, best is usually {} ({:.0}% of packs){pick_note}", planets[top].0.name, best_counts[top] as f64 * 100.0 / count.max(1.0)),
+            });
+        } else if pk.key.starts_with("p_buffoon") {
+            let budget = run.dollars - pk.cost as f64;
+            let e = expected_best(pool, round, now, extra, 1.0, budget, per_rarity, &mut rng);
+            out.push(ShopOption { label: pk.name.clone(), kind: "pack".into(), cost: pk.cost, p_win: e, note: format!("{extra} jokers{pick_note}") });
+        }
+    }
+
+    // Rerolls: each redraws the shop's card slots (not packs or vouchers).
+    if let Some(shop) = &run.shop {
+        let slots = run.shop_rates.slots.max(1) as usize;
+        let mut spent = 0i64;
+        for k in 1..=3usize {
+            spent += shop.reroll_cost + k as i64 - 1;
+            if spent as f64 > run.dollars {
+                break;
+            }
+            let budget = run.dollars - spent as f64;
+            let e = expected_best(pool, round, now, slots * k, joker_share, budget, per_rarity, &mut rng);
+            out.push(ShopOption {
+                label: format!("{k} reroll{}", if k > 1 { "s" } else { "" }),
+                kind: "reroll".into(),
+                cost: spent,
+                p_win: e,
+                note: format!("{} new cards; buy the best joker if it helps and fits the ${budget:.0} left", slots * k),
+            });
+        }
+    }
+    out.sort_by(|a, b| b.p_win.total_cmp(&a.p_win));
+    out
+}
+
+/// Expected win chance after seeing `cards` random shop/pack cards (each a joker with
+/// probability `joker_share`), buying the best affordable joker if it beats `now`.
+#[allow(clippy::too_many_arguments)]
+fn expected_best(
+    pool: &[Candidate],
+    round: usize,
+    now: f64,
+    cards: usize,
+    joker_share: f64,
+    budget: f64,
+    per_rarity: [usize; 4],
+    rng: &mut crate::engine::Rng,
+) -> f64 {
+    use crate::engine::Rolls;
+    let by_rarity: [Vec<&Candidate>; 4] = [0u8, 1, 2, 3].map(|r| pool.iter().filter(|c| c.rarity_n == r).collect());
+    let trials = 4000;
+    let mut total = 0.0;
+    for _ in 0..trials {
+        let mut best = now;
+        for _ in 0..cards {
+            if !rng.chance(joker_share) {
+                continue;
+            }
+            let roll = rng.unit();
+            let r = if roll > 0.95 { 3 } else if roll > 0.7 { 2 } else { 1 };
+            let list = &by_rarity[r];
+            if list.is_empty() || per_rarity[r] == 0 {
+                continue;
+            }
+            let c = list[rng.below(list.len())];
+            if (c.cost as f64) <= budget {
+                best = best.max(c.p_win.get(round).copied().unwrap_or(0.0));
+            }
+        }
+        total += best;
+    }
+    total / trials as f64
 }
