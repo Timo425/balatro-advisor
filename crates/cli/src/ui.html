@@ -39,7 +39,8 @@
   .scroll { max-height: 360px; overflow-y: auto; border: 1px solid var(--line); border-radius: 6px; }
   .scroll th { position: sticky; top: 0; background: var(--panel); }
   .more { margin-top: 6px; font-size: 12px; } .more a { color: var(--chips); }
-  tr.hit td { background: #16342a; }
+  tr.hit td { background: #1a4533; }
+  tr.hit td:first-child { box-shadow: inset 3px 0 0 var(--good); }
   .dig input[type=range] { width: 110px; accent-color: var(--gold); }
   .bar { height: 6px; background: #0e1b18; border-radius: 99px; overflow: hidden; }
   .bar > i { display: block; height: 100%; border-radius: 99px; }
@@ -212,7 +213,7 @@ function render(d) {
     return `<div class="round${done ? " done" : ""}" ${round && round.unmodelled ? `title="${esc(round.unmodelled)}"` : ""}>
       <div class="pct" style="color:${done ? "var(--muted)" : color(p)}">${done ? (bl.state === "Skipped" ? "skip" : "✓") : pct(p)}</div>
       <div class="name">${esc(bl.slot)}${bl.slot === "Boss" ? " · " + esc(bl.name) : ""}${round && round.unmodelled ? ' <span class="caveat">⚠</span>' : ""}</div>
-      <div class="sub">${num(bl.target)} chips · reward ${bl.reward ? "$" + bl.reward : "none"} + $${a.shop_odds.money_per_hand}/hand left + interest</div>
+      <div class="sub">${bl.state === "Current" ? "<b>in progress</b>, from your hand and draw pile · " : ""}${num(bl.target)} chips · reward ${bl.reward ? "$" + bl.reward : "none"} + $${a.shop_odds.money_per_hand}/hand left + interest</div>
       ${tag && !done ? `<div class="skip" title="${esc(tag.why)}">Skip → <b>${esc(bl.skip_tag.name)}</b>: ${tag.text}</div>` : ""}
       ${!done ? `<div class="bar"><i style="width:${p * 100}%;background:${color(p)}"></i></div>` : ""}
     </div>`;

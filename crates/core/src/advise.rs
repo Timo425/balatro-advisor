@@ -641,13 +641,18 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                 name: bl.name.clone(),
                 state: bl.state.clone(),
                 target: bl.target,
-                p_win: spec.map(|s| {
-                    // reuse the main simulation where it's the same round
-                    ctx.specs
-                        .iter()
-                        .position(|m| !m.horizon && !m.in_progress && m.blind_key == s.blind_key && m.start.target == s.start.target)
-                        .map_or_else(|| ctx.odds_one(&ctx.base, s, opts.sims).0, |i| base_odds[i].0)
-                }),
+                p_win: if bl.state == "Current" {
+                    // In progress: the simulation that starts from the real hand, draw pile and score so far
+                    ctx.specs.iter().position(|m| m.in_progress).map(|i| base_odds[i].0)
+                } else {
+                    spec.map(|s| {
+                        // reuse the main simulation where it's the same round
+                        ctx.specs
+                            .iter()
+                            .position(|m| !m.horizon && !m.in_progress && m.blind_key == s.blind_key && m.start.target == s.start.target)
+                            .map_or_else(|| ctx.odds_one(&ctx.base, s, opts.sims).0, |i| base_odds[i].0)
+                    })
+                },
                 reward: bl.reward,
                 skip_tag: bl.skip_tag.as_ref().map(|k| TagView {
                     key: k.clone(),
