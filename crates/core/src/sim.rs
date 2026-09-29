@@ -351,7 +351,10 @@ pub fn typical_hands(b: &Board, deck: &[Card], hand_size: usize, samples: usize,
 
 /// Like `typical_hands`, with the hand type each deal's best play was.
 pub fn typical_hands_detail(b: &Board, deck: &[Card], hand_size: usize, samples: usize, seed: u64) -> Vec<(f64, HandType)> {
+    // Separate streams: deals must be identical across the boards being compared, and a
+    // joker that adds a random roll (Lucky card, Bloodstone…) must not shift later deals.
     let mut rng = Rng::new(seed);
+    let mut rolls = Rng::new(seed ^ 0xA5A5_5A5A_DEAD_BEEF);
     let mut d = deck.to_vec();
     let mut b = b.clone();
     b.deck_remaining = (deck.len().saturating_sub(hand_size)) as i64;
@@ -362,7 +365,7 @@ pub fn typical_hands_detail(b: &Board, deck: &[Card], hand_size: usize, samples:
             best_play(&b, hand).map(|p| {
                 let played: Vec<Card> = p.cards.iter().map(|&i| hand[i]).collect();
                 let held: Vec<Card> = (0..hand.len()).filter(|i| !p.cards.contains(i)).map(|i| hand[i]).collect();
-                (score::score(&b, &played, &held, &mut rng, false).score, p.hand)
+                (score::score(&b, &played, &held, &mut rolls, false).score, p.hand)
             })
         })
         .collect()

@@ -95,9 +95,10 @@
 <script>
 const $ = (s) => document.querySelector(s);
 const pct = (x) => (x * 100).toFixed(x > 0 && x < 0.1 ? 1 : 0) + "%";
-const pp = (d) => Math.abs(d) < 0.005 ? '<span class="flat">±0</span>'
+const NOISE = 0.02; // differences below 2 points are within simulation noise
+const pp = (d) => Math.abs(d) < NOISE ? '<span class="flat">±0</span>'
   : `<span class="${d > 0 ? "up" : "down"}">${d > 0 ? "+" : ""}${Math.round(d * 100)}</span>`;
-const gainTxt = (g) => Math.abs(g) < 0.005 ? '<span class="flat">±0%</span>'
+const gainTxt = (g) => Math.abs(g) < NOISE ? '<span class="flat">±0%</span>'
   : `<span class="${g > 0 ? "up" : "down"}">${g > 0 ? "+" : ""}${Math.round(g * 100)}%</span>`;
 const color = (p) => p >= 0.85 ? "var(--good)" : p >= 0.5 ? "var(--warn)" : "var(--bad)";
 const num = (x) => x >= 1e6 ? x.toExponential(2) : Math.round(x).toLocaleString("en-US");
@@ -115,9 +116,9 @@ function candTable(a, list, withFind, odds) {
       <td class="muted">${esc(c.action.replace("replace ", "→ "))}</td>
       <td class="num">${c.cost}</td>
       ${c.p_win.map((p, i) => { if (a.rounds[i].horizon) { const r = Math.min(c.reach[i], 9), was = Math.min(c.reach[i] - c.reach_delta[i], 9);
-          return `<td class="num" title="Share of the ${esc(a.rounds[i].label)} boss target you reach on average: now ${pct(was)}, with it ${pct(r)}"><span class="muted">${pct(was).replace("%", "")}→</span><span class="${c.reach_delta[i] > 0.005 ? "up" : c.reach_delta[i] < -0.005 ? "down" : "flat"}">${pct(r)}</span></td>`; }
+          return `<td class="num" title="Share of the ${esc(a.rounds[i].label)} boss target you reach on average: now ${pct(was)}, with it ${pct(r)}"><span class="muted">${pct(was).replace("%", "")}→</span><span class="${c.reach_delta[i] > NOISE ? "up" : c.reach_delta[i] < -NOISE ? "down" : "flat"}">${pct(r)}</span></td>`; }
         const was = p - c.p_win_delta[i], d = c.p_win_delta[i];
-        const cls = Math.abs(d) < 0.005 ? "flat" : d > 0 ? "up" : "down";
+        const cls = Math.abs(d) < NOISE ? "flat" : d > 0 ? "up" : "down";
         return `<td class="num" title="now ${pct(was)}, with it ${pct(p)}"><span class="muted">${pct(was).replace("%", "")}→</span><span class="${cls}">${pct(p)}</span></td>`; }).join("")}
       <td class="num">${gainTxt(c.score_gain)}</td>
       ${withFind ? `<td class="num muted">${c.per_shop != null ? pct(c.per_shop) : ""}</td>` : ""}
@@ -242,7 +243,7 @@ function render(d) {
       const sold = j.p_win_if_removed.map((d, k) => {
         const r = a.rounds[k];
         if (r.horizon) return "";
-        const cls = Math.abs(d) < 0.005 ? "flat" : d < 0 ? "down" : "up";
+        const cls = Math.abs(d) < NOISE ? "flat" : d < 0 ? "down" : "up";
         return `${esc(roundName(r))} <span class="muted">${pct(r.p_win).replace("%", "")}→</span><span class="${cls}">${pct(Math.max(0, r.p_win + d))}</span>`;
       }).filter(Boolean).join(" · ");
       return `<div class="joker" style="border-top-color:${rarColor[j.rarity] || "var(--line)"}" ${j.note ? `title="${esc(j.note)}"` : ""}>
@@ -274,7 +275,7 @@ function render(d) {
     const r = a.rounds[a.options_round];
     right += `<section><h2>Your options vs ${esc(roundName(r))} <small>win chance after each, now ${pct(r.p_win)} · packs and rerolls are averages over what they can show</small></h2><table>` +
       a.options.map((o) => `<tr><td class="name"><b>${esc(o.label)}</b> <span class="muted">${esc(o.note)}</span></td><td class="num">$${o.cost}</td>
-        <td class="num"><span class="muted">${pct(r.p_win).replace("%", "")}→</span><span class="${o.p_win > r.p_win + 0.005 ? "up" : "flat"}">${pct(o.p_win)}</span></td></tr>`).join("") + `</table></section>`;
+        <td class="num"><span class="muted">${pct(r.p_win).replace("%", "")}→</span><span class="${o.p_win > r.p_win + NOISE ? "up" : "flat"}">${pct(o.p_win)}</span></td></tr>`).join("") + `</table></section>`;
   }
   if (a.shop.length) right += `<section><h2>Shop jokers <small>win chance now → with it</small></h2>${candTable(a, a.shop, false)}</section>`;
   const roundOpts = a.rounds.map((r, i) => r.horizon ? "" : `<option value="${i}" ${i === odds.round ? "selected" : ""}>${esc(roundName(r))}</option>`).join("");
