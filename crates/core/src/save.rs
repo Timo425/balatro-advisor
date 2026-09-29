@@ -237,6 +237,8 @@ pub struct RoundTargets {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snapshot {
     pub path: PathBuf,
+    /// Read from the advisor-live mod's `live.jkr` (current to the half second).
+    pub live: bool,
     pub age_secs: Option<u64>,
     /// What this snapshot cannot show (the game saves only at checkpoints).
     pub caveats: Vec<String>,
@@ -244,6 +246,18 @@ pub struct Snapshot {
 
 pub fn save_path(save_dir: &Path, profile: u8) -> PathBuf {
     save_dir.join(profile.to_string()).join("save.jkr")
+}
+
+/// `save.jkr`, or the advisor-live mod's `live.jkr` when it is at least as new.
+/// A run only counts while `save.jkr` exists (the game deletes it when a run ends).
+pub fn run_path(save_dir: &Path, profile: u8) -> PathBuf {
+    let save = save_path(save_dir, profile);
+    let live = save_dir.join(profile.to_string()).join("live.jkr");
+    let mtime = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    match (mtime(&save), mtime(&live)) {
+        (Some(s), Some(l)) if l >= s => live,
+        _ => save,
+    }
 }
 
 pub fn load(path: &Path, data: &GameData) -> Result<RunState, Error> {
@@ -549,7 +563,10 @@ pub fn from_value(g: &Value, data: &GameData, path: &Path, age_secs: Option<u64>
             playing_card: num(game.get("playing_card_rate")),
             slots: game.at("shop.joker_max").int().unwrap_or(2),
         },
-        snapshot: Snapshot { path: path.to_path_buf(), age_secs, caveats: caveats(g, screen) },
+        snapshot: {
+            let live = path.file_name().is_some_and(|n| n == "live.jkr");
+            Snapshot { path: path.to_path_buf(), live, age_secs, caveats: if live { vec![] } else { caveats(g, screen) } }
+        },
     };
     Ok(state)
 }

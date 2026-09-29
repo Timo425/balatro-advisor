@@ -134,6 +134,8 @@ pub struct Analysis {
     pub caveats: Vec<String>,
     pub heuristics: Vec<&'static str>,
     pub save_age_secs: Option<u64>,
+    /// Read from the live mod rather than the checkpoint save.
+    pub live: bool,
     pub elapsed_ms: u128,
 }
 
@@ -601,6 +603,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             "Scaling jokers keep their current value; growth isn't projected.",
         ],
         save_age_secs: run.snapshot.age_secs,
+        live: run.snapshot.live,
         elapsed_ms: t0.elapsed().as_millis(),
     }
 }

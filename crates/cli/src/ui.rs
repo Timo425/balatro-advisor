@@ -21,24 +21,29 @@ struct Shared {
 
 pub fn run(save_dir: PathBuf, profile: u8, port: u16, open: bool) -> Result<()> {
     let shared = Arc::new(Mutex::new(Shared { body: r#"{"status":"starting"}"#.into(), ..Default::default() }));
-    let save_path = save::save_path(&save_dir, profile);
 
     // Watcher: poll the save's mtime; re-analyse after it settles (the game writes several times).
     {
         let shared = shared.clone();
         std::thread::spawn(move || {
             let data = GameData::bundled();
-            let mut last: Option<SystemTime> = None;
+            let mut last: Option<(PathBuf, Option<SystemTime>)> = None;
+            let stamp = || {
+                let p = save::run_path(&save_dir, profile);
+                let m = std::fs::metadata(&p).and_then(|m| m.modified()).ok();
+                (p, m)
+            };
             loop {
-                let m = std::fs::metadata(&save_path).and_then(|m| m.modified()).ok();
+                let m = Some(stamp());
                 if m != last {
-                    std::thread::sleep(Duration::from_millis(300));
-                    let settled = std::fs::metadata(&save_path).and_then(|m| m.modified()).ok();
+                    std::thread::sleep(Duration::from_millis(150));
+                    let settled = Some(stamp());
                     if settled != m {
                         continue;
                     }
                     last = m;
                     shared.lock().unwrap().busy = true;
+                    let save_path = save::run_path(&save_dir, profile);
                     let body = match save::load(&save_path, data) {
                         Ok(r) => {
                             let g = gold::load(&save_dir, profile, data).ok();

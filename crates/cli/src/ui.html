@@ -123,7 +123,7 @@ function render(d) {
   $("#h-ante").innerHTML = `Ante <b>${a.ante}</b> · <b>${STAKES[a.stake] || a.stake}</b>`;
   $("#h-money").innerHTML = `<b>$${a.dollars}</b>`;
   $("#h-screen").innerHTML = esc(a.screen.replace(/([a-z])([A-Z])/g, "$1 $2"));
-  $("#h-caveat").innerHTML = a.caveats.length ? "⚠ snapshot" : "";
+  $("#h-caveat").innerHTML = a.live ? '<span style="color:var(--good)">● live</span>' : a.caveats.length ? "⚠ snapshot" : "";
   $("#h-caveat").title = a.caveats.join("\n");
 
   let html = `<section style="padding:8px"><div class="rounds">` + nowRounds(a).map((r) => `

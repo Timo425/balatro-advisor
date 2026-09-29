@@ -1,0 +1,50 @@
+# balatro-advisor live state: writes <profile>/live.jkr whenever the run changes.
+#
+# Lovely-only (no Steamodded): it reuses the game's own save_run() serialisation and
+# changes nothing else. Vanilla only turns achievements off through G.F_NO_ACHIEVEMENTS,
+# which this never touches (Steamodded is what normally sets it).
+
+[manifest]
+version = "1.0.0"
+dump_lua = false
+priority = 0
+
+[[patches]]
+[patches.pattern]
+target = "game.lua"
+pattern = "function Game:update(dt)"
+position = "after"
+match_indent = true
+payload = '''
+if G and G.STAGE == G.STAGES.RUN and G.GAME and G.GAME.blind and G.jokers and G.SETTINGS then
+    ADVISOR_LIVE_T = (ADVISOR_LIVE_T or 0) + dt
+    if ADVISOR_LIVE_T > 0.5 then
+        ADVISOR_LIVE_T = 0
+        pcall(function()
+            local cardAreas = {}
+            for k, v in pairs(G) do
+                if (type(v) == "table") and v.is and v:is(CardArea) then
+                    local s = v:save()
+                    if s then cardAreas[k] = s end
+                end
+            end
+            local tags = {}
+            for k, v in ipairs(G.GAME.tags or {}) do
+                if (type(v) == "table") and v.is and v:is(Tag) then
+                    local s = v:save()
+                    if s then tags[k] = s end
+                end
+            end
+            local str = STR_PACK(recursive_table_cull{
+                cardAreas = cardAreas, tags = tags, GAME = G.GAME, STATE = G.STATE,
+                ACTION = G.action or nil, BLIND = G.GAME.blind:save(),
+                BACK = G.GAME.selected_back:save(), VERSION = G.VERSION,
+            })
+            if str ~= ADVISOR_LIVE_LAST then
+                ADVISOR_LIVE_LAST = str
+                love.filesystem.write(G.SETTINGS.profile .. '/live.jkr', love.data.compress('string', 'deflate', str, 1))
+            end
+        end)
+    end
+end
+'''

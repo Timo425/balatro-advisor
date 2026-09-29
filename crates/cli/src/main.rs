@@ -122,7 +122,7 @@ fn main() -> Result<()> {
         }
         Cmd::State => {
             let dir = dir()?;
-            let s = save::load(&save::save_path(&dir, profile(&dir)), data)?;
+            let s = save::load(&save::run_path(&dir, profile(&dir)), data)?;
             if cli.json {
                 println!("{}", serde_json::to_string_pretty(&s)?);
             } else {
@@ -134,7 +134,7 @@ fn main() -> Result<()> {
                 None
             } else {
                 let dir = dir()?;
-                Some(save::load(&save::save_path(&dir, profile(&dir)), data)?)
+                Some(save::load(&save::run_path(&dir, profile(&dir)), data)?)
             };
             let mut board = run.as_ref().map_or_else(Board::empty, |r| Board::from_run(r, data));
             let (played, held) = match (hand, cards) {
@@ -204,7 +204,7 @@ fn main() -> Result<()> {
         Cmd::Analyze { sims, seed } => {
             let dir = dir()?;
             let p = profile(&dir);
-            let run = save::load(&save::save_path(&dir, p), data)?;
+            let run = save::load(&save::run_path(&dir, p), data)?;
             let g = gold::load(&dir, p, data).ok();
             let opts = balatro_advisor::advise::Options { sims: *sims, seed: *seed, ..Default::default() };
             let a = balatro_advisor::advise::analyze(&run, data, g.as_ref(), &opts);
