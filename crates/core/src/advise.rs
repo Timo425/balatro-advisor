@@ -1511,7 +1511,15 @@ fn tarot_values(
         (ctx.odds_one(&board_for_deck(&d), &sp, sims).0, reach_of(&d))
     };
 
-    par_map(&tarots, |t| {
+    let hz_idx = ctx.specs.iter().position(|x| x.horizon);
+    let money_gain = |key: &str| -> Option<f64> {
+        match key {
+            "c_hermit" => Some(run.dollars.clamp(0.0, 20.0)),
+            "c_temperance" => Some(run.jokers.iter().map(|j| j.sell_value).sum::<i64>().min(50) as f64),
+            _ => None,
+        }
+    };
+    let mut out = par_map(&tarots, |t| {
         let cfg = &t.config;
         let n = cfg.get("max_highlighted").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
         let mut d = deck.clone();
@@ -1591,7 +1599,23 @@ fn tarot_values(
         // Card-targeting tarots only work on cards in hand (in a blind or an opened pack)
         let note = if n > 0 && !from_hand { format!("{note}, if you hold suitable cards") } else if n > 0 { format!("{note} (from your hand)") } else { note };
         TarotValue { key: t.key.clone(), name: t.name.clone(), p_win: p, note, simulated: sim, per_shop, reach, reach_now }
-    })
+    });
+    // Money tarots: valued by what the extra money buys (rerolls, then the best joker found)
+    for t in &mut out {
+        let Some(g) = money_gain(&t.key) else { continue };
+        if g <= 0.0 {
+            continue;
+        }
+        if let Some(h) = hz_idx {
+            let v = |c: &Candidate| c.reach.get(h).copied().unwrap_or(0.0);
+            t.reach = reach_now + (money_value(ctx, pool, &v, reach_now, run.dollars + g) - money_value(ctx, pool, &v, reach_now, run.dollars)).max(0.0);
+        }
+        let pv = |c: &Candidate| c.p_win.get(round).copied().unwrap_or(0.0);
+        t.p_win = now + (money_value(ctx, pool, &pv, now, run.dollars + g) - money_value(ctx, pool, &pv, now, run.dollars)).max(0.0);
+        t.simulated = true;
+        t.note = format!("{} · valued as what the money buys: rerolls, then the best joker found", t.note);
+    }
+    out
 }
 
 /// Expected next-ante reach from `cards` free random jokers (the horizon column of the pool).
@@ -1652,6 +1676,64 @@ fn expected_best(
         total += best;
     }
     total / trials as f64
+}
+
+/// `expected_best` for any per-joker value (e.g. next-ante reach instead of win chance).
+#[allow(clippy::too_many_arguments)]
+fn expected_best_by(
+    pool: &[Candidate],
+    value: &dyn Fn(&Candidate) -> f64,
+    now: f64,
+    cards: usize,
+    joker_share: f64,
+    budget: f64,
+    rng: &mut crate::engine::Rng,
+) -> f64 {
+    use crate::engine::Rolls;
+    let by_rarity: [Vec<&Candidate>; 4] = [0u8, 1, 2, 3].map(|r| pool.iter().filter(|c| c.rarity_n == r).collect());
+    let trials = 3000;
+    let mut total = 0.0;
+    for _ in 0..trials {
+        let mut best = now;
+        for _ in 0..cards {
+            if !rng.chance(joker_share) {
+                continue;
+            }
+            let roll = rng.unit();
+            let r = if roll > 0.95 { 3 } else if roll > 0.7 { 2 } else { 1 };
+            let list = &by_rarity[r];
+            if list.is_empty() {
+                continue;
+            }
+            let c = list[rng.below(list.len())];
+            if (c.cost as f64) <= budget {
+                best = best.max(value(c));
+            }
+        }
+        total += best;
+    }
+    total / trials as f64
+}
+
+/// What `money` is worth in `value` terms: the best expected result from spending it on
+/// rerolls and then the best joker they show (0 rerolls = keep what you have). Same seed on
+/// every call, so two amounts are compared on the same shops.
+fn money_value(ctx: &Ctx, pool: &[Candidate], value: &dyn Fn(&Candidate) -> f64, now: f64, money: f64) -> f64 {
+    let run = ctx.run;
+    let slots = run.shop_rates.slots.max(1) as usize;
+    let base_cost = run.shop.as_ref().map_or(5, |s| s.reroll_cost);
+    let share = run.shop_rates.joker_share();
+    let mut best = now;
+    let mut spent = 0i64;
+    for k in 1..=8usize {
+        spent += base_cost + k as i64 - 1;
+        if spent as f64 > money {
+            break;
+        }
+        let mut rng = crate::engine::Rng::new(ctx.opts.seed ^ 0x6d6f6e6579 ^ k as u64);
+        best = best.max(expected_best_by(pool, value, now, slots * k, share, money - spent as f64, &mut rng));
+    }
+    best
 }
 
 /// Play styles, grouped by what each joker's own effect rewards (from its definition in
