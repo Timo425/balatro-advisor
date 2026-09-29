@@ -783,7 +783,8 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         .enumerate()
         .filter_map(|(i, c)| {
             let j = Joker::from_key(&c.key, data)?;
-            let (grown, label, fades) = grow_one_ante(&j, &hand_mix, run.dollars, run.interest_cap as f64)?;
+            // Money left after buying it is what could pay for its growth
+            let (grown, label, fades) = grow_one_ante(&j, &hand_mix, run.dollars - c.cost as f64, run.interest_cap as f64)?;
             Some((i, grown, label, fades))
         })
         .collect();
