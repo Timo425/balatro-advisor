@@ -65,7 +65,7 @@ pub fn run(save_dir: PathBuf, profile: u8, port: u16, open: bool) -> Result<()> 
     let url = format!("http://{addr}/");
     println!("Balatro advisor running at {url} (Ctrl+C to stop). It updates whenever the game saves.");
     if open {
-        let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
+        open_window(&url);
     }
     for req in server.incoming_requests() {
         let path = req.url().split('?').next().unwrap_or("/").to_string();
@@ -82,6 +82,23 @@ pub fn run(save_dir: PathBuf, profile: u8, port: u16, open: bool) -> Result<()> 
         let _ = req.respond(resp);
     }
     Ok(())
+}
+
+/// A chromeless app window (Chrome/Chromium `--app`), else the default browser.
+fn open_window(url: &str) {
+    for browser in ["google-chrome", "chromium", "chromium-browser", "brave-browser"] {
+        let ok = std::process::Command::new(browser)
+            .arg(format!("--app={url}"))
+            .arg("--window-size=1150,1000")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .is_ok();
+        if ok {
+            return;
+        }
+    }
+    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
 }
 
 fn header(k: &str, v: &str) -> tiny_http::Header {
