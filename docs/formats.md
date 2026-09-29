@@ -27,7 +27,7 @@ Balatro/
 └── Mods/, *.run         mod leftovers / BalatroBot logs; ignored
 ```
 
-In the owner's install, profile 1 is the real profile (145 wins).
+Profile 1 is typically the main profile.
 `balatro-agent` uses profiles 2 and 3 for bot benchmarks. The tool defaults to
 the profile named in `settings.jkr`, and `--profile N` overrides it.
 

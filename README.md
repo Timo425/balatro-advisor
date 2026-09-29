@@ -1,76 +1,76 @@
 # balatro-advisor
 
-A fast local advisor for **vanilla Balatro**. It reads the game's own save file
-(no mods, achievements stay on) and tells you:
+A local advisor for **Balatro**. It reads your run from the game's own files and
+shows, in a small window that updates as you play:
 
-1. how much each of your jokers contributes to your score,
-2. the best order to put them in,
-3. which shop or candidate joker would improve the run most (as an addition,
-   or as a swap when your slots are full),
+- your **chance to beat** each blind of the ante (simulated with your deck, hand
+  levels and jokers), and the boss's effect;
+- how much of your score **each joker** carries, and what selling it would cost;
+- the **best joker order**, when order matters;
+- **shop options** (jokers, planets, packs, rerolls) as "win chance after";
+- **jokers worth digging for**: everything the shop can still offer, ranked, with
+  the odds of seeing one that gets you to a target win chance;
+- **skip tags** valued in the same terms where they're about jokers;
+- your **Gold Stake sticker** progress.
 
-plus your **Gold Stake sticker progress** from the profile file.
+Scoring is a line-by-line port of the game's own `evaluate_play` and joker code,
+covering the scoring effects of all 150 jokers. Win chances come from Monte Carlo
+round simulations with a simple play/discard policy (a heuristic, not perfect play).
 
-Scoring follows the game's real evaluation order. It is evaluated with Monte
-Carlo over your remaining deck, with fixed seeds, so the results are
-reproducible. Jokers that aren't modelled yet are shown as **not modelled**,
-never silently left out.
+## Install and run
 
-> **Status:** save reader, `gold` and the scoring engine (`score`) work. The
-> engine is a line-by-line port of the game's `evaluate_play` and covers the
-> scoring effects of all 150 jokers. `ui` shows joker values, blind odds, shop and rescue jokers live.
-> Design notes: [docs/plan.md](docs/plan.md), [docs/formats.md](docs/formats.md).
-
-```bash
-cargo build --release
-B=./target/release/balatro-advisor
-$B ui                             # live page in your browser (http://127.0.0.1:7777), updates when the game saves
-$B analyze                        # the same analysis as JSON
-$B gold                           # Gold Stake stickers missing
-$B state                          # parsed run (add --json for everything)
-$B score --hand 1,2,5 --trace     # score cards from your hand, step by step
-$B score "KS KH:glass 5D:stone" --held "KD:steel"
-cargo test                        # ~2 s
-```
-
-Card notation: `KS`, `10H`, plus `:modifiers`: `bonus mult wild glass steel
-stone gold lucky`, `foil holo poly`, `red blue goldseal purple`, `debuff`,
-`+N` (perma chips).
-
-**Golden tests** (real in-game scores): before playing a hand run
-`$B score --hand 1,2,5 --golden my-case`; after it scores run
-`$B golden set my-case <score the game showed>`. `cargo test` checks every
-recorded case from then on; `$B golden list` shows them.
-
-`data/game.json` (joker/blind numbers) is generated from your own install:
-`unzip -p ~/.steam/debian-installation/steamapps/common/Balatro/Balatro.exe game.lua > /tmp/game.lua && cargo run -- extract-data /tmp/game.lua`
-
-## Planned interfaces
+Needs Rust ([rustup](https://rustup.rs)).
 
 ```bash
-balatro-advisor analyze   # joker contributions + best order + P(beat blind)
-balatro-advisor shop      # rank shop / --candidate jokers by marginal gain
-balatro-advisor gold      # Gold Stake stickers: have / missing
-balatro-advisor watch     # re-run automatically when save.jkr changes
-balatro-advisor bench     # performance benchmark
-balatro-advisor score     # score one specified hand, with --trace
-# every command: --json --profile N --save-dir PATH --seed N --samples N
-
-balatro-advisor-mcp       # MCP server (stdio) for AI agents, same JSON
+git clone https://github.com/Timo425/balatro-advisor && cd balatro-advisor
+cargo install --path crates/cli
+balatro-advisor ui          # opens the advisor window (Chrome/Chromium app window, else your browser)
 ```
 
-## Save location
+The save folder is found automatically on Linux (Steam + Proton) and Windows
+(`%APPDATA%\Balatro`). Override with `--save-dir`, the `BALATRO_DIR` env var, or
+`save_dir` in `~/.config/balatro-advisor/config.toml`.
 
-Found automatically on Linux (Steam + Proton), and in `%APPDATA%\Balatro` on
-Windows. Override with `--save-dir`, the `BALATRO_DIR` env var, or `save_dir`
-in `~/.config/balatro-advisor/config.toml`.
+### Optional: live updates (Lovely mod)
 
-## Privacy
+Without a mod, the game only writes its save at checkpoints (entering the shop,
+each new hand…), so buys, sells and consumables show up late. The included
+**advisor-live** mod writes the current state twice a second instead:
 
-Real `.jkr` files (saves, profiles, settings) are never committed. They are
-read in place and gitignored. Test fixtures are synthetic.
+1. Install [Lovely](https://github.com/ethangreen-dev/lovely-injector) (on Linux/Proton,
+   Steam launch option `WINEDLLOVERRIDES="version=n,b" %command%`).
+2. Copy `mod/advisor-live` into `%APPDATA%\Balatro\Mods\`.
 
-## Not affiliated
+It only serialises the run the same way the game's own `save_run()` does; it doesn't
+change gameplay. Don't combine it with Steamodded if you care about achievements:
+Steamodded turns them off, Lovely alone does not.
 
-Not affiliated with LocalThunk or Playstack. Balatro is © LocalThunk. The tool
-only reads your local save files. It does not modify the game or ship any of
-its code or assets.
+## Other commands
+
+```bash
+balatro-advisor analyze            # the full analysis as JSON (for scripts / AI agents)
+balatro-advisor state [--json]     # the parsed run
+balatro-advisor gold               # Gold Stake stickers you're missing
+balatro-advisor score --hand 1,2,5 --trace          # score cards from your hand, step by step
+balatro-advisor score "KS KH:glass 5D:stone" --held "KD:steel"
+balatro-advisor bench              # engine timings
+```
+
+Card notation: `KS`, `10H`, plus `:modifiers`: `bonus mult wild glass steel stone gold
+lucky`, `foil holo poly`, `red blue goldseal purple`, `debuff`, `+N` (perma chips).
+
+**Golden tests:** before playing a hand, `balatro-advisor score --hand 1,2,5 --golden name`;
+after it scores, `balatro-advisor golden set name <score the game showed>`. `cargo test`
+keeps checking it.
+
+`data/game.json` (joker/blind/tag numbers) is generated from a local install:
+`unzip -p .../Balatro.exe game.lua > /tmp/game.lua && cargo run -- extract-data /tmp/game.lua`.
+
+## Notes
+
+- Written almost entirely with an AI coding assistant (Claude Code), reviewed and
+  play-tested by a human.
+- Real save/profile files are never committed; tests use synthetic ones.
+- Not affiliated with LocalThunk or Playstack. Balatro is © LocalThunk. This repo
+  ships no game code or assets; `data/game.json` holds only names and numbers.
+- MIT licensed, see [LICENSE](LICENSE).
