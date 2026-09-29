@@ -127,6 +127,13 @@ function styleTags(a, key) {
 }
 
 // "↗ grows / ↘ fades" line for jokers whose value changes over time
+// "×1.25" vs a typical late find; ~×1.0 fades out
+function longTxt(m) {
+  if (m == null) return '<span class="flat">–</span>';
+  const cls = Math.abs(m - 1) < 0.08 ? "flat" : m > 1 ? "up" : "down";
+  return `<span class="${cls}">×${m.toFixed(2)}</span>`;
+}
+
 function growthLine(a, key) {
   const c = (a.pool || []).find((p) => p.key === key);
   const g = c && c.growth;
@@ -140,7 +147,7 @@ function growthLine(a, key) {
 }
 
 function candTable(a, list, withFind, odds) {
-  return `<table><tr><th>Joker</th><th>Action</th><th class="num">$</th>${a.rounds.map((r) => `<th class="num" ${r.horizon ? 'title="Share of that boss target reached (win chance is ~0 this far out)"' : ""}>${esc(r.horizon ? r.label + " reach" : roundName(r))}</th>`).join("")}<th class="num" title="Change in the best hand you can make from a fresh deal">Hand</th>${withFind ? '<th class="num" title="Chance a given shop shows it, before rerolls">Shop</th>' : ""}</tr>` +
+  return `<table><tr><th>Joker</th><th>Action</th><th class="num">$</th>${a.rounds.map((r) => `<th class="num" ${r.horizon ? 'title="Share of that boss target reached (win chance is ~0 this far out)"' : ""}>${esc(r.horizon ? r.label + " reach" : roundName(r))}</th>`).join("")}<th class="num" title="Change in the best hand you can make from a fresh deal">Hand</th><th class="num" title="${esc(a.long_assumptions || "")}">Ante 8</th>${withFind ? '<th class="num" title="Chance a given shop shows it, before rerolls">Shop</th>' : ""}</tr>` +
     list.map((c) => `<tr${odds && (c.p_win[odds.round] ?? 0) >= odds.t ? ' class="hit"' : ""}>
       <td class="name" ${c.desc || c.note ? `title="${esc([c.desc, c.note].filter(Boolean).join("\n"))}"` : ""}><span class="rar-${c.rarity}">●</span> <b>${esc(c.name)}</b>${c.precise === false ? ' <span class="muted" title="Quicker, rougher estimate">~</span>' : ""}${styleTags(a, c.key)} ${edTag(c.edition)}${growthLine(a, c.key)}${c.missing_gold ? ' <span class="star" title="No Gold sticker yet">★</span>' : ""}</td>
       <td class="muted">${esc(c.action.replace("replace ", "sell "))}</td>
@@ -150,7 +157,7 @@ function candTable(a, list, withFind, odds) {
         const was = p - c.p_win_delta[i], d = c.p_win_delta[i];
         const cls = Math.abs(d) < NOISE ? "flat" : d > 0 ? "up" : "down";
         return `<td class="num" title="now ${pct(was)}, with it ${pct(p)}"><span class="muted">${pct(was)}</span><span class="arr">→</span><span class="${cls}">${pct(p)}</span></td>`; }).join("")}
-      <td class="num">${gainTxt(c.score_gain)}</td>
+      <td class="num">${gainTxt(c.score_gain)}</td><td class="num" title="${esc(a.long_assumptions || "")}">${longTxt(c.long_mult)}</td>
       ${withFind ? `<td class="num muted">${c.per_shop != null ? pct(c.per_shop) : ""}</td>` : ""}
     </tr>`).join("") + `</table>`;
 }
@@ -330,10 +337,11 @@ function render(d) {
       sections.push([`Your options vs ${esc(roundName(r))} <small>everything you can buy now, by win chance after it (now ${pct(r.p_win)}) · packs and rerolls are averages over what they can show</small>`, shopRows]);
     }
     for (const [title, rows] of sections) {
-    right += `<section><h2>${title}</h2><table><tr><th></th><th class="num">Cost</th><th class="num" title="Money you'd have left, and the interest it earns per round">Left · interest</th><th class="num">Win chance</th></tr>` +
+    right += `<section><h2>${title}</h2><table><tr><th></th><th class="num">Cost</th><th class="num" title="Money you'd have left, and the interest it earns per round">Left · interest</th><th class="num">Win chance</th><th class="num" title="${esc(a.long_assumptions || "")}">By Ante 8</th></tr>` +
       rows.map((o) => `<tr${o.unaffordable ? ' class="broke" title="You can\'t afford this right now"' : ""}><td class="name"${o.desc ? ` title="${esc(o.desc)}"` : ""}>${o.kind === "joker" ? '<span class="muted">🃏</span> ' : ""}<b>${esc(o.label)}</b>${o.key ? styleTags(a, o.key) : ""}${o.unaffordable ? ' <span class="down">can\'t afford</span>' : ""} <span class="muted">${esc(o.note)}</span>${o.key ? growthLine(a, o.key) : ""}</td><td class="num">$${o.cost}</td>
         <td class="num" title="Money left, and the interest it earns per round ($1 per $5, before payouts)"><span class="${o.interest_after < o.interest_now ? "down" : o.interest_after > o.interest_now || o.money_gain ? "up" : "muted"}">$${Math.round(o.money_after)} · int $${o.interest_after}${o.interest_after < o.interest_now ? ` (−$${o.interest_now - o.interest_after})` : o.interest_after > o.interest_now ? ` (+$${o.interest_after - o.interest_now})` : ""}</span></td>
-        <td class="num"><span class="muted">${pct(r.p_win)}</span><span class="arr">→</span>${Math.abs(o.p_win - r.p_win) < NOISE ? `<span class="flat" title="Within simulation noise">±0</span>` : `<span class="${o.p_win > r.p_win ? "up" : "down"}">${pct(o.p_win)}</span>`}</td></tr>`).join("") + `</table></section>`;
+        <td class="num"><span class="muted">${pct(r.p_win)}</span><span class="arr">→</span>${Math.abs(o.p_win - r.p_win) < NOISE ? `<span class="flat" title="Within simulation noise">±0</span>` : `<span class="${o.p_win > r.p_win ? "up" : "down"}">${pct(o.p_win)}</span>`}</td>
+        <td class="num" title="${esc(a.long_assumptions || "")}">${longTxt(o.long_mult)}</td></tr>`).join("") + `</table></section>`;
     }
   }
   const roundOpts = a.rounds.map((r, i) => r.horizon ? "" : `<option value="${i}" ${i === odds.round ? "selected" : ""}>${esc(roundName(r))}</option>`).join("");

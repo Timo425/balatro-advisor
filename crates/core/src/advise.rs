@@ -119,6 +119,10 @@ pub struct Candidate {
     /// For jokers that grow or fade: their value one ante from now, under a stated assumption.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub growth: Option<Growth>,
+    /// How much stronger it makes your board by Ante 8 (best-hand score ratio, both boards
+    /// projected: growers grown, faders faded, perishables gone). An estimate.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub long_mult: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -160,6 +164,8 @@ pub struct Analysis {
     pub options_round: usize,
     /// Every tarot, valued for this run (the dig list's Tarots tab).
     pub tarots: Vec<TarotValue>,
+    /// What the "by Ante 8" numbers assume.
+    pub long_assumptions: String,
     pub outlook: Option<Outlook>,
     /// Style groups (name → joker keys), for tagging jokers in the page.
     pub style_groups: Vec<(String, Vec<String>)>,
@@ -226,6 +232,9 @@ pub struct ShopOption {
     /// Money it gives back (money tarots), counted in `money_after`.
     #[serde(default)]
     pub money_gain: f64,
+    /// Board strength by Ante 8 relative to not taking it (see `Candidate::long_mult`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub long_mult: Option<f64>,
     /// For jokers: the key (style tags in the page) and the game text.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
@@ -848,8 +857,131 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     fill(&mut pool_entries);
     fill(&mut shop);
     fill(&mut rescue);
-    let (options, tarots) = shop_options(&ctx, run, data, &pool_entries, &base_odds, key_round, per_rarity, joker_share, &shop);
+    let (mut options, tarots) = shop_options(&ctx, run, data, &pool_entries, &base_odds, key_round, per_rarity, joker_share, &shop);
     lap("shop options");
+    // By Ante 8: every board projected to then (growers grown, faders faded, perishables
+    // that run out gone), compared on best-hand score with and without each option.
+    let antes_left = ((run.win_ante - run.ante) as f64 + 0.5).max(0.5);
+    let line = run.interest_cap as f64;
+    let mut long_base = ctx.base.clone();
+    long_base.blind = Default::default();
+    // Planets on the hand that earns most of your points: half a level per ante as a base,
+    // plus more when money sits above the interest line (runs vary from 0 to 10+ levels).
+    let spare = (run.dollars - line).max(0.0);
+    let levels_per_ante = (0.5 + spare / 20.0).min(2.0);
+    let planet_levels = (levels_per_ante * antes_left).round() as i64;
+    let top_hand = hand_mix.first().and_then(|h| crate::engine::HandType::from_name(&h.hand));
+    if let Some(top) = top_hand {
+        let l = long_base.levels[top as usize];
+        long_base.levels[top as usize] = l.with_level(l.level + planet_levels);
+    }
+    long_base.jokers = ctx
+        .base
+        .jokers
+        .iter()
+        .zip(&run.jokers)
+        .filter(|(_, sj)| sj.perishable.is_none_or(|r| r as f64 >= 3.0 * antes_left))
+        .map(|(j, _)| grow_antes(j, &hand_mix, run.dollars, line, antes_left).map_or_else(|| j.clone(), |g| g.0))
+        .collect();
+    let long_deals = 150;
+    // Stand-ins for the jokers you'd find over the run: empty slots get alternating ×1.5
+    // and +15 Mult jokers, and the option is compared against a ×1.25 "typical find" in its
+    // slot. An assumption, labelled as one.
+    let stand_in = |x: f64, m: f64, chips: f64| {
+        let mut j = Joker::from_key("j_joker", data).expect("j_joker in data");
+        j.mult = 0.0;
+        if x > 1.0 {
+            j.kind = Kind::Other;
+            j.x_mult = x;
+        } else if chips > 0.0 {
+            j.kind = Kind::Stuntman;
+            j.extra.chip_mod = chips;
+        } else {
+            j.mult = m;
+        }
+        j.key = "stand-in".into();
+        j
+    };
+    let fill = |kept: &[Joker], option: Option<Joker>| -> Board {
+        let mut b = long_base.clone();
+        b.jokers = kept.to_vec();
+        b.jokers.push(option.unwrap_or_else(|| stand_in(1.25, 0.0, 0.0)));
+        let mut k = 0;
+        while (b.jokers.len() as i64) < b.joker_slots {
+            b.jokers.push(match k % 3 {
+                0 => stand_in(1.5, 0.0, 0.0),
+                1 => stand_in(1.0, 0.0, 60.0),
+                _ => stand_in(1.0, 15.0, 0.0),
+            });
+            k += 1;
+        }
+        b
+    };
+    let kept_all = long_base.jokers.clone();
+    // Whole rounds with no target (all hands played, discards and flush chases included),
+    // so builds that dig for their hand count the way they're played.
+    let _ = long_deals;
+    let long_spec = Spec {
+        label: "Ante 8 projection".into(),
+        blind_key: String::new(),
+        blind_name: String::new(),
+        start: RoundStart {
+            hand: vec![],
+            deck: ctx.fresh_deck.clone(),
+            hand_size: run.hand_size,
+            hands: run.round_hands,
+            discards: run.round_discards,
+            scored: 0.0,
+            target: 1e300,
+        },
+        rules: RoundRules::default(),
+        in_progress: false,
+        horizon: true,
+    };
+    let long_score = |b: &Board| ctx.odds_one(b, &long_spec, 48).1.mean.max(1.0);
+    let l0 = long_score(&fill(&kept_all, None));
+    let long_mults: Vec<Option<f64>> = par_map(&pool_entries, |c| {
+        let mut j = Joker::from_key(&c.key, data)?;
+        j.edition = c.edition;
+        let shop_copy = run.shop.as_ref().and_then(|sh| sh.jokers.iter().find(|x| x.key == c.key));
+        if shop_copy.and_then(|x| x.perishable).is_some_and(|r| (r as f64) < 3.0 * antes_left) {
+            return Some(1.0); // gone before then
+        }
+        let horizon = if c.key == "j_madness" { 1.0 } else { antes_left };
+        let j = grow_antes(&j, &hand_mix, run.dollars - c.cost as f64, line, horizon).map_or(j, |g| g.0);
+        let mut kept = kept_all.clone();
+        let mut base_l = l0;
+        if let Some(name) = c.action.strip_prefix("replace ") {
+            if let Some(i) = kept.iter().position(|x| data.name(&x.key) == name) {
+                kept.remove(i);
+                base_l = long_score(&fill(&kept, None));
+            }
+        }
+        if (kept.len() as i64) >= long_base.joker_slots && j.edition != Some(Edition::Negative) {
+            return None;
+        }
+        Some(long_score(&fill(&kept, Some(j))) / base_l)
+    });
+    for (c, m) in pool_entries.iter_mut().zip(long_mults) {
+        c.long_mult = m;
+    }
+    for o in options.iter_mut() {
+        if o.kind == "joker" {
+            o.long_mult = o.key.as_ref().and_then(|k| pool_entries.iter().find(|c| &c.key == k)).and_then(|c| c.long_mult);
+        } else if o.kind == "planet" {
+            let hand = o.key.as_ref().and_then(|k| data.center(k)).and_then(|c| c.config.get("hand_type")).and_then(|v| v.as_str()).and_then(crate::engine::HandType::from_name);
+            if let Some(h) = hand {
+                let mut b = fill(&kept_all, None);
+                let l = b.levels[h as usize];
+                b.levels[h as usize] = l.with_level(l.level + 1);
+                o.long_mult = Some(long_score(&b) / l0);
+            }
+        }
+    }
+    let long_note = format!(
+        "Your board projected {antes_left:.1} antes ahead: growing jokers grown, fading ones faded, perishables that run out dropped, {} +{planet_levels} levels (about {levels_per_ante:.1} per ante with your money), empty slots filled with stand-in jokers (×1.5, +60 Chips, +15 Mult). Each option is compared with a typical find (×1.25) in its slot, on whole simulated rounds. ×1.00 = as good as a typical find.",
+        top_hand.map_or("your main hand", |h| h.name())
+    );
     let shares: Vec<f64> = jokers.iter().map(|j| j.score_share).collect();
     let outlook = archetype_outlook(&ctx, run, data, &pool_entries, &shares, &hand_mix);
 
@@ -885,6 +1017,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         options,
         options_round: key_round,
         tarots,
+        long_assumptions: long_note.clone(),
         outlook,
         style_groups: archetypes().into_iter().map(|(n, m, _)| (n.to_string(), m.iter().map(|k| k.to_string()).collect())).collect(),
         pool: pool_entries,
@@ -1025,6 +1158,7 @@ fn evaluate_candidate(ctx: &Ctx, j: Joker, cost: i64, base_odds: &[(f64, Stats)]
             note: None,
             desc: None,
             growth: None,
+            long_mult: None,
         };
     };
     let r: Vec<&Joker> = removed.iter().collect();
@@ -1054,6 +1188,7 @@ fn evaluate_candidate(ctx: &Ctx, j: Joker, cost: i64, base_odds: &[(f64, Stats)]
         note: non_scoring_note(&j.key).map(str::to_string),
         desc: None,
         growth: None,
+        long_mult: None,
     }
 }
 
@@ -1228,17 +1363,17 @@ fn shop_options(
     let shop_cards = run.shop.as_ref().map(|s| s.other_cards.clone()).unwrap_or_default();
     for c in shop_cards.iter().filter(|c| c.set == "Planet") {
         if let Some(p) = p_of(&c.key) {
-            out.push(ShopOption { label: c.name.clone(), kind: "planet".into(), cost: c.cost, money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, key: None, desc: None, p_win: p, note: format!("levels up {}", data.center(&c.key).and_then(|x| x.config.get("hand_type")).and_then(|v| v.as_str()).unwrap_or("")) });
+            out.push(ShopOption { label: c.name.clone(), kind: "planet".into(), cost: c.cost, money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: Some(c.key.clone()), desc: None, p_win: p, note: format!("levels up {}", data.center(&c.key).and_then(|x| x.config.get("hand_type")).and_then(|v| v.as_str()).unwrap_or("")) });
         }
     }
     for c in run.open_pack.iter().filter(|c| c.set == "Planet") {
         if let Some(p) = p_of(&c.key) {
-            out.push(ShopOption { label: format!("pick {}", c.name), kind: "planet".into(), cost: 0, p_win: p, note: format!("levels up {}", data.center(&c.key).and_then(|x| x.config.get("hand_type")).and_then(|v| v.as_str()).unwrap_or("")), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, key: None, desc: None });
+            out.push(ShopOption { label: format!("pick {}", c.name), kind: "planet".into(), cost: 0, p_win: p, note: format!("levels up {}", data.center(&c.key).and_then(|x| x.config.get("hand_type")).and_then(|v| v.as_str()).unwrap_or("")), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: Some(c.key.clone()), desc: None });
         }
     }
     for c in run.consumables.iter().filter(|c| c.set == "Planet") {
         if let Some(p) = p_of(&c.key) {
-            out.push(ShopOption { label: format!("{} (you have it)", c.name), kind: "planet".into(), cost: 0, p_win: p, note: "use it before the blind".into(), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, key: None, desc: None });
+            out.push(ShopOption { label: format!("{} (you have it)", c.name), kind: "planet".into(), cost: 0, p_win: p, note: "use it before the blind".into(), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: Some(c.key.clone()), desc: None });
         }
     }
 
@@ -1281,6 +1416,7 @@ fn shop_options(
                 interest_after: 0,
                 unaffordable: false,
                 money_gain: 0.0,
+                long_mult: None,
                 key: None,
                 desc: None,
                 label: pk.name.clone(),
@@ -1292,7 +1428,7 @@ fn shop_options(
         } else if pk.key.starts_with("p_buffoon") {
             // Jokers picked from a pack are free: no budget limit on what's inside.
             let e = expected_best(pool, round, now, extra, 1.0, f64::INFINITY, per_rarity, &mut rng);
-            out.push(ShopOption { label: pk.name.clone(), kind: "pack".into(), cost: pk.cost, p_win: e, note: format!("{extra} jokers{pick_note}"), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, key: None, desc: None });
+            out.push(ShopOption { label: pk.name.clone(), kind: "pack".into(), cost: pk.cost, p_win: e, note: format!("{extra} jokers{pick_note}"), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: None, desc: None });
         }
     }
 
@@ -1314,6 +1450,7 @@ fn shop_options(
                 interest_after: 0,
                 unaffordable: false,
                 money_gain: 0.0,
+                long_mult: None,
                 key: None,
                 desc: None,
                 label: "reroll".to_string(),
@@ -1358,7 +1495,7 @@ fn shop_options(
                 _ => (false, "not valued".into()),
             };
             let p = if sim { ctx.odds_one(&ctx.base, &sp, ctx.opts.sims).0 } else { now };
-            out.push(ShopOption { label: v.name.clone(), kind: "voucher".into(), cost: v.cost, p_win: p, note, money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, key: None, desc: None });
+            out.push(ShopOption { label: v.name.clone(), kind: "voucher".into(), cost: v.cost, p_win: p, note, money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: None, desc: None });
         }
     }
     // Tarots: applied to the deck the way a player sensibly would, then the round re-simulated.
@@ -1367,17 +1504,17 @@ fn shop_options(
     let shop_cards = run.shop.as_ref().map(|s| s.other_cards.clone()).unwrap_or_default();
     for c in shop_cards.iter().filter(|c| c.set == "Tarot") {
         if let Some(t) = tarot_p(&c.key) {
-            out.push(ShopOption { label: c.name.clone(), kind: "tarot".into(), cost: c.cost, p_win: t.p_win, note: t.note.clone(), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: t.money_gain, key: None, desc: None });
+            out.push(ShopOption { label: c.name.clone(), kind: "tarot".into(), cost: c.cost, p_win: t.p_win, note: t.note.clone(), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: t.money_gain, long_mult: None, key: None, desc: None });
         }
     }
     for c in run.open_pack.iter().filter(|c| c.set == "Tarot") {
         if let Some(t) = tarot_p(&c.key) {
-            out.push(ShopOption { label: format!("pick {}", c.name), kind: "tarot".into(), cost: 0, p_win: t.p_win, note: format!("{} · next ante reach {:.0}% → {:.0}%", t.note, t.reach_now * 100.0, t.reach * 100.0), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: t.money_gain, key: None, desc: None });
+            out.push(ShopOption { label: format!("pick {}", c.name), kind: "tarot".into(), cost: 0, p_win: t.p_win, note: format!("{} · next ante reach {:.0}% → {:.0}%", t.note, t.reach_now * 100.0, t.reach * 100.0), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: t.money_gain, long_mult: None, key: None, desc: None });
         }
     }
     for c in run.consumables.iter().filter(|c| c.set == "Tarot") {
         if let Some(t) = tarot_p(&c.key) {
-            out.push(ShopOption { label: format!("{} (you have it)", c.name), kind: "tarot".into(), cost: 0, p_win: t.p_win, note: format!("{} · use it during a blind", t.note), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: t.money_gain, key: None, desc: None });
+            out.push(ShopOption { label: format!("{} (you have it)", c.name), kind: "tarot".into(), cost: 0, p_win: t.p_win, note: format!("{} · use it during a blind", t.note), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: t.money_gain, long_mult: None, key: None, desc: None });
         }
     }
     for pk in run.shop.as_ref().map(|s| s.boosters.clone()).unwrap_or_default().iter().filter(|p| p.key.starts_with("p_arcana")) {
@@ -1397,6 +1534,7 @@ fn shop_options(
             interest_after: 0,
             unaffordable: false,
             money_gain: 0.0,
+            long_mult: None,
             key: None,
             desc: None,
         });
@@ -1434,6 +1572,7 @@ fn shop_options(
             interest_after: 0,
             unaffordable: false,
             money_gain: 0.0,
+            long_mult: c.long_mult,
             key: Some(c.key.clone()),
             desc: c.desc.clone(),
         });
@@ -2013,6 +2152,11 @@ fn describe(key: &str, ability: &serde_json::Value, ctx: &crate::describe::DescC
 /// A joker's size one ante (3 rounds, ~12 hands) from now, under a simple stated
 /// assumption; `None` for jokers that don't grow or fade. Labelled everywhere it shows.
 fn grow_one_ante(j: &Joker, hand_mix: &[HandShare], dollars: f64, interest_line: f64) -> Option<(Joker, String, bool)> {
+    grow_antes(j, hand_mix, dollars, interest_line, 1.0)
+}
+
+/// `grow_one_ante` over `antes` antes (growth and fading scale with it; labels describe one ante).
+fn grow_antes(j: &Joker, hand_mix: &[HandShare], dollars: f64, interest_line: f64, antes: f64) -> Option<(Joker, String, bool)> {
     // Growth you pay for (skipping packs, rerolling): one per ante you'd do anyway, plus
     // one per $5 of money above the interest line (cash that isn't earning anything).
     let spare = (dollars - interest_line).max(0.0);
@@ -2022,53 +2166,53 @@ fn grow_one_ante(j: &Joker, hand_mix: &[HandShare], dollars: f64, interest_line:
     let mut g = j.clone();
     let (label, fades) = match j.key.as_str() {
         "j_red_card" => {
-            g.mult += 3.0 * buys;
+            g.mult += 3.0 * buys * antes;
             (format!("+{} Mult after 1 ante if you skip {buys:.0} booster pack{} (1 you'd open anyway, plus 1 per $5 above the ${interest_line:.0} interest line)", 3.0 * buys, if buys > 1.0 { "s" } else { "" }), false)
         }
         "j_green_joker" => {
-            g.mult += 4.0;
+            g.mult += 4.0 * antes;
             ("+4 Mult after 1 ante (+1 per hand, −1 per discard)".to_string(), false)
         }
         "j_ride_the_bus" => {
-            g.mult += 3.0;
+            g.mult += 3.0 * antes;
             ("~+3 Mult after 1 ante (resets whenever a face card scores)".to_string(), false)
         }
         "j_trousers" => {
             let n = (hands_per_ante * share(&["Two Pair", "Full House"])).round();
-            g.mult += 2.0 * n;
+            g.mult += 2.0 * n * antes;
             (format!("+{} Mult after 1 ante (~{n:.0} two pairs/full houses in your hands)", 2.0 * n), false)
         }
         "j_runner" => {
             let n = (hands_per_ante * share(&["Straight", "Straight Flush"])).round();
-            g.extra.chips += 15.0 * n;
+            g.extra.chips += 15.0 * n * antes;
             (format!("+{} Chips after 1 ante (~{n:.0} straights in your hands)", 15.0 * n), false)
         }
         "j_square" => {
-            g.extra.chips += 4.0 * 3.0;
+            g.extra.chips += 4.0 * 3.0 * antes;
             ("+12 Chips after 1 ante (3 hands of exactly 4 cards)".to_string(), false)
         }
         "j_flash" => {
-            g.mult += 2.0 * buys;
+            g.mult += 2.0 * buys * antes;
             (format!("+{} Mult after 1 ante if you reroll {buys:.0} time{} (1 anyway, plus 1 per $5 above the ${interest_line:.0} interest line)", 2.0 * buys, if buys > 1.0 { "s" } else { "" }), false)
         }
         "j_castle" => {
-            g.extra.chips += 3.0 * 7.0;
+            g.extra.chips += 3.0 * 7.0 * antes;
             ("+21 Chips after 1 ante (~7 discarded cards of its suit)".to_string(), false)
         }
         "j_wee" => {
-            g.extra.chips += 8.0 * 4.0;
+            g.extra.chips += 8.0 * 4.0 * antes;
             ("+32 Chips after 1 ante (~4 scored 2s)".to_string(), false)
         }
         "j_hologram" => {
-            g.x_mult += 0.25;
+            g.x_mult += 0.25 * antes;
             ("+×0.25 after 1 ante, if 1 card is added to your deck".to_string(), false)
         }
         "j_constellation" => {
-            g.x_mult += 0.2;
+            g.x_mult += 0.2 * antes;
             ("+×0.2 after 1 ante, if you use 2 planets".to_string(), false)
         }
         "j_madness" => {
-            g.x_mult += 1.0;
+            g.x_mult += 1.0 * antes;
             ("+×1 after 1 ante (2 small/big blinds), but destroys a joker each time".to_string(), false)
         }
         "j_campfire" => {
@@ -2076,15 +2220,15 @@ fn grow_one_ante(j: &Joker, hand_mix: &[HandShare], dollars: f64, interest_line:
             ("+×0.5 if you sell 2 cards before the boss (resets after it)".to_string(), false)
         }
         "j_popcorn" => {
-            g.mult = (g.mult - 12.0).max(0.0);
+            g.mult = (g.mult - 12.0 * antes).max(0.0);
             (format!("fades: {} Mult after 1 ante (−4 per round)", g.mult), true)
         }
         "j_ice_cream" => {
-            g.extra.chips = (g.extra.chips - 5.0 * hands_per_ante).max(0.0);
+            g.extra.chips = (g.extra.chips - 5.0 * hands_per_ante * antes).max(0.0);
             (format!("fades: {} Chips after 1 ante (−5 per hand)", g.extra.chips), true)
         }
         "j_ramen" => {
-            g.x_mult = (g.x_mult - 0.3).max(1.0);
+            g.x_mult = (g.x_mult - 0.3 * antes).max(1.0);
             (format!("fades: ×{:.1} after 1 ante (−×0.01 per discarded card)", g.x_mult), true)
         }
         "j_selzer" => {
