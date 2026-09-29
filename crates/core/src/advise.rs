@@ -97,6 +97,10 @@ pub struct Candidate {
     /// Typical best hand change (0.3 = +30%).
     pub score_gain: f64,
     pub missing_gold: bool,
+    /// 1 Common, 2 Uncommon, 3 Rare.
+    pub rarity_n: u8,
+    /// Odds from the full number of simulations (the top of the ranking) rather than the quick screen.
+    pub precise: bool,
     /// Chance a given shop shows it (all card slots, before rerolls).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub per_shop: Option<f64>,
@@ -130,7 +134,9 @@ pub struct Analysis {
     pub shop: Vec<Candidate>,
     pub rescue: Vec<Candidate>,
     pub blinds: Vec<BlindView>,
-    pub pool: Vec<PoolEntry>,
+    /// Every joker the shop can still offer. The top ones carry full-precision odds,
+    /// the rest screening-quality ones (fewer simulations).
+    pub pool: Vec<Candidate>,
     pub shop_odds: ShopOdds,
     pub best_play: Option<PlayAdvice>,
     pub gold: Option<GoldSummary>,
@@ -162,14 +168,6 @@ pub struct TagView {
     pub name: String,
 }
 
-/// Every joker the shop can still offer, with its (screening-quality) odds.
-#[derive(Debug, Clone, Serialize)]
-pub struct PoolEntry {
-    pub key: String,
-    pub name: String,
-    pub rarity: u8,
-    pub p_win: Vec<f64>,
-}
 
 /// What the page needs to turn pool odds into "chance the next shop shows one".
 #[derive(Debug, Clone, Serialize)]
@@ -622,14 +620,15 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         c.per_shop = Some(1.0 - (1.0 - per_card).powi(slots));
     }
     rescue.sort_by(|a, b| rank_value(b, key_round).total_cmp(&rank_value(a, key_round)));
-    let pool_entries: Vec<PoolEntry> = screened
+    let pool_entries: Vec<Candidate> = screened
         .iter()
-        .map(|c| rescue.iter().find(|r| r.key == c.key).unwrap_or(c))
-        .map(|c| PoolEntry {
-            key: c.key.clone(),
-            name: c.name.clone(),
-            rarity: data.center(&c.key).and_then(|x| x.rarity).unwrap_or(1),
-            p_win: c.p_win.clone(),
+        .map(|c| {
+            let mut c = rescue.iter().find(|r| r.key == c.key).cloned().unwrap_or_else(|| c.clone());
+            c.missing_gold = missing(&c.key);
+            let r = data.center(&c.key).and_then(|x| x.rarity).unwrap_or(1) as usize;
+            let per_card = joker_share * [0.0, 0.7, 0.25, 0.05][r.min(3)] / per_rarity[r.min(3)].max(1) as f64;
+            c.per_shop = Some(1.0 - (1.0 - per_card).powi(slots));
+            c
         })
         .collect();
     let blind_views: Vec<BlindView> = run
@@ -811,6 +810,8 @@ fn evaluate_candidate(ctx: &Ctx, j: Joker, cost: i64, base_odds: &[(f64, Stats)]
             reach_delta: vec![],
             score_gain: 0.0,
             missing_gold: false,
+            rarity_n: data.center(&j.key).and_then(|c| c.rarity).unwrap_or(0),
+            precise: full,
             per_shop: None,
             roles: roles(&j),
             note: None,
@@ -836,6 +837,8 @@ fn evaluate_candidate(ctx: &Ctx, j: Joker, cost: i64, base_odds: &[(f64, Stats)]
             .collect(),
         score_gain: if base_mean > 0.0 { t.mean / base_mean - 1.0 } else { 0.0 },
         missing_gold: false,
+        rarity_n: data.center(&j.key).and_then(|c| c.rarity).unwrap_or(0),
+        precise: sims >= ctx.opts.sims,
         per_shop: None,
         roles: roles(&j),
         note: non_scoring_note(&j.key).map(str::to_string),
