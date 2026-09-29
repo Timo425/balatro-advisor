@@ -221,6 +221,18 @@ fn decide(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i64, ne
         return play_best;
     }
     let on_pace = best.floor * hands as f64 >= need;
+    // Mystic Summit pays +Mult on every hand once no discards are left: burn them first on
+    // the worst cards (which also digs), unless Banner pays more for keeping them.
+    let has = |k: crate::engine::Kind| b.jokers.iter().any(|j| j.kind == k && !j.debuff);
+    if discards > 0 && has(crate::engine::Kind::MysticSummit) && !has(crate::engine::Kind::Banner) {
+        let mut toss: Vec<usize> = (0..hand.len()).filter(|i| !best.cards.contains(i)).collect();
+        toss.sort_by(|&a, &c| hand[a].rank.chips().total_cmp(&hand[c].rank.chips()));
+        toss.truncate(5);
+        if toss.is_empty() {
+            toss.push((0..hand.len()).min_by(|&a, &c| hand[a].rank.chips().total_cmp(&hand[c].rank.chips())).unwrap_or(0));
+        }
+        return Action::Discard(toss);
+    }
     let f = b.rule_flags();
     let need_f = if f.four_fingers { 4 } else { 5 };
     let suited = |c: &Card, s: Suit| hand::is_suit(c, s, false, true, f.smeared);

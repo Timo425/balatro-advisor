@@ -139,6 +139,9 @@ pub struct PlayAdvice {
     pub cards: Vec<String>,
     pub hand: String,
     pub score: f64,
+    /// A tip about how to play the round (e.g. burn discards for Mystic Summit).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tip: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -524,7 +527,10 @@ impl Ctx<'_> {
         let mut bb = b.clone();
         bb.blind = Default::default();
         bb.hands_left = self.run.round_hands.max(1);
-        bb.discards_left = self.run.round_discards;
+        // With Mystic Summit (and no Banner) you'd burn your discards first, so hands are
+        // played with none left
+        let mystic = b.jokers.iter().any(|j| j.kind == Kind::MysticSummit) && !b.jokers.iter().any(|j| j.kind == Kind::Banner);
+        bb.discards_left = if mystic { 0 } else { self.run.round_discards };
         Stats::of(sim::typical_hands(&bb, &self.fresh_deck, size, samples, self.opts.seed))
     }
 }
@@ -989,10 +995,19 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     let best_play = if run.screen.in_blind() && !run.hand.is_empty() {
         let mut b = ctx.base.clone();
         b.deck_remaining = run.draw_pile.len() as i64;
+        let has = |k: Kind| b.jokers.iter().any(|j| j.kind == k && !j.debuff);
+        let tip = (run.discards_left > 0 && has(Kind::MysticSummit) && !has(Kind::Banner)).then(|| {
+            format!(
+                "Use your {} discard{} first on cards outside this play: Mystic Summit gives +15 Mult on every hand once none are left",
+                run.discards_left,
+                if run.discards_left > 1 { "s" } else { "" }
+            )
+        });
         sim::best_play(&b, &run.hand).map(|p| PlayAdvice {
             cards: p.cards.iter().map(|&i| run.hand[i].label()).collect(),
             hand: p.hand.name().to_string(),
             score: p.floor,
+            tip,
         })
     } else {
         None
