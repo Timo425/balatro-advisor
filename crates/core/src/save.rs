@@ -33,6 +33,8 @@ pub struct RunState {
     pub interest_cap: i64,
     /// Cash per unused hand at cash-out (`modifiers.money_per_hand`, default 1).
     pub money_per_hand: f64,
+    /// What a shop's first reroll costs (`GAME.base_reroll_cost`; vouchers lower it).
+    pub base_reroll_cost: i64,
     pub skips: i64,
     /// Hands played this run (`GAME.hands_played`, Loyalty Card).
     pub hands_played: i64,
@@ -135,6 +137,10 @@ impl Screen {
             19 => NewRound,
             n => Other(n),
         }
+    }
+
+    pub fn in_pack(self) -> bool {
+        matches!(self, Screen::TarotPack | Screen::PlanetPack | Screen::SpectralPack | Screen::StandardPack | Screen::BuffoonPack)
     }
 
     pub fn in_blind(self) -> bool {
@@ -522,6 +528,7 @@ pub fn from_value(g: &Value, data: &GameData, path: &Path, age_secs: Option<u64>
         interest_amount: int(game.get("interest_amount")),
         interest_cap: int(game.get("interest_cap")),
         money_per_hand: game.at("modifiers.money_per_hand").num().unwrap_or(1.0),
+        base_reroll_cost: game.get("base_reroll_cost").int().unwrap_or(5),
         skips: int(game.get("skips")),
         hands_played: int(game.get("hands_played")),
         tarots_used: int(game.at("consumeable_usage_total.tarot")),

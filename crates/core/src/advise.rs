@@ -1614,12 +1614,12 @@ fn tarot_values(
         }
         if let Some(h) = hz_idx {
             let v = |c: &Candidate| c.reach.get(h).copied().unwrap_or(0.0);
-            t.reach = reach_now + (money_value(ctx, pool, &v, reach_now, run.dollars + g) - money_value(ctx, pool, &v, reach_now, run.dollars)).max(0.0);
+            t.reach = reach_now + (money_value(ctx, pool, &v, reach_now, run.dollars + g, true) - money_value(ctx, pool, &v, reach_now, run.dollars, true)).max(0.0);
         }
         let pv = |c: &Candidate| c.p_win.get(round).copied().unwrap_or(0.0);
-        t.p_win = now + (money_value(ctx, pool, &pv, now, run.dollars + g) - money_value(ctx, pool, &pv, now, run.dollars)).max(0.0);
+        t.p_win = now + (money_value(ctx, pool, &pv, now, run.dollars + g, false) - money_value(ctx, pool, &pv, now, run.dollars, false)).max(0.0);
         t.simulated = true;
-        t.note = format!("{} · valued as what the money buys: rerolls, then the best joker found", t.note);
+        t.note = format!("{} · valued as what the money buys: rerolls across the coming shops, then the best joker found", t.note);
     }
     out
 }
@@ -1684,23 +1684,77 @@ fn expected_best(
     total / trials as f64
 }
 
-/// `expected_best` for any per-joker value (e.g. next-ante reach instead of win chance).
+/// Shops still to come before a target round: the current one (if you're in it) plus one
+/// after each blind before it. `next_ante` adds the shop after this boss and next ante's two.
+fn shops_ahead(run: &RunState, next_ante: bool) -> (bool, usize) {
+    let in_shop = matches!(run.screen, crate::save::Screen::Shop) || run.screen.in_pack();
+    let before_boss = run.blinds.iter().filter(|b| b.slot != "Boss" && matches!(b.state.as_str(), "Select" | "Upcoming" | "Current")).count();
+    (in_shop, before_boss + if next_ante { 3 } else { 0 })
+}
+
+/// What `money` is worth in `value` terms: the best expected result from spending it on
+/// the cheapest rerolls across the shops still to come (each shop's reroll price starts
+/// low again) plus their free cards, then on the best joker found. Income between shops
+/// (blind reward, a hand's cash, interest) is added. Same seed on every call, so two
+/// amounts are compared on the same shops.
+fn money_value(ctx: &Ctx, pool: &[Candidate], value: &dyn Fn(&Candidate) -> f64, now: f64, money: f64, next_ante: bool) -> f64 {
+    let run = ctx.run;
+    let slots = run.shop_rates.slots.max(1) as usize;
+    let share = run.shop_rates.joker_share();
+    let (in_shop, future) = shops_ahead(run, next_ante);
+    // Every reroll you could buy, cheapest first
+    let mut costs: Vec<i64> = Vec::new();
+    if in_shop {
+        let c0 = run.shop.as_ref().map_or(run.base_reroll_cost, |s| s.reroll_cost);
+        costs.extend((0..8).map(|i| c0 + i));
+    }
+    for _ in 0..future {
+        costs.extend((0..8).map(|i| run.base_reroll_cost + i));
+    }
+    costs.sort_unstable();
+    let avg_reward = run.blinds.iter().map(|b| b.reward).sum::<i64>() as f64 / run.blinds.len().max(1) as f64;
+    let income = future as f64 * (avg_reward + run.money_per_hand + interest(money, run.interest_amount, run.interest_cap) as f64);
+    let budget = money + income;
+    // Chaos the Clown: one free reroll in every shop
+    let chaos = run.jokers.iter().any(|j| j.key == "j_chaos") as usize;
+    let free_cards = slots * (future + chaos * (future + in_shop as usize));
+    let open_slots = (run.joker_slots - run.jokers.len() as i64).max(1) as usize;
+    let mut best = now;
+    let mut spent = 0i64;
+    for k in 0..=costs.len().min(16) {
+        if k > 0 {
+            spent += costs[k - 1];
+        }
+        if spent as f64 > budget {
+            break;
+        }
+        let mut rng = crate::engine::Rng::new(ctx.opts.seed ^ 0x6d6f6e6579 ^ k as u64);
+        best = best.max(expected_buys(pool, value, now, free_cards + slots * k, share, budget - spent as f64, open_slots, &mut rng));
+    }
+    best
+}
+
+/// Like `expected_best_by`, but keeps buying: the best jokers seen, while money and free
+/// slots last. Later buys count for less (×0.6 each), since joker gains don't simply add
+/// up. A heuristic for "what money is worth", not a simulation of the board.
 #[allow(clippy::too_many_arguments)]
-fn expected_best_by(
+fn expected_buys(
     pool: &[Candidate],
     value: &dyn Fn(&Candidate) -> f64,
     now: f64,
     cards: usize,
     joker_share: f64,
     budget: f64,
+    open_slots: usize,
     rng: &mut crate::engine::Rng,
 ) -> f64 {
     use crate::engine::Rolls;
     let by_rarity: [Vec<&Candidate>; 4] = [0u8, 1, 2, 3].map(|r| pool.iter().filter(|c| c.rarity_n == r).collect());
-    let trials = 3000;
+    let trials = 2000;
     let mut total = 0.0;
+    let mut seen: Vec<(f64, f64)> = Vec::with_capacity(cards);
     for _ in 0..trials {
-        let mut best = now;
+        seen.clear();
         for _ in 0..cards {
             if !rng.chance(joker_share) {
                 continue;
@@ -1712,34 +1766,28 @@ fn expected_best_by(
                 continue;
             }
             let c = list[rng.below(list.len())];
-            if (c.cost as f64) <= budget {
-                best = best.max(value(c));
+            let gain = value(c) - now;
+            if gain > 0.0 {
+                seen.push((gain, c.cost as f64));
             }
         }
-        total += best;
+        seen.sort_by(|a, b| b.0.total_cmp(&a.0));
+        let (mut left, mut got, mut weight) = (budget, 0.0, 1.0);
+        let mut bought = 0;
+        for &(gain, cost) in &seen {
+            if bought == open_slots {
+                break;
+            }
+            if cost <= left {
+                left -= cost;
+                got += gain * weight;
+                weight *= 0.6;
+                bought += 1;
+            }
+        }
+        total += now + got;
     }
     total / trials as f64
-}
-
-/// What `money` is worth in `value` terms: the best expected result from spending it on
-/// rerolls and then the best joker they show (0 rerolls = keep what you have). Same seed on
-/// every call, so two amounts are compared on the same shops.
-fn money_value(ctx: &Ctx, pool: &[Candidate], value: &dyn Fn(&Candidate) -> f64, now: f64, money: f64) -> f64 {
-    let run = ctx.run;
-    let slots = run.shop_rates.slots.max(1) as usize;
-    let base_cost = run.shop.as_ref().map_or(5, |s| s.reroll_cost);
-    let share = run.shop_rates.joker_share();
-    let mut best = now;
-    let mut spent = 0i64;
-    for k in 1..=8usize {
-        spent += base_cost + k as i64 - 1;
-        if spent as f64 > money {
-            break;
-        }
-        let mut rng = crate::engine::Rng::new(ctx.opts.seed ^ 0x6d6f6e6579 ^ k as u64);
-        best = best.max(expected_best_by(pool, value, now, slots * k, share, money - spent as f64, &mut rng));
-    }
-    best
 }
 
 /// Play styles, grouped by what each joker's own effect rewards (from its definition in
