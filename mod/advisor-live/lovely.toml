@@ -1,4 +1,5 @@
-# balatro-advisor live state: writes <profile>/live.jkr whenever the run changes.
+# balatro-advisor live state: writes <profile>/live.jkr whenever the run changes,
+# and <profile>/live.beat every 2 s so the advisor knows the game is running.
 #
 # Lovely-only (no Steamodded): it reuses the game's own save_run() serialisation and
 # changes nothing else. Vanilla only turns achievements off through G.F_NO_ACHIEVEMENTS,
@@ -16,6 +17,11 @@ pattern = "function Game:update(dt)"
 position = "after"
 match_indent = true
 payload = '''
+ADVISOR_BEAT_T = (ADVISOR_BEAT_T or 99) + dt
+if ADVISOR_BEAT_T > 2 and G and G.SETTINGS and G.SETTINGS.profile then
+    ADVISOR_BEAT_T = 0
+    pcall(love.filesystem.write, G.SETTINGS.profile .. '/live.beat', tostring(G.STAGE))
+end
 if G and G.STAGE == G.STAGES.RUN and G.GAME and G.GAME.blind and G.jokers and G.SETTINGS then
     ADVISOR_LIVE_T = (ADVISOR_LIVE_T or 0) + dt
     if ADVISOR_LIVE_T > 0.5 then

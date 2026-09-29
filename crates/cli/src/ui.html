@@ -20,6 +20,7 @@
   .status { margin-left: auto; color: var(--muted); display: flex; align-items: center; gap: 6px; font-size: 12px; }
   .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--good); }
   .dot.busy { background: var(--warn); animation: pulse 1s infinite; }
+  .dot.off { background: #56706a; }
   @keyframes pulse { 50% { opacity: .3 } }
   .caveat { color: #f5dc9b; font-size: 12px; cursor: help; }
   main { padding: 10px 14px 12px; display: grid; gap: 10px; }
@@ -123,7 +124,7 @@ function render(d) {
   $("#h-ante").innerHTML = `Ante <b>${a.ante}</b> · <b>${STAKES[a.stake] || a.stake}</b>`;
   $("#h-money").innerHTML = `<b>$${a.dollars}</b>`;
   $("#h-screen").innerHTML = esc(a.screen.replace(/([a-z])([A-Z])/g, "$1 $2"));
-  $("#h-caveat").innerHTML = a.live ? '<span style="color:var(--good)">● live</span>' : a.caveats.length ? "⚠ snapshot" : "";
+  $("#h-caveat").innerHTML = a.caveats.length && !a.live ? "⚠ snapshot" : "";
   $("#h-caveat").title = a.caveats.join("\n");
 
   let html = `<section style="padding:8px"><div class="rounds">` + nowRounds(a).map((r) => `
@@ -136,12 +137,18 @@ function render(d) {
     `<div class="lbl" style="margin-top:6px" title="Your current jokers against a plain boss in later antes: how far this board carries without new jokers">Later, with these jokers: ${a.rounds.filter((r) => r.horizon).map((r) => `${esc(r.label)} boss (${num(r.target)}) <b style="color:${color(r.p_win)}">${pct(r.p_win)}</b>`).join(" · ")}</div></section>`;
 
   // Left: jokers, hand mix, best play
-  let left = `<section><h2>Your jokers <small>share of best-hand score · if sold</small></h2>`;
+  let left = `<section><h2>Your jokers <small>share of best-hand score · win chance now → without it</small></h2>`;
   if (!a.jokers.length) left += `<div class="muted">No jokers yet.</div>`;
   else {
     left += `<div class="jokers">` + a.jokers.map((j, i) => {
       const scoring = j.roles.some((r) => ["scoring", "retrigger", "rule"].includes(r)) || Math.abs(j.score_share) > 0.005;
-      const sold = j.p_win_if_removed.map((d, k) => a.rounds[k].horizon ? "" : `${esc(roundName(a.rounds[k]))} ${pp(d)}`).filter(Boolean).join(" · ");
+      // Win chance now → without this joker, per round of this ante
+      const sold = j.p_win_if_removed.map((d, k) => {
+        const r = a.rounds[k];
+        if (r.horizon) return "";
+        const cls = Math.abs(d) < 0.005 ? "flat" : d < 0 ? "down" : "up";
+        return `${esc(roundName(r))} <span class="muted">${pct(r.p_win).replace("%", "")}→</span><span class="${cls}">${pct(Math.max(0, r.p_win + d))}</span>`;
+      }).filter(Boolean).join(" · ");
       return `<div class="joker" style="border-top-color:${rarColor[j.rarity] || "var(--line)"}" ${j.note ? `title="${esc(j.note)}"` : ""}>
         <span class="slot">${i + 1}</span>
         <div class="jn">${esc(j.name)}</div>
@@ -192,8 +199,13 @@ async function poll() {
   try {
     const r = await fetch("/api/analysis", { cache: "no-store" });
     const j = await r.json();
-    $("#dot").className = "dot" + (j.busy ? " busy" : "");
-    $("#status").textContent = j.busy ? "analysing…" : "live";
+    const seen = j.game_seen_secs;
+    const gameUp = seen != null && seen < 6;
+    $("#dot").className = "dot" + (j.busy ? " busy" : gameUp ? "" : " off");
+    $("#status").textContent = j.busy ? "analysing…"
+      : gameUp ? "● live from the game"
+      : seen != null ? `game not running (last seen ${seen < 120 ? seen + " s" : Math.round(seen / 60) + " min"} ago)`
+      : "reading checkpoint saves (live mod not active)";
     if (j.version !== version) { version = j.version; render(j.data); }
   } catch (e) {
     $("#dot").className = "dot busy";

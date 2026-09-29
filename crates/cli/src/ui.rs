@@ -22,6 +22,7 @@ struct Shared {
 pub fn run(save_dir: PathBuf, profile: u8, port: u16, open: bool) -> Result<()> {
     let shared = Arc::new(Mutex::new(Shared { body: r#"{"status":"starting"}"#.into(), ..Default::default() }));
 
+    let beat_dir = save_dir.clone();
     // Watcher: poll the save's mtime; re-analyse after it settles (the game writes several times).
     {
         let shared = shared.clone();
@@ -79,7 +80,13 @@ pub fn run(save_dir: PathBuf, profile: u8, port: u16, open: bool) -> Result<()> 
                 .with_header(header("Content-Type", "text/html; charset=utf-8")),
             "/api/analysis" => {
                 let s = shared.lock().unwrap();
-                let body = format!(r#"{{"version":{},"busy":{},"data":{}}}"#, s.version, s.busy, s.body);
+                // Heartbeat from the advisor-live mod: tells a running game from a closed or crashed one.
+                let seen = std::fs::metadata(beat_dir.join(profile.to_string()).join("live.beat"))
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| SystemTime::now().duration_since(t).ok())
+                    .map_or("null".to_string(), |d| d.as_secs().to_string());
+                let body = format!(r#"{{"version":{},"busy":{},"game_seen_secs":{seen},"data":{}}}"#, s.version, s.busy, s.body);
                 tiny_http::Response::from_string(body).with_header(header("Content-Type", "application/json"))
             }
             _ => tiny_http::Response::from_string("not found").with_status_code(404),
