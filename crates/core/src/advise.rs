@@ -142,6 +142,8 @@ pub struct Analysis {
     pub options: Vec<ShopOption>,
     pub options_round: usize,
     pub outlook: Option<Outlook>,
+    /// Style groups (name → joker keys), for tagging jokers in the page.
+    pub style_groups: Vec<(String, Vec<String>)>,
     /// Every joker the shop can still offer. The top ones carry full-precision odds,
     /// the rest screening-quality ones (fewer simulations).
     pub pool: Vec<Candidate>,
@@ -794,6 +796,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         options,
         options_round: key_round,
         outlook,
+        style_groups: archetypes().into_iter().map(|(n, m, _)| (n.to_string(), m.iter().map(|k| k.to_string()).collect())).collect(),
         pool: pool_entries,
         shop_odds: ShopOdds {
             joker_share,

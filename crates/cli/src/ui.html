@@ -60,6 +60,7 @@
   .tag.ed { color: #fff; border: none; background: linear-gradient(90deg, #ff6b6b, #f2b33d, #37d17a, #3b9cff, #b57bff); }
   .tag.foil { background: #4a6f9a; color: #fff; border: none; } .tag.holo { background: #b04a6a; color: #fff; border: none; }
   .tag.neg { background: #333; color: #ddd; }
+  .tag.hot { color: #0c1715; background: var(--gold); border-color: var(--gold); font-weight: 700; }
   .order { margin-top: 8px; padding: 6px 9px; border-radius: 6px; background: #0e1b18; font-size: 12px; }
   table { width: 100%; border-collapse: collapse; }
   th { text-align: left; font-size: 11px; color: var(--muted); font-weight: 600; padding: 3px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
@@ -111,10 +112,20 @@ const roundName = (r) => r.label === "Boss" ? r.blind : r.label.replace("Next: "
 const nowRounds = (a) => a.rounds.filter((r) => !r.horizon);
 const STAKES = ["", "White", "Red", "Green", "Black", "Blue", "Purple", "Orange", "Gold"];
 
+// Style tags: which play style a joker belongs to; highlighted when that style is among
+// the outlook's top 2 (it builds toward a combo with room to grow). No tag = generic booster.
+function styleTags(a, key) {
+  const top = (a.outlook ? a.outlook.styles.slice(0, 2) : []).map((s) => s.name);
+  return (a.style_groups || []).filter(([, keys]) => keys.includes(key)).map(([name]) => {
+    const hot = top.includes(name);
+    return ` <span class="tag${hot ? " hot" : ""}" title="${hot ? "Builds toward one of your best styles in the outlook" : "Belongs to this style"}">${esc(name)}</span>`;
+  }).join("");
+}
+
 function candTable(a, list, withFind, odds) {
   return `<table><tr><th>Joker</th><th>Action</th><th class="num">$</th>${a.rounds.map((r) => `<th class="num" ${r.horizon ? 'title="Share of that boss target reached (win chance is ~0 this far out)"' : ""}>${esc(r.horizon ? r.label + " reach" : roundName(r))}</th>`).join("")}<th class="num" title="Change in the best hand you can make from a fresh deal">Hand</th>${withFind ? '<th class="num" title="Chance a given shop shows it, before rerolls">Shop</th>' : ""}</tr>` +
     list.map((c) => `<tr${odds && (c.p_win[odds.round] ?? 0) >= odds.t ? ' class="hit"' : ""}>
-      <td class="name" ${c.note ? `title="${esc(c.note)}"` : ""}><span class="rar-${c.rarity}">●</span> <b>${esc(c.name)}</b>${c.precise === false ? ' <span class="muted" title="Quicker, rougher estimate">~</span>' : ""} ${edTag(c.edition)}${c.missing_gold ? ' <span class="star" title="No Gold sticker yet">★</span>' : ""}</td>
+      <td class="name" ${c.note ? `title="${esc(c.note)}"` : ""}><span class="rar-${c.rarity}">●</span> <b>${esc(c.name)}</b>${c.precise === false ? ' <span class="muted" title="Quicker, rougher estimate">~</span>' : ""}${styleTags(a, c.key)} ${edTag(c.edition)}${c.missing_gold ? ' <span class="star" title="No Gold sticker yet">★</span>' : ""}</td>
       <td class="muted">${esc(c.action.replace("replace ", "sell "))}</td>
       <td class="num">${c.cost}</td>
       ${c.p_win.map((p, i) => { if (a.rounds[i].horizon) { const r = Math.min(c.reach[i], 9), was = Math.min(c.reach[i] - c.reach_delta[i], 9);
