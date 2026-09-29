@@ -3,19 +3,26 @@
 A local advisor for **Balatro**. It reads your run from the game's own files and
 shows, in a small window that updates as you play:
 
-- your **chance to beat** each blind of the ante (simulated with your deck, hand
-  levels and jokers), and the boss's effect;
-- how much of your score **each joker** carries, and what selling it would cost;
-- the **best joker order**, when order matters;
-- **shop options** (jokers, planets, packs, rerolls) as "win chance after";
-- **jokers worth digging for**: everything the shop can still offer, ranked, with
-  the odds of seeing one that gets you to a target win chance;
-- **skip tags** valued in the same terms where they're about jokers;
-- your **Gold Stake sticker** progress.
+- your **chance to beat** each blind of the ante, simulated with your deck, hand
+  levels and jokers, plus the boss's effect and each blind's reward and skip tag;
+- how much of your score **each joker** carries, what selling it would cost, and the
+  **best joker order** when order matters;
+- **your options**: everything you can buy right now (jokers, planets, tarots, packs,
+  rerolls, vouchers) ranked by your win chance afterwards, with the money and interest
+  each leaves you. While a pack is open, its picks come first;
+- **worth digging for**: every joker and tarot the shop can still offer, ranked for this
+  run, with the odds of seeing one that gets you to a target win chance;
+- a **style outlook**: which play style (flushes, pairs, held cards, …) has the most room,
+  as the best two jokers each could add, against a boss two antes ahead;
+- **money valued in the same terms**: what extra cash would buy over the coming shops
+  (Hermit, Temperance, economy vouchers);
+- the game's own **joker text** on hover (read from your install, with current values),
+  and your **Gold Stake sticker** progress.
 
 Scoring is a line-by-line port of the game's own `evaluate_play` and joker code,
 covering the scoring effects of all 150 jokers. Win chances come from Monte Carlo
 round simulations with a simple play/discard policy (a heuristic, not perfect play).
+Long-range numbers (the style outlook, money value) are estimates, and are labelled as such.
 
 ## Install and run
 
