@@ -207,6 +207,8 @@ pub struct ShopOption {
     pub money_after: f64,
     pub interest_now: i64,
     pub interest_after: i64,
+    /// You don't have the money for it right now.
+    pub unaffordable: bool,
 }
 
 /// Interest the game pays on `money` (`$1` per `$5`, capped; state_events.lua end of round).
@@ -1158,12 +1160,12 @@ fn shop_options(
     let shop_cards = run.shop.as_ref().map(|s| s.other_cards.clone()).unwrap_or_default();
     for c in shop_cards.iter().filter(|c| c.set == "Planet") {
         if let Some(p) = p_of(&c.key) {
-            out.push(ShopOption { label: c.name.clone(), kind: "planet".into(), cost: c.cost, money_after: 0.0, interest_now: 0, interest_after: 0, p_win: p, note: format!("levels up {}", data.center(&c.key).and_then(|x| x.config.get("hand_type")).and_then(|v| v.as_str()).unwrap_or("")) });
+            out.push(ShopOption { label: c.name.clone(), kind: "planet".into(), cost: c.cost, money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, p_win: p, note: format!("levels up {}", data.center(&c.key).and_then(|x| x.config.get("hand_type")).and_then(|v| v.as_str()).unwrap_or("")) });
         }
     }
     for c in run.consumables.iter().filter(|c| c.set == "Planet") {
         if let Some(p) = p_of(&c.key) {
-            out.push(ShopOption { label: format!("{} (you have it)", c.name), kind: "planet".into(), cost: 0, p_win: p, note: "use it before the blind".into(), money_after: 0.0, interest_now: 0, interest_after: 0 });
+            out.push(ShopOption { label: format!("{} (you have it)", c.name), kind: "planet".into(), cost: 0, p_win: p, note: "use it before the blind".into(), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false });
         }
     }
 
@@ -1204,6 +1206,7 @@ fn shop_options(
                 money_after: 0.0,
                 interest_now: 0,
                 interest_after: 0,
+                unaffordable: false,
                 label: pk.name.clone(),
                 kind: "pack".into(),
                 cost: pk.cost,
@@ -1211,9 +1214,9 @@ fn shop_options(
                 note: format!("{extra} planets, best is usually {} ({:.0}% of packs){pick_note}", planets[top].0.name, best_counts[top] as f64 * 100.0 / count.max(1.0)),
             });
         } else if pk.key.starts_with("p_buffoon") {
-            let budget = run.dollars - pk.cost as f64;
-            let e = expected_best(pool, round, now, extra, 1.0, budget, per_rarity, &mut rng);
-            out.push(ShopOption { label: pk.name.clone(), kind: "pack".into(), cost: pk.cost, p_win: e, note: format!("{extra} jokers{pick_note}"), money_after: 0.0, interest_now: 0, interest_after: 0 });
+            // Jokers picked from a pack are free: no budget limit on what's inside.
+            let e = expected_best(pool, round, now, extra, 1.0, f64::INFINITY, per_rarity, &mut rng);
+            out.push(ShopOption { label: pk.name.clone(), kind: "pack".into(), cost: pk.cost, p_win: e, note: format!("{extra} jokers{pick_note}"), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false });
         }
     }
 
@@ -1232,6 +1235,7 @@ fn shop_options(
                 money_after: 0.0,
                 interest_now: 0,
                 interest_after: 0,
+                unaffordable: false,
                 label: format!("{k} reroll{}", if k > 1 { "s" } else { "" }),
                 kind: "reroll".into(),
                 cost: spent,
@@ -1274,10 +1278,11 @@ fn shop_options(
                 _ => (false, "not valued".into()),
             };
             let p = if sim { ctx.odds_one(&ctx.base, &sp, ctx.opts.sims).0 } else { now };
-            out.push(ShopOption { label: v.name.clone(), kind: "voucher".into(), cost: v.cost, p_win: p, note, money_after: 0.0, interest_now: 0, interest_after: 0 });
+            out.push(ShopOption { label: v.name.clone(), kind: "voucher".into(), cost: v.cost, p_win: p, note, money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false });
         }
     }
     for o in &mut out {
+        o.unaffordable = o.cost as f64 > run.dollars;
         o.money_after = run.dollars - o.cost as f64;
         o.interest_now = interest(run.dollars, run.interest_amount, run.interest_cap);
         o.interest_after = interest(o.money_after, run.interest_amount, run.interest_cap);

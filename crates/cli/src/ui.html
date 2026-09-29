@@ -42,6 +42,7 @@
   .scroll th { position: sticky; top: 0; background: var(--panel); }
   .more { margin-top: 6px; font-size: 12px; } .more a { color: var(--chips); }
   tr.hit td { background: #1a4533; }
+  tr.broke td { opacity: .5; }
   tr.hit td:first-child { box-shadow: inset 3px 0 0 var(--good); }
   .dig input[type=range] { width: 110px; accent-color: var(--gold); }
   .bar { height: 6px; background: #0e1b18; border-radius: 99px; overflow: hidden; }
@@ -301,7 +302,7 @@ function render(d) {
   if (a.options && a.options.length) {
     const r = a.rounds[a.options_round];
     right += `<section><h2>Your options vs ${esc(roundName(r))} <small>win chance after each, now ${pct(r.p_win)} · packs and rerolls are averages over what they can show</small></h2><table>` +
-      a.options.map((o) => `<tr><td class="name"><b>${esc(o.label)}</b> <span class="muted">${esc(o.note)}</span></td><td class="num">$${o.cost}</td>
+      a.options.map((o) => `<tr${o.unaffordable ? ' class="broke" title="You can\'t afford this right now"' : ""}><td class="name"><b>${esc(o.label)}</b>${o.unaffordable ? ' <span class="down">can\'t afford</span>' : ""} <span class="muted">${esc(o.note)}</span></td><td class="num">$${o.cost}</td>
         <td class="num" title="Money left, and the interest it earns per round ($1 per $5, before payouts)"><span class="${o.interest_after < o.interest_now ? "down" : "muted"}">$${Math.round(o.money_after)} · int $${o.interest_after}${o.interest_after < o.interest_now ? ` (−$${o.interest_now - o.interest_after})` : ""}</span></td>
         <td class="num"><span class="muted">${pct(r.p_win)}</span><span class="arr">→</span><span class="${o.p_win > r.p_win + NOISE ? "up" : "flat"}">${pct(o.p_win)}</span></td></tr>`).join("") + `</table></section>`;
   }
