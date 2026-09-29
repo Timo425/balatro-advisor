@@ -1,0 +1,24 @@
+# Rust build output
+/target/
+**/*.rs.bk
+
+# NEVER commit real game files: saves, profiles, settings, meta, or snapshots of them.
+*.jkr
+*.jkr.lua
+*.run
+/local/
+/snapshots/
+tests/fixtures/private/
+
+# Extracted game source (proprietary; used only locally as a reference)
+/game-src/
+
+# Local config and environment
+.env
+config.local.toml
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
