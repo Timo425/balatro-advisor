@@ -86,7 +86,14 @@ pub fn run(save_dir: PathBuf, profile: u8, port: u16, open: bool) -> Result<()> 
                     .ok()
                     .and_then(|t| SystemTime::now().duration_since(t).ok())
                     .map_or("null".to_string(), |d| d.as_secs().to_string());
-                let body = format!(r#"{{"version":{},"busy":{},"game_seen_secs":{seen},"data":{}}}"#, s.version, s.busy, s.body);
+                // The game's "high contrast cards" setting picks its suit palette.
+                let high_contrast = balatro_advisor::jkr::read(&beat_dir.join("settings.jkr"))
+                    .ok()
+                    .is_some_and(|v| v.get("colourblind_option").truthy());
+                let body = format!(
+                    r#"{{"version":{},"busy":{},"game_seen_secs":{seen},"high_contrast":{high_contrast},"data":{}}}"#,
+                    s.version, s.busy, s.body
+                );
                 tiny_http::Response::from_string(body).with_header(header("Content-Type", "application/json"))
             }
             _ => tiny_http::Response::from_string("not found").with_status_code(404),

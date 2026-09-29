@@ -133,6 +133,16 @@ function digTable(a, odds) {
   return `<div class="${open ? "scroll" : ""}">${candTable(a, rows, true, odds)}</div>${more}`;
 }
 
+// The game's suit colours (globals.lua G.C.SO_1 / SO_2 for "high contrast cards").
+let highContrast = true;
+function suitColour(label) {
+  const pal = highContrast
+    ? { "♥": "#f83b2f", "♦": "#e29000", "♠": "#4f31b9", "♣": "#008ee6" }
+    : { "♥": "#f03464", "♦": "#f06b3f", "♠": "#403995", "♣": "#235955" };
+  const sym = [...label].find((ch) => pal[ch]);
+  return sym ? pal[sym] : "#222";
+}
+
 function rescueOdds(a) {
   let saved = {};
   try { saved = JSON.parse(localStorage.getItem("dig") || "{}"); } catch (e) {}
@@ -254,7 +264,7 @@ function render(d) {
   }
   left += `</section>`;
   if (a.best_play) {
-    left += `<section><h2>Best play now</h2><div class="play">${a.best_play.cards.map((c) => `<span class="card">${esc(c)}</span>`).join("")}<span style="margin-left:6px"><b>${esc(a.best_play.hand)}</b> · ${num(a.best_play.score)}</span></div></section>`;
+    left += `<section><h2>Best play now</h2><div class="play">${a.best_play.cards.map((c) => `<span class="card" style="color:${suitColour(c)}">${esc(c)}</span>`).join("")}<span style="margin-left:6px"><b>${esc(a.best_play.hand)}</b> · ${num(a.best_play.score)}</span></div></section>`;
   }
 
   // Right: shop, dig list
@@ -307,7 +317,8 @@ async function poll() {
       : gameUp ? "● live from the game"
       : seen != null ? `game not running (last seen ${seen < 120 ? seen + " s" : Math.round(seen / 60) + " min"} ago)`
       : "reading checkpoint saves (live mod not active)";
-    if (j.version !== version) { version = j.version; render(j.data); }
+    const hc = j.high_contrast !== false;
+    if (j.version !== version || hc !== highContrast) { version = j.version; highContrast = hc; render(j.data); }
   } catch (e) {
     $("#dot").className = "dot busy";
     $("#status").textContent = "advisor not running";
