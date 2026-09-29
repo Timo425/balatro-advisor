@@ -304,17 +304,24 @@ function render(d) {
   let right = "";
   if (a.options && a.options.length) {
     const r = a.rounds[a.options_round];
-    // While a pack is open, only its picks (and skipping) are possible
+    // While a pack is open: its picks first, and the shop options below for what comes after
     const inPack = a.screen.endsWith("Pack");
     const picks = a.options.filter((o) => o.label.startsWith("pick "));
-    const rows = inPack && picks.length ? [...picks, { label: "skip", kind: "skip", cost: 0, p_win: r.p_win, note: "keep things as they are", money_after: a.dollars, interest_now: 0, interest_after: 0 }]
-      : a.options.filter((o) => !o.label.startsWith("pick "));
-    const title = inPack && picks.length ? `Pick from the pack vs ${esc(roundName(r))} <small>win chance after each pick (now ${pct(r.p_win)}) · money isn't turned into win chance</small>`
-      : `Your options vs ${esc(roundName(r))} <small>everything you can buy now, by win chance after it (now ${pct(r.p_win)}) · packs and rerolls are averages over what they can show</small>`;
+    const shopRows = a.options.filter((o) => !o.label.startsWith("pick "));
+    const sections = [];
+    if (inPack && picks.length) {
+      sections.push([`Pick from the pack vs ${esc(roundName(r))} <small>win chance after each pick (now ${pct(r.p_win)}) · money isn't turned into win chance</small>`,
+        [...picks, { label: "skip", kind: "skip", cost: 0, p_win: r.p_win, note: "keep things as they are", money_after: a.dollars, interest_now: 0, interest_after: 0 }]]);
+      if (shopRows.length) sections.push([`Then in the shop <small>after you close the pack</small>`, shopRows]);
+    } else {
+      sections.push([`Your options vs ${esc(roundName(r))} <small>everything you can buy now, by win chance after it (now ${pct(r.p_win)}) · packs and rerolls are averages over what they can show</small>`, shopRows]);
+    }
+    for (const [title, rows] of sections) {
     right += `<section><h2>${title}</h2><table>` +
       rows.map((o) => `<tr${o.unaffordable ? ' class="broke" title="You can\'t afford this right now"' : ""}><td class="name"${o.desc ? ` title="${esc(o.desc)}"` : ""}>${o.kind === "joker" ? '<span class="muted">🃏</span> ' : ""}<b>${esc(o.label)}</b>${o.key ? styleTags(a, o.key) : ""}${o.unaffordable ? ' <span class="down">can\'t afford</span>' : ""} <span class="muted">${esc(o.note)}</span></td><td class="num">$${o.cost}</td>
         <td class="num" title="Money left, and the interest it earns per round ($1 per $5, before payouts)"><span class="${o.interest_after < o.interest_now ? "down" : "muted"}">$${Math.round(o.money_after)} · int $${o.interest_after}${o.interest_after < o.interest_now ? ` (−$${o.interest_now - o.interest_after})` : ""}</span></td>
         <td class="num"><span class="muted">${pct(r.p_win)}</span><span class="arr">→</span><span class="${o.p_win > r.p_win + NOISE ? "up" : "flat"}">${pct(o.p_win)}</span></td></tr>`).join("") + `</table></section>`;
+    }
   }
   const roundOpts = a.rounds.map((r, i) => r.horizon ? "" : `<option value="${i}" ${i === odds.round ? "selected" : ""}>${esc(roundName(r))}</option>`).join("");
   let tab = "jokers";
