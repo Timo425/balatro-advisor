@@ -18,6 +18,12 @@ use crate::Error;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunState {
+    /// The run's seed (`GAME.pseudorandom.seed`): identifies a run.
+    #[serde(default)]
+    pub seed: String,
+    /// The run has been won (`GAME.won`).
+    #[serde(default)]
+    pub won: bool,
     pub game_version: String,
     pub screen: Screen,
     pub stake: u8,
@@ -515,6 +521,8 @@ pub fn from_value(g: &Value, data: &GameData, path: &Path, age_secs: Option<u64>
     let areas = g.get("cardAreas");
     let limit = |name: &str| int(areas.get(name).at("config.card_limit"));
     let state = RunState {
+        seed: game.at("pseudorandom.seed").str().unwrap_or_default().to_string(),
+        won: game.get("won").truthy(),
         game_version: g.get("VERSION").str().unwrap_or_default().to_string(),
         screen,
         stake: game.get("stake").int().unwrap_or(1) as u8,

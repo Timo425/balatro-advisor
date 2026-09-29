@@ -2239,3 +2239,44 @@ fn grow_antes(j: &Joker, hand_mix: &[HandShare], dollars: f64, interest_line: f6
     };
     Some((g, label, fades))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn j(key: &str) -> Joker {
+        Joker::from_key(key, GameData::bundled()).unwrap()
+    }
+
+    #[test]
+    fn fading_jokers_only_go_down() {
+        for key in ["j_popcorn", "j_ice_cream", "j_ramen"] {
+            let base = j(key);
+            let size = |x: &Joker| x.mult + x.extra.chips + x.x_mult;
+            let mut last = size(&base);
+            for antes in [1.0, 2.0, 4.0, 8.0] {
+                let (g, _, fades) = grow_antes(&base, &[], 10.0, 25.0, antes).unwrap();
+                assert!(fades, "{key} should be marked as fading");
+                assert!(size(&g) <= last, "{key} grew after {antes} antes");
+                last = size(&g);
+            }
+        }
+    }
+
+    #[test]
+    fn growing_jokers_only_go_up_and_pay_to_grow_follows_spare_money() {
+        let base = j("j_red_card");
+        let poor = grow_antes(&base, &[], 10.0, 25.0, 1.0).unwrap().0.mult;
+        let rich = grow_antes(&base, &[], 60.0, 25.0, 1.0).unwrap().0.mult;
+        let longer = grow_antes(&base, &[], 10.0, 25.0, 3.0).unwrap().0.mult;
+        assert!(poor > base.mult && rich > poor && longer > poor);
+    }
+
+    #[test]
+    fn interest_matches_the_game() {
+        assert_eq!(interest(4.0, 1, 25), 0);
+        assert_eq!(interest(13.0, 1, 25), 2);
+        assert_eq!(interest(80.0, 1, 25), 5); // capped at $25 held
+        assert_eq!(interest(80.0, 1, 50), 10); // Seed Money
+    }
+}

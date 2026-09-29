@@ -67,6 +67,8 @@ enum Cmd {
         #[arg(long)]
         no_open: bool,
     },
+    /// How well the advisor's win chances matched what happened (logged while `ui` runs)
+    Calibration,
     /// Time the engine on fixed synthetic boards
     Bench,
     /// Golden cases: real hands with the in-game score
@@ -214,6 +216,34 @@ fn main() -> Result<()> {
             let dir = dir()?;
             let p = profile(&dir);
             ui::run(dir, p, *port, !*no_open)?;
+        }
+        Cmd::Calibration => {
+            use balatro_advisor::calibration::{self, Entry};
+            let dir = calibration::default_dir().context("no data directory")?;
+            let entries = calibration::read(&dir);
+            let buckets = calibration::report(&entries);
+            let wins: Vec<&Entry> = entries.iter().filter(|e| matches!(e, Entry::Win { .. })).collect();
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "buckets": buckets, "wins": wins }))?);
+            } else {
+                let total: usize = buckets.iter().map(|b| b.n).sum();
+                println!("Blinds with a recorded outcome: {total} (log: {})", dir.join("calibration.jsonl").display());
+                for b in buckets.iter().filter(|b| b.n > 0) {
+                    println!(
+                        "  predicted {:>3.0}–{:<3.0}%: won {:>3} of {:<3} ({:.0}%, avg prediction {:.0}%)",
+                        b.from * 100.0,
+                        b.to * 100.0,
+                        (b.actual * b.n as f64).round(),
+                        b.n,
+                        b.actual * 100.0,
+                        b.predicted * 100.0
+                    );
+                }
+                if total < 30 {
+                    println!("  (needs a few dozen blinds before it means much)");
+                }
+                println!("Won runs recorded: {}", wins.len());
+            }
         }
         Cmd::Bench => {
             for t in balatro_advisor::bench::run() {

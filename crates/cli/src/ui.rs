@@ -28,6 +28,8 @@ pub fn run(save_dir: PathBuf, profile: u8, port: u16, open: bool) -> Result<()> 
         let shared = shared.clone();
         std::thread::spawn(move || {
             let data = GameData::bundled();
+            // Calibration log: predictions at blind start, and how each blind ended
+            let mut tracker = balatro_advisor::calibration::default_dir().map(balatro_advisor::calibration::Tracker::new);
             let mut last: Option<(PathBuf, Option<SystemTime>)> = None;
             let stamp = || {
                 let p = save::run_path(&save_dir, profile);
@@ -49,9 +51,16 @@ pub fn run(save_dir: PathBuf, profile: u8, port: u16, open: bool) -> Result<()> 
                         Ok(r) => {
                             let g = gold::load(&save_dir, profile, data).ok();
                             let a = advise::analyze(&r, data, g.as_ref(), &Options::default());
+                            if let Some(t) = tracker.as_mut() {
+                                let p = a.blinds.iter().find(|b| b.state == "Current").and_then(|b| b.p_win);
+                                t.observe(Some(&r), p);
+                            }
                             serde_json::json!({ "status": "ok", "analysis": a, "gold": g }).to_string()
                         }
                         Err(e) => {
+                            if let (Some(t), balatro_advisor::Error::NoRun(_)) = (tracker.as_mut(), &e) {
+                                t.observe(None, None);
+                            }
                             let g = gold::load(&save_dir, profile, data).ok();
                             serde_json::json!({ "status": "no_run", "message": e.to_string(), "gold": g }).to_string()
                         }

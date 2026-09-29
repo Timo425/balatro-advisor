@@ -1,7 +1,9 @@
+#![recursion_limit = "256"]
 //! balatro-advisor: read a vanilla Balatro save, score hands, value jokers.
 
 pub mod advise;
 pub mod bench;
+pub mod calibration;
 pub mod data;
 pub mod describe;
 pub mod engine;
