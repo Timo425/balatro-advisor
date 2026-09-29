@@ -150,6 +150,28 @@ fn draw(hand: &mut Vec<Card>, deck: &mut Vec<Card>, size: usize) {
 /// over (held, suited left in deck, deck size); adapted from balatro-agent's
 /// `tools/balatro_state.py::flush_odds`.
 pub fn flush_odds(hold: usize, deck_suit: usize, deck_size: usize, hand_size: usize, need: usize, draws: usize) -> f64 {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    // The same situations recur constantly across simulations, so cache per thread.
+    thread_local! {
+        static CACHE: RefCell<HashMap<(usize, usize, usize, usize, usize, usize), f64>> = RefCell::new(HashMap::new());
+    }
+    let key = (hold, deck_suit, deck_size, hand_size, need, draws);
+    if let Some(p) = CACHE.with(|c| c.borrow().get(&key).copied()) {
+        return p;
+    }
+    let p = flush_odds_uncached(hold, deck_suit, deck_size, hand_size, need, draws);
+    CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.len() > 200_000 {
+            c.clear();
+        }
+        c.insert(key, p);
+    });
+    p
+}
+
+fn flush_odds_uncached(hold: usize, deck_suit: usize, deck_size: usize, hand_size: usize, need: usize, draws: usize) -> f64 {
     use std::collections::HashMap;
     fn comb(n: usize, k: usize) -> f64 {
         if k > n {
@@ -372,16 +394,27 @@ pub fn typical_hands_detail(b: &Board, deck: &[Card], hand_size: usize, samples:
 }
 
 /// Chance of beating a round, from `sims` simulations (same seed → same deals across boards).
+/// Simulations run in parallel; each has its own seed, so the result doesn't depend on
+/// how they're split across threads.
 pub fn round_odds(b: &Board, start: &RoundStart, sims: usize, seed: u64) -> (f64, Stats) {
-    let mut wins = 0;
-    let mut totals = Vec::with_capacity(sims);
-    for i in 0..sims {
+    let run_one = |i: usize| {
         let mut rng = Rng::new(seed.wrapping_add(i as u64 * 7919));
-        let r = sim_round(b, start, &mut rng);
-        wins += usize::from(r.won);
-        totals.push(r.total);
-    }
-    (wins as f64 / sims.max(1) as f64, Stats::of(totals))
+        sim_round(b, start, &mut rng)
+    };
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(sims / 8).max(1);
+    let results: Vec<RoundResult> = if threads <= 1 {
+        (0..sims).map(run_one).collect()
+    } else {
+        let chunk = sims.div_ceil(threads);
+        std::thread::scope(|sc| {
+            let hs: Vec<_> = (0..threads)
+                .map(|t| sc.spawn(move || (t * chunk..((t + 1) * chunk).min(sims)).map(run_one).collect::<Vec<_>>()))
+                .collect();
+            hs.into_iter().flat_map(|h| h.join().expect("sim thread")).collect()
+        })
+    };
+    let wins = results.iter().filter(|r| r.won).count();
+    (wins as f64 / sims.max(1) as f64, Stats::of(results.into_iter().map(|r| r.total).collect()))
 }
 
 /// Which hands score the points in simulated rounds: (hand, share of points, share of

@@ -141,6 +141,7 @@ pub struct Analysis {
     /// Planets, packs and rerolls, valued against `options_round`.
     pub options: Vec<ShopOption>,
     pub options_round: usize,
+    pub outlook: Option<Outlook>,
     /// Every joker the shop can still offer. The top ones carry full-precision odds,
     /// the rest screening-quality ones (fewer simulations).
     pub pool: Vec<Candidate>,
@@ -153,6 +154,35 @@ pub struct Analysis {
     /// Read from the live mod rather than the checkpoint save.
     pub live: bool,
     pub elapsed_ms: u128,
+}
+
+/// "Which play style has the most room?": each style's best 2-joker addition from the
+/// current pool, measured against a boss two antes ahead. An estimate: it can't know what
+/// you'll actually find, but every style is compared on the same assumptions.
+#[derive(Debug, Clone, Serialize)]
+pub struct Outlook {
+    pub target_label: String,
+    pub target: f64,
+    /// Share of that target your current board reaches (mean round total / target).
+    pub now_reach: f64,
+    pub styles: Vec<Style>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Style {
+    pub name: String,
+    /// The style your points currently come from.
+    pub current: bool,
+    /// Share of your points that come from this style's hands now.
+    pub points_now: f64,
+    /// Jokers you own that belong to it.
+    pub owned: Vec<String>,
+    /// The best 2 it could add from the pool (name, chance per shop, cost).
+    pub add: Vec<(String, f64, i64)>,
+    /// Jokers those would replace when slots are full.
+    pub replaces: Vec<String>,
+    pub reach_one: f64,
+    pub reach: f64,
 }
 
 /// Something in (or from) the shop, valued as the win chance for one round afterwards.
@@ -352,8 +382,13 @@ fn apply_mods(start: &RoundStart, added: &[&Joker], removed: &[&Joker], fresh: b
     s
 }
 
+/// Fresh deals per board in the quick screen of the whole pool.
+const SCREEN_DEALS: usize = 100;
+
 struct Ctx<'a> {
     run: &'a RunState,
+    /// Current jokers' share of the best-hand score (filled after the contribution pass).
+    shares: Vec<f64>,
     data: &'a GameData,
     base: Board,
     specs: Vec<Spec>,
@@ -401,6 +436,11 @@ impl Ctx<'_> {
     }
 
     fn typical(&self, b: &Board, added: &[&Joker], removed: &[&Joker]) -> Stats {
+        self.typical_n(b, added, removed, self.opts.hand_samples)
+    }
+
+    /// Deals used by the quick screen (the first `SCREEN_DEALS` of the same sequence).
+    fn typical_n(&self, b: &Board, added: &[&Joker], removed: &[&Joker], samples: usize) -> Stats {
         let size = apply_mods(
             &RoundStart { hand: vec![], deck: vec![], hand_size: self.run.hand_size, hands: 1, discards: 0, scored: 0.0, target: 0.0 },
             added,
@@ -412,7 +452,7 @@ impl Ctx<'_> {
         bb.blind = Default::default();
         bb.hands_left = self.run.round_hands.max(1);
         bb.discards_left = self.run.round_discards;
-        Stats::of(sim::typical_hands(&bb, &self.fresh_deck, size, self.opts.hand_samples, self.opts.seed))
+        Stats::of(sim::typical_hands(&bb, &self.fresh_deck, size, samples, self.opts.seed))
     }
 }
 
@@ -446,6 +486,12 @@ fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> 
 
 pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts: &Options) -> Analysis {
     let t0 = Instant::now();
+    let timing = std::env::var_os("BAV_TIMING").is_some();
+    let lap = |what: &str| {
+        if timing {
+            eprintln!("{:>6} ms  {what}", t0.elapsed().as_millis());
+        }
+    };
     let base = Board::from_run(run, data);
     let mut fresh_deck = run.full_deck();
     for c in &mut fresh_deck {
@@ -531,8 +577,9 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             horizon: true,
         });
     }
-    let ctx = Ctx { run, data, base, specs, fresh_deck, opts: opts.clone() };
+    let mut ctx = Ctx { run, data, base, specs, fresh_deck, opts: opts.clone(), shares: Vec::new() };
 
+    lap("setup");
     let base_odds = ctx.odds(&ctx.base, &[], &[], opts.sims);
     let base_typical = ctx.typical(&ctx.base, &[], &[]);
     let rounds: Vec<Round> = ctx
@@ -552,6 +599,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         })
         .collect();
 
+    lap("base odds + typical");
     // Contributions
     let n = ctx.base.jokers.len();
     let idx: Vec<usize> = (0..n).collect();
@@ -585,9 +633,12 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         })
         .collect();
 
+    lap("contributions");
+    ctx.shares = jokers.iter().map(|j| j.score_share).collect();
+    let ctx = ctx;
     let order = best_order(&ctx, base_typical.mean);
     // Which hands carry the points, from the hardest round (usually the boss)
-    let hand_mix = ctx
+    let hand_mix: Vec<HandShare> = ctx
         .specs
         .iter()
         .rfind(|s| !s.horizon)
@@ -602,6 +653,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         .unwrap_or_default();
     let missing = |k: &str| gold.is_some_and(|g| g.is_missing(k));
 
+    lap("order + hand mix");
     // Shop jokers (and an open Buffoon pack)
     let mut offers: Vec<(Joker, i64)> = Vec::new();
     if let Some(shop) = &run.shop {
@@ -623,13 +675,16 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         })
         .collect();
 
+    lap("shop jokers");
     // Rescue: every joker the shop could still offer.
     let pool = shop_pool(run, data);
     let per_rarity: [usize; 4] = [0, 1, 2, 3].map(|r| pool.iter().filter(|k| data.center(k).and_then(|c| c.rarity) == Some(r as u8)).count());
     let joker_share = run.shop_rates.joker_share();
     let slots = run.shop_rates.slots.max(1) as i32;
     let candidates: Vec<Joker> = pool.iter().filter_map(|k| Joker::from_key(k, data)).collect();
-    let screened = par_map(&candidates, |j| evaluate_candidate(&ctx, j.clone(), cost(data, &j.key), &base_odds, base_typical.mean, opts.screen_sims, false));
+    let screen_base = ctx.typical_n(&ctx.base, &[], &[], SCREEN_DEALS).mean;
+    let screened = par_map(&candidates, |j| evaluate_candidate(&ctx, j.clone(), cost(data, &j.key), &base_odds, screen_base, opts.screen_sims, false));
+    lap("screen pool");
     let mut order_idx: Vec<usize> = (0..screened.len()).collect();
     // The hardest round of this ante (the last non-horizon one)
     let key_round = rounds.iter().rposition(|r| !r.horizon).unwrap_or(0);
@@ -644,6 +699,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         c.per_shop = Some(1.0 - (1.0 - per_card).powi(slots));
     }
     rescue.sort_by(|a, b| rank_value(b, key_round).total_cmp(&rank_value(a, key_round)));
+    lap("refine top");
     let pool_entries: Vec<Candidate> = screened
         .iter()
         .map(|c| {
@@ -687,8 +743,13 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         })
         .collect();
 
+    lap("blind views");
     let options = shop_options(&ctx, run, data, &pool_entries, &base_odds, key_round, per_rarity, joker_share);
+    lap("shop options");
+    let shares: Vec<f64> = jokers.iter().map(|j| j.score_share).collect();
+    let outlook = archetype_outlook(&ctx, run, data, &pool_entries, &shares, &hand_mix);
 
+    lap("outlook");
     let best_play = if run.screen.in_blind() && !run.hand.is_empty() {
         let mut b = ctx.base.clone();
         b.deck_remaining = run.draw_pile.len() as i64;
@@ -719,6 +780,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         blinds: blind_views,
         options,
         options_round: key_round,
+        outlook,
         pool: pool_entries,
         shop_odds: ShopOdds {
             joker_share,
@@ -814,8 +876,13 @@ fn evaluate_candidate(ctx: &Ctx, j: Joker, cost: i64, base_odds: &[(f64, Stats)]
             options.push(("add (leftmost)".into(), with_joker(base, j.clone(), 0), vec![]));
         }
     } else {
+        // Screening only tries the weakest non-eternal joker; the full pass tries every swap.
+        let weakest = ctx.shares.iter().enumerate()
+            .filter(|(i, _)| ctx.run.jokers.get(*i).is_some_and(|sj| !sj.eternal))
+            .min_by(|a, b| a.1.total_cmp(b.1))
+            .map(|(i, _)| i);
         for (i, (cur, sj)) in base.jokers.iter().zip(&ctx.run.jokers).enumerate() {
-            if sj.eternal {
+            if sj.eternal || (!full && sims < ctx.opts.sims && Some(i) != weakest) {
                 continue;
             }
             options.push((format!("replace {}", data.name(&cur.key)), with_joker(&without(base, i), j.clone(), i), vec![cur.clone()]));
@@ -825,7 +892,8 @@ fn evaluate_candidate(ctx: &Ctx, j: Joker, cost: i64, base_odds: &[(f64, Stats)]
     let mut best: Option<(String, Board, Vec<Joker>, Stats)> = None;
     for (label, b, removed) in options {
         let r: Vec<&Joker> = removed.iter().collect();
-        let t = ctx.typical(&b, &[&j], &r);
+        let n = if sims >= ctx.opts.sims { ctx.opts.hand_samples } else { SCREEN_DEALS };
+        let t = ctx.typical_n(&b, &[&j], &r, n);
         if best.as_ref().is_none_or(|(_, _, _, bt)| t.mean > bt.mean) {
             best = Some((label, b, removed, t));
         }
@@ -1166,4 +1234,137 @@ fn expected_best(
         total += best;
     }
     total / trials as f64
+}
+
+/// Play styles, grouped by what each joker's own effect rewards (from its definition in
+/// the game data, not from strategy guides). Jokers that help every style (plain ×Mult,
+/// +Mult) aren't in any group: this compares directions, not raw power.
+pub fn archetypes() -> Vec<(&'static str, &'static [&'static str], &'static [crate::engine::HandType])> {
+    use crate::engine::HandType::*;
+    vec![
+        ("Flushes", &["j_droll", "j_crafty", "j_tribe", "j_smeared", "j_four_fingers", "j_greedy_joker", "j_lusty_joker",
+            "j_wrathful_joker", "j_gluttenous_joker", "j_bloodstone", "j_onyx_agate", "j_arrowhead", "j_ancient"], &[Flush, StraightFlush, FlushHouse, FlushFive]),
+        ("Pairs & sets", &["j_jolly", "j_sly", "j_duo", "j_mad", "j_clever", "j_trousers", "j_zany", "j_wily", "j_trio", "j_family"],
+            &[Pair, TwoPair, ThreeOfAKind, FullHouse, FourOfAKind, FiveOfAKind]),
+        ("Straights", &["j_crazy", "j_devious", "j_order", "j_runner", "j_shortcut", "j_four_fingers"], &[Straight, StraightFlush]),
+        ("Held cards", &["j_raised_fist", "j_baron", "j_mime", "j_shoot_the_moon", "j_steel_joker", "j_blackboard"], &[HighCard]),
+        ("Face cards", &["j_scary_face", "j_smiley", "j_sock_and_buskin", "j_photograph", "j_pareidolia", "j_triboulet"], &[]),
+        ("Small hands", &["j_half", "j_hanging_chad", "j_splash", "j_square"], &[]),
+        ("Low ranks", &["j_fibonacci", "j_hack", "j_wee", "j_walkie_talkie", "j_even_steven", "j_odd_todd", "j_scholar"], &[]),
+    ]
+}
+
+fn archetype_outlook(
+    ctx: &Ctx,
+    run: &RunState,
+    data: &GameData,
+    pool: &[Candidate],
+    shares: &[f64],
+    hand_mix: &[HandShare],
+) -> Option<Outlook> {
+    use crate::engine::HandType;
+    // Target: a plain boss two antes ahead
+    let ante = run.ante + 2;
+    let target = crate::save::blind_amount(ante, run.blind_scaling) * 2.0 * run.ante_scaling;
+    let spec = Spec {
+        label: format!("Ante {ante}"),
+        blind_key: String::new(),
+        blind_name: "plain boss".into(),
+        start: RoundStart {
+            hand: vec![],
+            deck: ctx.fresh_deck.clone(),
+            hand_size: run.hand_size,
+            hands: run.round_hands,
+            discards: run.round_discards,
+            scored: 0.0,
+            target,
+        },
+        rules: RoundRules::default(),
+        in_progress: false,
+        horizon: true,
+    };
+    // Comparing styles on means, not win odds, so fewer simulations are enough.
+    let sims = 32;
+    let reach = |b: &Board| ctx.odds_one(b, &spec, sims).1.mean / target;
+    let now_reach = reach(&ctx.base);
+
+    // Which style do your points come from now?
+    let points_in = |hands: &[HandType]| -> f64 {
+        hand_mix.iter().filter(|h| HandType::from_name(&h.hand).is_some_and(|t| hands.contains(&t))).map(|h| h.share).sum()
+    };
+    let styles_def = archetypes();
+    let current = styles_def
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, _, hands))| !hands.is_empty())
+        .max_by(|a, b| points_in(a.1 .2).total_cmp(&points_in(b.1 .2)))
+        .map(|(i, _)| i);
+
+    let in_pool = |k: &str| pool.iter().find(|c| c.key == k);
+    let styles: Vec<Style> = par_map(&styles_def.iter().enumerate().collect::<Vec<_>>(), |(i, (name, members, _))| {
+        let owned: Vec<String> =
+            ctx.base.jokers.iter().filter(|j| members.contains(&j.key.as_str())).map(|j| data.name(&j.key).to_string()).collect();
+        let avail: Vec<&Candidate> = members.iter().filter_map(|k| in_pool(k)).collect();
+        // Add a joker: into a free slot, else in place of your weakest non-eternal joker outside this style.
+        let add_to = |b: &Board, key: &str, replaced: &mut Vec<String>| -> Option<Board> {
+            let j = Joker::from_key(key, data)?;
+            if (b.jokers.len() as i64) < b.joker_slots {
+                return Some(with_joker(b, j, b.jokers.len()));
+            }
+            let weakest = b
+                .jokers
+                .iter()
+                .enumerate()
+                .filter(|(_, x)| !members.contains(&x.key.as_str()))
+                .filter(|(_, x)| !run.jokers.iter().any(|sj| sj.key == x.key && sj.eternal))
+                .min_by(|(ia, a), (ib, bb)| {
+                    let sa = ctx.base.jokers.iter().position(|y| y.key == a.key).and_then(|p| shares.get(p)).copied().unwrap_or(0.0);
+                    let sb = ctx.base.jokers.iter().position(|y| y.key == bb.key).and_then(|p| shares.get(p)).copied().unwrap_or(0.0);
+                    sa.total_cmp(&sb).then(ia.cmp(ib))
+                })
+                .map(|(i, _)| i)?;
+            replaced.push(data.name(&b.jokers[weakest].key).to_string());
+            Some(with_joker(&without(b, weakest), j, weakest))
+        };
+        // Greedy: best single, then the best partner for the top few singles.
+        let mut singles: Vec<(f64, &Candidate)> = avail
+            .iter()
+            .filter_map(|c| {
+                let mut r = Vec::new();
+                add_to(&ctx.base, &c.key, &mut r).map(|b| (reach(&b), *c))
+            })
+            .collect();
+        singles.sort_by(|a, b| b.0.total_cmp(&a.0));
+        let reach_one = singles.first().map_or(now_reach, |s| s.0);
+        let mut best: Option<(f64, Vec<&Candidate>, Vec<String>)> =
+            singles.first().map(|(r, c)| (*r, vec![*c], Vec::new()));
+        for (_, first) in singles.iter().take(3) {
+            for second in &avail {
+                if second.key == first.key {
+                    continue;
+                }
+                let mut replaced = Vec::new();
+                let Some(b1) = add_to(&ctx.base, &first.key, &mut replaced) else { continue };
+                let Some(b2) = add_to(&b1, &second.key, &mut replaced) else { continue };
+                let r = reach(&b2);
+                if best.as_ref().is_none_or(|(br, _, _)| r > *br) {
+                    best = Some((r, vec![*first, *second], replaced));
+                }
+            }
+        }
+        let (reach_two, picks, replaces) = best.unwrap_or((now_reach, vec![], vec![]));
+        Style {
+            name: name.to_string(),
+            current: current == Some(*i),
+            points_now: points_in(styles_def[*i].2),
+            owned,
+            add: picks.iter().map(|c| (c.name.clone(), c.per_shop.unwrap_or(0.0), c.cost)).collect(),
+            replaces,
+            reach_one,
+            reach: reach_two,
+        }
+    });
+    let mut styles = styles;
+    styles.sort_by(|a, b| b.reach.total_cmp(&a.reach));
+    Some(Outlook { target_label: format!("Ante {ante} boss"), target, now_reach, styles })
 }

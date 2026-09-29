@@ -74,6 +74,7 @@
   .card { background: #f4efe4; color: #222; border-radius: 5px; padding: 3px 7px; font-weight: 700; }
   .muted { color: var(--muted); }
   .mix td { padding: 2px 6px; border: none; }
+  .outlook td { padding: 3px 6px; }
   details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
   details summary b { color: var(--text); }
   footer { color: var(--muted); font-size: 11px; }
@@ -266,6 +267,20 @@ function render(d) {
       a.hand_mix.slice(0, 4).map((h) => `<tr><td>${esc(h.hand)}</td><td class="num" style="width:44px">${pct(h.share)}</td><td style="width:38%"><div class="bar"><i style="width:${h.share * 100}%;background:var(--chips)"></i></div></td><td class="num muted">avg ${num(h.mean)}</td></tr>`).join("") + `</table></div>`;
   }
   left += `</section>`;
+  if (a.outlook && a.outlook.styles.length) {
+    const o = a.outlook;
+    const openAll = localStorage.getItem("styleAll") === "1";
+    const rows = openAll ? o.styles : o.styles.slice(0, 4);
+    left += `<section><h2>Style outlook <small>your board + the 2 best jokers each style could add · share of the ${esc(o.target_label)} (${num(o.target)}) reached · estimate</small></h2><table class="outlook">` +
+      rows.map((st) => {
+        const adds = st.add.map(([n, p, c]) => `<span title="${pct(p)} of shops show it · $${c}">${esc(n)}</span>`).join(" + ");
+        return `<tr>
+        <td class="name"><b>${esc(st.name)}</b>${st.points_now > 0.005 ? ` <span class="muted">· ${pct(st.points_now)} of your points</span>` : ""}
+          <div class="lbl">+ ${adds}${st.replaces.length ? ` <span title="Sold to make room">(sell ${st.replaces.map(esc).join(", ")})</span>` : ""}</div></td>
+        <td class="num" style="width:96px"><span class="muted">${pct(o.now_reach)}</span><span class="arr">→</span><b style="color:${color(Math.min(st.reach, 1))}">${pct(st.reach)}</b></td>
+      </tr>`;
+      }).join("") + `</table><div class="more"><a href="#" onclick="try{localStorage.setItem('styleAll','${openAll ? "0" : "1"}')}catch(e){};render(last);return false">${openAll ? "show fewer" : `all ${o.styles.length} styles`}</a> <span class="muted">· hover a joker for its shop odds</span></div></section>`;
+  }
   if (a.best_play) {
     left += `<section><h2>Best play now</h2><div class="play">${a.best_play.cards.map((c) => `<span class="card" style="color:${suitColour(c)}">${esc(c)}</span>`).join("")}<span style="margin-left:6px"><b>${esc(a.best_play.hand)}</b> · ${num(a.best_play.score)}</span></div></section>`;
   }
