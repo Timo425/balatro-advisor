@@ -1464,8 +1464,14 @@ fn tarot_values(
     fresh.start.deck = ctx.fresh_deck.clone();
     let deck = &ctx.fresh_deck;
     let count = |s: Suit| deck.iter().filter(|c| c.suit == s && c.enhancement != Some(Enhancement::Stone)).count();
-    let main = Suit::ALL.into_iter().max_by_key(|&s| count(s)).unwrap_or(Suit::Spades);
-    let weakest_suit = Suit::ALL.into_iter().filter(|&s| s != main).min_by_key(|&s| count(s)).unwrap_or(Suit::Clubs);
+    // Your main suit, only if one suit clearly leads (a tie means there isn't one)
+    let mut by_count: Vec<(usize, Suit)> = Suit::ALL.iter().map(|&s| (count(s), s)).collect();
+    by_count.sort_by(|a, b| b.0.cmp(&a.0));
+    let main: Option<Suit> = (by_count[0].0 > by_count[1].0).then_some(by_count[0].1);
+    let is_main = |c: &Card| main.is_none_or(|m| c.suit == m);
+    let even = if main.is_none() { " (your suits are even)" } else { "" };
+    let main_name = main.map_or("card".to_string(), |m| m.name().trim_end_matches('s').to_string());
+    let weakest_suit = Suit::ALL.into_iter().filter(|&s| Some(s) != main).min_by_key(|&s| count(s)).unwrap_or(Suit::Clubs);
     // Card-targeting tarots only reach the cards in hand. When a hand is on screen (a blind or
     // an opened pack), targets are limited to those cards; otherwise any card is assumed.
     let mut in_hand = vec![run.hand.is_empty(); deck.len()];
@@ -1526,38 +1532,38 @@ fn tarot_values(
         let (sim, note): (bool, String) = if let Some(suit) = cfg.get("suit_conv").and_then(|v| v.as_str()).and_then(Suit::from_name) {
             // 3 cards of your least-used suit (lowest first) become this suit
             // Take from your least-used suit (or the next one, if that's the target suit)
-            let source = Suit::ALL.into_iter().filter(|&x| x != suit && x != main).min_by_key(|&x| count(x))
+            let source = Suit::ALL.into_iter().filter(|&x| x != suit && Some(x) != main).min_by_key(|&x| count(x))
                 .or_else(|| Suit::ALL.into_iter().filter(|&x| x != suit).min_by_key(|&x| count(x)))
                 .unwrap_or(weakest_suit);
             for &i in plain(&|c: &Card| c.suit == source, false).iter().take(n) {
                 d[i].suit = suit;
             }
-            (true, format!("{n} {} → {}", source.name(), suit.name()))
+            (true, format!("{n} {} → {}{even}", source.name(), suit.name()))
         } else if let Some(m) = cfg.get("mod_conv").and_then(|v| v.as_str()) {
             match m {
                 "up_rank" => {
-                    for &i in plain(&|c: &Card| c.suit == main, false).iter().take(n) {
+                    for &i in plain(&is_main, false).iter().take(n) {
                         d[i].rank = Rank(if d[i].rank.0 >= 14 { 2 } else { d[i].rank.0 + 1 });
                     }
-                    (true, format!("+1 rank on your {n} lowest {}", main.name()))
+                    (true, format!("+1 rank on your {n} lowest {main_name}s{even}"))
                 }
                 "card" => {
                     // Death: the worst card becomes a copy of the best one
-                    let best = plain(&|c: &Card| c.suit == main, true).first().copied();
+                    let best = plain(&is_main, true).first().copied();
                     let worst = plain(&|c: &Card| c.suit == weakest_suit, false).first().copied();
                     if let (Some(b), Some(w)) = (best, worst) {
                         d[w] = d[b];
                     }
-                    (true, format!("a low {} becomes a copy of your best {}", weakest_suit.name(), main.name()))
+                    (true, format!("a low {} becomes a copy of your best {main_name}{even}", weakest_suit.name().trim_end_matches('s')))
                 }
                 "m_gold" => (false, "Gold card: $3 per round while held (economy)".into()),
                 _ => {
                     let e = Enhancement::from_key(m);
                     // Steel and Stone go on cards you'd hold or throw in; the rest on your main suit's high cards
                     let targets = match e {
-                        Some(Enhancement::Steel) => plain(&|c: &Card| c.suit != main, true),
+                        Some(Enhancement::Steel) => plain(&|c: &Card| main.is_none_or(|m| c.suit != m), true),
                         Some(Enhancement::Stone) => plain(&|c: &Card| c.suit == weakest_suit, false),
-                        _ => plain(&|c: &Card| c.suit == main, true),
+                        _ => plain(&is_main, true),
                     };
                     for &i in targets.iter().take(n) {
                         d[i].enhancement = e;
