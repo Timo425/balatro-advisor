@@ -29,6 +29,14 @@ pub struct RunState {
     pub interest_amount: i64,
     pub interest_cap: i64,
     pub skips: i64,
+    /// Hands played this run (`GAME.hands_played`, Loyalty Card).
+    pub hands_played: i64,
+    /// Tarots used this run (Fortune Teller).
+    pub tarots_used: i64,
+    /// Erosion compares the deck against this.
+    pub starting_deck_size: i64,
+    /// The Ox.
+    pub most_played_hand: String,
     pub hands_left: i64,
     pub discards_left: i64,
     pub hand_size: i64,
@@ -142,6 +150,11 @@ pub struct HandLevel {
     pub level: i64,
     pub chips: f64,
     pub mult: f64,
+    /// Level 1 values and per-level gains (`s_chips`, `l_chips`, … in the save).
+    pub s_chips: f64,
+    pub s_mult: f64,
+    pub l_chips: f64,
+    pub l_mult: f64,
     pub played: i64,
     pub played_this_round: i64,
     pub visible: bool,
@@ -161,10 +174,15 @@ pub struct BlindSlot {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CurrentBlind {
+    pub key: String,
     pub name: String,
     pub target: f64,
     pub scored: f64,
     pub disabled: bool,
+    /// The Eye: hand types already played this round.
+    pub hands_seen: Vec<String>,
+    /// The Mouth: the only hand type allowed this round, once one was played.
+    pub only_hand: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -340,10 +358,22 @@ pub fn from_value(g: &Value, data: &GameData, path: &Path, age_secs: Option<u64>
 
     let blind = g.get("BLIND");
     let current_blind = blind.get("name").str().filter(|n| !n.is_empty()).map(|name| CurrentBlind {
+        key: blind.get("config_blind").str().unwrap_or_default().to_string(),
         name: name.to_string(),
         target: num(blind.get("chips")),
         scored: num(game.get("chips")),
         disabled: blind.get("disabled").truthy(),
+        hands_seen: blind.get("hands").table().map_or_else(Vec::new, |t| {
+            t.entries
+                .iter()
+                .filter(|(_, v)| v.truthy())
+                .filter_map(|(k, _)| match k {
+                    crate::lua::Key::Str(s) => Some(s.clone()),
+                    crate::lua::Key::Int(_) => None,
+                })
+                .collect()
+        }),
+        only_hand: blind.get("only_hand").str().map(str::to_string),
     });
 
     let hand_levels = game
@@ -360,6 +390,10 @@ pub fn from_value(g: &Value, data: &GameData, path: &Path, age_secs: Option<u64>
                             level: int(h.get("level")),
                             chips: num(h.get("chips")),
                             mult: num(h.get("mult")),
+                            s_chips: num(h.get("s_chips")),
+                            s_mult: num(h.get("s_mult")),
+                            l_chips: num(h.get("l_chips")),
+                            l_mult: num(h.get("l_mult")),
                             played: int(h.get("played")),
                             played_this_round: int(h.get("played_this_round")),
                             visible: h.get("visible").truthy(),
@@ -419,6 +453,10 @@ pub fn from_value(g: &Value, data: &GameData, path: &Path, age_secs: Option<u64>
         interest_amount: int(game.get("interest_amount")),
         interest_cap: int(game.get("interest_cap")),
         skips: int(game.get("skips")),
+        hands_played: int(game.get("hands_played")),
+        tarots_used: int(game.at("consumeable_usage_total.tarot")),
+        starting_deck_size: game.get("starting_deck_size").int().unwrap_or(52),
+        most_played_hand: cr.get("most_played_poker_hand").str().unwrap_or_default().to_string(),
         hands_left: int(cr.get("hands_left")),
         discards_left: int(cr.get("discards_left")),
         hand_size: limit("hand"),

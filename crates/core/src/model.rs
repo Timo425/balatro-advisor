@@ -148,7 +148,7 @@ impl Seal {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Card {
     pub rank: Rank,
     pub suit: Suit,
@@ -242,3 +242,63 @@ pub const POKER_HANDS: [&str; 12] = [
     "Pair",
     "High Card",
 ];
+
+impl Card {
+    /// Parses `KH`, `10S:glass:foil:red`, `AD:stone`, `5C:+30`.
+    /// Modifiers: bonus mult wild glass steel stone gold lucky · foil holo poly ·
+    /// red blue goldseal purple · debuff · +N (perma chips).
+    pub fn parse(token: &str) -> Result<Card, String> {
+        let mut parts = token.split(':');
+        let body = parts.next().unwrap_or_default().to_ascii_uppercase();
+        if body.len() < 2 {
+            return Err(format!("bad card '{token}'"));
+        }
+        let (r, s) = body.split_at(body.len() - 1);
+        let rank = match r {
+            "A" => 14,
+            "K" => 13,
+            "Q" => 12,
+            "J" => 11,
+            "T" => 10,
+            n => n.parse().ok().filter(|n| (2..=10).contains(n)).ok_or_else(|| format!("bad rank in '{token}'"))?,
+        };
+        let suit = match s {
+            "S" => Suit::Spades,
+            "H" => Suit::Hearts,
+            "C" => Suit::Clubs,
+            "D" => Suit::Diamonds,
+            _ => return Err(format!("bad suit in '{token}'")),
+        };
+        let mut c = Card::new(Rank(rank), suit);
+        for m in parts {
+            match m.to_ascii_lowercase().as_str() {
+                "bonus" => c.enhancement = Some(Enhancement::Bonus),
+                "mult" => c.enhancement = Some(Enhancement::Mult),
+                "wild" => c.enhancement = Some(Enhancement::Wild),
+                "glass" => c.enhancement = Some(Enhancement::Glass),
+                "steel" => c.enhancement = Some(Enhancement::Steel),
+                "stone" => c.enhancement = Some(Enhancement::Stone),
+                "gold" => c.enhancement = Some(Enhancement::Gold),
+                "lucky" => c.enhancement = Some(Enhancement::Lucky),
+                "foil" => c.edition = Some(Edition::Foil),
+                "holo" => c.edition = Some(Edition::Holo),
+                "poly" | "polychrome" => c.edition = Some(Edition::Polychrome),
+                "red" => c.seal = Some(Seal::Red),
+                "blue" => c.seal = Some(Seal::Blue),
+                "goldseal" => c.seal = Some(Seal::Gold),
+                "purple" => c.seal = Some(Seal::Purple),
+                "debuff" => c.debuff = true,
+                p if p.starts_with('+') => {
+                    c.perma_bonus = p[1..].parse().map_err(|_| format!("bad perma bonus in '{token}'"))?
+                }
+                other => return Err(format!("unknown modifier '{other}' in '{token}'")),
+            }
+        }
+        Ok(c)
+    }
+
+    /// Space-separated list of `Card::parse` tokens.
+    pub fn parse_list(spec: &str) -> Result<Vec<Card>, String> {
+        spec.split_whitespace().map(Card::parse).collect()
+    }
+}

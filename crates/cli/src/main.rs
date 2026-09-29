@@ -2,7 +2,9 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use balatro_advisor::data::GameData;
-use balatro_advisor::{gold, paths, save};
+use balatro_advisor::engine::{self, Board, Lucky, Rng, Unlucky};
+use balatro_advisor::model::Card;
+use balatro_advisor::{gold, golden, paths, save};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -27,6 +29,31 @@ enum Cmd {
     Gold,
     /// The parsed run state
     State,
+    /// Score one hand against your current board (jokers, levels, money… from the save)
+    Score {
+        /// Cards to play, e.g. "KS KH:glass 5D:stone" (see README for modifiers)
+        cards: Option<String>,
+        /// Pick the played cards from your current hand by position (1 = leftmost), e.g. 1,3,4
+        #[arg(long)]
+        hand: Option<String>,
+        /// Cards held in hand (default with --hand: the rest of your hand)
+        #[arg(long)]
+        held: Option<String>,
+        /// Ignore the save: no jokers, level 1 hands
+        #[arg(long)]
+        no_save: bool,
+        /// Print every step of the scoring pass
+        #[arg(long)]
+        trace: bool,
+        /// Save as a golden case to check against the game's real score later
+        #[arg(long)]
+        golden: Option<String>,
+    },
+    /// Golden cases: real hands with the in-game score
+    Golden {
+        #[command(subcommand)]
+        cmd: GoldenCmd,
+    },
     /// Regenerate data/game.json from the game's game.lua
     /// (`unzip -p .../Balatro/Balatro.exe game.lua > /tmp/game.lua`)
     ExtractData {
@@ -37,6 +64,18 @@ enum Cmd {
         game_version: String,
     },
 }
+
+#[derive(Subcommand)]
+enum GoldenCmd {
+    /// Record the score the game showed for a captured case
+    Set { name: String, score: f64 },
+    /// Show a case with the engine's trace
+    Show { name: String },
+    /// List cases and whether they match
+    List,
+}
+
+const GOLDEN_DIR: &str = "tests/golden";
 
 fn main() -> Result<()> {
     // `balatro-advisor gold | head` should end quietly, not panic on a closed pipe.
@@ -70,6 +109,113 @@ fn main() -> Result<()> {
                 print_state(&s);
             }
         }
+        Cmd::Score { cards, hand, held, no_save, trace, golden: golden_name } => {
+            let run = if *no_save {
+                None
+            } else {
+                let dir = dir()?;
+                Some(save::load(&save::save_path(&dir, profile(&dir)), data)?)
+            };
+            let mut board = run.as_ref().map_or_else(Board::empty, |r| Board::from_run(r, data));
+            let (played, held) = match (hand, cards) {
+                (Some(idx), _) => {
+                    let r = run.as_ref().context("--hand needs a save")?;
+                    let picks: Vec<usize> = idx
+                        .split(',')
+                        .map(|n| n.trim().parse::<usize>().context("--hand takes positions like 1,3,4"))
+                        .collect::<Result<_>>()?;
+                    let mut played = Vec::new();
+                    let mut rest = Vec::new();
+                    for (i, c) in r.hand.iter().enumerate() {
+                        if picks.contains(&(i + 1)) { played.push(*c) } else { rest.push(*c) }
+                    }
+                    let held = match held {
+                        Some(h) => Card::parse_list(h).map_err(anyhow::Error::msg)?,
+                        None => rest,
+                    };
+                    (played, held)
+                }
+                (None, Some(c)) => (
+                    Card::parse_list(c).map_err(anyhow::Error::msg)?,
+                    held.as_deref().map(Card::parse_list).transpose().map_err(anyhow::Error::msg)?.unwrap_or_default(),
+                ),
+                (None, None) => anyhow::bail!("give the cards to play, or --hand 1,2,3 to pick from your hand"),
+            };
+            if played.is_empty() || played.len() > 5 {
+                anyhow::bail!("play 1 to 5 cards (got {})", played.len());
+            }
+            if run.is_some() && hand.is_none() {
+                // Cards typed by hand: the draw pile the save shows is still the best guess for Blue Joker.
+                board.deck_remaining = board.deck_remaining.max(0);
+            }
+            let floor = engine::score(&board, &played, &held, &mut Unlucky, *trace);
+            let ceil = engine::score(&board, &played, &held, &mut Lucky, false);
+            let mut rng = Rng::new(42);
+            let n = 2000;
+            let mean = if floor.score == ceil.score {
+                floor.score
+            } else {
+                (0..n).map(|_| engine::score(&board, &played, &held, &mut rng, false).score).sum::<f64>() / n as f64
+            };
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                    "outcome": floor, "if_all_rolls_hit": ceil.score, "mean": mean,
+                }))?);
+            } else {
+                print_score(&board, &played, &held, &floor, ceil.score, mean);
+            }
+            if let Some(name) = golden_name {
+                let case = golden::Case {
+                    name: name.clone(),
+                    board,
+                    played,
+                    held,
+                    predicted: floor.score,
+                    expected: None,
+                    note: String::new(),
+                };
+                let p = case.save(std::path::Path::new(GOLDEN_DIR)).map_err(anyhow::Error::msg)?;
+                println!("\nSaved {}. After playing it: balatro-advisor golden set {name} <score the game showed>", p.display());
+            }
+        }
+        Cmd::Golden { cmd } => {
+            let dir = std::path::Path::new(GOLDEN_DIR);
+            match cmd {
+                GoldenCmd::Set { name, score } => {
+                    let mut c = golden::Case::load(&golden::Case::path(dir, name)).map_err(anyhow::Error::msg)?;
+                    c.expected = Some(*score);
+                    c.save(dir).map_err(anyhow::Error::msg)?;
+                    let got = c.rescore();
+                    if got == *score {
+                        println!("✓ {name}: engine and game agree on {score}");
+                    } else {
+                        println!("✗ {name}: engine {got}, game {score}. `balatro-advisor golden show {name}` for the trace");
+                    }
+                }
+                GoldenCmd::Show { name } => {
+                    let c = golden::Case::load(&golden::Case::path(dir, name)).map_err(anyhow::Error::msg)?;
+                    let o = engine::score(&c.board, &c.played, &c.held, &mut Unlucky, true);
+                    print_score(&c.board, &c.played, &c.held, &o, o.score, o.score);
+                    println!("Game showed: {}", c.expected.map_or("not recorded".into(), |e| e.to_string()));
+                }
+                GoldenCmd::List => {
+                    for (p, c) in golden::load_all(dir) {
+                        match c {
+                            Ok(c) => {
+                                let got = c.rescore();
+                                let mark = match c.expected {
+                                    None => "…",
+                                    Some(e) if e == got => "✓",
+                                    Some(_) => "✗",
+                                };
+                                println!("{mark} {:<24} engine {got:>12}  game {}", c.name, c.expected.map_or("-".into(), |e| e.to_string()));
+                            }
+                            Err(e) => println!("! {}: {e}", p.display()),
+                        }
+                    }
+                }
+            }
+        }
         Cmd::ExtractData { game_lua, out, game_version } => {
             let src = std::fs::read_to_string(game_lua).with_context(|| format!("reading {}", game_lua.display()))?;
             let d = balatro_advisor::data::extract_from_game_lua(&src, game_version).map_err(anyhow::Error::msg)?;
@@ -98,6 +244,50 @@ fn print_gold(r: &gold::GoldReport) {
         for j in list {
             println!("  {:<22} best: {:<7} used {}×", j.name, STAKES[j.best_stake.min(8) as usize], j.times_used);
         }
+    }
+}
+
+fn print_score(board: &Board, played: &[Card], held: &[Card], o: &engine::Outcome, ceil: f64, mean: f64) {
+    let label = |cs: &[Card]| cs.iter().map(|c| c.label()).collect::<Vec<_>>().join(" ");
+    println!("Play: {}", label(played));
+    if !held.is_empty() {
+        println!("Held: {}", label(held));
+    }
+    let names: Vec<&str> = board.jokers.iter().map(|j| balatro_advisor::data::GameData::bundled().name(&j.key)).collect();
+    println!("Jokers: {}", if names.is_empty() { "none".into() } else { names.join(", ") });
+    if o.debuffed_hand {
+        println!("{}: blocked by the boss, scores 0", o.hand.name());
+        return;
+    }
+    let scoring: Vec<String> = o.scoring.iter().map(|&i| played[i].label()).collect();
+    println!("{} — scoring: {}", o.hand.name(), scoring.join(" "));
+    for s in &o.trace {
+        println!("  {:<34} {:>10} × {}", s.source, fmt_num(s.chips), fmt_num(s.mult));
+    }
+    println!("Score: {} ({} × {})", fmt_num(o.score), fmt_num(o.chips), fmt_num(o.mult));
+    if ceil != o.score {
+        println!("  random effects: {} if every roll fails, {} if all hit, mean ≈ {}", fmt_num(o.score), fmt_num(ceil), fmt_num(mean.round()));
+    }
+    if o.dollars > 0.0 {
+        println!("  earns ${}", o.dollars);
+    }
+}
+
+fn fmt_num(x: f64) -> String {
+    if x.fract() == 0.0 && x.abs() < 1e15 {
+        let s = format!("{}", x as i64);
+        let mut out = String::new();
+        for (i, ch) in s.chars().enumerate() {
+            if i > 0 && (s.len() - i) % 3 == 0 && ch != '-' {
+                out.push(',');
+            }
+            out.push(ch);
+        }
+        out
+    } else if x.abs() >= 1e15 {
+        format!("{x:.3e}")
+    } else {
+        format!("{x:.2}")
     }
 }
 

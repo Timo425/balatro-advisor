@@ -1,7 +1,9 @@
 //! balatro-advisor: read a vanilla Balatro save, score hands, value jokers.
 
 pub mod data;
+pub mod engine;
 pub mod gold;
+pub mod golden;
 pub mod jkr;
 pub mod lua;
 pub mod model;
