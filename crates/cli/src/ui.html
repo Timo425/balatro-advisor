@@ -36,6 +36,10 @@
   .round .skip { grid-column: 1 / -1; font-size: 12px; margin-top: 3px; padding: 3px 7px; border-radius: 6px; background: #0e1b18; }
   .dig { font-size: 12px; margin-bottom: 8px; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
   .dig select, .dig input { background: #0e1b18; color: var(--text); border: 1px solid var(--line); border-radius: 5px; font: inherit; }
+  details.all { margin-top: 8px; }
+  details.all .scroll { max-height: 320px; overflow-y: auto; margin-top: 6px; border: 1px solid var(--line); border-radius: 6px; }
+  details.all th { position: sticky; top: 0; background: var(--panel); }
+  tr.hit td { background: #16342a; }
   .dig input[type=range] { width: 110px; accent-color: var(--gold); }
   .bar { height: 6px; background: #0e1b18; border-radius: 99px; overflow: hidden; }
   .bar > i { display: block; height: 100%; border-radius: 99px; }
@@ -251,7 +255,17 @@ function render(d) {
       <span title="${odds.good.map((g) => esc(g.name)).join(", ")}"><b>${odds.good.length}</b> jokers get you there</span> ·
       next shop <b>${pct(odds.shop(0))}</b>${[1, 3].map((k) => ` · ${k} reroll${k > 1 ? "s" : ""} ($${odds.rerollCost(k)}) <b>${pct(odds.shop(k))}</b>`).join("")} ·
       Mega Buffoon pack <b>${pct(odds.buffoon(4))}</b></div>
-    ${candTable(a, a.rescue.slice(0, 9), true)}</section>`;
+    ${candTable(a, a.rescue.slice(0, 9), true)}
+    <details class="all"${localStorage.getItem("allOpen") === "1" ? " open" : ""} ontoggle="try{localStorage.setItem('allOpen', this.open ? '1' : '0')}catch(e){}">
+      <summary>All ${a.pool.length} jokers in the pool, by ${esc(roundName(a.rounds[odds.round]))} <span class="muted">(quicker, rougher estimate)</span></summary>
+      <div class="scroll"><table><tr><th>Joker</th>${a.rounds.map((r, i) => r.horizon ? "" : `<th class="num">${esc(roundName(r))}</th>`).join("")}<th class="num">Shop</th></tr>
+      ${[...a.pool].sort((x, y) => (y.p_win[odds.round] ?? 0) - (x.p_win[odds.round] ?? 0)).map((p) => {
+        const rar = ["", "Common", "Uncommon", "Rare"][p.rarity] || "";
+        const perShop = 1 - Math.pow(1 - a.shop_odds.joker_share * a.shop_odds.rarity_weight[p.rarity] / Math.max(1, a.shop_odds.pool_by_rarity[p.rarity]), a.shop_odds.slots);
+        const hit = (p.p_win[odds.round] ?? 0) >= odds.t;
+        return `<tr${hit ? ' class="hit"' : ""}><td class="name"><span class="rar-${rar}">●</span> ${esc(p.name)}</td>${a.rounds.map((r, i) => r.horizon ? "" : `<td class="num">${pct(p.p_win[i] ?? 0)}</td>`).join("")}<td class="num muted">${pct(perShop)}</td></tr>`;
+      }).join("")}</table></div>
+    </details></section>`;
 
   html += `<div class="cols"><div class="stack">${left}</div><div class="stack">${right}</div></div>`;
   html += goldSection(d.gold);
