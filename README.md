@@ -15,15 +15,29 @@ Carlo over your remaining deck, with fixed seeds, so the results are
 reproducible. Jokers that aren't modelled yet are shown as **not modelled**,
 never silently left out.
 
-> **Status:** save/profile reader and `gold` work; the scoring engine is next.
+> **Status:** save reader, `gold` and the scoring engine (`score`) work. The
+> engine is a line-by-line port of the game's `evaluate_play` and covers the
+> scoring effects of all 150 jokers. Monte Carlo (`analyze`/`shop`) is next.
 > Design notes: [docs/plan.md](docs/plan.md), [docs/formats.md](docs/formats.md).
 
 ```bash
 cargo build --release
-./target/release/balatro-advisor gold          # Gold Stake stickers missing
-./target/release/balatro-advisor state         # parsed run (add --json for everything)
-cargo test                                     # ~1 s
+B=./target/release/balatro-advisor
+$B gold                           # Gold Stake stickers missing
+$B state                          # parsed run (add --json for everything)
+$B score --hand 1,2,5 --trace     # score cards from your hand, step by step
+$B score "KS KH:glass 5D:stone" --held "KD:steel"
+cargo test                        # ~2 s
 ```
+
+Card notation: `KS`, `10H`, plus `:modifiers`: `bonus mult wild glass steel
+stone gold lucky`, `foil holo poly`, `red blue goldseal purple`, `debuff`,
+`+N` (perma chips).
+
+**Golden tests** (real in-game scores): before playing a hand run
+`$B score --hand 1,2,5 --golden my-case`; after it scores run
+`$B golden set my-case <score the game showed>`. `cargo test` checks every
+recorded case from then on; `$B golden list` shows them.
 
 `data/game.json` (joker/blind numbers) is generated from your own install:
 `unzip -p ~/.steam/debian-installation/steamapps/common/Balatro/Balatro.exe game.lua > /tmp/game.lua && cargo run -- extract-data /tmp/game.lua`
