@@ -895,9 +895,13 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         let per_ante = (0.5 + (dollars - line).max(0.0) / 20.0).min(2.0);
         (per_ante, (per_ante * antes_left).round() as i64)
     };
+    // Money jokers you keep pay every ante, like rent in reverse.
+    let owned_income = |keep: &dyn Fn(usize) -> bool| {
+        run.jokers.iter().enumerate().filter(|(i, sj)| keep(*i) && lasts(sj) && !sj.debuff).map(|(_, sj)| income_per_ante(&sj.key, &sj.ability, run, antes_left)).sum::<f64>()
+    };
     // The projected board: the jokers kept (by index), grown with the money you'd hold.
     let project = |keep: &dyn Fn(usize) -> bool, dollars: f64| -> Board {
-        let dollars = dollars - owned_rent(keep);
+        let dollars = dollars - owned_rent(keep) + owned_income(keep);
         let mut b = ctx.base.clone();
         b.blind = Default::default();
         if let Some(top) = top_hand {
@@ -993,7 +997,8 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     // An option's projected score: bought for `cost` (selling `sell`, if any), rent paid if rental.
     let long_of = |j: &Joker, sell: Option<usize>, cost: i64, rental: bool| -> f64 {
         let back = sell.map_or(0, |i| run.jokers[i].sell_value) as f64;
-        let dollars = run.dollars - if rental { RENT_PER_ANTE } else { 0.0 };
+        let ability = data.center(&j.key).map(|c| crate::engine::joker::ability_from_config(&c.config)).unwrap_or_default();
+        let dollars = run.dollars - if rental { RENT_PER_ANTE } else { 0.0 } + income_per_ante(&j.key, &ability, run, antes_left);
         let horizon = if j.key == "j_madness" { 1.0 } else { antes_left };
         let g = grow_antes(j, &hand_mix, dollars, line, horizon).map_or_else(|| j.clone(), |g| g.0);
         long_score(&fill_long(project(&|k| Some(k) != sell, dollars), Some(g), back - cost as f64))
@@ -1160,7 +1165,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     rank_options(&mut options, base_reach);
     let (levels_per_ante, planet_levels) = levels_for(run.dollars - owned_rent(&|_| true));
     let long_note = format!(
-        "Your board projected {antes_left:.1} antes ahead: growing jokers grown, fading ones faded, perishables that run out dropped, {} +{planet_levels} levels (about {levels_per_ante:.1} per ante with your money), empty slots filled with stand-in jokers (×1.5, +60 Chips, +15 Mult). Each option is compared with a typical find (×1.25) in its slot, on whole simulated rounds, with the money it leaves you: its price, what selling a joker gives back or a money card gives (spent once, on pack skips for Red Card/Flash or on planets, ~$5 each), and $9 less money held every ante per rental. ×1.00 = as good as a typical find.",
+        "Your board projected {antes_left:.1} antes ahead: growing jokers grown, fading ones faded, perishables that run out dropped, {} +{planet_levels} levels (about {levels_per_ante:.1} per ante with your money), empty slots filled with stand-in jokers (×1.5, +60 Chips, +15 Mult). Each option is compared with a typical find (×1.25) in its slot, on whole simulated rounds, with the money it leaves you: its price, what selling a joker gives back or a money card gives (spent once, on pack skips for Red Card/Flash or on planets, ~$5 each), and $9 less money held every ante per rental; money jokers (Golden, Rocket, Cloud 9, To the Moon, Egg) add their payout per ante. ×1.00 = as good as a typical find.",
         top_hand.map_or("your main hand", |h| h.name())
     );
     let shares: Vec<f64> = jokers.iter().map(|j| j.score_share).collect();
@@ -1853,6 +1858,26 @@ fn shop_options(
     }
     rank_options(&mut out, base_reach);
     (out, tarots)
+}
+
+/// Money a joker pays per ante (3 rounds), averaged over the antes left, for jokers with
+/// a fixed payout (card.lua `calculate_dollar_bonus` and end-of-round effects). Counted
+/// as money you hold every ante in the By Ante 8 projection.
+fn income_per_ante(key: &str, ability: &serde_json::Value, run: &RunState, antes_left: f64) -> f64 {
+    let extra = ability.get("extra");
+    let num = |v: Option<&serde_json::Value>, d: f64| v.and_then(|x| x.as_f64()).unwrap_or(d);
+    let per_round = match key {
+        "j_golden" => num(extra, 4.0),
+        // $1 a round, +$2 after each boss: the average over the antes left
+        "j_rocket" => num(extra.and_then(|e| e.get("dollars")), 1.0) + num(extra.and_then(|e| e.get("increase")), 2.0) * (antes_left - 1.0).max(0.0) / 2.0,
+        "j_cloud_9" => num(extra, 1.0) * run.full_deck().iter().filter(|c| c.rank.0 == 9 && c.enhancement != Some(crate::model::Enhancement::Stone)).count() as f64,
+        // +$1 interest per $5 (capped like interest): doubles it
+        "j_to_the_moon" => interest(run.dollars, 1, run.interest_cap) as f64,
+        // sell value grows $3 a round
+        "j_egg" => num(extra, 3.0),
+        _ => 0.0,
+    };
+    per_round * 3.0
 }
 
 /// Average over random draws of the best By Ante 8 value among `cards` shop cards (each a
