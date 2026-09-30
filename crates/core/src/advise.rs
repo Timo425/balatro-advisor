@@ -1948,14 +1948,24 @@ fn boss_reroll_option(ctx: &Ctx, run: &RunState, data: &GameData, spec: &Spec, n
 }
 
 /// Win chance first, in 2-point tiers counted down from the best option (closer than
-/// that is simulation noise); within a tier the long run (By Ante 8), then the score
-/// reached this round.
+/// that is simulation noise); within a tier the long run (By Ante 8) in 0.05 tiers from
+/// the tier's best, for the same reason; then the score reached this round.
 fn rank_options(out: &mut [ShopOption], base_reach: f64) {
     let top = out.iter().map(|o| o.p_win).fold(0.0, f64::max);
-    let key = |o: &ShopOption| (-((top - o.p_win) / 0.02).floor(), o.long_mult.unwrap_or(1.0), o.reach.unwrap_or(base_reach));
+    let p_tier = |o: &ShopOption| ((top - o.p_win) / 0.02).floor() as i64;
+    let long = |o: &ShopOption| o.long_mult.unwrap_or(1.0);
+    let tops: std::collections::HashMap<i64, f64> = out.iter().fold(Default::default(), |mut m, o| {
+        let e = m.entry(p_tier(o)).or_insert(f64::MIN);
+        *e = e.max(long(o));
+        m
+    });
+    let key = |o: &ShopOption| {
+        let t = p_tier(o);
+        (t, ((tops[&t] - long(o)) / 0.05).floor() as i64, o.reach.unwrap_or(base_reach))
+    };
     out.sort_by(|a, b| {
         let (ka, kb) = (key(a), key(b));
-        kb.0.total_cmp(&ka.0).then(kb.1.total_cmp(&ka.1)).then(kb.2.total_cmp(&ka.2))
+        ka.0.cmp(&kb.0).then(ka.1.cmp(&kb.1)).then(kb.2.total_cmp(&ka.2))
     });
 }
 
