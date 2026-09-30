@@ -1124,7 +1124,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     // tarots through money; Judgement as a random joker. Arcana packs take the best card
     // in them, or the skip when Red Card grows from it (+3 Mult).
     // Deck changes are small, so they get more rounds than the rest (and the same seeds).
-    const TAROT_ROUNDS: usize = 120;
+    const TAROT_ROUNDS: usize = 300;
     // A board without a chips joker will likely find one by Ante 8: the typical find in
     // these projections is then a +60 Chips joker, so card chips (Bonus, Stone) aren't
     // valued as if that gap stayed open.
