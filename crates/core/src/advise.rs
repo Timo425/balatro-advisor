@@ -382,7 +382,7 @@ fn economy_key(k: &str) -> bool {
 /// A short label for jokers whose value isn't a score number.
 fn non_scoring_note(key: &str) -> Option<&'static str> {
     Some(match key {
-        "j_mr_bones" => "Survival: saves a lost round if you scored at least 25% of the blind (heuristic, not simulated)",
+        "j_mr_bones" => "Survival: saves a lost round once if you scored at least 25% of the blind, then destroys itself (counted in win chances, not in scores)",
         "j_juggler" | "j_troubadour" | "j_turtle_bean" | "j_merry_andy" | "j_drunkard" | "j_burglar" => {
             "Changes hand size / hands / discards: simulated"
         }
@@ -1581,7 +1581,19 @@ fn shop_options(
         }
     }
     // Tarots: applied to the deck the way a player sensibly would, then the round re-simulated.
-    let tarots = tarot_values(ctx, run, data, spec, round, now, pool, per_rarity, &planet_p);
+    let mut tarots = tarot_values(ctx, run, data, spec, round, now, pool, per_rarity, &planet_p);
+    // The Fool makes a copy of the last tarot or planet used: worth what that one is worth.
+    if let Some(last) = &run.last_tarot_planet {
+        let copied = p_of(last)
+            .map(|p| (p, 0.0))
+            .or_else(|| tarots.iter().find(|t| &t.key == last).map(|t| (t.p_win, t.money_gain)));
+        if let (Some((p, gain)), Some(fool)) = (copied, tarots.iter_mut().find(|t| t.key == "c_fool")) {
+            fool.p_win = p;
+            fool.money_gain = gain;
+            fool.simulated = true;
+            fool.note = format!("makes a {} (the last one used)", data.name(last));
+        }
+    }
     let tarot_p = |key: &str| tarots.iter().find(|t| t.key == key);
     let shop_cards = run.shop.as_ref().map(|s| s.other_cards.clone()).unwrap_or_default();
     for c in shop_cards.iter().filter(|c| c.set == "Tarot") {

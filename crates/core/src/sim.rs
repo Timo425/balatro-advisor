@@ -354,7 +354,9 @@ pub fn sim_round(board: &Board, start: &RoundStart, rng: &mut Rng) -> RoundResul
             }
         }
     }
-    RoundResult { total, won: total >= start.target, best_hand, plays }
+    // Mr. Bones: a lost round still counts if you reached 25% of the blind (card.lua, game_over)
+    let bones = b.jokers.iter().any(|j| j.key == "j_mr_bones" && !j.debuff);
+    RoundResult { total, won: total >= start.target || (bones && total >= 0.25 * start.target), best_hand, plays }
 }
 
 /// Mean and quantiles of a sample.

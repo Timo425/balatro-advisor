@@ -46,6 +46,8 @@ pub struct RunState {
     pub hands_played: i64,
     /// Tarots used this run (Fortune Teller).
     pub tarots_used: i64,
+    /// What The Fool would copy (`GAME.last_tarot_planet`).
+    pub last_tarot_planet: Option<String>,
     /// Erosion compares the deck against this.
     pub starting_deck_size: i64,
     /// The Ox.
@@ -540,6 +542,7 @@ pub fn from_value(g: &Value, data: &GameData, path: &Path, age_secs: Option<u64>
         skips: int(game.get("skips")),
         hands_played: int(game.get("hands_played")),
         tarots_used: int(game.at("consumeable_usage_total.tarot")),
+        last_tarot_planet: game.get("last_tarot_planet").str().filter(|k| *k != "c_fool").map(str::to_string),
         starting_deck_size: game.get("starting_deck_size").int().unwrap_or(52),
         most_played_hand: cr.get("most_played_poker_hand").str().unwrap_or_default().to_string(),
         hands_left: int(cr.get("hands_left")),
