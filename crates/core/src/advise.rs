@@ -2023,7 +2023,10 @@ fn shop_options(
         let note = [stickers, Some(action).filter(|a| !a.is_empty()), later].into_iter().flatten().collect::<Vec<_>>().join(" · ");
         let from_pack = run.open_pack.iter().any(|p| p.key == c.key);
         out.push(ShopOption { reach: None,
-            label: if from_pack { format!("pick {}", c.name) } else { c.name.clone() },
+            label: {
+                let ed = c.edition.map_or(String::new(), |e| format!(" ({e:?})"));
+                if from_pack { format!("pick {}{ed}", c.name) } else { format!("{}{ed}", c.name) }
+            },
             kind: "joker".into(),
             cost: c.cost,
             p_win: c.p_win.get(round).copied().unwrap_or(now),
