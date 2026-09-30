@@ -278,6 +278,9 @@ pub struct TarotValue {
     pub reach_now: f64,
     /// Money it gives (Hermit, Temperance), for "money after" in the options list.
     pub money_gain: f64,
+    /// The deck after using it, for the By Ante 8 projection (deck-changing tarots).
+    #[serde(skip)]
+    pub deck: Option<Vec<Card>>,
 }
 
 /// One of this ante's three blinds.
@@ -1042,7 +1045,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         let now_p = |x: &Candidate| x.p_win.get(key_round).copied().unwrap_or(0.0);
         let (keep_name, sell_name) = (data.name(&ctx.base.jokers[today].key), data.name(&ctx.base.jokers[best].key));
         if now_p(&alt) >= now_p(c) - NOW_SLACK {
-            let note = format!("sells {sell_name} rather than {keep_name}: better by Ante 8 (selling {keep_name} scores a bit more this ante)");
+            let note = format!("sell {sell_name} for it, not {keep_name}: better by Ante 8 (selling {keep_name} scores a bit more this ante)");
             *c = Candidate { missing_gold: c.missing_gold, desc: c.desc.take(), long_mult: Some(ratio(best_v, Some(best))), sell_note: Some(note), ..alt };
         } else {
             c.sell_note = Some(format!(
@@ -1085,6 +1088,53 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         let draw = long_draw(&pool_entries, cards, share, &mut rng);
         let price = long_score(&fill_long(project(&|_| true, run.dollars), None, -(o.cost as f64))) / l0;
         o.long_mult = Some(draw * price);
+    }
+    // Tarots: a changed deck is permanent, so it's projected like everything else; money
+    // tarots through money; Judgement as a random joker. Arcana packs take the best card
+    // in them, or the skip when Red Card grows from it (+3 Mult).
+    let tarot_long: Vec<f64> = par_map(&tarots, |t| {
+        if let Some(d) = &t.deck {
+            let mut b = fill_long(project(&|_| true, run.dollars), None, 0.0);
+            let tally = |e: crate::model::Enhancement| d.iter().filter(|c| c.enhancement == Some(e)).count() as i64;
+            b.steel_tally = tally(crate::model::Enhancement::Steel);
+            b.stone_tally = tally(crate::model::Enhancement::Stone);
+            b.driver_tally = d.iter().filter(|c| c.enhancement.is_some()).count() as i64;
+            b.playing_cards = d.len() as i64;
+            let mut sp = long_spec.clone();
+            sp.start.deck = d.clone();
+            ctx.odds_one(&b, &sp, 48).1.mean.max(1.0) / l0
+        } else if t.money_gain > 0.0 {
+            long_score(&fill_long(project(&|_| true, run.dollars), None, t.money_gain)) / l0
+        } else if t.key == "c_judgement" {
+            long_draw(&pool_entries, 1, 1.0, &mut crate::engine::Rng::new(opts.seed ^ 0x1d6e))
+        } else {
+            1.0
+        }
+    });
+    let skip_long = {
+        let mut b = fill_long(project(&|_| true, run.dollars), None, 0.0);
+        match b.jokers.iter_mut().find(|j| j.key == "j_red_card") {
+            Some(j) => {
+                j.mult += 3.0;
+                long_score(&b) / l0
+            }
+            None => 1.0,
+        }
+    };
+    let price = |cost: i64| if cost == 0 { 1.0 } else { long_score(&fill_long(project(&|_| true, run.dollars), None, -(cost as f64))) / l0 };
+    for o in options.iter_mut() {
+        if o.kind == "tarot" && o.money_gain == 0.0 {
+            if let Some(i) = o.key.as_ref().and_then(|k| tarots.iter().position(|t| &t.key == k)) {
+                o.long_mult = Some(tarot_long[i] * price(o.cost));
+            }
+        } else if o.kind == "pack" && o.label.contains("Arcana") {
+            let k = if o.label.contains("Jumbo") || o.label.contains("Mega") { 5 } else { 3 };
+            let vals: Vec<f64> = tarot_long.iter().map(|v| v.max(skip_long)).collect();
+            o.long_mult = Some(best_of_subsets(&vals, k).0 * price(o.cost));
+            if skip_long > 1.0 {
+                o.note = format!("{} · or skip it for Red Card +3 Mult (×{skip_long:.2} by Ante 8)", o.note);
+            }
+        }
     }
     let base_reach = base_odds.get(key_round).zip(ctx.specs.get(key_round)).map_or(0.0, |(o, sp)| o.1.mean / sp.start.target.max(1.0));
     rank_options(&mut options, base_reach);
@@ -1726,7 +1776,14 @@ fn shop_options(
 
     // Jokers in the shop (and an open Buffoon pack) are options like any other.
     for c in shop_jokers {
-        let action = if c.action.starts_with("replace ") { c.action.replacen("replace ", "sells ", 1) } else { String::new() };
+        // Slots are full: "sell X for it" (and where to put it)
+        let action = match c.action.strip_prefix("replace ") {
+            Some(rest) => match rest.split_once(", ") {
+                Some((name, place)) => format!("sell {name} for it, {place}"),
+                None => format!("sell {rest} for it"),
+            },
+            None => String::new(),
+        };
         let later = c.reach.iter().zip(&c.reach_delta).zip(&ctx.specs).find(|(_, sp)| sp.horizon).map(|((r, d), sp)| {
             format!("{} reach {:.0}% → {:.0}%", sp.label, (r - d) * 100.0, r * 100.0)
         });
@@ -2078,14 +2135,14 @@ fn tarot_values(
                 "c_judgement" => {
                     let mut rng = crate::engine::Rng::new(ctx.opts.seed ^ 0x7a70);
                     let reach = pool_reach(pool, 1, &mut rng).unwrap_or(reach_now).max(reach_now);
-                    return TarotValue { key: t.key.clone(), name: t.name.clone(), p_win: expected_best(pool, round, now, 1, 1.0, f64::INFINITY, per_rarity, &mut rng).max(now), note, simulated: true, per_shop, reach, reach_now, money_gain: 0.0 };
+                    return TarotValue { deck: None, key: t.key.clone(), name: t.name.clone(), p_win: expected_best(pool, round, now, 1, 1.0, f64::INFINITY, per_rarity, &mut rng).max(now), note, simulated: true, per_shop, reach, reach_now, money_gain: 0.0 };
                 }
                 "c_wheel_of_fortune" => {
                     // card.lua: 1 in 4 hits a random joker without an edition; the edition is
                     // poll_edition(guaranteed, no negative): Polychrome 15%, Holo 35%, Foil 50%.
                     let plain: Vec<usize> = ctx.base.jokers.iter().enumerate().filter(|(_, j)| j.edition.is_none()).map(|(i, _)| i).collect();
                     if plain.is_empty() {
-                        return TarotValue { key: t.key.clone(), name: t.name.clone(), p_win: now, note: "no joker without an edition to hit".into(), simulated: true, per_shop, reach: reach_now, reach_now, money_gain: 0.0 };
+                        return TarotValue { deck: None, key: t.key.clone(), name: t.name.clone(), p_win: now, note: "no joker without an edition to hit".into(), simulated: true, per_shop, reach: reach_now, reach_now, money_gain: 0.0 };
                     }
                     let hit = (run.probability_normal / 4.0).min(1.0);
                     let (mut p, mut r) = (0.0, 0.0);
@@ -2103,17 +2160,18 @@ fn tarot_values(
                     let p = (1.0 - hit) * now + hit * p / k;
                     let reach = (1.0 - hit) * reach_now + hit * r / k;
                     let note = format!("{:.0}% chance: one of your {} jokers without an edition gets Polychrome 15% / Holo 35% / Foil 50%", hit * 100.0, plain.len());
-                    return TarotValue { key: t.key.clone(), name: t.name.clone(), p_win: p, note, simulated: true, per_shop, reach, reach_now, money_gain: 0.0 };
+                    return TarotValue { deck: None, key: t.key.clone(), name: t.name.clone(), p_win: p, note, simulated: true, per_shop, reach, reach_now, money_gain: 0.0 };
                 }
                 "c_high_priestess" if !planet_p.is_empty() => best_of_subsets(planet_p, 2).0.max(now),
                 _ => now,
             };
-            return TarotValue { key: t.key.clone(), name: t.name.clone(), p_win: p, note, simulated: p != now, per_shop, reach: reach_now, reach_now, money_gain: 0.0 };
+            return TarotValue { deck: None, key: t.key.clone(), name: t.name.clone(), p_win: p, note, simulated: p != now, per_shop, reach: reach_now, reach_now, money_gain: 0.0 };
         };
+        let changed = sim.then(|| d.clone());
         let (p, reach) = if sim { simulate(d) } else { (now, reach_now) };
         // Card-targeting tarots only work on cards in hand (in a blind or an opened pack)
         let note = if n > 0 && !from_hand { format!("{note}, if you hold suitable cards") } else if n > 0 { format!("{note} (from your hand)") } else { note };
-        TarotValue { key: t.key.clone(), name: t.name.clone(), p_win: p, note, simulated: sim, per_shop, reach, reach_now, money_gain: 0.0 }
+        TarotValue { deck: changed, key: t.key.clone(), name: t.name.clone(), p_win: p, note, simulated: sim, per_shop, reach, reach_now, money_gain: 0.0 }
     });
     // Money tarots: valued by what the extra money buys (rerolls, then the best joker found)
     for t in &mut out {
