@@ -1629,7 +1629,13 @@ fn shop_options(
             fool.p_win = p;
             fool.money_gain = gain;
             fool.simulated = true;
-            fool.note = format!("makes a {} (the last one used)", data.name(last));
+            // It needs a free consumable slot for the copy; using another card first changes the copy.
+            let full = run.consumables.len() as i64 >= run.consumable_slots;
+            fool.note = format!(
+                "makes {} (the last one used){}",
+                data.name(last),
+                if full { "; needs a free consumable slot, so sell one first (using one would change what it copies)" } else { "; use it before another tarot or planet, or it copies that one" }
+            );
         }
     }
     let tarot_p = |key: &str| tarots.iter().find(|t| t.key == key);
@@ -1794,10 +1800,12 @@ fn boss_reroll_option(ctx: &Ctx, run: &RunState, data: &GameData, spec: &Spec, n
     o
 }
 
-/// Win chance first (in half-point steps); on a tie the long run (By Ante 8), then the
-/// score reached this round.
+/// Win chance first, in 2-point tiers counted down from the best option (closer than
+/// that is simulation noise); within a tier the long run (By Ante 8), then the score
+/// reached this round.
 fn rank_options(out: &mut [ShopOption], base_reach: f64) {
-    let key = |o: &ShopOption| ((o.p_win * 200.0).round(), o.long_mult.unwrap_or(1.0), o.reach.unwrap_or(base_reach));
+    let top = out.iter().map(|o| o.p_win).fold(0.0, f64::max);
+    let key = |o: &ShopOption| (-((top - o.p_win) / 0.02).floor(), o.long_mult.unwrap_or(1.0), o.reach.unwrap_or(base_reach));
     out.sort_by(|a, b| {
         let (ka, kb) = (key(a), key(b));
         kb.0.total_cmp(&ka.0).then(kb.1.total_cmp(&ka.1)).then(kb.2.total_cmp(&ka.2))
