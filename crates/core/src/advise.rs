@@ -996,7 +996,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         long_score(&fill_long(project(&|k| Some(k) != sell, dollars), Some(g), back - cost as f64))
     };
     let sell_index = |action: &str| {
-        action.strip_prefix("replace ").and_then(|name| ctx.base.jokers.iter().position(|x| data.name(&x.key) == name))
+        action.strip_prefix("replace ").map(|n| n.trim_end_matches(", put it rightmost")).and_then(|name| ctx.base.jokers.iter().position(|x| data.name(&x.key) == name))
     };
     let ratio = |v: f64, sell: Option<usize>| v / sell.and_then(|i| sell_base.get(i).copied().flatten()).unwrap_or(l0);
     let long_mults: Vec<Option<f64>> = par_map(&pool_entries, |c| {
@@ -1261,7 +1261,18 @@ fn evaluate_candidate(ctx: &Ctx, j: Joker, cost: i64, base_odds: &[(f64, Stats)]
             if sj.eternal || (sell.is_none() && others > 0 && cur.key == "j_mr_bones") || sell.is_some_and(|x| x != i) || (sell.is_none() && only_weakest && Some(i) != weakest) {
                 continue;
             }
-            options.push((format!("replace {}", data.name(&cur.key)), with_joker(&without(base, i), j.clone(), i), vec![cur.clone()]));
+            // You can reorder freely: try the freed slot and the right end (where ×Mult goes);
+            // the quick screen only tries the end (Blueprint keeps the slot, next to what it copies).
+            let label = format!("replace {}", data.name(&cur.key));
+            let rest = without(base, i);
+            let end = rest.jokers.len();
+            if full || sims >= ctx.opts.sims || j.kind == Kind::Blueprint {
+                options.push((label.clone(), with_joker(&rest, j.clone(), i), vec![cur.clone()]));
+            }
+            if j.kind != Kind::Blueprint && (i != end || !(full || sims >= ctx.opts.sims)) {
+                let label = if i != end { format!("{label}, put it rightmost") } else { label };
+                options.push((label, with_joker(&rest, j.clone(), end), vec![cur.clone()]));
+            }
         }
     }
     // Pick the option with the best typical score, then simulate the rounds for it.
