@@ -1154,11 +1154,8 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                 st = deck_long(d, run.dollars + extra);
             }
             let gain = st.mean.max(1.0) / deck_base.mean.max(1.0);
-            // Glass breaks 1 in 4 times it scores; a card scores about every other round, so
-            // only this share of Glass cards is still there by Ante 8.
             if t.key == "c_justice" {
-                let survive = 0.75f64.powf(0.5 * 3.0 * antes_left);
-                1.0 + (gain - 1.0) * survive
+                1.0 + (gain - 1.0) * glass_presence(antes_left)
             } else {
                 gain
             }
@@ -1221,7 +1218,8 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         let with = |c: Card| {
             let mut d = ctx.fresh_deck.clone();
             d.push(c);
-            deck_long(&d, run.dollars).mean.max(1.0) / deck_base.mean.max(1.0)
+            let gain = deck_long(&d, run.dollars).mean.max(1.0) / deck_base.mean.max(1.0);
+            if c.enhancement == Some(crate::model::Enhancement::Glass) { 1.0 + (gain - 1.0) * glass_presence(antes_left) } else { gain }
         };
         let wild = (lovers && card.enhancement.is_none()).then(|| with(Card { enhancement: Some(crate::model::Enhancement::Wild), ..*card }));
         (with(*card), wild)
@@ -2052,6 +2050,18 @@ fn shop_options(
     }
     rank_options(&mut out, base_reach);
     (out, tarots)
+}
+
+/// Glass breaks 1 in 4 times it scores, and a card scores about every other round (1.5
+/// times an ante). What it's worth is the share of the antes left that it's expected to
+/// last, since it does its work on the way to Ante 8, not only at the end:
+/// the average of 0.75^(1.5 t) over t in [0, antes left].
+fn glass_presence(antes_left: f64) -> f64 {
+    let q: f64 = 0.75f64.powf(1.5);
+    if antes_left <= 0.0 {
+        return 1.0;
+    }
+    (1.0 - q.powf(antes_left)) / (antes_left * (1.0 / q).ln())
 }
 
 /// Money a joker pays per ante (3 rounds), averaged over the antes left, for jokers with
@@ -3057,6 +3067,14 @@ mod tests {
         assert!(pick.label.starts_with("pick 2♣") && pick.long_mult.is_some(), "{}", pick.label);
         let skip = a.options.iter().find(|o| o.kind == "skip").expect("Red Card makes skipping an option");
         assert!(skip.long_mult.unwrap() > 1.0);
+    }
+
+    #[test]
+    fn glass_counts_for_the_antes_it_lasts() {
+        assert!((glass_presence(0.0) - 1.0).abs() < 1e-9);
+        let (one, four) = (glass_presence(1.0), glass_presence(4.5));
+        assert!(one > four && four > 0.75f64.powf(1.5 * 4.5), "{one} {four}");
+        assert!((0.4..0.5).contains(&four), "{four}");
     }
 
     #[test]

@@ -103,7 +103,7 @@ pub fn candidate_moves(b: &Board, hand: &[Card], deck: &[Card], hands: i64, disc
         all.push((mask, idx, floor, mean));
     }
     let mut out: Vec<Move> = Vec::new();
-    let mut push = |m: Move, out: &mut Vec<Move>| {
+    let push = |m: Move, out: &mut Vec<Move>| {
         let key = |m: &Move| match m {
             Move::Play(v) => (0, { let mut v = v.clone(); v.sort(); v }),
             Move::Discard(v) => (1, { let mut v = v.clone(); v.sort(); v }),
