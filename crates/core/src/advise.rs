@@ -1998,6 +1998,31 @@ fn tarot_values(
                     let reach = pool_reach(pool, 1, &mut rng).unwrap_or(reach_now).max(reach_now);
                     return TarotValue { key: t.key.clone(), name: t.name.clone(), p_win: expected_best(pool, round, now, 1, 1.0, f64::INFINITY, per_rarity, &mut rng).max(now), note, simulated: true, per_shop, reach, reach_now, money_gain: 0.0 };
                 }
+                "c_wheel_of_fortune" => {
+                    // card.lua: 1 in 4 hits a random joker without an edition; the edition is
+                    // poll_edition(guaranteed, no negative): Polychrome 15%, Holo 35%, Foil 50%.
+                    let plain: Vec<usize> = ctx.base.jokers.iter().enumerate().filter(|(_, j)| j.edition.is_none()).map(|(i, _)| i).collect();
+                    if plain.is_empty() {
+                        return TarotValue { key: t.key.clone(), name: t.name.clone(), p_win: now, note: "no joker without an edition to hit".into(), simulated: true, per_shop, reach: reach_now, reach_now, money_gain: 0.0 };
+                    }
+                    let hit = (run.probability_normal / 4.0).min(1.0);
+                    let (mut p, mut r) = (0.0, 0.0);
+                    for &i in &plain {
+                        for (e, w) in [(Edition::Polychrome, 0.15), (Edition::Holo, 0.35), (Edition::Foil, 0.5)] {
+                            let mut b = board_for_deck(deck);
+                            b.jokers[i].edition = Some(e);
+                            p += w * ctx.odds_one(&b, &fresh, sims).0;
+                            if let Some(h) = &horizon {
+                                r += w * ctx.odds_one(&b, h, sims).1.mean / h.start.target.max(1.0);
+                            }
+                        }
+                    }
+                    let k = plain.len() as f64;
+                    let p = (1.0 - hit) * now + hit * p / k;
+                    let reach = (1.0 - hit) * reach_now + hit * r / k;
+                    let note = format!("{:.0}% chance: one of your {} jokers without an edition gets Polychrome 15% / Holo 35% / Foil 50%", hit * 100.0, plain.len());
+                    return TarotValue { key: t.key.clone(), name: t.name.clone(), p_win: p, note, simulated: true, per_shop, reach, reach_now, money_gain: 0.0 };
+                }
                 "c_high_priestess" if !planet_p.is_empty() => best_of_subsets(planet_p, 2).0.max(now),
                 _ => now,
             };
