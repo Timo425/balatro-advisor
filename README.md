@@ -60,6 +60,7 @@ balatro-advisor state [--json]     # the parsed run
 balatro-advisor gold               # Gold Stake stickers you're missing
 balatro-advisor score --hand 1,2,5 --trace          # score cards from your hand, step by step
 balatro-advisor score "KS KH:glass 5D:stone" --held "KD:steel"
+balatro-advisor whatif --sell misprint --add cavendish   # a plan vs the blinds ahead
 balatro-advisor bench              # engine timings
 ```
 

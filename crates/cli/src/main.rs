@@ -59,6 +59,34 @@ enum Cmd {
         #[arg(long, default_value_t = 42)]
         seed: u64,
     },
+    /// Simulate a plan against the blinds ahead, next to the board as it is. For "what if I…"
+    /// questions (meant for agents too): e.g. --sell mystic_summit,misprint
+    /// --jokers crafty,red_card,red_card --card "4D:lucky:red=4D:glass:red"
+    Whatif {
+        /// The whole joker list after the plan; owned jokers keep their values, naming one
+        /// twice copies it (Ankh). Keys or names, with :foil/:holo/:poly/:negative
+        #[arg(long, value_delimiter = ',')]
+        jokers: Option<Vec<String>>,
+        /// Jokers to sell
+        #[arg(long, value_delimiter = ',')]
+        sell: Vec<String>,
+        /// Jokers to add (fresh from the shop)
+        #[arg(long, value_delimiter = ',')]
+        add: Vec<String>,
+        /// A card changed, "AS KH" notation: "OLD=NEW", e.g. "4D:lucky:red=4D:glass:red" (repeatable)
+        #[arg(long = "card")]
+        cards: Vec<String>,
+        /// Cards added to the deck, e.g. "2C:poly:wild"
+        #[arg(long)]
+        add_cards: Option<String>,
+        /// Cards removed (Hanged Man), e.g. "2C 3S"
+        #[arg(long)]
+        remove_cards: Option<String>,
+        #[arg(long, default_value_t = 2000)]
+        sims: usize,
+        #[arg(long, default_value_t = 42)]
+        seed: u64,
+    },
     /// Live advisor page in your browser, updating whenever the game saves
     Ui {
         #[arg(long, default_value_t = 7777)]
@@ -211,6 +239,44 @@ fn main() -> Result<()> {
             let opts = balatro_advisor::advise::Options { sims: *sims, seed: *seed, ..Default::default() };
             let a = balatro_advisor::advise::analyze(&run, data, g.as_ref(), &opts);
             println!("{}", serde_json::to_string_pretty(&a)?);
+        }
+        Cmd::Whatif { jokers, sell, add, cards, add_cards, remove_cards, sims, seed } => {
+            let dir = dir()?;
+            let run = save::load(&save::run_path(&dir, profile(&dir)), data)?;
+            let parse = |s: &Option<String>| s.as_deref().map(Card::parse_list).transpose().map_err(anyhow::Error::msg).map(Option::unwrap_or_default);
+            let set_cards = cards
+                .iter()
+                .map(|c| {
+                    let (a, b) = c.split_once('=').context("--card takes OLD=NEW")?;
+                    Ok((Card::parse(a.trim()).map_err(anyhow::Error::msg)?, Card::parse(b.trim()).map_err(anyhow::Error::msg)?))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let plan = balatro_advisor::whatif::Plan {
+                jokers: jokers.clone(),
+                sell: sell.clone(),
+                add: add.clone(),
+                set_cards,
+                add_cards: parse(add_cards)?,
+                remove_cards: parse(remove_cards)?,
+            };
+            let o = balatro_advisor::whatif::run(&run, data, &plan, *sims, *seed).map_err(anyhow::Error::msg)?;
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&o)?);
+            } else {
+                println!("Plan board: {}", o.jokers.join(", "));
+                for n in &o.notes {
+                    println!("⚠ {n}");
+                }
+                println!("{:<28} {:>10} {:>16} {:>16}", "", "target", "now", "plan");
+                for (a, b) in o.now.iter().zip(&o.plan) {
+                    let cell = |x: &balatro_advisor::whatif::BlindOdds| {
+                        let bones = x.p_with_bones.map_or(String::new(), |p| format!(" ({:.0}%)", p * 100.0));
+                        format!("{:.1}%{bones} · {:.0}%", x.p_win * 100.0, x.reach * 100.0)
+                    };
+                    println!("{:<28} {:>10.0} {:>16} {:>16}", a.label, a.target, cell(a), cell(b));
+                }
+                println!("(win chance on score, Mr. Bones' save in brackets · average share of the target reached; {sims} rounds each)");
+            }
         }
         Cmd::Ui { port, no_open } => {
             let dir = dir()?;
