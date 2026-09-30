@@ -322,7 +322,14 @@ function render(d) {
       }).join("") + `</table><div class="more"><a href="#" onclick="try{localStorage.setItem('styleAll','${openAll ? "0" : "1"}')}catch(e){};render(last);return false">${openAll ? "show fewer" : `all ${o.styles.length} styles`}</a> <span class="muted">· hover a joker for its shop odds</span></div></section>`;
   }
   if (a.best_play) {
-    left += `<section><h2>Best play now</h2><div class="play">${a.best_play.cards.map((c) => `<span class="card" style="color:${suitColour(c)}">${esc(c)}</span>`).join("")}<span style="margin-left:6px"><b>${esc(a.best_play.hand)}</b> · ${num(a.best_play.score)}</span></div>${a.best_play.tip ? `<div class="order" style="margin-top:8px">💡 ${esc(a.best_play.tip)}</div>` : ""}</section>`;
+    const bp = a.best_play;
+    const cardsHtml = (cs) => cs.map((c) => `<span class="card" style="color:${suitColour(c)}">${esc(c)}</span>`).join("");
+    const what = (o) => o.action === "discard" ? "<b>discard</b>" : `<b>${esc(o.hand)}</b> · ${num(o.score)}`;
+    const alts = (bp.alternatives || []).map((o) => `<tr><td>${o.action === "discard" ? "discard " : ""}${cardsHtml(o.cards)}</td><td class="num muted">${o.action === "play" ? esc(o.hand) : ""}</td><td class="num">${pct(o.p_win)}</td></tr>`).join("");
+    left += `<section><h2>Best play now <small>${bp.p_win != null ? "each first move simulated through the rest of the round · heuristic play after it" : ""}</small></h2>
+      <div class="play">${bp.action === "discard" ? "<b>Discard</b> " : ""}${cardsHtml(bp.cards)}<span style="margin-left:6px">${what(bp)}${bp.p_win != null ? ` · <b style="color:${color(bp.p_win)}">${pct(bp.p_win)}</b> to win` : ""}</span></div>
+      ${bp.tip ? `<div class="order" style="margin-top:8px">💡 ${esc(bp.tip)}</div>` : ""}
+      ${alts ? `<details style="margin-top:6px"><summary class="muted">other first moves</summary><table class="mix">${alts}</table></details>` : ""}</section>`;
   }
 
   // Right: shop, dig list

@@ -139,12 +139,30 @@ pub struct Growth {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PlayAdvice {
+    /// "play" or "discard"
+    pub action: String,
     pub cards: Vec<String>,
     pub hand: String,
     pub score: f64,
+    /// Chance to win the round making this move first, then playing on (look-ahead).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub p_win: Option<f64>,
+    /// The other first moves simulated, best first.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub alternatives: Vec<PlayOption>,
     /// A tip about how to play the round (e.g. burn discards for Mystic Summit).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tip: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PlayOption {
+    pub action: String,
+    pub cards: Vec<String>,
+    pub hand: String,
+    pub score: f64,
+    pub p_win: f64,
+    pub mean_total: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1262,12 +1280,79 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                 if run.discards_left > 1 { "s" } else { "" }
             )
         });
-        sim::best_play(&b, &run.hand).map(|p| PlayAdvice {
-            cards: p.cards.iter().map(|&i| run.hand[i].label()).collect(),
-            hand: p.hand.name().to_string(),
-            score: p.floor,
-            tip,
-        })
+        // Look-ahead: each candidate first move (best plays, holding a special card back,
+        // the policy's dig or discard) is simulated through the rest of the round.
+        let look = ctx.specs.iter().find(|x| x.in_progress).map(|spec| {
+            let bb = ctx.board_for(&b, spec);
+            let start = ctx.start_for(spec, &bb);
+            let moves = sim::candidate_moves(&bb, &start.hand, &start.deck, start.hands, start.discards, start.target - start.scored, start.hand_size.max(1) as usize);
+            let res = par_map(&moves, |m| sim::odds_after(&bb, &start, m, ctx.opts.sims, ctx.opts.seed));
+            let mut opts: Vec<PlayOption> = moves
+                .iter()
+                .zip(res)
+                .map(|(m, (p, mean))| {
+                    let (action, idx) = match m {
+                        sim::Move::Play(v) => ("play", v),
+                        sim::Move::Discard(v) => ("discard", v),
+                    };
+                    let cards: Vec<Card> = idx.iter().map(|&i| start.hand[i]).collect();
+                    let (hand, score) = if action == "play" {
+                        let held: Vec<Card> = (0..start.hand.len()).filter(|i| !idx.contains(i)).map(|i| start.hand[i]).collect();
+                        let o = crate::engine::score(&bb, &cards, &held, &mut crate::engine::Unlucky, false);
+                        (o.hand.name().to_string(), o.score)
+                    } else {
+                        (String::new(), 0.0)
+                    };
+                    PlayOption { action: action.into(), cards: cards.iter().map(Card::label).collect(), hand, score, p_win: p, mean_total: mean }
+                })
+                .collect();
+            // Best chance first; within 2 points (noise), the higher mean round total
+            opts.sort_by(|a, b| b.p_win.total_cmp(&a.p_win));
+            let top = opts.first().map_or(0.0, |o| o.p_win);
+            opts.sort_by(|a, b| {
+                let ta = ((top - a.p_win) / 0.02).floor() as i64;
+                let tb = ((top - b.p_win) / 0.02).floor() as i64;
+                ta.cmp(&tb).then(b.mean_total.total_cmp(&a.mean_total))
+            });
+            opts
+        });
+        match look.filter(|o| !o.is_empty()) {
+            Some(mut opts) => {
+                let best = opts.remove(0);
+                opts.truncate(4);
+                // A tarot you hold that beats the best play (valued on this round): use it first.
+                // The Fool copies the last tarot used, so after it The Fool makes another.
+                let fool = run.consumables.iter().any(|c| c.key == "c_fool");
+                let first = run
+                    .consumables
+                    .iter()
+                    .filter_map(|c| tarots.iter().find(|t| t.key == c.key && t.key != "c_fool"))
+                    .filter(|t| t.p_win > best.p_win + 0.02)
+                    .max_by(|a, b| a.p_win.total_cmp(&b.p_win));
+                let tip = match first {
+                    Some(t) => Some(format!(
+                        "First use {} ({}): {:.0}% instead of {:.0}%{}{}",
+                        t.name,
+                        t.note,
+                        t.p_win * 100.0,
+                        best.p_win * 100.0,
+                        if fool { format!(". Then The Fool makes another {}: worth using on a second card", t.name) } else { String::new() },
+                        tip.map_or(String::new(), |x| format!(". {x}"))
+                    )),
+                    None => tip,
+                };
+                Some(PlayAdvice { action: best.action, cards: best.cards, hand: best.hand, score: best.score, p_win: Some(best.p_win), alternatives: opts, tip })
+            }
+            None => sim::best_play(&b, &run.hand).map(|p| PlayAdvice {
+                action: "play".into(),
+                cards: p.cards.iter().map(|&i| run.hand[i].label()).collect(),
+                hand: p.hand.name().to_string(),
+                score: p.floor,
+                p_win: None,
+                alternatives: vec![],
+                tip,
+            }),
+        }
     } else {
         None
     };

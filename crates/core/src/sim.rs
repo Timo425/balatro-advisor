@@ -68,6 +68,117 @@ pub fn best_play(b: &Board, hand: &[Card]) -> Option<Play> {
     best
 }
 
+/// A first move in a round, for the look-ahead in "Best play".
+#[derive(Debug, Clone, PartialEq)]
+pub enum Move {
+    Play(Vec<usize>),
+    Discard(Vec<usize>),
+}
+
+/// First moves worth simulating: the best few plays by score with every roll failing and
+/// by average score (Lucky rolls averaged), the best play holding back each special card
+/// (enhanced, sealed or with an edition), and what the usual policy would do (which may
+/// be a dig or a discard).
+pub fn candidate_moves(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i64, need: f64, size: usize) -> Vec<Move> {
+    let n = hand.len().min(12);
+    let flags = b.rule_flags();
+    let keep_kickers = kickers_matter(b);
+    // (mask, arranged cards, floor, mean)
+    let mut all: Vec<(u32, Vec<usize>, f64, f64)> = Vec::new();
+    for mask in 1u32..(1 << n) {
+        if mask.count_ones() > 5 {
+            continue;
+        }
+        let mut idx: Vec<usize> = (0..n).filter(|i| mask & (1 << i) != 0).collect();
+        arrange(hand, &mut idx);
+        let played: Vec<Card> = idx.iter().map(|&i| hand[i]).collect();
+        let info = hand::detect(&played, flags);
+        if !keep_kickers && info.scoring.len() != played.len() {
+            continue;
+        }
+        let held: Vec<Card> = (0..n).filter(|i| mask & (1 << i) == 0).map(|i| hand[i]).collect();
+        let floor = score::score_detected(b, &played, &held, info.clone(), &mut Unlucky, false).score;
+        let mut rng = Rng::new(0x5eed ^ mask as u64);
+        let mean = (0..6).map(|_| score::score_detected(b, &played, &held, info.clone(), &mut rng, false).score).sum::<f64>() / 6.0;
+        all.push((mask, idx, floor, mean));
+    }
+    let mut out: Vec<Move> = Vec::new();
+    let mut push = |m: Move, out: &mut Vec<Move>| {
+        let key = |m: &Move| match m {
+            Move::Play(v) => (0, { let mut v = v.clone(); v.sort(); v }),
+            Move::Discard(v) => (1, { let mut v = v.clone(); v.sort(); v }),
+        };
+        if !out.iter().any(|x| key(x) == key(&m)) {
+            out.push(m);
+        }
+    };
+    let mut by_floor: Vec<&(u32, Vec<usize>, f64, f64)> = all.iter().collect();
+    by_floor.sort_by(|a, b| b.2.total_cmp(&a.2));
+    for c in by_floor.iter().take(4) {
+        push(Move::Play(c.1.clone()), &mut out);
+    }
+    let mut by_mean = by_floor.clone();
+    by_mean.sort_by(|a, b| b.3.total_cmp(&a.3));
+    for c in by_mean.iter().take(3) {
+        push(Move::Play(c.1.clone()), &mut out);
+    }
+    // Hold one special card back for later
+    for k in 0..n {
+        let c = &hand[k];
+        let special = !c.debuff && (c.enhancement.is_some() || c.seal.is_some() || c.edition.is_some());
+        if special {
+            if let Some(best) = by_floor.iter().find(|x| x.0 & (1 << k) == 0) {
+                push(Move::Play(best.1.clone()), &mut out);
+            }
+        }
+    }
+    match decide(b, hand, deck, hands, discards, need, size) {
+        Action::Play(idx, _) if !idx.is_empty() => push(Move::Play(idx), &mut out),
+        Action::Discard(idx) if !idx.is_empty() => push(Move::Discard(idx), &mut out),
+        _ => {}
+    }
+    out
+}
+
+/// Chance to win the round after making `first`, then playing on with the usual policy,
+/// and the mean round total. Same seeds for every move, so moves compare on the same draws.
+pub fn odds_after(b: &Board, start: &RoundStart, first: &Move, sims: usize, seed: u64) -> (f64, f64) {
+    let size = start.hand_size.max(1) as usize;
+    let (mut wins, mut sum) = (0usize, 0.0);
+    for i in 0..sims {
+        let mut rng = Rng::new(seed.wrapping_add(i as u64 * 7919));
+        let mut deck = start.deck.clone();
+        shuffle(&mut deck, &mut rng);
+        let mut hand = start.hand.clone();
+        draw(&mut hand, &mut deck, size);
+        let mut bb = b.clone();
+        bb.hands_left = start.hands;
+        bb.discards_left = start.discards;
+        bb.deck_remaining = deck.len() as i64;
+        let next = match first {
+            Move::Play(idx) => {
+                let played: Vec<Card> = idx.iter().filter_map(|&k| hand.get(k).copied()).collect();
+                let held: Vec<Card> = (0..hand.len()).filter(|k| !idx.contains(k)).map(|k| hand[k]).collect();
+                let total = start.scored + score::score(&bb, &played, &held, &mut rng, false).score;
+                if total >= start.target || start.hands <= 1 {
+                    wins += (total >= start.target) as usize;
+                    sum += total;
+                    continue;
+                }
+                RoundStart { hand: held, deck, hands: start.hands - 1, scored: total, ..start.clone() }
+            }
+            Move::Discard(idx) => {
+                let kept: Vec<Card> = (0..hand.len()).filter(|k| !idx.contains(k)).map(|k| hand[k]).collect();
+                RoundStart { hand: kept, deck, discards: (start.discards - 1).max(0), ..start.clone() }
+            }
+        };
+        let r = sim_round(b, &next, &mut rng);
+        wins += r.won as usize;
+        sum += r.total;
+    }
+    (wins as f64 / sims.max(1) as f64, sum / sims.max(1) as f64)
+}
+
 /// Fisher–Yates.
 pub fn shuffle<T>(v: &mut [T], rng: &mut Rng) {
     for i in (1..v.len()).rev() {
