@@ -47,6 +47,7 @@ pub struct RunState {
     /// Tarots used this run (Fortune Teller).
     pub tarots_used: i64,
     /// What The Fool would copy (`GAME.last_tarot_planet`).
+    #[serde(default)]
     pub last_tarot_planet: Option<String>,
     /// Erosion compares the deck against this.
     pub starting_deck_size: i64,
@@ -80,6 +81,7 @@ pub struct RunState {
     pub pool_flags: Vec<String>,
     pub banned_keys: Vec<String>,
     /// Times each boss has been drawn this run (`GAME.bosses_used`): rerolls pick among the least used.
+    #[serde(default)]
     pub bosses_used: Vec<(String, i64)>,
     pub shop_rates: ShopRates,
     pub snapshot: Snapshot,
