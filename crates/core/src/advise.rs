@@ -1237,13 +1237,20 @@ fn evaluate_candidate(ctx: &Ctx, j: Joker, cost: i64, base_odds: &[(f64, Stats)]
             options.push(("add (leftmost)".into(), with_joker(base, j.clone(), 0), vec![]));
         }
     } else {
+        // A perished joker (debuffed, 0 rounds left) is dead weight: it's the one to sell.
+        let perished = ctx.run.jokers.iter().position(|sj| sj.perishable == Some(0) && !sj.eternal);
         // Screening only tries the weakest non-eternal joker; the full pass tries every swap.
-        let weakest = ctx.shares.iter().enumerate()
-            .filter(|(i, _)| ctx.run.jokers.get(*i).is_some_and(|sj| !sj.eternal))
-            .min_by(|a, b| a.1.total_cmp(b.1))
-            .map(|(i, _)| i);
+        // Ties in score go against jokers that don't score but do something else (Mr. Bones).
+        let keeps_value = |i: usize| base.jokers.get(i).is_some_and(|j| j.key == "j_mr_bones") as u8;
+        let weakest = perished.or_else(|| {
+            ctx.shares.iter().enumerate()
+                .filter(|(i, _)| ctx.run.jokers.get(*i).is_some_and(|sj| !sj.eternal))
+                .min_by(|a, b| a.1.total_cmp(b.1).then(keeps_value(a.0).cmp(&keeps_value(b.0))))
+                .map(|(i, _)| i)
+        });
         for (i, (cur, sj)) in base.jokers.iter().zip(&ctx.run.jokers).enumerate() {
-            if sj.eternal || sell.is_some_and(|x| x != i) || (sell.is_none() && !full && sims < ctx.opts.sims && Some(i) != weakest) {
+            let only_weakest = perished.is_some() || (!full && sims < ctx.opts.sims);
+            if sj.eternal || sell.is_some_and(|x| x != i) || (sell.is_none() && only_weakest && Some(i) != weakest) {
                 continue;
             }
             options.push((format!("replace {}", data.name(&cur.key)), with_joker(&without(base, i), j.clone(), i), vec![cur.clone()]));
@@ -1251,11 +1258,16 @@ fn evaluate_candidate(ctx: &Ctx, j: Joker, cost: i64, base_odds: &[(f64, Stats)]
     }
     // Pick the option with the best typical score, then simulate the rounds for it.
     let mut best: Option<(String, Board, Vec<Joker>, Stats)> = None;
+    let survival = |removed: &[Joker]| removed.iter().any(|x| x.key == "j_mr_bones");
     for (label, b, removed) in options {
         let r: Vec<&Joker> = removed.iter().collect();
         let n = if sims >= ctx.opts.sims { ctx.opts.hand_samples } else { SCREEN_DEALS };
         let t = ctx.typical_n(&b, &[&j], &r, n);
-        if best.as_ref().is_none_or(|(_, _, _, bt)| t.mean > bt.mean) {
+        // Equal scores: keep Mr. Bones (his value is surviving, not scoring)
+        let better = |bt: &Stats, bremoved: &[Joker]| {
+            t.mean > bt.mean * 1.001 || (t.mean >= bt.mean * 0.999 && survival(bremoved) && !survival(&removed))
+        };
+        if best.as_ref().is_none_or(|(_, _, br, bt)| better(bt, br)) {
             best = Some((label, b, removed, t));
         }
     }
@@ -2032,7 +2044,10 @@ fn tarot_values(
                     let v: i64 = run.jokers.iter().map(|j| j.sell_value).sum();
                     format!("+${} (your jokers' sell value, max $50)", v.min(50))
                 }
-                "c_judgement" if run.jokers.len() as i64 >= run.joker_slots => "creates a random joker; needs a free joker slot, so sell one first".into(),
+                "c_judgement" if run.jokers.len() as i64 >= run.joker_slots => match run.jokers.iter().find(|j| j.perishable == Some(0)) {
+                    Some(dead) => format!("creates a random joker; needs a free joker slot: sell {} first (perished)", data.name(&dead.key)),
+                    None => "creates a random joker; needs a free joker slot, so sell one first".into(),
+                },
                 "c_judgement" => "creates a random joker".into(),
                 "c_high_priestess" => "creates 2 random planets".into(),
                 "c_emperor" => "creates 2 random tarots".into(),
