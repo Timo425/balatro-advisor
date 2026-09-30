@@ -2178,11 +2178,15 @@ fn tarot_values(
     // Card-targeting tarots only reach the cards in hand. When a hand is on screen (a blind or
     // an opened pack), targets are limited to those cards; otherwise any card is assumed.
     let mut in_hand = vec![run.hand.is_empty(); deck.len()];
+    // For each card in hand, its place in `deck` (so a changed deck maps back onto the hand)
+    let mut hand_idx: Vec<Option<usize>> = Vec::new();
     if !run.hand.is_empty() {
         for h in &run.hand {
-            if let Some(i) = (0..deck.len()).find(|&i| !in_hand[i] && deck[i].rank == h.rank && deck[i].suit == h.suit && deck[i].enhancement == h.enhancement) {
+            let i = (0..deck.len()).find(|&i| !in_hand[i] && deck[i].rank == h.rank && deck[i].suit == h.suit && deck[i].enhancement == h.enhancement && deck[i].seal == h.seal);
+            if let Some(i) = i {
                 in_hand[i] = true;
             }
+            hand_idx.push(i);
         }
     }
     let from_hand = !run.hand.is_empty();
@@ -2194,6 +2198,17 @@ fn tarot_values(
             v.reverse();
         }
         v
+    };
+    // For ×Mult enhancements (Glass): Red Seal cards first, even over a weaker enhancement
+    // (the seal retriggers the card, so its ×2 applies twice)
+    let red_first = |pred: &dyn Fn(&Card) -> bool| -> Vec<usize> {
+        let mut sealed: Vec<usize> = (0..deck.len())
+            .filter(|&i| in_hand[i] && deck[i].seal == Some(crate::model::Seal::Red) && !matches!(deck[i].enhancement, Some(Enhancement::Glass | Enhancement::Steel)) && pred(&deck[i]))
+            .collect();
+        sealed.sort_by_key(|&i| std::cmp::Reverse(deck[i].rank.0));
+        let rest: Vec<usize> = plain(pred, true).into_iter().filter(|i| !sealed.contains(i)).collect();
+        sealed.extend(rest);
+        sealed
     };
 
     let horizon = ctx.specs.iter().find(|x| x.horizon).cloned();
@@ -2214,9 +2229,16 @@ fn tarot_values(
         ctx.odds_one(&board_for_deck(d), &sp, sims).1.mean / sp.start.target.max(1.0)
     };
     let reach_now = reach_of(deck);
+    // In a blind, the round being played continues from the real hand (changed) and draw
+    // pile; otherwise a fresh round with the changed deck.
     let simulate = |d: Vec<Card>| -> (f64, f64) {
         let mut sp = fresh.clone();
         sp.start.deck = d.clone();
+        if spec.in_progress && d.len() == deck.len() && hand_idx.iter().all(|i| i.is_some()) {
+            let mut live = spec.clone();
+            live.start.hand = hand_idx.iter().map(|i| d[i.unwrap()]).collect();
+            sp = live;
+        }
         (ctx.odds_one(&board_for_deck(&d), &sp, sims).0, reach_of(&d))
     };
 
@@ -2265,6 +2287,7 @@ fn tarot_values(
                     // Steel and Stone go on cards you'd hold or throw in; the rest on your main suit's high cards
                     let targets = match e {
                         Some(Enhancement::Steel) => plain(&|c: &Card| main.is_none_or(|m| c.suit != m), true),
+                        Some(Enhancement::Glass) => red_first(&is_main),
                         Some(Enhancement::Stone) => plain(&|c: &Card| c.suit == weakest_suit, false),
                         _ => plain(&is_main, true),
                     };
