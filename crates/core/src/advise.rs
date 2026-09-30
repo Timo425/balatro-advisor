@@ -238,6 +238,10 @@ pub struct ShopOption {
     /// Money it gives back (money tarots), counted in `money_after`.
     #[serde(default)]
     pub money_gain: f64,
+    /// Share of this round's target a typical round scores after taking it, where known:
+    /// breaks ties when win chances saturate (Mr. Bones, easy blinds).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reach: Option<f64>,
     /// Board strength by Ante 8 relative to not taking it (see `Candidate::long_mult`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub long_mult: Option<f64>,
@@ -1434,28 +1438,32 @@ fn shop_options(
             (!softlock || ctx.base.levels[h as usize].played > 0).then_some((c, h))
         })
         .collect();
-    let planet_p: Vec<f64> = par_map(&planets, |(_, h)| {
+    let planet_p: Vec<(f64, f64)> = par_map(&planets, |(_, h)| {
         let mut b = ctx.base.clone();
         let l = b.levels[*h as usize];
         b.levels[*h as usize] = l.with_level(l.level + 1);
-        ctx.odds_one(&b, spec, ctx.opts.sims).0
+        let (p, st) = ctx.odds_one(&b, spec, ctx.opts.sims);
+        (p, st.mean / spec.start.target.max(1.0))
     });
+    let planet_reach: Vec<f64> = planet_p.iter().map(|x| x.1).collect();
+    let planet_p: Vec<f64> = planet_p.iter().map(|x| x.0).collect();
     let p_of = |key: &str| planets.iter().position(|(c, _)| c.key == key).map(|i| planet_p[i]);
+    let reach_of = |key: &str| planets.iter().position(|(c, _)| c.key == key).map(|i| planet_reach[i]);
 
     let shop_cards = run.shop.as_ref().map(|s| s.other_cards.clone()).unwrap_or_default();
     for c in shop_cards.iter().filter(|c| c.set == "Planet") {
         if let Some(p) = p_of(&c.key) {
-            out.push(ShopOption { label: c.name.clone(), kind: "planet".into(), cost: c.cost, money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: Some(c.key.clone()), desc: None, p_win: p, note: format!("levels up {}", data.center(&c.key).and_then(|x| x.config.get("hand_type")).and_then(|v| v.as_str()).unwrap_or("")) });
+            out.push(ShopOption { reach: None, label: c.name.clone(), kind: "planet".into(), cost: c.cost, money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: Some(c.key.clone()), desc: None, p_win: p, note: format!("levels up {}", data.center(&c.key).and_then(|x| x.config.get("hand_type")).and_then(|v| v.as_str()).unwrap_or("")) });
         }
     }
     for c in run.open_pack.iter().filter(|c| c.set == "Planet") {
         if let Some(p) = p_of(&c.key) {
-            out.push(ShopOption { label: format!("pick {}", c.name), kind: "planet".into(), cost: 0, p_win: p, note: format!("levels up {}", data.center(&c.key).and_then(|x| x.config.get("hand_type")).and_then(|v| v.as_str()).unwrap_or("")), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: Some(c.key.clone()), desc: None });
+            out.push(ShopOption { reach: None, label: format!("pick {}", c.name), kind: "planet".into(), cost: 0, p_win: p, note: format!("levels up {}", data.center(&c.key).and_then(|x| x.config.get("hand_type")).and_then(|v| v.as_str()).unwrap_or("")), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: Some(c.key.clone()), desc: None });
         }
     }
     for c in run.consumables.iter().filter(|c| c.set == "Planet") {
         if let Some(p) = p_of(&c.key) {
-            out.push(ShopOption { label: format!("{} (you have it)", c.name), kind: "planet".into(), cost: 0, p_win: p, note: "use it before the blind".into(), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: Some(c.key.clone()), desc: None });
+            out.push(ShopOption { reach: None, label: format!("{} (you have it)", c.name), kind: "planet".into(), cost: 0, p_win: p, note: "use it before the blind".into(), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: Some(c.key.clone()), desc: None });
         }
     }
 
@@ -1492,7 +1500,7 @@ fn shop_options(
                 }
             }
             let top = (0..n).max_by_key(|&i| best_counts[i]).unwrap_or(0);
-            out.push(ShopOption {
+            out.push(ShopOption { reach: None,
                 money_after: 0.0,
                 interest_now: 0,
                 interest_after: 0,
@@ -1510,7 +1518,7 @@ fn shop_options(
         } else if pk.key.starts_with("p_buffoon") {
             // Jokers picked from a pack are free: no budget limit on what's inside.
             let e = expected_best(pool, round, now, extra, 1.0, f64::INFINITY, per_rarity, &mut rng);
-            out.push(ShopOption { label: pk.name.clone(), kind: "pack".into(), cost: pk.cost, p_win: e, note: format!("{extra} jokers{pick_note}"), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: None, desc: None });
+            out.push(ShopOption { reach: None, label: pk.name.clone(), kind: "pack".into(), cost: pk.cost, p_win: e, note: format!("{extra} jokers{pick_note}"), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: None, desc: None });
         }
     }
 
@@ -1526,7 +1534,7 @@ fn shop_options(
             }
             let budget = run.dollars - spent as f64;
             let e = expected_best(pool, round, now, slots * k, joker_share, budget, per_rarity, &mut rng);
-            out.push(ShopOption {
+            out.push(ShopOption { reach: None,
                 money_after: 0.0,
                 interest_now: 0,
                 interest_after: 0,
@@ -1577,7 +1585,7 @@ fn shop_options(
                 _ => (false, "not valued".into()),
             };
             let p = if sim { ctx.odds_one(&ctx.base, &sp, ctx.opts.sims).0 } else { now };
-            out.push(ShopOption { label: v.name.clone(), kind: "voucher".into(), cost: v.cost, p_win: p, note, money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: None, desc: None });
+            out.push(ShopOption { reach: None, label: v.name.clone(), kind: "voucher".into(), cost: v.cost, p_win: p, note, money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: None, desc: None });
         }
     }
     // Tarots: applied to the deck the way a player sensibly would, then the round re-simulated.
@@ -1598,17 +1606,17 @@ fn shop_options(
     let shop_cards = run.shop.as_ref().map(|s| s.other_cards.clone()).unwrap_or_default();
     for c in shop_cards.iter().filter(|c| c.set == "Tarot") {
         if let Some(t) = tarot_p(&c.key) {
-            out.push(ShopOption { label: c.name.clone(), kind: "tarot".into(), cost: c.cost, p_win: t.p_win, note: t.note.clone(), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: t.money_gain, long_mult: None, key: None, desc: None });
+            out.push(ShopOption { reach: None, label: c.name.clone(), kind: "tarot".into(), cost: c.cost, p_win: t.p_win, note: t.note.clone(), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: t.money_gain, long_mult: None, key: None, desc: None });
         }
     }
     for c in run.open_pack.iter().filter(|c| c.set == "Tarot") {
         if let Some(t) = tarot_p(&c.key) {
-            out.push(ShopOption { label: format!("pick {}", c.name), kind: "tarot".into(), cost: 0, p_win: t.p_win, note: format!("{} · next ante reach {:.0}% → {:.0}%", t.note, t.reach_now * 100.0, t.reach * 100.0), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: t.money_gain, long_mult: None, key: None, desc: None });
+            out.push(ShopOption { reach: None, label: format!("pick {}", c.name), kind: "tarot".into(), cost: 0, p_win: t.p_win, note: format!("{} · next ante reach {:.0}% → {:.0}%", t.note, t.reach_now * 100.0, t.reach * 100.0), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: t.money_gain, long_mult: None, key: None, desc: None });
         }
     }
     for c in run.consumables.iter().filter(|c| c.set == "Tarot") {
         if let Some(t) = tarot_p(&c.key) {
-            out.push(ShopOption { label: format!("{} (you have it)", c.name), kind: "tarot".into(), cost: 0, p_win: t.p_win, note: format!("{} · use it during a blind", t.note), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: t.money_gain, long_mult: None, key: None, desc: None });
+            out.push(ShopOption { reach: None, label: format!("{} (you have it)", c.name), kind: "tarot".into(), cost: 0, p_win: t.p_win, note: format!("{} · use it during a blind", t.note), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: t.money_gain, long_mult: None, key: None, desc: None });
         }
     }
     for pk in run.shop.as_ref().map(|s| s.boosters.clone()).unwrap_or_default().iter().filter(|p| p.key.starts_with("p_arcana")) {
@@ -1617,7 +1625,7 @@ fn shop_options(
         let choose = center.config.get("choose").and_then(|v| v.as_u64()).unwrap_or(1);
         let vals: Vec<f64> = tarots.iter().map(|t| t.p_win.max(now)).collect();
         let (avg, top) = best_of_subsets(&vals, extra);
-        out.push(ShopOption {
+        out.push(ShopOption { reach: None,
             label: pk.name.clone(),
             kind: "pack".into(),
             cost: pk.cost,
@@ -1656,7 +1664,7 @@ fn shop_options(
         let action = c.sell_note.clone().unwrap_or(action);
         let note = [stickers, Some(action).filter(|a| !a.is_empty()), later].into_iter().flatten().collect::<Vec<_>>().join(" · ");
         let from_pack = run.open_pack.iter().any(|p| p.key == c.key);
-        out.push(ShopOption {
+        out.push(ShopOption { reach: None,
             label: if from_pack { format!("pick {}", c.name) } else { c.name.clone() },
             kind: "joker".into(),
             cost: c.cost,
@@ -1672,13 +1680,24 @@ fn shop_options(
             desc: c.desc.clone(),
         });
     }
+    let base_reach = base_odds.get(round).map_or(0.0, |o| o.1.mean / spec.start.target.max(1.0));
     for o in &mut out {
+        if o.kind == "planet" {
+            o.reach = o.key.as_deref().and_then(reach_of);
+        } else if o.kind == "joker" {
+            o.reach = o.key.as_ref().and_then(|k| shop_jokers.iter().find(|c| &c.key == k)).and_then(|c| c.reach.get(round).copied());
+        }
         o.unaffordable = o.cost as f64 > run.dollars;
         o.money_after = run.dollars - o.cost as f64 + o.money_gain;
         o.interest_now = interest(run.dollars, run.interest_amount, run.interest_cap);
         o.interest_after = interest(o.money_after, run.interest_amount, run.interest_cap);
     }
-    out.sort_by(|a, b| b.p_win.total_cmp(&a.p_win));
+    // Win chance first (in half-point steps), then the score reached
+    let key = |o: &ShopOption| ((o.p_win * 200.0).round(), o.reach.unwrap_or(base_reach));
+    out.sort_by(|a, b| {
+        let (ka, kb) = (key(a), key(b));
+        kb.0.total_cmp(&ka.0).then(kb.1.total_cmp(&ka.1))
+    });
     (out, tarots)
 }
 
