@@ -1248,9 +1248,17 @@ fn evaluate_candidate(ctx: &Ctx, j: Joker, cost: i64, base_odds: &[(f64, Stats)]
                 .min_by(|a, b| a.1.total_cmp(b.1).then(keeps_value(a.0).cmp(&keeps_value(b.0))))
                 .map(|(i, _)| i)
         });
+        // Mr. Bones scores nothing but saves a run: he's only sold when nothing else can be.
+        let others = ctx.run.jokers.iter().zip(&base.jokers).filter(|(sj, j)| !sj.eternal && j.key != "j_mr_bones").count();
+        let weakest = weakest.filter(|&i| others == 0 || keeps_value(i) == 0).or_else(|| {
+            ctx.shares.iter().enumerate()
+                .filter(|(i, _)| ctx.run.jokers.get(*i).is_some_and(|sj| !sj.eternal) && keeps_value(*i) == 0)
+                .min_by(|a, b| a.1.total_cmp(b.1))
+                .map(|(i, _)| i)
+        });
         for (i, (cur, sj)) in base.jokers.iter().zip(&ctx.run.jokers).enumerate() {
             let only_weakest = perished.is_some() || (!full && sims < ctx.opts.sims);
-            if sj.eternal || sell.is_some_and(|x| x != i) || (sell.is_none() && only_weakest && Some(i) != weakest) {
+            if sj.eternal || (sell.is_none() && others > 0 && cur.key == "j_mr_bones") || sell.is_some_and(|x| x != i) || (sell.is_none() && only_weakest && Some(i) != weakest) {
                 continue;
             }
             options.push((format!("replace {}", data.name(&cur.key)), with_joker(&without(base, i), j.clone(), i), vec![cur.clone()]));
