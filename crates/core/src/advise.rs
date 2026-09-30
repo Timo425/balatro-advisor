@@ -1105,6 +1105,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     for (i, m) in long_idx.into_iter().zip(long_opts) {
         options[i].long_mult = m;
     }
+    let base_reach_now = base_odds.get(key_round).zip(ctx.specs.get(key_round)).map_or(0.0, |(o, sp)| o.1.mean / sp.start.target.max(1.0));
     // Random jokers (Judgement, rerolls, Buffoon packs): the best one seen, and one you
     // don't want is sold, so a draw is worth at least a typical find (×1.00). Its price
     // comes off as one-off money.
@@ -1117,6 +1118,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             _ => continue,
         };
         let draw = long_draw(&pool_entries, cards, share, &mut rng);
+        o.reach = Some(reach_draw(&pool_entries, key_round, base_reach_now, cards, share, &mut rng));
         let price = long_score(&fill_long(project(&|_| true, run.dollars), None, -(o.cost as f64))) / l0;
         o.long_mult = Some(draw * price);
     }
@@ -2084,6 +2086,30 @@ fn income_per_ante(key: &str, ability: &serde_json::Value, run: &RunState, antes
     per_round * 3.0
 }
 
+/// Like `long_draw`, for the share of this round's target reached: the best joker seen,
+/// never below what you reach now.
+fn reach_draw(pool: &[Candidate], round: usize, now: f64, cards: usize, joker_share: f64, rng: &mut crate::engine::Rng) -> f64 {
+    use crate::engine::Rolls;
+    let by_rarity: [Vec<f64>; 4] = [0u8, 1, 2, 3].map(|r| pool.iter().filter(|c| c.rarity_n == r).filter_map(|c| c.reach.get(round).copied()).collect());
+    let trials = 2000;
+    let mut total = 0.0;
+    for _ in 0..trials {
+        let mut best = now;
+        for _ in 0..cards {
+            if !rng.chance(joker_share) {
+                continue;
+            }
+            let roll = rng.unit();
+            let list = &by_rarity[if roll > 0.95 { 3 } else if roll > 0.7 { 2 } else { 1 }];
+            if !list.is_empty() {
+                best = best.max(list[rng.below(list.len())]);
+            }
+        }
+        total += best;
+    }
+    total / trials as f64
+}
+
 /// Average over random draws of the best By Ante 8 value among `cards` shop cards (each a
 /// joker with chance `joker_share`, rarity 70/25/5), never below ×1.00 (a bad one is sold).
 fn long_draw(pool: &[Candidate], cards: usize, joker_share: f64, rng: &mut crate::engine::Rng) -> f64 {
@@ -2179,9 +2205,13 @@ fn boss_reroll_option(ctx: &Ctx, run: &RunState, data: &GameData, spec: &Spec, n
 /// Win chance first, in 2-point tiers counted down from the best option (closer than
 /// that is simulation noise); within a tier the long run (By Ante 8) in 0.05 tiers from
 /// the tier's best, for the same reason; then the score reached this round, then the
-/// raw By Ante 8 value and win chance.
+/// raw By Ante 8 value and win chance. When no option gives a real chance, score reached
+/// comes before the long run.
 fn rank_options(out: &mut [ShopOption], base_reach: f64) {
     let top = out.iter().map(|o| o.p_win).fold(0.0, f64::max);
+    // In trouble (no option gets you a real chance): the score you reach now comes before
+    // the long run, since there may not be a long run.
+    let trouble = top < 0.2;
     let p_tier = |o: &ShopOption| ((top - o.p_win) / 0.02).floor() as i64;
     let long = |o: &ShopOption| o.long_mult.unwrap_or(1.0);
     let tops: std::collections::HashMap<i64, f64> = out.iter().fold(Default::default(), |mut m, o| {
@@ -2196,7 +2226,10 @@ fn rank_options(out: &mut [ShopOption], base_reach: f64) {
     out.sort_by(|a, b| {
         let (ka, kb) = (key(a), key(b));
         // then, rather than list order, the raw numbers
-        ka.0.cmp(&kb.0).then(ka.1.cmp(&kb.1)).then(kb.2.total_cmp(&ka.2)).then(long(b).total_cmp(&long(a))).then(b.p_win.total_cmp(&a.p_win))
+        let first = ka.0.cmp(&kb.0);
+        let (reach, longer) = (kb.2.total_cmp(&ka.2), ka.1.cmp(&kb.1));
+        let mid = if trouble { reach.then(longer) } else { longer.then(reach) };
+        first.then(mid).then(long(b).total_cmp(&long(a))).then(b.p_win.total_cmp(&a.p_win))
     });
 }
 
