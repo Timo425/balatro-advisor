@@ -1576,7 +1576,14 @@ fn shop_options(
     }
     // Vouchers: the ones that change a round are re-simulated; economy ones get exact notes.
     if let Some(shop) = &run.shop {
-        for v in &shop.vouchers {
+        for v in shop.vouchers.iter().filter(|v| matches!(v.key.as_str(), "v_directors_cut" | "v_retcon")) {
+            let mut o = boss_reroll_option(ctx, run, data, spec, now);
+            o.label = v.name.clone();
+            o.cost = v.cost;
+            o.note = format!("{}{}", if v.key == "v_retcon" { "reroll the boss for $10, as often as you like" } else { "reroll the boss once per ante for $10" }, o.note);
+            out.push(o);
+        }
+        for v in shop.vouchers.iter().filter(|v| !matches!(v.key.as_str(), "v_directors_cut" | "v_retcon")) {
             let mut sp = spec.clone();
             let (sim, note): (bool, String) = match v.key.as_str() {
                 "v_grabber" | "v_nacho_tong" => {
@@ -1717,6 +1724,74 @@ fn shop_options(
     }
     rank_options(&mut out, base_reach);
     (out, tarots)
+}
+
+/// Director's Cut / Retcon: the options round's boss against a reroll into any boss the
+/// game could draw instead (`get_new_boss` in common_events.lua: bosses allowed at this
+/// ante, showdown ones only on the final ante, banned ones out, least drawn first).
+/// Rerolling costs $10, counted in the money after when it's worth doing.
+fn boss_reroll_option(ctx: &Ctx, run: &RunState, data: &GameData, spec: &Spec, now: f64) -> ShopOption {
+    let mut o = ShopOption {
+        reach: None,
+        label: String::new(),
+        kind: "voucher".into(),
+        cost: 0,
+        p_win: now,
+        note: String::new(),
+        money_after: 0.0,
+        interest_now: 0,
+        interest_after: 0,
+        unaffordable: false,
+        money_gain: 0.0,
+        long_mult: None,
+        key: None,
+        desc: None,
+    };
+    let Some(cur) = data.blinds.iter().find(|b| b.key == spec.blind_key && !b.boss.is_null()) else {
+        o.note = " (no boss left this ante to reroll)".into();
+        return o;
+    };
+    let showdown = run.ante >= 2 && run.ante % run.win_ante.max(1) == 0;
+    let used = |k: &str| run.bosses_used.iter().find(|(x, _)| x == k).map_or(0, |x| x.1);
+    let eligible: Vec<&crate::data::Blind> = data
+        .blinds
+        .iter()
+        .filter(|b| b.key != cur.key && !run.banned_keys.contains(&b.key))
+        .filter(|b| {
+            let sd = b.boss.get("showdown").and_then(|v| v.as_bool()).unwrap_or(false);
+            let min = b.boss.get("min").and_then(|v| v.as_i64());
+            min.is_some() && if showdown { sd } else { !sd && min.unwrap_or(99) <= run.ante.max(1) }
+        })
+        .collect();
+    let least = eligible.iter().map(|b| used(&b.key)).min().unwrap_or(0);
+    let eligible: Vec<&crate::data::Blind> = eligible.into_iter().filter(|b| used(&b.key) == least).collect();
+    if eligible.is_empty() {
+        o.note = " (no other boss to reroll into)".into();
+        return o;
+    }
+    let base_target = spec.start.target / cur.mult.max(0.1);
+    let odds: Vec<f64> = par_map(&eligible, |b| {
+        let mut sp = spec.clone();
+        sp.blind_key = b.key.clone();
+        sp.blind_name = b.name.clone();
+        sp.rules = RoundRules::for_blind(&b.key);
+        sp.start.target = base_target * b.mult;
+        sp.start.hand_size = run.hand_size + sp.rules.hand_size_delta;
+        sp.start.hands = if b.key == "bl_needle" { 1 } else { run.round_hands };
+        sp.start.discards = if b.key == "bl_water" { 0 } else { run.round_discards };
+        ctx.odds_one(&ctx.base, &sp, (ctx.opts.sims / 2).max(50)).0
+    });
+    let avg = odds.iter().sum::<f64>() / odds.len() as f64;
+    let rough = eligible.iter().filter(|b| unmodelled_boss(&b.key).is_some()).count();
+    let rough_note = if rough > 0 { format!("; {rough} of them have effects that aren't simulated, so the reroll may look better than it is") } else { String::new() };
+    if avg > now {
+        o.p_win = avg;
+        o.money_gain = -10.0;
+        o.note = format!(": worth using on {} now ({:.0}% → {:.0}% on average over {} bosses it could become{rough_note})", cur.name, now * 100.0, avg * 100.0, eligible.len());
+    } else {
+        o.note = format!(": keep {} ({:.0}%; a reroll averages {:.0}% over {} bosses{rough_note}). Also a reroll on every later boss, Ante 8's included (not valued)", cur.name, now * 100.0, avg * 100.0, eligible.len());
+    }
+    o
 }
 
 /// Win chance first (in half-point steps); on a tie the long run (By Ante 8), then the

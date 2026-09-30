@@ -79,6 +79,8 @@ pub struct RunState {
     pub used_jokers: Vec<String>,
     pub pool_flags: Vec<String>,
     pub banned_keys: Vec<String>,
+    /// Times each boss has been drawn this run (`GAME.bosses_used`): rerolls pick among the least used.
+    pub bosses_used: Vec<(String, i64)>,
     pub shop_rates: ShopRates,
     pub snapshot: Snapshot,
 }
@@ -583,6 +585,15 @@ pub fn from_value(g: &Value, data: &GameData, path: &Path, age_secs: Option<u64>
         used_jokers: true_keys(game.get("used_jokers")),
         pool_flags: true_keys(game.get("pool_flags")),
         banned_keys: true_keys(game.get("banned_keys")),
+        bosses_used: game.get("bosses_used").table().map_or_else(Vec::new, |t| {
+            t.entries
+                .iter()
+                .filter_map(|(k, v)| match k {
+                    crate::lua::Key::Str(s) => Some((s.clone(), v.int().unwrap_or(0))),
+                    crate::lua::Key::Int(_) => None,
+                })
+                .collect()
+        }),
         shop_rates: ShopRates {
             joker: game.get("joker_rate").num().unwrap_or(20.0),
             tarot: game.get("tarot_rate").num().unwrap_or(4.0),
