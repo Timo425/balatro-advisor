@@ -47,15 +47,36 @@ pub fn run(save_dir: PathBuf, profile: u8, port: u16, open: bool) -> Result<()> 
                     last = m;
                     shared.lock().unwrap().busy = true;
                     let save_path = save::run_path(&save_dir, profile);
+                    // Keep a copy of the state being analysed until it finishes: if the
+                    // analysis ever hangs or panics, `last-analysed.jkr` holds the state that did it.
+                    let keep = balatro_advisor::calibration::default_dir().map(|d| d.join("last-analysed.jkr"));
+                    if let Some(k) = &keep {
+                        let _ = std::fs::create_dir_all(k.parent().unwrap_or(k));
+                        let _ = std::fs::copy(&save_path, k);
+                    }
                     let body = match save::load(&save_path, data) {
                         Ok(r) => {
                             let g = gold::load(&save_dir, profile, data).ok();
-                            let a = advise::analyze(&r, data, g.as_ref(), &Options::default());
-                            if let Some(t) = tracker.as_mut() {
-                                let p = a.blinds.iter().find(|b| b.state == "Current").and_then(|b| b.p_win);
-                                t.observe(Some(&r), p);
+                            let analysed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                advise::analyze(&r, data, g.as_ref(), &Options::default())
+                            }));
+                            match analysed {
+                                Ok(a) => {
+                                    if let Some(k) = &keep {
+                                        let _ = std::fs::remove_file(k);
+                                    }
+                                    if let Some(t) = tracker.as_mut() {
+                                        let p = a.blinds.iter().find(|b| b.state == "Current").and_then(|b| b.p_win);
+                                        t.observe(Some(&r), p);
+                                    }
+                                    serde_json::json!({ "status": "ok", "analysis": a, "gold": g }).to_string()
+                                }
+                                Err(_) => serde_json::json!({
+                                    "status": "error",
+                                    "message": format!("the analysis crashed on this state (a copy is kept as {})", keep.as_ref().map_or(String::new(), |k| k.display().to_string())),
+                                })
+                                .to_string(),
                             }
-                            serde_json::json!({ "status": "ok", "analysis": a, "gold": g }).to_string()
                         }
                         Err(e) => {
                             if let (Some(t), balatro_advisor::Error::NoRun(_)) = (tracker.as_mut(), &e) {

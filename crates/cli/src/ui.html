@@ -242,6 +242,10 @@ function render(d) {
     $("#main").innerHTML = `<section><div class="empty">No run in progress (${esc(d.message)}).<br>Start or continue a run and this updates by itself.</div></section>` + goldSection(d.gold);
     return;
   }
+  if (d.status === "error") {
+    $("#main").innerHTML = `<section><div class="empty">Couldn't analyse this moment: ${esc(d.message)}.<br>It tries again on the next save.</div></section>`;
+    return;
+  }
   if (d.status !== "ok") return;
   const a = d.analysis;
   $("#h-deck").innerHTML = `<b>${esc(a.deck)}</b>`;
