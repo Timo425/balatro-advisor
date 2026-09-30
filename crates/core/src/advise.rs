@@ -2596,6 +2596,121 @@ mod tests {
         assert!(poor > base.mult && rich > poor && longer > poor);
     }
 
+    /// A synthetic run in the shop: a standard deck, the given jokers (key, edition,
+    /// perishable rounds left), full slots, and the given jokers for sale.
+    fn shop_run(owned: &[(&str, Option<Edition>, Option<i64>)], for_sale: &[&str]) -> RunState {
+        let data = GameData::bundled();
+        let card = |key: &str, edition: Option<Edition>, perishable: Option<i64>| crate::save::JokerCard {
+            key: key.into(),
+            name: data.name(key).to_string(),
+            edition,
+            eternal: false,
+            perishable,
+            rental: false,
+            debuff: perishable == Some(0),
+            cost: data.center(key).map_or(4, |c| c.cost),
+            sell_value: 2,
+            ability: crate::engine::joker::ability_from_config(&data.center(key).unwrap().config),
+            pending_tag_edition: None,
+        };
+        let mut r: RunState = serde_json::from_value(serde_json::json!({
+            "seed": "T", "won": false, "game_version": "", "screen": "shop", "stake": 1, "deck": "Red Deck",
+            "ante": 2, "win_ante": 8, "blind_scaling": 1, "ante_scaling": 1.0, "round": 4, "dollars": 30.0,
+            "interest_amount": 1, "interest_cap": 25, "money_per_hand": 1.0, "base_reroll_cost": 5, "skips": 0, "hands_played": 0,
+            "tarots_used": 0, "starting_deck_size": 52, "most_played_hand": "", "hands_left": 4, "discards_left": 3,
+            "round_hands": 4, "round_discards": 3, "hand_size": 8, "joker_slots": owned.len(), "consumable_slots": 2, "probability_normal": 1.0,
+            "jokers": [], "consumables": [], "hand": [], "draw_pile": [], "discard_pile": [], "hand_levels": {}, "blinds": [],
+            "current_blind": null, "shop": null, "open_pack": [], "vouchers": [], "tags": [],
+            "round_targets": {"ancient_suit": null, "castle_suit": null, "idol": null, "mail_rank": null},
+            "used_jokers": [], "pool_flags": [], "banned_keys": [],
+            "shop_rates": {"joker": 20.0, "tarot": 4.0, "planet": 4.0, "spectral": 0.0, "playing_card": 0.0, "slots": 2},
+            "snapshot": {"path": "x", "live": false, "age_secs": null, "caveats": []}
+        }))
+        .unwrap();
+        r.screen = crate::save::Screen::Shop;
+        r.draw_pile = crate::bench::standard_deck();
+        r.jokers = owned.iter().map(|(k, e, p)| card(k, *e, *p)).collect();
+        let blind = |slot: &str, key: &str, target: f64| crate::save::BlindSlot {
+            slot: slot.into(), key: key.into(), name: data.blinds.iter().find(|b| b.key == key).map_or(String::new(), |b| b.name.clone()),
+            state: "Upcoming".into(), target, reward: 4, skip_tag: None,
+        };
+        r.blinds = vec![blind("Small", "bl_small", 800.0), blind("Big", "bl_big", 1200.0), blind("Boss", "bl_wall", 3200.0)];
+        r.shop = Some(crate::save::Shop {
+            jokers: for_sale.iter().map(|k| card(k, None, None)).collect(),
+            other_cards: vec![],
+            boosters: vec![],
+            vouchers: vec![],
+            reroll_cost: 5,
+        });
+        r
+    }
+
+    fn quick() -> Options {
+        Options { sims: 60, screen_sims: 20, hand_samples: 80, seed: 7, rescue_top: 2 }
+    }
+
+    fn shop_action(owned: &[(&str, Option<Edition>, Option<i64>)], buy: &str) -> String {
+        let a = analyze(&shop_run(owned, &[buy]), GameData::bundled(), None, &quick());
+        a.shop.iter().find(|c| c.key == buy).unwrap().action.clone()
+    }
+
+    #[test]
+    fn a_swap_puts_x_mult_after_plus_mult() {
+        // Selling the weak Joker frees the left slot; Cavendish (×3) must still go last.
+        let action = shop_action(&[("j_joker", None, None), ("j_joker", Some(Edition::Holo), None)], "j_cavendish");
+        assert_eq!(action, "replace Joker, put it rightmost");
+    }
+
+    #[test]
+    fn a_perished_joker_is_sold_first_and_mr_bones_is_kept() {
+        // Mr. Bones and the perished Scary Face both score 0: the perished one goes.
+        let action = shop_action(&[("j_mr_bones", None, None), ("j_scary_face", None, Some(0)), ("j_joker", Some(Edition::Holo), None)], "j_cavendish");
+        assert!(action.starts_with("replace Scary Face"), "{action}");
+        let action = shop_action(&[("j_mr_bones", None, None), ("j_joker", None, None)], "j_cavendish");
+        assert!(action.starts_with("replace Joker"), "Mr. Bones sold over a scoring joker: {action}");
+    }
+
+    #[test]
+    fn close_win_chances_rank_by_the_long_run() {
+        let opt = |label: &str, p: f64, long: Option<f64>| ShopOption {
+            reach: None, label: label.into(), kind: "tarot".into(), cost: 0, p_win: p, note: String::new(), money_after: 0.0,
+            interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: long, key: None, desc: None,
+        };
+        let mut v = vec![opt("noise-best", 0.993, None), opt("keeper", 0.984, Some(1.09)), opt("clearly-better", 0.80, Some(2.0))];
+        rank_options(&mut v, 0.5);
+        assert_eq!(v.iter().map(|o| o.label.as_str()).collect::<Vec<_>>(), ["keeper", "noise-best", "clearly-better"]);
+        let mut v = vec![opt("low", 0.60, Some(3.0)), opt("high", 0.90, None)];
+        rank_options(&mut v, 0.5);
+        assert_eq!(v[0].label, "high", "a real win-chance gap beats the long run");
+    }
+
+    #[test]
+    fn a_random_joker_is_worth_at_least_a_typical_find() {
+        let c = |r: u8, m: f64| Candidate {
+            key: String::new(), name: String::new(), rarity: String::new(), cost: 4, edition: None, action: "add".into(),
+            p_win: vec![], p_win_delta: vec![], reach: vec![], reach_delta: vec![], score_gain: 0.0, missing_gold: false,
+            rarity_n: r, precise: false, per_shop: None, roles: vec![], note: None, desc: None, growth: None, long_mult: Some(m), sell_note: None,
+        };
+        let mut rng = crate::engine::Rng::new(1);
+        let weak = long_draw(&[c(1, 0.5), c(2, 0.7), c(3, 0.9)], 2, 1.0, &mut rng);
+        assert!((weak - 1.0).abs() < 1e-9, "bad draws are sold, not kept: {weak}");
+        let one = long_draw(&[c(1, 1.5), c(2, 1.5), c(3, 1.5)], 1, 1.0, &mut rng);
+        assert!((one - 1.5).abs() < 1e-9);
+        let rarely = long_draw(&[c(1, 2.0), c(2, 2.0), c(3, 2.0)], 1, 0.2, &mut rng);
+        assert!(rarely > 1.0 && rarely < 1.4, "a card that's seldom a joker: {rarely}");
+    }
+
+    #[test]
+    fn one_off_money_counts_once() {
+        // +$12 once must not be worth as much as +$12 every ante would: bounded, above ×1.00.
+        let mut r = shop_run(&[("j_red_card", None, None), ("j_joker", None, None)], &[]);
+        r.shop.as_mut().unwrap().other_cards.push(crate::save::ItemCard { key: "c_hermit".into(), name: "The Hermit".into(), set: "Tarot".into(), cost: 3, edition: None, card: None });
+        let a = analyze(&r, GameData::bundled(), None, &quick());
+        let h = a.options.iter().find(|o| o.label == "The Hermit").expect("Hermit offered");
+        let m = h.long_mult.expect("money cards get a By Ante 8 value");
+        assert!(m > 1.0 && m < 1.35, "Hermit By Ante 8 ×{m}");
+    }
+
     #[test]
     fn interest_matches_the_game() {
         assert_eq!(interest(4.0, 1, 25), 0);
