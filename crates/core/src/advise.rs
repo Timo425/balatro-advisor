@@ -1164,6 +1164,12 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             tarot_long[fi] = long_score(&b) / l0;
         }
     }
+    // The Emperor: 2 random tarots (one you don't want is sold, so each is worth at least ×1.00)
+    if let Some(ei) = tarots.iter().position(|t| t.key == "c_emperor") {
+        let others: Vec<f64> = tarot_long.iter().enumerate().filter(|(i, _)| *i != ei).map(|(_, v)| v.max(1.0)).collect();
+        let avg = others.iter().sum::<f64>() / others.len().max(1) as f64;
+        tarot_long[ei] = avg * avg;
+    }
     let skip_long = {
         let mut b = fill_long(project(&|_| true, run.dollars), None, 0.0);
         match b.jokers.iter_mut().find(|j| j.key == "j_red_card") {

@@ -276,7 +276,13 @@ pub fn run_path(save_dir: &Path, profile: u8) -> PathBuf {
     let save = save_path(save_dir, profile);
     let live = save_dir.join(profile.to_string()).join("live.jkr");
     let mtime = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    // While the advisor-live mod is running (fresh heartbeat), its file is the current
+    // state even when the game's own save is newer: the game saves the moment a pack
+    // opens, before the pack's cards exist.
+    let beat = save_dir.join(profile.to_string()).join("live.beat");
+    let running = mtime(&beat).and_then(|t| std::time::SystemTime::now().duration_since(t).ok()).is_some_and(|d| d.as_secs() < 10);
     match (mtime(&save), mtime(&live)) {
+        (_, Some(_)) if running => live,
         (Some(s), Some(l)) if l >= s => live,
         _ => save,
     }
