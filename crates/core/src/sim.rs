@@ -130,7 +130,10 @@ pub struct RoundStart {
 #[derive(Debug, Clone)]
 pub struct RoundResult {
     pub total: f64,
+    /// Beaten on score (Mr. Bones' save not counted).
     pub won: bool,
+    /// Lost, but Mr. Bones would save it (one save, then he's gone).
+    pub saved: bool,
     pub best_hand: f64,
     /// Hands played (type, score, whether it was a junk hand played to dig).
     pub plays: Vec<(HandType, f64, bool)>,
@@ -347,7 +350,7 @@ pub fn sim_round(board: &Board, start: &RoundStart, rng: &mut Rng) -> RoundResul
                 hand = held;
                 hands -= 1;
                 if total >= start.target {
-                    return RoundResult { total, won: true, best_hand, plays, money };
+                    return RoundResult { total, won: true, saved: false, best_hand, plays, money };
                 }
                 draw(&mut hand, &mut deck, size);
             }
@@ -358,9 +361,10 @@ pub fn sim_round(board: &Board, start: &RoundStart, rng: &mut Rng) -> RoundResul
             }
         }
     }
-    // Mr. Bones: a lost round still counts if you reached 25% of the blind (card.lua, game_over)
+    // Mr. Bones: a lost round is saved if you reached 25% of the blind (card.lua, game_over)
     let bones = b.jokers.iter().any(|j| j.key == "j_mr_bones" && !j.debuff);
-    RoundResult { total, won: total >= start.target || (bones && total >= 0.25 * start.target), best_hand, plays, money }
+    let won = total >= start.target;
+    RoundResult { total, won, saved: !won && bones && total >= 0.25 * start.target, best_hand, plays, money }
 }
 
 /// Mean and quantiles of a sample.
@@ -374,6 +378,9 @@ pub struct Stats {
     /// Mean money earned while scoring, per round (round simulations only).
     #[serde(skip)]
     pub money: f64,
+    /// Chance of getting through with Mr. Bones' save counted (round simulations only).
+    #[serde(skip)]
+    pub p_saved: f64,
 }
 
 impl Stats {
@@ -383,7 +390,7 @@ impl Stats {
         }
         v.sort_by(f64::total_cmp);
         let q = |p: f64| v[((v.len() - 1) as f64 * p).round() as usize];
-        Stats { mean: v.iter().sum::<f64>() / v.len() as f64, p10: q(0.1), p50: q(0.5), p90: q(0.9), n: v.len(), money: 0.0 }
+        Stats { mean: v.iter().sum::<f64>() / v.len() as f64, p10: q(0.1), p50: q(0.5), p90: q(0.9), n: v.len(), money: 0.0, p_saved: 0.0 }
     }
 }
 
@@ -434,10 +441,14 @@ pub fn round_odds(b: &Board, start: &RoundStart, sims: usize, seed: u64) -> (f64
             hs.into_iter().flat_map(|h| h.join().expect("sim thread")).collect()
         })
     };
+    // Win chance on score alone: Mr. Bones' one-off save is reported separately (p_saved),
+    // so it doesn't make a weak board look strong.
     let wins = results.iter().filter(|r| r.won).count();
+    let saved = results.iter().filter(|r| r.saved).count();
     let money = results.iter().map(|r| r.money).sum::<f64>() / results.len().max(1) as f64;
     let mut st = Stats::of(results.into_iter().map(|r| r.total).collect());
     st.money = money;
+    st.p_saved = (wins + saved) as f64 / sims.max(1) as f64;
     (wins as f64 / sims.max(1) as f64, st)
 }
 

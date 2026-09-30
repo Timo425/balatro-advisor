@@ -293,8 +293,11 @@ pub struct BlindView {
     pub effect: Option<String>,
     pub state: String,
     pub target: f64,
-    /// Chance to beat it now (None once defeated/skipped).
+    /// Chance to beat it now on score (None once defeated/skipped).
     pub p_win: Option<f64>,
+    /// With Mr. Bones' save counted, when you own him.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub p_with_bones: Option<f64>,
     /// Cash for beating it, before unused-hand money and interest.
     pub reward: i64,
     pub skip_tag: Option<TagView>,
@@ -824,29 +827,32 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             pool_entries[i].growth = Some(Growth { assumption: label, reach: r, fades });
         }
     }
+    let bones = ctx.base.jokers.iter().any(|j| j.key == "j_mr_bones" && !j.debuff);
     let blind_views: Vec<BlindView> = run
         .blinds
         .iter()
         .map(|bl| {
             let spec = overview_specs.iter().find(|(slot, _)| *slot == bl.slot).map(|(_, s)| s);
+            let odds: Option<(f64, Stats)> = if bl.state == "Current" {
+                // In progress: the simulation that starts from the real hand, draw pile and score so far
+                ctx.specs.iter().position(|m| m.in_progress).map(|i| base_odds[i])
+            } else {
+                spec.map(|s| {
+                    // reuse the main simulation where it's the same round
+                    ctx.specs
+                        .iter()
+                        .position(|m| !m.horizon && !m.in_progress && m.blind_key == s.blind_key && m.start.target == s.start.target)
+                        .map_or_else(|| ctx.odds_one(&ctx.base, s, opts.sims), |i| base_odds[i])
+                })
+            };
             BlindView {
                 slot: bl.slot.clone(),
                 name: bl.name.clone(),
                 effect: boss_effect(&bl.key).map(str::to_string),
                 state: bl.state.clone(),
                 target: bl.target,
-                p_win: if bl.state == "Current" {
-                    // In progress: the simulation that starts from the real hand, draw pile and score so far
-                    ctx.specs.iter().position(|m| m.in_progress).map(|i| base_odds[i].0)
-                } else {
-                    spec.map(|s| {
-                        // reuse the main simulation where it's the same round
-                        ctx.specs
-                            .iter()
-                            .position(|m| !m.horizon && !m.in_progress && m.blind_key == s.blind_key && m.start.target == s.start.target)
-                            .map_or_else(|| ctx.odds_one(&ctx.base, s, opts.sims).0, |i| base_odds[i].0)
-                    })
-                },
+                p_win: odds.map(|o| o.0),
+                p_with_bones: odds.filter(|_| bones).map(|o| o.1.p_saved),
                 reward: bl.reward,
                 skip_tag: bl.skip_tag.as_ref().map(|k| TagView {
                     key: k.clone(),
@@ -1037,7 +1043,9 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             continue;
         }
         let Some(today) = today else { continue };
-        let tries: Vec<(usize, f64)> = par_map(&(0..run.jokers.len()).filter(|&i| sell_base.get(i).is_some_and(|b| b.is_some())).collect::<Vec<_>>(), |&i| {
+        // Mr. Bones' value (his save) isn't in any score, so he's never the long-run pick to sell
+        let sellable = |i: usize| sell_base.get(i).is_some_and(|b| b.is_some()) && ctx.base.jokers[i].key != "j_mr_bones";
+        let tries: Vec<(usize, f64)> = par_map(&(0..run.jokers.len()).filter(|&i| sellable(i)).collect::<Vec<_>>(), |&i| {
             (i, long_of(j, Some(i), c.cost, rental))
         });
         let Some(&(best, best_v)) = tries.iter().max_by(|a, b| a.1.total_cmp(&b.1)) else { continue };
@@ -1127,7 +1135,15 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             if extra.abs() > 0.5 {
                 st = deck_long(d, run.dollars + extra);
             }
-            st.mean.max(1.0) / deck_base.mean.max(1.0)
+            let gain = st.mean.max(1.0) / deck_base.mean.max(1.0);
+            // Glass breaks 1 in 4 times it scores; a card scores about every other round, so
+            // only this share of Glass cards is still there by Ante 8.
+            if t.key == "c_justice" {
+                let survive = 0.75f64.powf(0.5 * 3.0 * antes_left);
+                1.0 + (gain - 1.0) * survive
+            } else {
+                gain
+            }
         } else if t.money_gain > 0.0 {
             long_score(&fill_long(project(&|_| true, run.dollars), None, t.money_gain)) / l0
         } else if t.key == "c_judgement" {
@@ -1136,6 +1152,18 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             1.0
         }
     });
+    // The Fool is worth what it copies: that tarot's value, or a planet's level
+    let mut tarot_long = tarot_long;
+    if let (Some(last), Some(fi)) = (&run.last_tarot_planet, tarots.iter().position(|t| t.key == "c_fool")) {
+        if let Some(k) = tarots.iter().position(|t| &t.key == last) {
+            tarot_long[fi] = tarot_long[k];
+        } else if let Some(h) = data.center(last).and_then(|c| c.config.get("hand_type")).and_then(|v| v.as_str()).and_then(crate::engine::HandType::from_name) {
+            let mut b = fill_long(project(&|_| true, run.dollars), None, 0.0);
+            let l = b.levels[h as usize];
+            b.levels[h as usize] = l.with_level(l.level + 1);
+            tarot_long[fi] = long_score(&b) / l0;
+        }
+    }
     let skip_long = {
         let mut b = fill_long(project(&|_| true, run.dollars), None, 0.0);
         match b.jokers.iter_mut().find(|j| j.key == "j_red_card") {
