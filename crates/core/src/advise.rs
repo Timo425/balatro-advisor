@@ -1071,6 +1071,21 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     for (i, m) in long_idx.into_iter().zip(long_opts) {
         options[i].long_mult = m;
     }
+    // Random jokers (Judgement, rerolls, Buffoon packs): the best one seen, and one you
+    // don't want is sold, so a draw is worth at least a typical find (×1.00). Its price
+    // comes off as one-off money.
+    let mut rng = crate::engine::Rng::new(opts.seed ^ 0x10ae);
+    for o in options.iter_mut() {
+        let (cards, share) = match (o.kind.as_str(), o.key.as_deref()) {
+            ("tarot", Some("c_judgement")) => (1, 1.0),
+            ("reroll", _) => (run.shop_rates.slots.max(1) as usize, joker_share),
+            ("pack", _) if o.label.contains("Buffoon") => (if o.label.contains("Jumbo") || o.label.contains("Mega") { 4 } else { 2 }, 1.0),
+            _ => continue,
+        };
+        let draw = long_draw(&pool_entries, cards, share, &mut rng);
+        let price = long_score(&fill_long(project(&|_| true, run.dollars), None, -(o.cost as f64))) / l0;
+        o.long_mult = Some(draw * price);
+    }
     let base_reach = base_odds.get(key_round).zip(ctx.specs.get(key_round)).map_or(0.0, |(o, sp)| o.1.mean / sp.start.target.max(1.0));
     rank_options(&mut options, base_reach);
     let (levels_per_ante, planet_levels) = levels_for(run.dollars - owned_rent(&|_| true));
@@ -1642,17 +1657,17 @@ fn shop_options(
     let shop_cards = run.shop.as_ref().map(|s| s.other_cards.clone()).unwrap_or_default();
     for c in shop_cards.iter().filter(|c| c.set == "Tarot") {
         if let Some(t) = tarot_p(&c.key) {
-            out.push(ShopOption { reach: None, label: c.name.clone(), kind: "tarot".into(), cost: c.cost, p_win: t.p_win, note: t.note.clone(), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: t.money_gain, long_mult: None, key: None, desc: None });
+            out.push(ShopOption { reach: None, label: c.name.clone(), kind: "tarot".into(), cost: c.cost, p_win: t.p_win, note: t.note.clone(), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: t.money_gain, long_mult: None, key: Some(c.key.clone()), desc: None });
         }
     }
     for c in run.open_pack.iter().filter(|c| c.set == "Tarot") {
         if let Some(t) = tarot_p(&c.key) {
-            out.push(ShopOption { reach: None, label: format!("pick {}", c.name), kind: "tarot".into(), cost: 0, p_win: t.p_win, note: format!("{} · next ante reach {:.0}% → {:.0}%", t.note, t.reach_now * 100.0, t.reach * 100.0), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: t.money_gain, long_mult: None, key: None, desc: None });
+            out.push(ShopOption { reach: None, label: format!("pick {}", c.name), kind: "tarot".into(), cost: 0, p_win: t.p_win, note: format!("{} · next ante reach {:.0}% → {:.0}%", t.note, t.reach_now * 100.0, t.reach * 100.0), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: t.money_gain, long_mult: None, key: Some(c.key.clone()), desc: None });
         }
     }
     for c in run.consumables.iter().filter(|c| c.set == "Tarot") {
         if let Some(t) = tarot_p(&c.key) {
-            out.push(ShopOption { reach: None, label: format!("{} (you have it)", c.name), kind: "tarot".into(), cost: 0, p_win: t.p_win, note: format!("{} · use it during a blind", t.note), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: t.money_gain, long_mult: None, key: None, desc: None });
+            out.push(ShopOption { reach: None, label: format!("{} (you have it)", c.name), kind: "tarot".into(), cost: 0, p_win: t.p_win, note: format!("{} · use it during a blind", t.note), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: t.money_gain, long_mult: None, key: Some(c.key.clone()), desc: None });
         }
     }
     for pk in run.shop.as_ref().map(|s| s.boosters.clone()).unwrap_or_default().iter().filter(|p| p.key.starts_with("p_arcana")) {
@@ -1730,6 +1745,30 @@ fn shop_options(
     }
     rank_options(&mut out, base_reach);
     (out, tarots)
+}
+
+/// Average over random draws of the best By Ante 8 value among `cards` shop cards (each a
+/// joker with chance `joker_share`, rarity 70/25/5), never below ×1.00 (a bad one is sold).
+fn long_draw(pool: &[Candidate], cards: usize, joker_share: f64, rng: &mut crate::engine::Rng) -> f64 {
+    use crate::engine::Rolls;
+    let by_rarity: [Vec<f64>; 4] = [0u8, 1, 2, 3].map(|r| pool.iter().filter(|c| c.rarity_n == r).map(|c| c.long_mult.unwrap_or(1.0)).collect());
+    let trials = 2000;
+    let mut total = 0.0;
+    for _ in 0..trials {
+        let mut best: f64 = 1.0;
+        for _ in 0..cards {
+            if !rng.chance(joker_share) {
+                continue;
+            }
+            let roll = rng.unit();
+            let list = &by_rarity[if roll > 0.95 { 3 } else if roll > 0.7 { 2 } else { 1 }];
+            if !list.is_empty() {
+                best = best.max(list[rng.below(list.len())]);
+            }
+        }
+        total += best;
+    }
+    total / trials as f64
 }
 
 /// Director's Cut / Retcon: the options round's boss against a reroll into any boss the
@@ -1993,6 +2032,7 @@ fn tarot_values(
                     let v: i64 = run.jokers.iter().map(|j| j.sell_value).sum();
                     format!("+${} (your jokers' sell value, max $50)", v.min(50))
                 }
+                "c_judgement" if run.jokers.len() as i64 >= run.joker_slots => "creates a random joker; needs a free joker slot, so sell one first".into(),
                 "c_judgement" => "creates a random joker".into(),
                 "c_high_priestess" => "creates 2 random planets".into(),
                 "c_emperor" => "creates 2 random tarots".into(),
