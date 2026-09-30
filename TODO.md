@@ -7,6 +7,9 @@ check that reuses the engine, not another term in the options ranking.
   blind to Ante 8", with perishables that only age on played rounds (Throwback lasts
   exactly its rounds), Throwback grown by the skips, and the chance to beat each boss on
   the way. Separate output; doesn't feed the options ranking or By Ante 8.
+- **Fix chance for the next boss**: "the shops before it (with your money on rerolls)
+  find what gets you through: X%". A forecast, so a separate line under the boss, never
+  part of the win chance. Reuses the shop simulation behind the money value.
 - **Golden cases**: record a few real hands (`score --golden`, then `golden set`).
 - **Calibration**: let the log collect a few runs; check predicted vs actual win rates.
 - Rentals held "until the danger passes, then sold", not held all run.
