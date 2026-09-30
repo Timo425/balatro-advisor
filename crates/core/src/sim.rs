@@ -373,7 +373,9 @@ fn decide(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i64, ne
             extra.sort_by(|a, c| c.rank.chips().total_cmp(&a.rank.chips()));
             cards.extend(extra.into_iter().take(need_f - group.len()));
             cards.truncate(5);
-            let est = score::score(b, &cards, &[], &mut Unlucky, false).score;
+            // Average over a few rolls, so Lucky cards count for their average, not for nothing
+            let mut rolls = Rng::new(0x1d1e ^ suit as u64);
+            let est = (0..4).map(|_| score::score(b, &cards, &[], &mut rolls, false).score).sum::<f64>() / 4.0;
             Some((group, p, est))
         })
         .max_by(|a, c| (a.1 * a.2).total_cmp(&(c.1 * c.2)));

@@ -1,7 +1,9 @@
 //! Calibration log: what the advisor predicted at the start of each blind, and what
 //! happened. Over many blinds, predictions of "70%" should win about 70% of the time;
 //! that is the real test of the round simulation. Also records the final board of every
-//! won run, as evidence for what winning boards look like.
+//! won run, as evidence for what winning boards look like, and every shop (and opened
+//! pack) seen with the board and money at the time: consecutive shop entries show what
+//! was bought, sold and skipped.
 //!
 //! Stored as JSON lines in `~/.local/share/balatro-advisor/` (never in the repo).
 
@@ -21,6 +23,20 @@ pub enum Entry {
     Outcome { id: String, won: bool, time: u64 },
     /// A won run's final board.
     Win { seed: String, deck: String, stake: u8, jokers: Vec<String>, hand_levels: Vec<(String, i64)>, time: u64 },
+    /// A shop or an opened pack as seen (logged again whenever what's on offer, the board
+    /// or the money changes).
+    Shop {
+        seed: String,
+        ante: i64,
+        round: i64,
+        screen: String,
+        dollars: f64,
+        jokers: Vec<String>,
+        consumables: Vec<String>,
+        offers: Vec<String>,
+        pack: Vec<String>,
+        time: u64,
+    },
 }
 
 pub fn default_dir() -> Option<PathBuf> {
@@ -46,6 +62,8 @@ pub struct Tracker {
     /// Predictions without an outcome yet (restored from the file on start).
     open: Vec<(String, String, i64, String)>, // id, seed, ante, slot
     wins_logged: Vec<String>,
+    /// The last shop entry, to log only changes
+    last_shop: Option<Entry>,
 }
 
 impl Tracker {
@@ -58,9 +76,10 @@ impl Tracker {
                 Entry::Prediction { id, seed, ante, slot, .. } => open.push((id.clone(), seed.clone(), *ante, slot.clone())),
                 Entry::Outcome { id, .. } => open.retain(|o| &o.0 != id),
                 Entry::Win { seed, .. } => wins_logged.push(seed.clone()),
+                Entry::Shop { .. } => {}
             }
         }
-        Tracker { dir, open, wins_logged }
+        Tracker { dir, open, wins_logged, last_shop: None }
     }
 
     fn append(&self, e: &Entry) {
@@ -126,6 +145,24 @@ impl Tracker {
                     self.open.push((id, r.seed.clone(), r.ante, slot));
                 }
             }
+            if let Some(e) = shop_entry(r) {
+                let same = |a: &Entry, b: &Entry| match (a, b) {
+                    (Entry::Shop { time: _, .. }, Entry::Shop { .. }) => {
+                        let strip = |e: &Entry| match e {
+                            Entry::Shop { seed, ante, round, screen, dollars, jokers, consumables, offers, pack, .. } => {
+                                (seed.clone(), *ante, *round, screen.clone(), *dollars, jokers.clone(), consumables.clone(), offers.clone(), pack.clone())
+                            }
+                            _ => unreachable!(),
+                        };
+                        strip(a) == strip(b)
+                    }
+                    _ => false,
+                };
+                if self.last_shop.as_ref().is_none_or(|l| !same(l, &e)) {
+                    self.last_shop = Some(e.clone());
+                    out.push(e);
+                }
+            }
             if r.won && !self.wins_logged.contains(&seed) {
                 out.push(Entry::Win {
                     seed: seed.clone(),
@@ -143,6 +180,48 @@ impl Tracker {
         }
         out
     }
+}
+
+/// The shop (or opened pack) on screen, as a log entry.
+fn shop_entry(r: &RunState) -> Option<Entry> {
+    let in_shop = matches!(r.screen, crate::save::Screen::Shop) || r.screen.in_pack();
+    if !in_shop {
+        return None;
+    }
+    let joker = |j: &crate::save::JokerCard| {
+        let mut tags: Vec<String> = Vec::new();
+        if let Some(e) = j.edition {
+            tags.push(format!("{e:?}").to_lowercase());
+        }
+        if j.eternal {
+            tags.push("eternal".into());
+        }
+        if let Some(p) = j.perishable {
+            tags.push(format!("perishable {p}"));
+        }
+        if j.rental {
+            tags.push("rental".into());
+        }
+        if tags.is_empty() { j.name.clone() } else { format!("{} ({})", j.name, tags.join(", ")) }
+    };
+    let item = |c: &crate::save::ItemCard| c.card.map_or_else(|| c.name.clone(), |card| card.label());
+    let mut offers = Vec::new();
+    if let Some(sh) = &r.shop {
+        offers.extend(sh.jokers.iter().map(|j| format!("{} ${}", joker(j), j.cost)));
+        offers.extend(sh.other_cards.iter().chain(&sh.boosters).chain(&sh.vouchers).map(|c| format!("{} ${}", item(c), c.cost)));
+    }
+    Some(Entry::Shop {
+        seed: r.seed.clone(),
+        ante: r.ante,
+        round: r.round,
+        screen: format!("{:?}", r.screen),
+        dollars: r.dollars,
+        jokers: r.jokers.iter().map(joker).collect(),
+        consumables: r.consumables.iter().map(|c| c.name.clone()).collect(),
+        offers,
+        pack: r.open_pack.iter().map(item).collect(),
+        time: now(),
+    })
 }
 
 /// "Predicted 70–85%: won 11 of 14 (79%)" rows.
@@ -223,7 +302,9 @@ mod tests {
         assert!(t.observe(Some(&run_at("Current", Screen::SelectingHand, 500.0)), Some(0.9)).is_empty());
         // beaten
         let e = t.observe(Some(&run_at("Defeated", Screen::Shop, 0.0)), None);
-        assert!(matches!(e.as_slice(), [Entry::Outcome { won: true, .. }]));
+        assert!(matches!(e.as_slice(), [Entry::Outcome { won: true, .. }, Entry::Shop { .. }]), "{e:?}");
+        // the same shop again isn't logged twice
+        assert!(t.observe(Some(&run_at("Defeated", Screen::Shop, 0.0)), None).is_empty());
         // a restart doesn't predict the same blind twice
         let mut t2 = Tracker::new(dir.clone());
         assert!(t2.observe(Some(&run_at("Current", Screen::SelectingHand, 0.0)), Some(0.8)).is_empty());
