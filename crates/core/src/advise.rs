@@ -2049,7 +2049,8 @@ fn boss_reroll_option(ctx: &Ctx, run: &RunState, data: &GameData, spec: &Spec, n
 
 /// Win chance first, in 2-point tiers counted down from the best option (closer than
 /// that is simulation noise); within a tier the long run (By Ante 8) in 0.05 tiers from
-/// the tier's best, for the same reason; then the score reached this round.
+/// the tier's best, for the same reason; then the score reached this round, then the
+/// raw By Ante 8 value and win chance.
 fn rank_options(out: &mut [ShopOption], base_reach: f64) {
     let top = out.iter().map(|o| o.p_win).fold(0.0, f64::max);
     let p_tier = |o: &ShopOption| ((top - o.p_win) / 0.02).floor() as i64;
@@ -2065,7 +2066,8 @@ fn rank_options(out: &mut [ShopOption], base_reach: f64) {
     };
     out.sort_by(|a, b| {
         let (ka, kb) = (key(a), key(b));
-        ka.0.cmp(&kb.0).then(ka.1.cmp(&kb.1)).then(kb.2.total_cmp(&ka.2))
+        // then, rather than list order, the raw numbers
+        ka.0.cmp(&kb.0).then(ka.1.cmp(&kb.1)).then(kb.2.total_cmp(&ka.2)).then(long(b).total_cmp(&long(a))).then(b.p_win.total_cmp(&a.p_win))
     });
 }
 
