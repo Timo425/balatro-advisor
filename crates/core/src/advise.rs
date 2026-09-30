@@ -2431,7 +2431,10 @@ fn tarot_values(
                 }
             }
         } else if cfg.get("remove_card").and_then(|v| v.as_bool()).unwrap_or(false) {
-            for i in plain(&|c: &Card| c.suit == weakest_suit, false).into_iter().take(n).collect::<Vec<_>>().into_iter().rev() {
+            // Remove from the highest position down, so earlier removals don't shift later ones
+            let mut gone: Vec<usize> = plain(&|c: &Card| c.suit == weakest_suit, false).into_iter().take(n).collect();
+            gone.sort_unstable_by(|a, b| b.cmp(a));
+            for i in gone {
                 d.remove(i);
             }
             (true, format!("destroys {n} low {}", weakest_suit.name()))
