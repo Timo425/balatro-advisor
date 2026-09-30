@@ -1094,8 +1094,15 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     // in them, or the skip when Red Card grows from it (+3 Mult).
     // Deck changes are small, so they get more rounds than the rest (and the same seeds).
     const TAROT_ROUNDS: usize = 120;
+    // A board without a chips joker will likely find one by Ante 8: the typical find in
+    // these projections is then a +60 Chips joker, so card chips (Bonus, Stone) aren't
+    // valued as if that gap stayed open.
+    const CHIP_JOKERS: &[&str] = &["j_stuntman", "j_bull", "j_banner", "j_scary_face", "j_arrowhead", "j_castle", "j_runner", "j_square",
+        "j_wee", "j_ice_cream", "j_blue_joker", "j_sly", "j_wily", "j_clever", "j_devious", "j_crafty", "j_odd_todd", "j_stone", "j_hiker"];
+    let has_chips = ctx.base.jokers.iter().any(|j| CHIP_JOKERS.contains(&j.key.as_str()));
     let deck_long = |d: &[Card], dollars: f64| -> Stats {
-        let mut b = fill_long(project(&|_| true, dollars), None, 0.0);
+        let find = if has_chips { None } else { Some(stand_in(1.0, 0.0, 60.0)) };
+        let mut b = fill_long(project(&|_| true, dollars), find, 0.0);
         let tally = |e: crate::model::Enhancement| d.iter().filter(|c| c.enhancement == Some(e)).count() as i64;
         b.steel_tally = tally(crate::model::Enhancement::Steel);
         b.stone_tally = tally(crate::model::Enhancement::Stone);
@@ -2115,10 +2122,12 @@ fn tarot_values(
                         Some(Enhancement::Stone) => plain(&|c: &Card| c.suit == weakest_suit, false),
                         _ => plain(&is_main, true),
                     };
+                    let names: Vec<String> = targets.iter().take(n).map(|&i| d[i].label()).collect();
                     for &i in targets.iter().take(n) {
                         d[i].enhancement = e;
                     }
-                    (true, format!("{} on {n} card{}", m.trim_start_matches("m_"), if n > 1 { "s" } else { "" }))
+                    let on = if from_hand && !names.is_empty() { names.join(" ") } else { format!("{n} card{}", if n > 1 { "s" } else { "" }) };
+                    (true, format!("{} on {on}", m.trim_start_matches("m_")))
                 }
             }
         } else if cfg.get("remove_card").and_then(|v| v.as_bool()).unwrap_or(false) {
