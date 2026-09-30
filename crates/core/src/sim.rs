@@ -134,6 +134,8 @@ pub struct RoundResult {
     pub best_hand: f64,
     /// Hands played (type, score, whether it was a junk hand played to dig).
     pub plays: Vec<(HandType, f64, bool)>,
+    /// Money earned while scoring (Lucky cards, gold seals, …).
+    pub money: f64,
 }
 
 fn draw(hand: &mut Vec<Card>, deck: &mut Vec<Card>, size: usize) {
@@ -314,6 +316,7 @@ pub fn sim_round(board: &Board, start: &RoundStart, rng: &mut Rng) -> RoundResul
     let mut total = start.scored;
     let mut best_hand: f64 = 0.0;
     let mut plays = Vec::new();
+    let mut money = 0.0;
     while hands > 0 && !hand.is_empty() {
         b.hands_left = hands;
         b.discards_left = discards;
@@ -328,6 +331,7 @@ pub fn sim_round(board: &Board, start: &RoundStart, rng: &mut Rng) -> RoundResul
                 let held: Vec<Card> = (0..hand.len()).filter(|i| !idx.contains(i)).map(|i| hand[i]).collect();
                 let o = score::score(&b, &played, &held, rng, false);
                 total += o.score;
+                money += o.dollars;
                 best_hand = best_hand.max(o.score);
                 plays.push((o.hand, o.score, dig));
                 if b.blind.key == "bl_eye" {
@@ -343,7 +347,7 @@ pub fn sim_round(board: &Board, start: &RoundStart, rng: &mut Rng) -> RoundResul
                 hand = held;
                 hands -= 1;
                 if total >= start.target {
-                    return RoundResult { total, won: true, best_hand, plays };
+                    return RoundResult { total, won: true, best_hand, plays, money };
                 }
                 draw(&mut hand, &mut deck, size);
             }
@@ -356,7 +360,7 @@ pub fn sim_round(board: &Board, start: &RoundStart, rng: &mut Rng) -> RoundResul
     }
     // Mr. Bones: a lost round still counts if you reached 25% of the blind (card.lua, game_over)
     let bones = b.jokers.iter().any(|j| j.key == "j_mr_bones" && !j.debuff);
-    RoundResult { total, won: total >= start.target || (bones && total >= 0.25 * start.target), best_hand, plays }
+    RoundResult { total, won: total >= start.target || (bones && total >= 0.25 * start.target), best_hand, plays, money }
 }
 
 /// Mean and quantiles of a sample.
@@ -367,6 +371,9 @@ pub struct Stats {
     pub p50: f64,
     pub p90: f64,
     pub n: usize,
+    /// Mean money earned while scoring, per round (round simulations only).
+    #[serde(skip)]
+    pub money: f64,
 }
 
 impl Stats {
@@ -376,7 +383,7 @@ impl Stats {
         }
         v.sort_by(f64::total_cmp);
         let q = |p: f64| v[((v.len() - 1) as f64 * p).round() as usize];
-        Stats { mean: v.iter().sum::<f64>() / v.len() as f64, p10: q(0.1), p50: q(0.5), p90: q(0.9), n: v.len() }
+        Stats { mean: v.iter().sum::<f64>() / v.len() as f64, p10: q(0.1), p50: q(0.5), p90: q(0.9), n: v.len(), money: 0.0 }
     }
 }
 
@@ -428,7 +435,10 @@ pub fn round_odds(b: &Board, start: &RoundStart, sims: usize, seed: u64) -> (f64
         })
     };
     let wins = results.iter().filter(|r| r.won).count();
-    (wins as f64 / sims.max(1) as f64, Stats::of(results.into_iter().map(|r| r.total).collect()))
+    let money = results.iter().map(|r| r.money).sum::<f64>() / results.len().max(1) as f64;
+    let mut st = Stats::of(results.into_iter().map(|r| r.total).collect());
+    st.money = money;
+    (wins as f64 / sims.max(1) as f64, st)
 }
 
 /// Which hands score the points in simulated rounds: (hand, share of points, share of

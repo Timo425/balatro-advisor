@@ -1092,17 +1092,30 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     // Tarots: a changed deck is permanent, so it's projected like everything else; money
     // tarots through money; Judgement as a random joker. Arcana packs take the best card
     // in them, or the skip when Red Card grows from it (+3 Mult).
+    // Deck changes are small, so they get more rounds than the rest (and the same seeds).
+    const TAROT_ROUNDS: usize = 120;
+    let deck_long = |d: &[Card], dollars: f64| -> Stats {
+        let mut b = fill_long(project(&|_| true, dollars), None, 0.0);
+        let tally = |e: crate::model::Enhancement| d.iter().filter(|c| c.enhancement == Some(e)).count() as i64;
+        b.steel_tally = tally(crate::model::Enhancement::Steel);
+        b.stone_tally = tally(crate::model::Enhancement::Stone);
+        b.driver_tally = d.iter().filter(|c| c.enhancement.is_some()).count() as i64;
+        b.playing_cards = d.len() as i64;
+        let mut sp = long_spec.clone();
+        sp.start.deck = d.to_vec();
+        ctx.odds_one(&b, &sp, TAROT_ROUNDS).1
+    };
+    let deck_base = deck_long(&ctx.fresh_deck, run.dollars);
     let tarot_long: Vec<f64> = par_map(&tarots, |t| {
         if let Some(d) = &t.deck {
-            let mut b = fill_long(project(&|_| true, run.dollars), None, 0.0);
-            let tally = |e: crate::model::Enhancement| d.iter().filter(|c| c.enhancement == Some(e)).count() as i64;
-            b.steel_tally = tally(crate::model::Enhancement::Steel);
-            b.stone_tally = tally(crate::model::Enhancement::Stone);
-            b.driver_tally = d.iter().filter(|c| c.enhancement.is_some()).count() as i64;
-            b.playing_cards = d.len() as i64;
-            let mut sp = long_spec.clone();
-            sp.start.deck = d.clone();
-            ctx.odds_one(&b, &sp, 48).1.mean.max(1.0) / l0
+            let mut st = deck_long(d, run.dollars);
+            // Money the new cards earn while scoring (Lucky cards' $20, gold seals) is money
+            // you get every round: about 3 rounds an ante.
+            let extra = (st.money - deck_base.money) * 3.0;
+            if extra.abs() > 0.5 {
+                st = deck_long(d, run.dollars + extra);
+            }
+            st.mean.max(1.0) / deck_base.mean.max(1.0)
         } else if t.money_gain > 0.0 {
             long_score(&fill_long(project(&|_| true, run.dollars), None, t.money_gain)) / l0
         } else if t.key == "c_judgement" {
