@@ -1178,9 +1178,11 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         if let Some(i) = pack_cards.iter().position(|c| o.label == format!("pick {}", c.label())) {
             let (plain, wild) = card_long[i];
             o.long_mult = Some(plain);
-            if let Some(w) = wild.filter(|w| *w > plain) {
+            // Using The Lovers on it gives up what The Lovers would do on another card
+            let lovers_own = tarots.iter().position(|t| t.key == "c_lovers").map_or(1.0, |k| tarot_long[k].max(1.0));
+            if let Some(w) = wild.map(|w| w / lovers_own).filter(|w| *w > plain) {
                 o.long_mult = Some(w);
-                o.note = format!("added to your deck; made Wild with your Lovers (×{plain:.2} as it is)");
+                o.note = format!("added to your deck; made Wild with your Lovers (counts The Lovers used up; ×{plain:.2} as it is)");
             }
         }
     }
