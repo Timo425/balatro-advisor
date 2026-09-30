@@ -1,5 +1,6 @@
 # balatro-advisor live state: writes <profile>/live.jkr whenever the run changes,
-# and <profile>/live.beat every 2 s so the advisor knows the game is running.
+# and <profile>/live.beat every 2 s so the advisor knows the game is running (its text
+# says what the writer is waiting on, and the last error, if live.jkr stops updating).
 #
 # Lovely-only (no Steamodded): it reuses the game's own save_run() serialisation and
 # changes nothing else. Vanilla only turns achievements off through G.F_NO_ACHIEVEMENTS,
@@ -20,7 +21,10 @@ payload = '''
 ADVISOR_BEAT_T = (ADVISOR_BEAT_T or 99) + dt
 if ADVISOR_BEAT_T > 2 and G and G.SETTINGS and G.SETTINGS.profile then
     ADVISOR_BEAT_T = 0
-    pcall(love.filesystem.write, G.SETTINGS.profile .. '/live.beat', tostring(G.STAGE))
+    -- What the writer is waiting on, for when live.jkr stops updating
+    local why = 'stage=' .. tostring(G.STAGE) .. ' state=' .. tostring(G.STATE) .. ' complete=' .. tostring(G.STATE_COMPLETE)
+        .. ' busy_for=' .. string.format('%.1f', ADVISOR_BUSY_T or 0) .. ' err=' .. tostring(ADVISOR_LIVE_ERR)
+    pcall(love.filesystem.write, G.SETTINGS.profile .. '/live.beat', why)
 end
 if G and G.STAGE == G.STAGES.RUN and G.GAME and G.GAME.blind and G.jokers and G.SETTINGS then
     ADVISOR_LIVE_T = (ADVISOR_LIVE_T or 0) + dt
@@ -37,9 +41,16 @@ if G and G.STAGE == G.STAGES.RUN and G.GAME and G.GAME.blind and G.jokers and G.
             if ev.blocking then idle = false break end
         end
     end
+    -- A waiting screen that stays "busy" for 3 s has a stuck event, not an animation in flight.
+    if waiting and not idle then
+        ADVISOR_BUSY_T = (ADVISOR_BUSY_T or 0) + dt
+        if ADVISOR_BUSY_T > 3 then idle = true end
+    else
+        ADVISOR_BUSY_T = 0
+    end
     if ADVISOR_LIVE_T > 0.5 and waiting and idle then
         ADVISOR_LIVE_T = 0
-        pcall(function()
+        local ok, err = pcall(function()
             local cardAreas = {}
             for k, v in pairs(G) do
                 if (type(v) == "table") and v.is and v:is(CardArea) then
@@ -64,6 +75,7 @@ if G and G.STAGE == G.STAGES.RUN and G.GAME and G.GAME.blind and G.jokers and G.
                 love.filesystem.write(G.SETTINGS.profile .. '/live.jkr', love.data.compress('string', 'deflate', str, 1))
             end
         end)
+        ADVISOR_LIVE_ERR = (not ok) and tostring(err):sub(1, 200) or nil
     end
 end
 '''

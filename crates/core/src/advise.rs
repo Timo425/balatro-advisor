@@ -1161,6 +1161,38 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             }
         }
     }
+    // Standard pack cards: your deck with the card added, projected to Ante 8
+    let pack_cards: Vec<Card> = run.open_pack.iter().filter_map(|c| c.card).collect();
+    let card_long: Vec<f64> = par_map(&pack_cards, |card| {
+        let mut d = ctx.fresh_deck.clone();
+        d.push(*card);
+        deck_long(&d, run.dollars).mean.max(1.0) / deck_base.mean.max(1.0)
+    });
+    for o in options.iter_mut().filter(|o| o.kind == "card") {
+        if let Some(i) = pack_cards.iter().position(|c| o.label == format!("pick {}", c.label())) {
+            o.long_mult = Some(card_long[i]);
+        }
+    }
+    // With Red Card, skipping an open pack is a pick of its own
+    if !run.open_pack.is_empty() && skip_long > 1.0 {
+        let now = base_odds.get(key_round).map_or(0.0, |o| o.0);
+        options.push(ShopOption {
+            reach: None,
+            label: "skip the pack".into(),
+            kind: "skip".into(),
+            cost: 0,
+            p_win: now,
+            note: "Red Card +3 Mult".into(),
+            money_after: run.dollars,
+            interest_now: interest(run.dollars, run.interest_amount, run.interest_cap),
+            interest_after: interest(run.dollars, run.interest_amount, run.interest_cap),
+            unaffordable: false,
+            money_gain: 0.0,
+            long_mult: Some(skip_long),
+            key: None,
+            desc: None,
+        });
+    }
     let base_reach = base_odds.get(key_round).zip(ctx.specs.get(key_round)).map_or(0.0, |(o, sp)| o.1.mean / sp.start.target.max(1.0));
     rank_options(&mut options, base_reach);
     let (levels_per_ante, planet_levels) = levels_for(run.dollars - owned_rent(&|_| true));
@@ -1799,6 +1831,36 @@ fn shop_options(
         });
     }
 
+    // Playing cards in an open Standard pack: the round re-simulated with the card in your deck.
+    for c in run.open_pack.iter() {
+        let Some(card) = c.card else { continue };
+        let mut sp = spec.clone();
+        if sp.in_progress {
+            sp.start.hand.clear();
+            sp.start.scored = 0.0;
+            sp.start.hands = run.round_hands;
+            sp.start.discards = run.round_discards;
+            sp.start.deck = ctx.fresh_deck.clone();
+        }
+        sp.start.deck.push(card);
+        let p = ctx.odds_one(&ctx.base, &sp, ctx.opts.sims).0;
+        out.push(ShopOption {
+            reach: None,
+            label: format!("pick {}", card.label()),
+            kind: "card".into(),
+            cost: 0,
+            p_win: p,
+            note: "added to your deck".into(),
+            money_after: 0.0,
+            interest_now: 0,
+            interest_after: 0,
+            unaffordable: false,
+            money_gain: 0.0,
+            long_mult: None,
+            key: None,
+            desc: None,
+        });
+    }
     // Jokers in the shop (and an open Buffoon pack) are options like any other.
     for c in shop_jokers {
         // Slots are full: "sell X for it" (and where to put it)
@@ -2824,6 +2886,20 @@ mod tests {
         let h = a.options.iter().find(|o| o.label == "The Hermit").expect("Hermit offered");
         let m = h.long_mult.expect("money cards get a By Ante 8 value");
         assert!(m > 1.0 && m < 1.35, "Hermit By Ante 8 ×{m}");
+    }
+
+    #[test]
+    fn standard_pack_cards_are_picks_and_red_card_can_skip() {
+        let mut r = shop_run(&[("j_red_card", None, None), ("j_joker", None, None)], &[]);
+        r.screen = crate::save::Screen::StandardPack;
+        let mut card = crate::model::Card::new(crate::model::Rank(2), crate::model::Suit::Clubs);
+        card.edition = Some(Edition::Polychrome);
+        r.open_pack = vec![crate::save::ItemCard { key: "c_base".into(), name: "2 of Clubs".into(), set: "Default".into(), cost: 0, edition: None, card: Some(card) }];
+        let a = analyze(&r, GameData::bundled(), None, &quick());
+        let pick = a.options.iter().find(|o| o.kind == "card").expect("the pack card is an option");
+        assert!(pick.label.starts_with("pick 2♣") && pick.long_mult.is_some(), "{}", pick.label);
+        let skip = a.options.iter().find(|o| o.kind == "skip").expect("Red Card makes skipping an option");
+        assert!(skip.long_mult.unwrap() > 1.0);
     }
 
     #[test]

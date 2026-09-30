@@ -330,8 +330,9 @@ function render(d) {
     const r = a.rounds[a.options_round];
     // While a pack is open: its picks first, and the shop options below for what comes after
     const inPack = a.screen.endsWith("Pack");
-    const picks = a.options.filter((o) => o.label.startsWith("pick "));
-    const shopRows = a.options.filter((o) => !o.label.startsWith("pick "));
+    const isPick = (o) => o.label.startsWith("pick ") || o.kind === "skip";
+    const picks = a.options.filter(isPick);
+    const shopRows = a.options.filter((o) => !isPick(o));
     const sections = [];
     if (inPack && picks.length) {
       sections.push([`Pick from the pack vs ${esc(roundName(r))} <small>win chance after each pick (now ${pct(r.p_win)}) · money isn't turned into win chance</small>`,
