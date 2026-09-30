@@ -1163,14 +1163,25 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     }
     // Standard pack cards: your deck with the card added, projected to Ante 8
     let pack_cards: Vec<Card> = run.open_pack.iter().filter_map(|c| c.card).collect();
-    let card_long: Vec<f64> = par_map(&pack_cards, |card| {
-        let mut d = ctx.fresh_deck.clone();
-        d.push(*card);
-        deck_long(&d, run.dollars).mean.max(1.0) / deck_base.mean.max(1.0)
+    // Holding The Lovers: a plain card can also be made Wild (fits every flush), valued too.
+    let lovers = run.consumables.iter().any(|c| c.key == "c_lovers");
+    let card_long: Vec<(f64, Option<f64>)> = par_map(&pack_cards, |card| {
+        let with = |c: Card| {
+            let mut d = ctx.fresh_deck.clone();
+            d.push(c);
+            deck_long(&d, run.dollars).mean.max(1.0) / deck_base.mean.max(1.0)
+        };
+        let wild = (lovers && card.enhancement.is_none()).then(|| with(Card { enhancement: Some(crate::model::Enhancement::Wild), ..*card }));
+        (with(*card), wild)
     });
     for o in options.iter_mut().filter(|o| o.kind == "card") {
         if let Some(i) = pack_cards.iter().position(|c| o.label == format!("pick {}", c.label())) {
-            o.long_mult = Some(card_long[i]);
+            let (plain, wild) = card_long[i];
+            o.long_mult = Some(plain);
+            if let Some(w) = wild.filter(|w| *w > plain) {
+                o.long_mult = Some(w);
+                o.note = format!("added to your deck; made Wild with your Lovers (×{plain:.2} as it is)");
+            }
         }
     }
     // With Red Card, skipping an open pack is a pick of its own
