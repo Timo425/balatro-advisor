@@ -352,25 +352,34 @@ fn decide(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i64, ne
     let f = b.rule_flags();
     let need_f = if f.four_fingers { 4 } else { 5 };
     let suited = |c: &Card, s: Suit| hand::is_suit(c, s, false, true, f.smeared);
-    let (suit, group) = Suit::ALL
+    // Flush plan: for each suit you could chase, the exact odds of completing it with the
+    // digs left (from what's in hand and what's left in the draw pile) × what it would
+    // score; the best suit is the one to chase, not simply the one you hold most of.
+    let digs = (discards + hands - 1).max(0) as usize;
+    let plan = Suit::ALL
         .iter()
-        .map(|&s| (s, (0..hand.len()).filter(|&i| suited(&hand[i], s)).collect::<Vec<usize>>()))
-        .max_by_key(|(_, g)| g.len())
-        .unwrap_or((Suit::Spades, vec![]));
-    let off: Vec<usize> = (0..hand.len()).filter(|i| !group.contains(i)).collect();
-
-    // Flush plan: exact odds of completing it with the digs left × what it would score.
-    if group.len() < need_f && group.len() >= 2 {
-        let in_deck: Vec<&Card> = deck.iter().filter(|c| suited(c, suit)).collect();
-        let digs = (discards + hands - 1).max(0) as usize;
-        let p = flush_odds(group.len(), in_deck.len(), deck.len(), size, need_f, digs);
-        if p > 0.1 && in_deck.len() + group.len() >= need_f {
+        .filter_map(|&suit| {
+            let group: Vec<usize> = (0..hand.len()).filter(|&i| suited(&hand[i], suit)).collect();
+            if group.len() >= need_f || group.len() < 2 {
+                return None;
+            }
+            let in_deck: Vec<&Card> = deck.iter().filter(|c| suited(c, suit)).collect();
+            if in_deck.len() + group.len() < need_f {
+                return None;
+            }
+            let p = flush_odds(group.len(), in_deck.len(), deck.len(), size, need_f, digs);
             let mut cards: Vec<Card> = group.iter().map(|&i| hand[i]).collect();
             let mut extra: Vec<Card> = in_deck.iter().map(|c| **c).collect();
             extra.sort_by(|a, c| c.rank.chips().total_cmp(&a.rank.chips()));
             cards.extend(extra.into_iter().take(need_f - group.len()));
             cards.truncate(5);
             let est = score::score(b, &cards, &[], &mut Unlucky, false).score;
+            Some((group, p, est))
+        })
+        .max_by(|a, c| (a.1 * a.2).total_cmp(&(c.1 * c.2)));
+    if let Some((group, p, est)) = plan {
+        let off: Vec<usize> = (0..hand.len()).filter(|i| !group.contains(i)).collect();
+        if p > 0.1 {
             // When on pace, only chase if the flush is clearly better AND the best hand
             // would spend 2+ of the suited cards (playing it would break the draw).
             let breaks_draw = best.hand != HandType::Flush && best.cards.iter().filter(|i| group.contains(i)).count() >= 2;
