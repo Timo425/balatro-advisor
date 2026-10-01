@@ -59,7 +59,10 @@ pub fn run(save_dir: PathBuf, profile: u8, port: u16, open: bool) -> Result<()> 
                     let loaded = save::load(&save_path, data);
                     if let Ok(r) = &loaded {
                         let mut same = r.clone();
-                        same.hand.sort_by_key(|c| c.label());
+                        // (unless a card is face down: then the order tells you something)
+                        if !same.hand.iter().any(|c| c.face_down) {
+                            same.hand.sort_by_key(|c| c.label());
+                        }
                         same.snapshot.age_secs = None;
                         same.snapshot.live = false;
                         let fp = serde_json::to_string(&same).unwrap_or_default();
