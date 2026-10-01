@@ -1850,9 +1850,16 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                 .iter()
                 .zip(res)
                 .map(|(m, (p, mean, spare, cash))| {
+                    // A play is shown in the order to play it; a discard by rank (order doesn't matter)
+                    let sorted_discard;
                     let (action, idx) = match m {
                         sim::Move::Play(v) => ("play", v),
-                        sim::Move::Discard(v) => ("discard", v),
+                        sim::Move::Discard(v) => {
+                            let mut v = v.clone();
+                            v.sort_by_key(|&i| (std::cmp::Reverse(start.hand[i].rank.0), start.hand[i].suit as u8));
+                            sorted_discard = v;
+                            ("discard", &sorted_discard)
+                        }
                     };
                     let cards: Vec<Card> = idx.iter().map(|&i| start.hand[i]).collect();
                     let (hand, score, dig) = if action == "play" {
