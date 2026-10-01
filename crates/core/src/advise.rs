@@ -1359,7 +1359,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     };
     let price = |cost: i64| if cost == 0 { 1.0 } else { long_score(&fill_long(project(&|_| true, run.dollars), None, once(-(cost as f64)))) / l0 };
     for o in options.iter_mut() {
-        if o.kind == "tarot" && o.money_gain == 0.0 {
+        if o.kind == "tarot" && o.money_gain <= 0.0 {
             if let Some(i) = o.key.as_ref().and_then(|k| tarots.iter().position(|t| &t.key == k)) {
                 o.long_mult = Some(tarot_long[i] * price(o.cost));
             }
@@ -1401,6 +1401,27 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                 o.note = format!("added to your deck; made Wild with your Lovers (counts The Lovers used up; ×{plain:.2} as it is)");
             }
         }
+    }
+    // Hone / Glow Up: editions on shop jokers twice as often (×2, then ×4). poll_edition
+    // (common_events.lua) at rate r: Polychrome 0.6%·r, Holo 2%·r, Foil 4%·r cumulative,
+    // so each step up adds Polychrome +0.6%, Holo +1.4%, Foil +2% per joker card (×r/1).
+    // Worth that on the jokers you'll buy (about one an ante: an assumption), each edition
+    // measured on the projected board.
+    for o in options.iter_mut().filter(|o| o.kind == "voucher" && matches!(o.key.as_deref(), Some("v_hone" | "v_glow_up"))) {
+        let step = if o.key.as_deref() == Some("v_glow_up") { 2.0 } else { 1.0 }; // ×2 → ×4 adds twice as much
+        let base = fill_long(project(&|_| true, run.dollars), None, 0.0);
+        let gain = |e: Edition| {
+            let mut b = base.clone();
+            if let Some(j) = b.jokers.iter_mut().rev().find(|j| j.key == "stand-in") {
+                j.edition = Some(e);
+            }
+            long_score(&b) / l0 - 1.0
+        };
+        let per_joker = step * (0.006 * gain(Edition::Polychrome) + 0.014 * gain(Edition::Holo) + 0.02 * gain(Edition::Foil));
+        let buys = antes_left;
+        let price = long_score(&fill_long(project(&|_| true, run.dollars), None, once(-(o.cost as f64)))) / l0;
+        o.long_mult = Some((1.0 + buys * per_joker).max(0.0) * price);
+        o.note = format!("editions on shop jokers {} as often · ~{:.1}% more of the jokers you'd buy (about one an ante) get one (estimate)", if step > 1.0 { "4×" } else { "2×" }, step * 4.0);
     }
     // Economy vouchers: money they're worth every ante (an estimate, labelled), plus their price
     let per_round_interest = |cap: i64| interest(run.dollars, run.interest_amount, cap) as f64;
