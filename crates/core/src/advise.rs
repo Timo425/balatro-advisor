@@ -746,6 +746,8 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     let dctx = desc_ctx(run);
     let mut fresh_deck = run.full_deck();
     for c in &mut fresh_deck {
+        // a fresh round deals everything face up (only the boss turns some down)
+        c.face_down = false;
         c.debuff = false;
     }
 
@@ -1706,7 +1708,15 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         o.note = format!("{} · about {extra:.0} more planets by Ante 8 (estimate)", o.note);
     }
     // Economy vouchers: money they're worth every ante (an estimate, labelled), plus their price
-    let per_round_interest = |cap: i64| interest(run.dollars, run.interest_amount, cap) as f64;
+    // Interest at the money you'd typically hold over the next ante: halfway between now and
+    // saving one ante's income (blind rewards, interest, a hand's money), for Seed Money and
+    // Money Tree, whose higher caps only pay once you hold more.
+    let ante_income = {
+        let avg_reward = run.blinds.iter().map(|b| b.reward).sum::<i64>() as f64 / run.blinds.len().max(1) as f64;
+        3.0 * (avg_reward + run.money_per_hand + interest(run.dollars, run.interest_amount, run.interest_cap) as f64)
+    };
+    let held_later = run.dollars + ante_income / 2.0;
+    let per_round_interest = |cap: i64| interest(held_later, run.interest_amount, cap) as f64;
     for o in options.iter_mut().filter(|o| o.kind == "voucher" && o.long_mult.is_none()) {
         let reroll = run.shop.as_ref().map_or(run.base_reroll_cost, |s| s.reroll_cost) as f64;
         let flow = match o.key.as_deref() {
@@ -1714,7 +1724,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             Some("v_overstock_norm" | "v_overstock_plus") => 0.5 * reroll * 3.0,
             // $2 off the reroll you'd make in a shop
             Some("v_reroll_surplus" | "v_reroll_glut") => 2.0 * 3.0,
-            Some("v_seed_money") => 3.0 * (per_round_interest(50) - per_round_interest(run.interest_cap)).max(0.0),
+            Some("v_seed_money") => 3.0 * (per_round_interest(50) - per_round_interest(run.interest_cap)).max(0.0), // at the money you'd hold
             Some("v_money_tree") => 3.0 * (per_round_interest(100) - per_round_interest(run.interest_cap)).max(0.0),
             // off what a shop usually costs you (~$8)
             Some("v_clearance_sale") => 0.25 * 8.0 * 3.0,
@@ -4333,6 +4343,17 @@ mod tests {
         // nothing to say when nothing applies
         let plain = shop_run(&[("j_joker", None, None)], &[]);
         assert!(order_tips(&plain, GameData::bundled(), &[]).is_empty());
+    }
+
+    #[test]
+    fn a_face_down_deck_still_scores() {
+        // The save marks the whole draw pile face down (it's a deck): that mustn't stop plays
+        let mut r = shop_run(&[("j_joker", None, None)], &[]);
+        for c in &mut r.draw_pile {
+            c.face_down = true;
+        }
+        let a = analyze(&r, GameData::bundled(), None, &quick());
+        assert!(a.typical_hand.mean > 0.0 && a.jokers[0].score_share > 0.0, "{:?}", a.typical_hand);
     }
 
     #[test]

@@ -496,10 +496,18 @@ pub fn from_value(g: &Value, data: &GameData, path: &Path, age_secs: Option<u64>
         .unwrap_or_default();
 
     let cards = |name: &str| area(g, name).into_iter().filter_map(playing_card).collect::<Vec<_>>();
-    let draw_pile = cards("deck");
+    // Only a card in your hand can be "face down" in the boss sense: the draw pile is face
+    // down because it's a deck.
+    let unflip = |mut v: Vec<Card>| {
+        for c in &mut v {
+            c.face_down = false;
+        }
+        v
+    };
+    let draw_pile = unflip(cards("deck"));
     // Cards mid-play (saved during HAND_PLAYED) go back into the round's discard.
-    let mut discard_pile = cards("discard");
-    discard_pile.extend(cards("play"));
+    let mut discard_pile = unflip(cards("discard"));
+    discard_pile.extend(unflip(cards("play")));
 
     let mut tags: Vec<String> = g
         .get("tags")

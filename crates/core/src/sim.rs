@@ -508,7 +508,9 @@ fn decide(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i64, ne
     // Mail-In Rebate: cash cards of its rank with a discard before playing (they pay $5
     // each), as long as the play doesn't need them. That keeps discards for cashing and
     // makes playing the way to dig.
-    if discards > 0 && b.mail_rank.is_some() {
+    // Only when the round is safe (on pace with this hand): in a tight round the discards
+    // are worth more for digging than $5.
+    if discards > 0 && b.mail_rank.is_some() && best.floor * hands as f64 >= need {
         let pays: Vec<usize> = (0..hand.len()).filter(|&i| discard_money(b, hand, &[i]) > 0.0).collect();
         // also the ones in the best play, when the rest of the hand still keeps you on pace
         let rest: Vec<Card> = (0..hand.len()).filter(|i| !pays.contains(i)).map(|i| hand[i]).collect();
