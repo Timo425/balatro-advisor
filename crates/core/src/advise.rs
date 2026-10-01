@@ -3018,7 +3018,8 @@ fn boss_reroll_option(ctx: &Ctx, run: &RunState, data: &GameData, spec: &Spec, n
 /// the long run only counts if you survive to it, so when a round is at risk the win
 /// chance dominates, and when it's safe the long run does. Values within 3% of each other
 /// are a tie (simulation noise), broken by the score reached this round, then the raw
-/// numbers. With no real chance at all (under 20%), the score reached comes first.
+/// numbers; keeping your money wins a tie. With no real chance at all (under 20%), the score
+/// reached comes first.
 fn rank_options(out: &mut [ShopOption], base_reach: f64) {
     let top_p = out.iter().map(|o| o.p_win).fold(0.0, f64::max);
     let trouble = top_p < 0.2;
@@ -3038,7 +3039,11 @@ fn rank_options(out: &mut [ShopOption], base_reach: f64) {
             (Some(x), Some(y)) => y.total_cmp(&x),
             _ => std::cmp::Ordering::Equal,
         };
-        let first = if trouble { by_reach.then(tier(a).cmp(&tier(b))) } else { tier(a).cmp(&tier(b)).then(by_flex).then(by_reach) };
+        // Keeping your money (next round / skip the pack) wins a tie: spending only beats it
+        // when it's actually better, not within noise
+        let keep = |o: &ShopOption| matches!(o.kind.as_str(), "leave" | "skip");
+        let by_keep = keep(b).cmp(&keep(a));
+        let first = if trouble { by_reach.then(tier(a).cmp(&tier(b))) } else { tier(a).cmp(&tier(b)).then(by_keep).then(by_flex).then(by_reach) };
         first.then(value(b).total_cmp(&value(a))).then(b.p_win.total_cmp(&a.p_win))
     });
 }
