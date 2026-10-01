@@ -286,6 +286,9 @@ pub struct Outcome {
     pub planets: f64,
     /// The first hand played for points after a discard (not a junk hand played to dig)
     pub next: Option<(HandType, f64)>,
+    /// The hand played last in a won round: a Blue Seal's planet is that hand's
+    /// (card.lua Card:get_end_of_round_effect, G.GAME.last_hand_played)
+    pub last: Option<HandType>,
 }
 
 /// The rounds numbered `range` after `first` (round i always draws the same cards, whatever
@@ -315,6 +318,7 @@ pub fn outcomes_after(b: &Board, start: &RoundStart, first: &Move, range: std::o
                         if total >= start.target {
                             o.won = 1.0;
                             o.spare = (start.hands - 1) as f64;
+                            o.last = Some(s.hand);
                             o.planets = seal_planets(&bb, &held);
                             o.cash += held_dollars(&held);
                         }
@@ -338,6 +342,7 @@ pub fn outcomes_after(b: &Board, start: &RoundStart, first: &Move, range: std::o
             o.total = r.total;
             o.planets = r.planets;
             o.next = r.plays.iter().find(|p| !p.2).map(|p| (p.0, p.1));
+            o.last = r.plays.last().map(|p| p.0);
             o
         })
         .collect()
@@ -780,6 +785,77 @@ impl Use {
     }
 }
 
+/// What a won round is worth beyond winning it, in the advice's long-run measure: each planet
+/// a Blue Seal makes, by the hand played last (it's that hand's planet), and each dollar.
+/// The round simulation uses it to choose between winning now and playing on for more.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RoundGoals {
+    pub planet: [f64; 12],
+    pub dollar: f64,
+    pub per_hand: f64,
+}
+
+impl RoundGoals {
+    /// A simulated round's value: 0 if lost, else 1 plus what it leaves you.
+    pub fn value(&self, o: &Outcome) -> f64 {
+        let planet = o.last.map_or(0.0, |h| self.planet[h as usize]);
+        o.won * (1.0 + planet * o.planets + self.dollar * (o.spare * self.per_hand + o.cash))
+    }
+}
+
+/// Simulated futures per choice when the round simulation weighs winning now against
+/// playing on.
+const LOOKAHEAD_ROLLOUTS: usize = 8;
+
+/// A win is on the table: is playing on for a better finish worth more? Compares winning now
+/// with `win` against the move the policy would make if it weren't finishing (digging with
+/// the cards that don't pay at round end), on a few simulated futures, by `RoundGoals`. Only
+/// when a better finish could be worth something; the futures play on without looking ahead.
+#[allow(clippy::too_many_arguments)]
+fn play_on_instead(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i64, scored: f64, target: f64, size: usize, win: &[usize], uses: &[Use], rng: &mut Rng) -> Option<Action> {
+    let g = b.goals?;
+    if hands <= 1 {
+        return None;
+    }
+    let played: Vec<Card> = win.iter().map(|&i| hand[i]).collect();
+    let held: Vec<Card> = (0..hand.len()).filter(|i| !win.contains(i)).map(|i| hand[i]).collect();
+    let h = score::score(b, &played, &held, &mut Unlucky, false).hand;
+    let planets = seal_planets(b, &held);
+    let now = 1.0 + g.planet[h as usize] * planets + g.dollar * ((hands - 1) as f64 * g.per_hand + held_dollars(&held));
+    // the most a different finish could add: the best planet for the seals kept
+    let best = g.planet.iter().copied().fold(0.0, f64::max);
+    if (best - g.planet[h as usize]) * planets < 0.01 {
+        return None;
+    }
+    // what the policy does when not finishing now, with the cards that pay at round end kept
+    let keep = pays_at_end(b, hand);
+    let free: Vec<usize> = (0..hand.len()).filter(|i| !keep.contains(i)).collect();
+    let cards: Vec<Card> = free.iter().map(|&i| hand[i]).collect();
+    let alt = match decide_cards(b, &cards, deck, hands, discards, f64::INFINITY, size.saturating_sub(keep.len()).max(1)) {
+        Action::Play(v, _) => Move::Play(v.into_iter().map(|k| free[k]).collect()),
+        Action::Discard(v) => Move::Discard(v.into_iter().map(|k| free[k]).collect()),
+    };
+    if let Move::Play(v) = &alt {
+        let mut a = v.clone();
+        let mut w = win.to_vec();
+        a.sort();
+        w.sort();
+        if a == w || v.is_empty() {
+            return None;
+        }
+    }
+    let mut plain = b.clone();
+    plain.goals = None;
+    let start = RoundStart { hand: hand.to_vec(), deck: deck.to_vec(), hand_size: size as i64, hands, discards, scored, target };
+    let seed = rng.next_u64();
+    let outs = outcomes_after(&plain, &start, &alt, 0..LOOKAHEAD_ROLLOUTS, seed, uses);
+    let later = outs.iter().map(|o| g.value(o)).sum::<f64>() / outs.len() as f64;
+    (later > now).then(|| match alt {
+        Move::Play(v) => Action::Play(v, true),
+        Move::Discard(v) => Action::Discard(v),
+    })
+}
+
 /// Uses a held consumable once it improves the best play in hand (by more than 1%).
 fn use_if_better(b: &mut Board, hand: &mut Vec<Card>, uses: &[Use], used: &mut [bool]) {
     for (k, u) in uses.iter().enumerate() {
@@ -822,7 +898,7 @@ pub fn sim_round_uses(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[
         b.deck_remaining = deck.len() as i64;
         use_if_better(&mut b, &mut hand, uses, &mut used);
         let act = match win_keeping_seals(&b, &hand, start.target - total) {
-            Some(v) => Action::Play(v, false),
+            Some(v) => play_on_instead(&b, &hand, &deck, hands, discards, total, start.target, size, &v, uses, rng).unwrap_or(Action::Play(v, false)),
             None => decide(&b, &hand, &deck, hands, discards, start.target - total, size),
         };
         match act {

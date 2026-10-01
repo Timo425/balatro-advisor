@@ -36,6 +36,11 @@ similar situation gets better at once:
   thought of it.
 - **How moves are judged**: one measure everywhere (win chance × long-run value, money as
   what it buys), with values measured by simulating your board, not set by hand.
+- **How the simulated player plays**: the rest of a round is played by a simulated player,
+  and the advice can only value lines that player would play. It plays toward the same
+  measure the advice ranks by (`sim::RoundGoals`: winning, then planets by the hand that ends
+  the round, and money), weighing "win now" against playing on with a few simulated futures.
+  When the advice misses a line, first check whether the simulated player would ever play it.
 - **Noise**: spend more simulation where moves are close, rather than picking between them
   by a side number.
 If a fix only makes sense for one joker, suit or hand, it's the wrong fix: look for the
@@ -57,6 +62,7 @@ because the simulated rest of the round spent the 3♠ Blue Seal in a Flush.
 When the owner says a suggestion is wrong, save that game state before fixing it:
 `tests/fixtures/private/<name>.json` = `{"note", "state": <balatro-advisor state --json>,
 "expect": {...}}` (keys: `best_action`, `best_hand`, `best_use_first`, `best_not_cards`: [..], `top_option`, `above`: ["A", "B"]).
-`cargo test --release --test replay` replays every one; it must pass before a commit.
+`cargo test --release --test replay` replays every one; it must pass before a commit
+(check the exit status, not the printed output).
 Other local data (never in the repo): `~/.local/share/balatro-advisor/calibration.jsonl`
 (predicted vs actual blind results, shops seen).

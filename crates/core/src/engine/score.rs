@@ -107,6 +107,10 @@ pub struct Board {
     pub seal_seen_value: f64,
     /// Consumable slots free for the planets Blue Seal cards held at round end make.
     pub planet_slots: i64,
+    /// What a round is worth beyond winning it, for the round simulation's own choices
+    /// (none: it just plays to win).
+    #[serde(skip)]
+    pub goals: Option<crate::sim::RoundGoals>,
     pub mail_rank: Option<u8>,
     pub plasma: bool,
 }
@@ -141,6 +145,7 @@ impl Board {
             mail_rank: None,
             seal_seen_value: 0.0,
             planet_slots: 2,
+            goals: None,
         }
     }
 

@@ -611,7 +611,7 @@ fn is_zero_usize(n: &usize) -> bool {
 /// move gets, and how close (as a share of the round's value) counts as equally good.
 const RACE_FIRST: usize = 64;
 const RACE_MAX: usize = 1600;
-const RACE_EQUAL: f64 = 0.003;
+const RACE_EQUAL: f64 = 0.01;
 
 struct Ctx<'a> {
     run: &'a RunState,
@@ -2080,17 +2080,25 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     lap("outlook");
     let best_play = if run.screen.in_blind() && !run.hand.is_empty() {
         let mut b = ctx.base.clone();
-        // A planet from a Blue Seal held at round end: your main hand +1 level and Constellation
-        // ×0.1, as its gain in the same long-run projection everything else is valued by
-        let planet_gain = top_hand.filter(|_| run.hand.iter().chain(&run.draw_pile).any(|c| c.seal == Some(crate::model::Seal::Blue))).map_or(0.0, |top| {
-            let mut p = fill_long(project(&|_| true, run.dollars), None, 0.0);
-            for j in p.jokers.iter_mut().filter(|j| j.key == "j_constellation") {
-                j.x_mult += 0.1;
-            }
-            let l = p.levels[top as usize];
-            p.levels[top as usize] = l.with_level(l.level + 1);
-            (long_score(&p) / l0 - 1.0).max(0.0)
-        });
+        // A planet from a Blue Seal held at round end is the planet of the hand played last
+        // (card.lua): that hand +1 level and Constellation ×0.1, as its gain in the same
+        // long-run projection everything else is valued by. One value per hand type.
+        let has_seals = run.hand.iter().chain(&run.draw_pile).any(|c| c.seal == Some(crate::model::Seal::Blue));
+        let planet_gain_by: Vec<f64> = if has_seals {
+            par_map(&crate::engine::HandType::ALL.to_vec(), |&h| {
+                let mut p = fill_long(project(&|_| true, run.dollars), None, 0.0);
+                for j in p.jokers.iter_mut().filter(|j| j.key == "j_constellation") {
+                    j.x_mult += 0.1;
+                }
+                let l = p.levels[h as usize];
+                p.levels[h as usize] = l.with_level(l.level + 1);
+                (long_score(&p) / l0 - 1.0).max(0.0)
+            })
+        } else {
+            vec![0.0; 12]
+        };
+        // for estimates that don't know which hand ends the round: your main hand's
+        let planet_gain = top_hand.map_or(0.0, |t| planet_gain_by[t as usize]);
         // A dollar won this round, in the same long-run measure: what +$10 does to the projection
         let dollar_gain = ((long_score(&fill_long(project(&|_| true, run.dollars), None, once(10.0))) / l0 - 1.0) / 10.0).max(0.0);
         b.deck_remaining = run.draw_pile.len() as i64;
@@ -2106,6 +2114,9 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         // the policy's dig or discard) is simulated through the rest of the round.
         let look = ctx.specs.iter().find(|x| x.in_progress).map(|spec| {
             let mut bb = ctx.board_for(&b, spec);
+            // The simulated player plays toward the same measure the advice ranks by
+            let goals = sim::RoundGoals { planet: std::array::from_fn(|i| planet_gain_by[i]), dollar: dollar_gain, per_hand: run.money_per_hand };
+            bb.goals = Some(goals);
             // Holding Cryptid: drawing a Blue Seal card this round means two more of it (an
             // estimate: about three planets' worth)
             if run.consumables.iter().any(|c| c.key == "c_cryptid") && !run.hand.iter().any(|c| c.seal == Some(crate::model::Seal::Blue)) {
@@ -2215,8 +2226,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             // each by its gain in the long-run projection). A lost round counts 0. All on the same draws,
             // in batches: a move clearly worse than the leader (95%) stops, one provably as good
             // (within RACE_EQUAL) is a tie and stops, the rest go on, up to RACE_MAX rounds.
-            let money_per_hand = run.money_per_hand;
-            let utility = |o: &sim::Outcome| o.won * (1.0 + planet_gain * o.planets + dollar_gain * (o.spare * money_per_hand + o.cash));
+            let utility = |o: &sim::Outcome| goals.value(o);
             let mut outs: Vec<Vec<sim::Outcome>> = vec![Vec::new(); cands.len()];
             let mut alive: Vec<usize> = (0..cands.len()).collect();
             let mut tied = vec![false; cands.len()];

@@ -69,6 +69,7 @@ impl Board {
             mail_rank: s.round_targets.mail_rank.map(|r| r.0),
             seal_seen_value: 0.0,
             planet_slots: (s.consumable_slots - s.consumables.len() as i64).max(0),
+            goals: None,
         }
     }
 }
