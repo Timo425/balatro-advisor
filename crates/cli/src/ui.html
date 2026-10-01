@@ -349,7 +349,7 @@ function render(d) {
         [...picks, { label: "skip", kind: "skip", cost: 0, p_win: r.p_win, note: "keep things as they are", money_after: a.dollars, interest_now: 0, interest_after: 0 }]]);
       if (shopRows.length) sections.push([`Then in the shop <small>after you close the pack</small>`, shopRows]);
     } else {
-      sections.push([`Your options vs ${esc(roundName(r))} <small>everything you can buy now, by win chance after it (now ${pct(r.p_win)}) · packs and rerolls are averages over what they can show</small>`, shopRows]);
+      sections.push([`Your options vs ${esc(roundName(r))} <small>everything you can buy now, ranked by win chance × By Ante 8 (now ${pct(r.p_win)}) · packs and rerolls are averages over what they can show</small>`, shopRows]);
     }
     for (const [title, rows] of sections) {
     right += `<section><h2>${title}</h2><table><tr><th></th><th class="num">Cost</th><th class="num" title="Money you'd have left, and the interest it earns per round">Left · interest</th><th class="num">Win chance</th><th class="num" title="${esc(a.long_assumptions || "")}">By Ante 8</th></tr>` +
