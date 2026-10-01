@@ -273,6 +273,13 @@ pub struct ShopOption {
     /// shown win chance stays your board as it is.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub survive: Option<f64>,
+    /// The same for the next ante's boss: the option's own win chance there (jokers), plus
+    /// what its leftover money buys in the shops before it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub survive_next: Option<f64>,
+    /// Win chance against the next ante's boss right after taking it (jokers only)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_p: Option<f64>,
     /// Share of this round's target a typical round scores after taking it, where known:
     /// breaks ties when win chances saturate (Mr. Bones, easy blinds).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1416,7 +1423,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     }
     let now_p = base_odds.get(key_round).map_or(0.0, |o| o.0);
     let keep_money = |label: &str, kind: &str, note: String, long: f64| ShopOption {
-        survive: None,
+        survive: None, survive_next: None, next_p: None,
         reach: None,
         label: label.into(),
         kind: kind.into(),
@@ -1451,8 +1458,19 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         let mut cache: std::collections::HashMap<i64, f64> = std::collections::HashMap::new();
         for o in options.iter_mut() {
             let money = o.money_after.max(0.0);
-            let bonus = *cache.entry(money.round() as i64).or_insert_with(|| (money_value(&ctx, &pool_entries, &value, p_now, money, false) - p_now).max(0.0));
+            let bonus = *cache.entry(money.round() as i64).or_insert_with(|| (survival_with(&ctx, &pool_entries, &value, p_now, money, false) - p_now).max(0.0));
             o.survive = Some((o.p_win + bonus).min(1.0));
+        }
+    }
+    // And the next ante's boss, with all the shops before it
+    if let Some(hz) = ctx.specs.iter().position(|x| x.horizon) {
+        let p_next = base_odds.get(hz).map_or(0.0, |o| o.0);
+        let value = |c: &Candidate| c.p_win.get(hz).copied().unwrap_or(p_next);
+        let mut cache: std::collections::HashMap<i64, f64> = std::collections::HashMap::new();
+        for o in options.iter_mut() {
+            let money = o.money_after.max(0.0);
+            let bonus = *cache.entry(money.round() as i64).or_insert_with(|| (survival_with(&ctx, &pool_entries, &value, p_next, money, true) - p_next).max(0.0));
+            o.survive_next = Some((o.next_p.unwrap_or(p_next) + bonus).min(1.0));
         }
     }
     let base_reach = base_odds.get(key_round).zip(ctx.specs.get(key_round)).map_or(0.0, |(o, sp)| o.1.mean / sp.start.target.max(1.0));
@@ -1465,7 +1483,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         let p_boss = base_odds.get(key_round).map_or(0.0, |o| o.0);
         let value = |c: &Candidate| c.p_win.get(key_round).copied().unwrap_or(p_boss);
         let (_, k) = shops_ahead(run, false);
-        let survive_with = |money: f64, shops: usize, p0: f64| money_value_with(&ctx, &pool_entries, &value, p0, money, false, shops).max(p0).min(1.0);
+        let survive_with = |money: f64, shops: usize, p0: f64| money_value_with(&ctx, &pool_entries, &value, p0, money, false, shops, true).max(p0).min(1.0);
         let money_long = |delta: f64| long_score(&fill_long(project(&|_| true, run.dollars), None, once(delta))) / l0;
         // Money cards you hold (Immolate, Hermit…) get used either way: in the blind when you
         // play it, or inside the pack / before the boss when you skip.
@@ -2045,17 +2063,17 @@ fn shop_options(
     let shop_cards = run.shop.as_ref().map(|s| s.other_cards.clone()).unwrap_or_default();
     for c in shop_cards.iter().filter(|c| c.set == "Planet") {
         if let Some(p) = p_of(&c.key) {
-            out.push(ShopOption { survive: None, reach: None, label: c.name.clone(), kind: "planet".into(), cost: c.cost, money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: Some(c.key.clone()), desc: None, p_win: p, note: format!("levels up {}", data.center(&c.key).and_then(|x| x.config.get("hand_type")).and_then(|v| v.as_str()).unwrap_or("")) });
+            out.push(ShopOption { survive: None, survive_next: None, next_p: None, reach: None, label: c.name.clone(), kind: "planet".into(), cost: c.cost, money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: Some(c.key.clone()), desc: None, p_win: p, note: format!("levels up {}", data.center(&c.key).and_then(|x| x.config.get("hand_type")).and_then(|v| v.as_str()).unwrap_or("")) });
         }
     }
     for c in run.open_pack.iter().filter(|c| c.set == "Planet") {
         if let Some(p) = p_of(&c.key) {
-            out.push(ShopOption { survive: None, reach: None, label: format!("pick {}", c.name), kind: "planet".into(), cost: 0, p_win: p, note: format!("levels up {}", data.center(&c.key).and_then(|x| x.config.get("hand_type")).and_then(|v| v.as_str()).unwrap_or("")), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: Some(c.key.clone()), desc: None });
+            out.push(ShopOption { survive: None, survive_next: None, next_p: None, reach: None, label: format!("pick {}", c.name), kind: "planet".into(), cost: 0, p_win: p, note: format!("levels up {}", data.center(&c.key).and_then(|x| x.config.get("hand_type")).and_then(|v| v.as_str()).unwrap_or("")), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: Some(c.key.clone()), desc: None });
         }
     }
     for c in run.consumables.iter().filter(|c| c.set == "Planet") {
         if let Some(p) = p_of(&c.key) {
-            out.push(ShopOption { survive: None, reach: None, label: format!("{} (you have it)", c.name), kind: "planet".into(), cost: 0, p_win: p, note: "use it before the blind".into(), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: Some(c.key.clone()), desc: None });
+            out.push(ShopOption { survive: None, survive_next: None, next_p: None, reach: None, label: format!("{} (you have it)", c.name), kind: "planet".into(), cost: 0, p_win: p, note: "use it before the blind".into(), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: Some(c.key.clone()), desc: None });
         }
     }
 
@@ -2092,7 +2110,7 @@ fn shop_options(
                 }
             }
             let top = (0..n).max_by_key(|&i| best_counts[i]).unwrap_or(0);
-            out.push(ShopOption { survive: None, reach: None,
+            out.push(ShopOption { survive: None, survive_next: None, next_p: None, reach: None,
                 money_after: 0.0,
                 interest_now: 0,
                 interest_after: 0,
@@ -2110,7 +2128,7 @@ fn shop_options(
         } else if pk.key.starts_with("p_buffoon") {
             // Jokers picked from a pack are free: no budget limit on what's inside.
             let e = expected_best(pool, round, now, extra, 1.0, f64::INFINITY, per_rarity, &mut rng);
-            out.push(ShopOption { survive: None, reach: None, label: pk.name.clone(), kind: "pack".into(), cost: pk.cost, p_win: e, note: format!("{extra} jokers{pick_note}"), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: Some(pk.key.clone()), desc: None });
+            out.push(ShopOption { survive: None, survive_next: None, next_p: None, reach: None, label: pk.name.clone(), kind: "pack".into(), cost: pk.cost, p_win: e, note: format!("{extra} jokers{pick_note}"), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: Some(pk.key.clone()), desc: None });
         }
     }
 
@@ -2126,7 +2144,7 @@ fn shop_options(
             }
             let budget = run.dollars - spent as f64;
             let e = expected_best(pool, round, now, slots * k, joker_share, budget, per_rarity, &mut rng);
-            out.push(ShopOption { survive: None, reach: None,
+            out.push(ShopOption { survive: None, survive_next: None, next_p: None, reach: None,
                 money_after: 0.0,
                 interest_now: 0,
                 interest_after: 0,
@@ -2185,7 +2203,7 @@ fn shop_options(
                 _ => (false, "not valued".into()),
             };
             let p = if sim { ctx.odds_one(&ctx.base, &sp, ctx.opts.sims).0 } else { now };
-            out.push(ShopOption { survive: None, reach: None, label: v.name.clone(), kind: "voucher".into(), cost: v.cost, p_win: p, note, money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: Some(v.key.clone()), desc: None });
+            out.push(ShopOption { survive: None, survive_next: None, next_p: None, reach: None, label: v.name.clone(), kind: "voucher".into(), cost: v.cost, p_win: p, note, money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: Some(v.key.clone()), desc: None });
         }
     }
     // Tarots: applied to the deck the way a player sensibly would, then the round re-simulated.
@@ -2212,17 +2230,17 @@ fn shop_options(
     let shop_cards = run.shop.as_ref().map(|s| s.other_cards.clone()).unwrap_or_default();
     for c in shop_cards.iter().filter(|c| c.set == "Tarot" || c.set == "Spectral") {
         if let Some(t) = tarot_p(&c.key) {
-            out.push(ShopOption { survive: None, reach: None, label: c.name.clone(), kind: "tarot".into(), cost: c.cost, p_win: t.p_win, note: t.note.clone(), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: t.money_gain, long_mult: None, key: Some(c.key.clone()), desc: None });
+            out.push(ShopOption { survive: None, survive_next: None, next_p: None, reach: None, label: c.name.clone(), kind: "tarot".into(), cost: c.cost, p_win: t.p_win, note: t.note.clone(), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: t.money_gain, long_mult: None, key: Some(c.key.clone()), desc: None });
         }
     }
     for c in run.open_pack.iter().filter(|c| c.set == "Tarot" || c.set == "Spectral") {
         if let Some(t) = tarot_p(&c.key) {
-            out.push(ShopOption { survive: None, reach: None, label: format!("pick {}", c.name), kind: "tarot".into(), cost: 0, p_win: t.p_win, note: format!("{} · next ante reach {:.0}% → {:.0}%", t.note, t.reach_now * 100.0, t.reach * 100.0), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: t.money_gain, long_mult: None, key: Some(c.key.clone()), desc: None });
+            out.push(ShopOption { survive: None, survive_next: None, next_p: None, reach: None, label: format!("pick {}", c.name), kind: "tarot".into(), cost: 0, p_win: t.p_win, note: format!("{} · next ante reach {:.0}% → {:.0}%", t.note, t.reach_now * 100.0, t.reach * 100.0), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: t.money_gain, long_mult: None, key: Some(c.key.clone()), desc: None });
         }
     }
     for c in run.consumables.iter().filter(|c| c.set == "Tarot" || c.set == "Spectral") {
         if let Some(t) = tarot_p(&c.key) {
-            out.push(ShopOption { survive: None, reach: None, label: format!("{} (you have it)", c.name), kind: "tarot".into(), cost: 0, p_win: t.p_win, note: format!("{} · use it during a blind", t.note), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: t.money_gain, long_mult: None, key: Some(c.key.clone()), desc: None });
+            out.push(ShopOption { survive: None, survive_next: None, next_p: None, reach: None, label: format!("{} (you have it)", c.name), kind: "tarot".into(), cost: 0, p_win: t.p_win, note: format!("{} · use it during a blind", t.note), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: t.money_gain, long_mult: None, key: Some(c.key.clone()), desc: None });
         }
     }
     for pk in run.shop.as_ref().map(|s| s.boosters.clone()).unwrap_or_default().iter().filter(|p| p.key.starts_with("p_spectral")) {
@@ -2232,7 +2250,7 @@ fn shop_options(
         let vals: Vec<f64> = spectrals.iter().map(|t| t.p_win.max(now)).collect();
         let (avg, top) = best_of_subsets(&vals, extra);
         out.push(ShopOption {
-            survive: None,
+            survive: None, survive_next: None, next_p: None,
             reach: None,
             label: pk.name.clone(),
             kind: "pack".into(),
@@ -2256,7 +2274,7 @@ fn shop_options(
         let arcana: Vec<&TarotValue> = tarots.iter().filter(|t| !t.spectral).collect();
         let vals: Vec<f64> = arcana.iter().map(|t| t.p_win.max(now)).collect();
         let (avg, top) = best_of_subsets(&vals, extra);
-        out.push(ShopOption { survive: None, reach: None,
+        out.push(ShopOption { survive: None, survive_next: None, next_p: None, reach: None,
             label: pk.name.clone(),
             kind: "pack".into(),
             cost: pk.cost,
@@ -2287,7 +2305,7 @@ fn shop_options(
         sp.start.deck.push(card);
         let p = ctx.odds_one(&ctx.base, &sp, ctx.opts.sims).0;
         out.push(ShopOption {
-            survive: None,
+            survive: None, survive_next: None, next_p: None,
             reach: None,
             label: format!("pick {}", card.label()),
             kind: "card".into(),
@@ -2333,7 +2351,7 @@ fn shop_options(
         let action = c.sell_note.clone().unwrap_or(action);
         let note = [stickers, Some(action).filter(|a| !a.is_empty()), later].into_iter().flatten().collect::<Vec<_>>().join(" · ");
         let from_pack = run.open_pack.iter().any(|p| p.key == c.key);
-        out.push(ShopOption { survive: None, reach: None,
+        out.push(ShopOption { survive: None, survive_next: None, reach: None,
             label: {
                 let ed = c.edition.map_or(String::new(), |e| format!(" ({e:?})"));
                 if from_pack { format!("pick {}{ed}", c.name) } else { format!("{}{ed}", c.name) }
@@ -2350,6 +2368,7 @@ fn shop_options(
             long_mult: c.long_mult,
             key: Some(c.key.clone()),
             desc: c.desc.clone(),
+            next_p: ctx.specs.iter().position(|x| x.horizon).and_then(|h| c.p_win.get(h).copied()),
         });
     }
     let base_reach = base_odds.get(round).map_or(0.0, |o| o.1.mean / spec.start.target.max(1.0));
@@ -2454,7 +2473,7 @@ fn long_draw(pool: &[Candidate], cards: usize, joker_share: f64, rng: &mut crate
 /// Rerolling costs $10, counted in the money after when it's worth doing.
 fn boss_reroll_option(ctx: &Ctx, run: &RunState, data: &GameData, spec: &Spec, now: f64) -> ShopOption {
     let mut o = ShopOption {
-        survive: None,
+        survive: None, survive_next: None, next_p: None,
         reach: None,
         label: String::new(),
         kind: "voucher".into(),
@@ -2517,7 +2536,8 @@ fn boss_reroll_option(ctx: &Ctx, run: &RunState, data: &GameData, spec: &Spec, n
     o
 }
 
-/// Ranked by the chance to get through this ante times the long-run value (By Ante 8):
+/// Ranked by the chance to get through this ante, times the chance against the next ante's
+/// boss (both with the shops before them), times the long-run value (By Ante 8):
 /// the long run only counts if you survive to it, so when a round is at risk the win
 /// chance dominates, and when it's safe the long run does. Values within 3% of each other
 /// are a tie (simulation noise), broken by the score reached this round, then the raw
@@ -2525,7 +2545,7 @@ fn boss_reroll_option(ctx: &Ctx, run: &RunState, data: &GameData, spec: &Spec, n
 fn rank_options(out: &mut [ShopOption], base_reach: f64) {
     let top_p = out.iter().map(|o| o.p_win).fold(0.0, f64::max);
     let trouble = top_p < 0.2;
-    let value = |o: &ShopOption| o.survive.unwrap_or(o.p_win) * o.long_mult.unwrap_or(1.0);
+    let value = |o: &ShopOption| o.survive.unwrap_or(o.p_win) * o.survive_next.unwrap_or(1.0) * o.long_mult.unwrap_or(1.0);
     let top = out.iter().map(value).fold(0.0, f64::max).max(1e-9);
     let tier = |o: &ShopOption| ((top - value(o)) / (0.03 * top)).floor() as i64;
     let reach = |o: &ShopOption| o.reach.unwrap_or(base_reach);
@@ -3094,11 +3114,21 @@ fn shops_ahead(run: &RunState, next_ante: bool) -> (bool, usize) {
 /// amounts are compared on the same shops.
 fn money_value(ctx: &Ctx, pool: &[Candidate], value: &dyn Fn(&Candidate) -> f64, now: f64, money: f64, next_ante: bool) -> f64 {
     let (in_shop, future) = shops_ahead(ctx.run, next_ante);
-    money_value_with(ctx, pool, value, now, money, in_shop, future)
+    money_value_with(ctx, pool, value, now, money, in_shop, future, false)
+}
+
+/// The chance of getting through a round with the shops before it: the money buys
+/// rerolls, and only the single best joker found counts (gains from several jokers don't
+/// add up as probabilities).
+fn survival_with(ctx: &Ctx, pool: &[Candidate], value: &dyn Fn(&Candidate) -> f64, now: f64, money: f64, next_ante: bool) -> f64 {
+    let (in_shop, future) = shops_ahead(ctx.run, next_ante);
+    money_value_with(ctx, pool, value, now, money, in_shop, future, true).min(1.0)
 }
 
 /// `money_value` for a given number of shops ahead (and whether you're in one now).
-fn money_value_with(ctx: &Ctx, pool: &[Candidate], value: &dyn Fn(&Candidate) -> f64, now: f64, money: f64, in_shop: bool, future: usize) -> f64 {
+/// `best_only`: count only the single best joker found (for survival chances).
+#[allow(clippy::too_many_arguments)]
+fn money_value_with(ctx: &Ctx, pool: &[Candidate], value: &dyn Fn(&Candidate) -> f64, now: f64, money: f64, in_shop: bool, future: usize, best_only: bool) -> f64 {
     let run = ctx.run;
     let slots = run.shop_rates.slots.max(1) as usize;
     let share = run.shop_rates.joker_share();
@@ -3118,7 +3148,7 @@ fn money_value_with(ctx: &Ctx, pool: &[Candidate], value: &dyn Fn(&Candidate) ->
     // Chaos the Clown: one free reroll in every shop
     let chaos = run.jokers.iter().any(|j| j.key == "j_chaos") as usize;
     let free_cards = slots * (future + chaos * (future + in_shop as usize));
-    let open_slots = (run.joker_slots - run.jokers.len() as i64).max(1) as usize;
+    let open_slots = if best_only { 1 } else { (run.joker_slots - run.jokers.len() as i64).max(1) as usize };
     let mut best = now;
     let mut spent = 0i64;
     for k in 0..=costs.len().min(16) {
@@ -3557,7 +3587,7 @@ mod tests {
     #[test]
     fn options_rank_by_surviving_times_the_long_run() {
         let opt = |label: &str, p: f64, long: Option<f64>| ShopOption {
-            survive: None,
+            survive: None, survive_next: None, next_p: None,
             reach: None, label: label.into(), kind: "tarot".into(), cost: 0, p_win: p, note: String::new(), money_after: 0.0,
             interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: long, key: None, desc: None,
         };
@@ -3667,6 +3697,28 @@ mod tests {
         // Half Joker wants 3 cards or fewer: no fillers
         let half = crate::bench::sample_board(&["j_half"]);
         assert_eq!(sim::with_fillers(&half, &hand, &[0, 1]), vec![0, 1]);
+    }
+
+    #[test]
+    fn an_empty_board_takes_a_cheap_joker_over_keeping_the_money() {
+        // Early run, no jokers, this ante already safe: a plain Joker still beats leaving,
+        // because the next ante's boss needs something on the board.
+        let mut r = shop_run(&[], &["j_joker"]);
+        r.joker_slots = 5;
+        r.dollars = 6.0;
+        r.ante = 1;
+        // eternal: no "sell it later" floor, so By Ante 8 alone says it's weaker than a find
+        r.shop.as_mut().unwrap().jokers[0].eternal = true;
+        for (b, t) in r.blinds.iter_mut().zip([100.0, 150.0, 200.0]) {
+            b.target = t;
+            b.key = if b.slot == "Boss" { "bl_hook".into() } else { b.key.clone() };
+        }
+        let a = analyze(&r, GameData::bundled(), None, &quick());
+        let pos = |kind: &str| a.options.iter().position(|o| o.kind == kind).unwrap();
+        let (o, keep) = (&a.options[pos("joker")], &a.options[pos("leave")]);
+        assert!(o.survive_next > keep.survive_next, "next-ante survival: joker {:?} vs keeping the money {:?}", o.survive_next, keep.survive_next);
+        assert!(keep.survive_next.unwrap() < 1.0, "survival with shops ahead must not saturate");
+        assert!(pos("joker") < pos("leave"), "joker {:?} next {:?}", (o.p_win, o.survive, o.survive_next, o.long_mult), keep.survive_next);
     }
 
     #[test]

@@ -95,18 +95,11 @@ def play_hand(sims):
         rpc("play", cards=idx)
 
 
-def worth(o):
-    """The advisor ranks options; take one only when it's an improvement: better by Ante 8,
-    a better win chance now, or (with a free joker slot) a higher score this round."""
-    long = o.get("long_mult") or 1.0
-    note = o.get("note", "")
-    # Rentals drain money every round and eternals take a slot for good: only when they're
-    # worth it by Ante 8, or when the run is in trouble now.
-    if ("rental" in note or "eternal" in note) and long < 1.0 and o.get("_now", 0) >= 0.5:
-        return False
-    if long > 1.0 or o.get("p_win", 0) > o.get("_now", 0) + 0.02:
-        return True
-    return o["kind"] == "joker" and o.get("_free_slot") and (o.get("reach") or 0) > o.get("_reach", 0) * 1.03
+def worth(o, options):
+    """The advisor ranks every option against keeping the money ("next round" / "skip the
+    pack"); anything ranked above that is worth taking."""
+    keep = next((i for i, x in enumerate(options) if x["kind"] in ("leave", "skip")), len(options))
+    return options.index(o) < keep
 
 
 def shop(sims, log):
@@ -123,11 +116,10 @@ def shop(sims, log):
             print(f"  shop ${money} · now {now:.2f} reach {reach:.2f} free slot {free} · " + " | ".join(
                 f"{o['kind']} {o['label']} ${o['cost']} p{o['p_win']:.2f} r{o.get('reach') or 0:.2f} L{o.get('long_mult') or 0:.2f}" for o in a.get("options", [])))
         for o in a.get("options", []):
-            o["_now"], o["_reach"], o["_free_slot"] = now, reach, free
             if o.get("unaffordable") or o["label"].endswith("(you have it)") or o["label"].startswith("pick "):
                 continue
             kind, key = o["kind"], o.get("key")
-            if kind == "joker" and key and worth(o):
+            if kind == "joker" and key and worth(o, a.get("options", [])):
                 i = index_of_key(gs, "shop", key)
                 if i is None:
                     continue
@@ -139,7 +131,7 @@ def shop(sims, log):
                 rpc("buy", card=i)
                 log.append(f"buy {o['label']}")
                 acted = True
-            elif kind == "planet" and key and worth(o):
+            elif kind == "planet" and key and worth(o, a.get("options", [])):
                 i = index_of_key(gs, "shop", key)
                 if i is None:
                     continue
@@ -148,7 +140,7 @@ def shop(sims, log):
                 rpc("use", consumable=len(cards(gs, "consumables")) - 1)
                 log.append(f"planet {o['label']}")
                 acted = True
-            elif kind == "pack" and key and (key.startswith("p_buffoon") or key.startswith("p_celestial")) and worth(o):
+            elif kind == "pack" and key and (key.startswith("p_buffoon") or key.startswith("p_celestial")) and worth(o, a.get("options", [])):
                 i = index_of_key(gs, "packs", key)
                 if i is None:
                     continue
@@ -156,7 +148,7 @@ def shop(sims, log):
                 log.append(f"pack {o['label']}")
                 open_pack(sims, log)
                 acted = True
-            elif kind == "reroll" and rerolls < 2 and money - o["cost"] >= 5 and worth(o):
+            elif kind == "reroll" and rerolls < 2 and money - o["cost"] >= 5 and worth(o, a.get("options", [])):
                 rpc("reroll")
                 rerolls += 1
                 log.append("reroll")
@@ -176,6 +168,8 @@ def open_pack(sims, log):
         a = analyze(sims)
         took = False
         for o in a.get("options", []):
+            if o["kind"] == "skip":
+                break
             if not o["label"].startswith("pick ") or o["kind"] not in ("joker", "planet"):
                 continue
             i = index_of_key(gs, "pack", o.get("key"))
