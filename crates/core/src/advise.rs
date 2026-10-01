@@ -2950,6 +2950,16 @@ fn order_tips(run: &RunState, data: &GameData, tarots: &[TarotValue]) -> Vec<Str
             }
         }
     }
+    // A voucher stays in the shop all ante: when a shop before the boss is still to come,
+    // its money can work for you there first
+    if let Some(shop) = &run.shop {
+        let shops_left_before_boss = run.blinds.iter().filter(|b| b.slot != "Boss" && matches!(b.state.as_str(), "Select" | "Upcoming")).count();
+        if shops_left_before_boss > 0 {
+            for v in &shop.vouchers {
+                tips.push(format!("{} stays in the shop all ante: you can buy it in the last shop before the boss and keep the ${} for this shop's other buys or rerolls", v.name, v.cost));
+            }
+        }
+    }
     // Ankh copies a random joker (Hex keeps one): sell the ones you don't want first
     for (k, what) in [("c_ankh", "copies a random joker and destroys the rest"), ("c_hex", "puts Polychrome on a random joker and destroys the rest")] {
         if held(k) {
