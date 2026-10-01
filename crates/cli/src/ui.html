@@ -337,6 +337,9 @@ function render(d) {
 
   // Right: shop, dig list
   let right = "";
+  if (a.order_tips && a.order_tips.length) {
+    right += `<section><h2>Order tips <small>doing one thing before another</small></h2>${a.order_tips.map((t) => `<div class="order">💡 ${esc(t)}</div>`).join("")}</section>`;
+  }
   if (a.options && a.options.length) {
     const r = a.rounds[a.options_round];
     // While a pack is open: its picks first, and the shop options below for what comes after

@@ -218,6 +218,9 @@ pub struct Analysis {
     pub save_age_secs: Option<u64>,
     /// Read from the live mod rather than the checkpoint save.
     pub live: bool,
+    /// Known orderings that help right now ("use X before Y"), each with its gain.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub order_tips: Vec<String>,
     pub elapsed_ms: u128,
 }
 
@@ -1834,7 +1837,12 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         // Look-ahead: each candidate first move (best plays, holding a special card back,
         // the policy's dig or discard) is simulated through the rest of the round.
         let look = ctx.specs.iter().find(|x| x.in_progress).map(|spec| {
-            let bb = ctx.board_for(&b, spec);
+            let mut bb = ctx.board_for(&b, spec);
+            // Holding Cryptid: drawing a Blue Seal card this round means two more of it (an
+            // estimate: about three planets' worth)
+            if run.consumables.iter().any(|c| c.key == "c_cryptid") && !run.hand.iter().any(|c| c.seal == Some(crate::model::Seal::Blue)) {
+                bb.seal_seen_value = 15.0;
+            }
             let start = ctx.start_for(spec, &bb);
             let moves = sim::candidate_moves(&bb, &start.hand, &start.deck, start.hands, start.discards, start.target - start.scored, start.hand_size.max(1) as usize);
             let res = par_map(&moves, |m| sim::odds_after(&bb, &start, m, ctx.opts.sims, ctx.opts.seed));
@@ -1915,6 +1923,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         None
     };
 
+    let tips = order_tips(run, data, &tarots);
     Analysis {
         schema_version: 1,
         deck: run.deck.clone(),
@@ -1958,6 +1967,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         ],
         save_age_secs: run.snapshot.age_secs,
         live: run.snapshot.live,
+        order_tips: tips,
         elapsed_ms: t0.elapsed().as_millis(),
     }
 }
@@ -2759,6 +2769,77 @@ fn seal_round_chance(run: &RunState, deck_len: usize) -> f64 {
     (seen / deck_len.max(1) as f64).min(1.0)
 }
 
+/// Known orderings checked against the run, each with what it gains. Not a search over
+/// sequences: a short list of plays where doing one thing first is plainly better.
+fn order_tips(run: &RunState, data: &GameData, tarots: &[TarotValue]) -> Vec<String> {
+    let mut tips = Vec::new();
+    let held = |k: &str| run.consumables.iter().any(|c| c.key == k);
+    let offered = |k: &str| {
+        run.open_pack.iter().any(|c| c.key == k)
+            || run.shop.as_ref().is_some_and(|s| s.other_cards.iter().chain(&s.vouchers).chain(&s.boosters).any(|c| c.key == k))
+    };
+    let have = |k: &str| held(k) || offered(k);
+    let name = |k: &str| data.name(k).to_string();
+    // Temperance pays your jokers' sell value: buy a cheap joker first, use it, sell it back
+    if have("c_temperance") {
+        if let Some(shop) = &run.shop {
+            for j in &shop.jokers {
+                let gain = 2 * j.sell_value - j.cost;
+                if gain > 0 && j.cost as f64 <= run.dollars && (run.jokers.len() as i64) < run.joker_slots + 1 {
+                    tips.push(format!("Buy {} (${}) before using Temperance, then sell it back: +${gain}", j.name, j.cost));
+                }
+            }
+        }
+    }
+    // Hone doubles editions on every joker created after it, packs and rerolls included
+    if offered("v_hone") && run.shop.as_ref().is_some_and(|s| !s.boosters.is_empty()) {
+        tips.push("Buy Hone before opening packs or rerolling: their jokers get the doubled edition chance".into());
+    }
+    // Immolate before The Hermit: the $20 comes first, then gets doubled
+    if held("c_immolate") && have("c_hermit") {
+        let before = run.dollars.clamp(0.0, 20.0);
+        let after = (run.dollars + 20.0).clamp(0.0, 20.0);
+        if after > before {
+            tips.push(format!("Use Immolate before The Hermit: +${:.0} more from The Hermit", after - before));
+        }
+    }
+    // The Fool copies the last tarot used: use your best one first
+    if have("c_fool") {
+        let value = |k: &str| tarots.iter().find(|t| t.key == k).and_then(|t| t.long_mult).unwrap_or(1.0);
+        let last = run.last_tarot_planet.as_deref().map_or(1.0, value);
+        if let Some(best) = run.consumables.iter().filter(|c| c.key != "c_fool" && c.set == "Tarot").max_by(|a, b| value(&a.key).total_cmp(&value(&b.key))) {
+            if value(&best.key) > last + 0.02 {
+                tips.push(format!("Use {} before The Fool, so The Fool makes another one (×{:.2} instead of ×{:.2} for {})", best.name, value(&best.key), last,
+                    run.last_tarot_planet.as_deref().map_or("nothing".to_string(), name)));
+            }
+        }
+    }
+    // Ankh copies a random joker (Hex keeps one): sell the ones you don't want first
+    for (k, what) in [("c_ankh", "copies a random joker and destroys the rest"), ("c_hex", "puts Polychrome on a random joker and destroys the rest")] {
+        if held(k) {
+            tips.push(format!("Before {}: it {what} (eternal ones stay), so sell the jokers you don't want it to pick first", name(k)));
+        }
+    }
+    if held("c_wheel_of_fortune") && held("c_ankh") {
+        tips.push("Use The Wheel of Fortune before Ankh: an edition it gives is kept on Ankh's copy".into());
+    }
+    // Cryptid on a sealed or enhanced card in hand
+    if held("c_cryptid") {
+        use crate::model::Seal;
+        let best = run.hand.iter().max_by_key(|c| match (c.seal, c.enhancement) {
+            (Some(Seal::Blue), _) => 4,
+            (Some(Seal::Red), Some(crate::model::Enhancement::Glass)) => 3,
+            (Some(_), _) | (_, Some(crate::model::Enhancement::Glass)) => 2,
+            (_, Some(_)) => 1,
+            _ => 0,
+        });
+        if let Some(c) = best.filter(|c| c.seal.is_some() || c.enhancement.is_some()) {
+            tips.push(format!("Use Cryptid on {}: two more copies of it", c.label()));
+        }
+    }
+    tips
+}
+
 /// Using a planet grows Constellation by ×0.1 (card.lua: Constellation, using_consumeable).
 fn grow_constellation(b: &mut Board) {
     for j in b.jokers.iter_mut().filter(|j| j.key == "j_constellation") {
@@ -3061,7 +3142,6 @@ fn tarot_values(
         let hand_cards: Vec<usize> = if from_hand {
             (0..deck.len()).filter(|&i| in_hand[i]).collect()
         } else {
-            use crate::engine::Rolls;
             let mut all: Vec<usize> = (0..deck.len()).collect();
             let mut picked = Vec::new();
             let mut r = crate::engine::Rng::new(ctx.opts.seed ^ 0x4a4d);
@@ -4105,6 +4185,23 @@ mod tests {
         let by_suit = in_blind("AH 9H 5H KS 7S 3D QC 2C");
         let by_rank = in_blind("AH KS QC 9H 7S 5H 3D 2C");
         assert_eq!(by_suit, by_rank);
+    }
+
+    #[test]
+    fn order_tips_spot_plays_where_order_matters() {
+        let item = |k: &str| crate::save::ItemCard { key: k.into(), name: GameData::bundled().name(k).to_string(), set: "Tarot".into(), cost: 3, edition: None, card: None };
+        let mut r = shop_run(&[("j_joker", None, None)], &["j_joker"]);
+        r.joker_slots = 5;
+        r.dollars = 6.0;
+        r.consumables = vec![item("c_immolate"), item("c_hermit"), item("c_temperance")];
+        r.shop.as_mut().unwrap().jokers[0].cost = 1;
+        r.shop.as_mut().unwrap().jokers[0].sell_value = 1;
+        let tips = order_tips(&r, GameData::bundled(), &[]);
+        assert!(tips.iter().any(|t| t.contains("Immolate before The Hermit") && t.contains("+$14")), "{tips:?}");
+        assert!(tips.iter().any(|t| t.contains("before using Temperance") && t.contains("+$1")), "{tips:?}");
+        // nothing to say when nothing applies
+        let plain = shop_run(&[("j_joker", None, None)], &[]);
+        assert!(order_tips(&plain, GameData::bundled(), &[]).is_empty());
     }
 
     #[test]

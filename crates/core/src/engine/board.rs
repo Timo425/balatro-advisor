@@ -67,6 +67,7 @@ impl Board {
             blind,
             plasma: s.deck == "Plasma Deck",
             mail_rank: s.round_targets.mail_rank.map(|r| r.0),
+            seal_seen_value: 0.0,
         }
     }
 }

@@ -609,6 +609,12 @@ pub fn sim_round(board: &Board, start: &RoundStart, rng: &mut Rng) -> RoundResul
     let mut best_hand: f64 = 0.0;
     let mut plays = Vec::new();
     let mut money = 0.0;
+    let has_seal = |h: &[Card]| h.iter().any(|c| c.seal == Some(crate::model::Seal::Blue));
+    let mut seen = b.seal_seen_value <= 0.0 || has_seal(&start.hand);
+    if b.seal_seen_value > 0.0 && !seen && has_seal(&hand) {
+        money += b.seal_seen_value;
+        seen = true;
+    }
     while hands > 0 && !hand.is_empty() {
         b.hands_left = hands;
         b.discards_left = discards;
@@ -643,12 +649,20 @@ pub fn sim_round(board: &Board, start: &RoundStart, rng: &mut Rng) -> RoundResul
                     return RoundResult { total, won: true, saved: false, best_hand, plays, money, hands_left: hands };
                 }
                 draw(&mut hand, &mut deck, size);
+                if !seen && has_seal(&hand) {
+                    money += b.seal_seen_value;
+                    seen = true;
+                }
             }
             Action::Discard(idx) => {
                 money += discard_money(&b, &hand, &idx);
                 hand = (0..hand.len()).filter(|i| !idx.contains(i)).map(|i| hand[i]).collect();
                 draw(&mut hand, &mut deck, size);
                 discards -= 1;
+                if !seen && has_seal(&hand) {
+                    money += b.seal_seen_value;
+                    seen = true;
+                }
             }
         }
     }
