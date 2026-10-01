@@ -994,13 +994,17 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     };
     // Planets on the hand that earns most of your points: half a level per ante as a base,
     // plus more when money sits above the interest line (runs vary from 0 to 10+ levels).
-    // `rent`: what rentals take per ante. Above the interest line it already came off the
-    // spare money; the part that takes you below the line comes off the planets you'd buy
-    // (about $18 of rent an ante = one planet level fewer), so rent costs even when poor.
-    let levels_for = |dollars: f64, rent: f64| {
-        let below = rent.min((line - dollars).max(0.0));
-        let per_ante = (0.5 + (dollars - line).max(0.0) / 20.0 - below / 18.0).clamp(0.0, 2.0);
-        (per_ante, (per_ante * antes_left).round() as i64)
+    // `flow`: money per ante from money jokers minus rent (`dollars` already includes it).
+    // Above the interest line it's in the spare money; the part below the line counts too,
+    // at about $18 an ante for a planet level, so rent costs and income pays even when poor.
+    let levels_for = |dollars: f64, flow: f64| {
+        let below = if flow < 0.0 {
+            -(-flow).min((line - dollars).max(0.0))
+        } else {
+            flow.min((line - (dollars - flow)).max(0.0))
+        };
+        let per_ante = (0.5 + (dollars - line).max(0.0) / 20.0 + below / 18.0).clamp(0.0, 2.0);
+        (per_ante, per_ante * antes_left)
     };
     // Money jokers you keep pay every ante, like rent in reverse.
     let owned_income = |keep: &dyn Fn(usize) -> bool| {
@@ -1028,14 +1032,20 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     // Your sellable jokers that are weaker by Ante 8 than a typical find are assumed
     // replaced by then (jokers get cycled); eternal ones can't be, so they stay however weak.
     let replaced: std::sync::OnceLock<Vec<bool>> = std::sync::OnceLock::new();
+    // `extra_rent`: more rent per ante (negative: more income), on top of your jokers'
     let project_rent = |keep: &dyn Fn(usize) -> bool, dollars: f64, extra_rent: f64| -> Board {
         let rent = owned_rent(keep) + extra_rent;
-        let dollars = dollars - rent + owned_income(keep);
+        let flow = owned_income(keep) - rent;
+        let dollars = dollars + flow;
         let mut b = ctx.base.clone();
         b.blind = Default::default();
         if let Some(top) = top_hand {
             let l = b.levels[top as usize];
-            b.levels[top as usize] = l.with_level(l.level + levels_for(dollars, rent).1);
+            let n = levels_for(dollars, flow).1;
+            let mut lv = l.with_level(l.level + n.floor() as i64);
+            lv.chips += lv.l_chips * (n - n.floor());
+            lv.mult += lv.l_mult * (n - n.floor());
+            b.levels[top as usize] = lv;
         }
         b.jokers = ctx
             .base
@@ -1222,10 +1232,10 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         let back = sell.map_or(0, |i| run.jokers[i].sell_value) as f64;
         let ability = data.center(&j.key).map(|c| crate::engine::joker::ability_from_config(&c.config)).unwrap_or_default();
         let rent = if rental { RENT_PER_ANTE } else { 0.0 };
-        let dollars = run.dollars + income_per_ante(&j.key, &ability, run, antes_left);
+        let income = income_per_ante(&j.key, &ability, run, antes_left);
         let horizon = if j.key == "j_madness" { 1.0 } else { antes_left };
-        let g = grow_antes(j, &hand_mix, dollars - rent, line, horizon).map_or_else(|| j.clone(), |g| g.0);
-        long_score(&fill_long(project_rent(&|k| Some(k) != sell, dollars, rent), Some(g), once(back - cost as f64)))
+        let g = grow_antes(j, &hand_mix, run.dollars + income - rent, line, horizon).map_or_else(|| j.clone(), |g| g.0);
+        long_score(&fill_long(project_rent(&|k| Some(k) != sell, run.dollars, rent - income), Some(g), once(back - cost as f64)))
     };
     let sell_index = |action: &str| {
         action.strip_prefix("replace ").map(|n| n.trim_end_matches(", put it rightmost")).and_then(|name| ctx.base.jokers.iter().position(|x| data.name(&x.key) == name))
@@ -1349,9 +1359,9 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     const CHIP_JOKERS: &[&str] = &["j_stuntman", "j_bull", "j_banner", "j_scary_face", "j_arrowhead", "j_castle", "j_runner", "j_square",
         "j_wee", "j_ice_cream", "j_blue_joker", "j_sly", "j_wily", "j_clever", "j_devious", "j_crafty", "j_odd_todd", "j_stone", "j_hiker"];
     let has_chips = ctx.base.jokers.iter().any(|j| CHIP_JOKERS.contains(&j.key.as_str()));
-    let deck_long = |d: &[Card], dollars: f64, money_once: f64| -> Stats {
+    let deck_long = |d: &[Card], dollars: f64, money_once: f64, income: f64| -> Stats {
         let find = if has_chips { None } else { Some(stand_in(1.0, 0.0, 60.0)) };
-        let mut b = fill_long(project(&|_| true, dollars), find, money_once);
+        let mut b = fill_long(project_rent(&|_| true, dollars, -income), find, money_once);
         let tally = |e: crate::model::Enhancement| d.iter().filter(|c| c.enhancement == Some(e)).count() as i64;
         b.steel_tally = tally(crate::model::Enhancement::Steel);
         b.stone_tally = tally(crate::model::Enhancement::Stone);
@@ -1361,10 +1371,10 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         sp.start.deck = d.to_vec();
         ctx.odds_one(&b, &sp, TAROT_ROUNDS).1
     };
-    let deck_base = deck_long(&ctx.fresh_deck, run.dollars, 0.0);
+    let deck_base = deck_long(&ctx.fresh_deck, run.dollars, 0.0, 0.0);
     let tarot_long: Vec<f64> = par_map(&tarots, |t| {
         if !t.decks.is_empty() {
-            return t.decks.iter().map(|(w, d)| w * deck_long(d, run.dollars, 0.0).mean.max(1.0) / deck_base.mean.max(1.0)).sum::<f64>();
+            return t.decks.iter().map(|(w, d)| w * deck_long(d, run.dollars, 0.0, 0.0).mean.max(1.0) / deck_base.mean.max(1.0)).sum::<f64>();
         }
         if t.planets_per_ante > 0.0 {
             // planets of your main hand from the seal: levels and Constellation by Ante 8
@@ -1385,12 +1395,12 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         if let Some(d) = &t.deck {
             // Immolate's $20 comes with its deck change
             let gain = if t.spectral { once(t.money_gain) } else { 0.0 };
-            let mut st = deck_long(d, run.dollars, gain);
+            let mut st = deck_long(d, run.dollars, gain, 0.0);
             // Money the new cards earn while scoring (Lucky cards' $20, gold seals) is money
             // you get every round: about 3 rounds an ante.
             let extra = (st.money - deck_base.money) * 3.0;
             if extra.abs() > 0.5 {
-                st = deck_long(d, run.dollars + extra, gain);
+                st = deck_long(d, run.dollars, gain, extra);
             }
             let gain = st.mean.max(1.0) / deck_base.mean.max(1.0);
             if t.key == "c_justice" {
@@ -1501,7 +1511,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         let with = |c: Card| {
             let mut d = ctx.fresh_deck.clone();
             d.push(c);
-            let gain = deck_long(&d, run.dollars, 0.0).mean.max(1.0) / deck_base.mean.max(1.0);
+            let gain = deck_long(&d, run.dollars, 0.0, 0.0).mean.max(1.0) / deck_base.mean.max(1.0);
             if c.enhancement == Some(crate::model::Enhancement::Glass) { 1.0 + (gain - 1.0) * glass_presence(antes_left) } else { gain }
         };
         let wild = (lovers && card.enhancement.is_none()).then(|| with(Card { enhancement: Some(crate::model::Enhancement::Wild), ..*card }));
@@ -1799,7 +1809,9 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         let verdict = if (pv - sv).abs() <= 0.03 * pv.max(sv) { "close" } else if sv > pv { "skip" } else { "play" };
         blind_views[bi].skip = Some(SkipCompare { play_survive, play_next, play_long, skip_survive, skip_next, skip_long, verdict: verdict.into(), tag: what, valued });
     }
-    let (levels_per_ante, planet_levels) = levels_for(run.dollars - owned_rent(&|_| true), owned_rent(&|_| true));
+    let flow_now = owned_income(&|_| true) - owned_rent(&|_| true);
+    let (levels_per_ante, planet_levels) = levels_for(run.dollars + flow_now, flow_now);
+    let planet_levels = planet_levels.round() as i64;
     let long_note = format!(
         "Your board projected {antes_left:.1} antes ahead: growing jokers grown, fading ones faded, perishables that run out dropped, {} +{planet_levels} levels (about {levels_per_ante:.1} per ante with your money), empty slots filled with stand-in jokers (×1.5, +60 Chips or +15 Mult, in proportion to how often your shop pool offers each type). Each option is compared with a typical find (×1.25) in its slot, on whole simulated rounds, with the money it leaves you: its price, what selling a joker gives back or a money card gives (spent once: pack skips for Red Card/Flash ~$5 each, else ~$12 a level of your main hand, and ~$4 a planet for Constellation; money counts for less the more you have (the next dollar is worth about half at $20); interest lost or gained over the next ante included), and $9 less money held every ante per rental; money jokers (Golden, Rocket, Cloud 9, To the Moon, Egg, Mail-In Rebate) add their payout per ante. Your sellable jokers weaker than a typical find are assumed replaced by then, and a sellable option counts at least as a typical find less its price net of what selling it gives back; eternal ones stay, however weak. ×1.00 = as good as a typical find.",
         top_hand.map_or("your main hand", |h| h.name())

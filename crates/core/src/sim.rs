@@ -176,6 +176,22 @@ pub fn candidate_moves(b: &Board, hand: &[Card], deck: &[Card], hands: i64, disc
             }
         }
     }
+    // A dig play: 5 junk cards (outside the suit your jokers reward, else your deck's commonest;
+    // no sealed or enhanced cards), so a whole hand's worth of new cards comes in
+    {
+        let keep = keep_suit(b, hand, deck);
+        let mut junk: Vec<usize> = (0..n)
+            .filter(|&i| {
+                let c = &hand[i];
+                Some(c.suit) != keep && c.seal.is_none() && c.enhancement.is_none() && c.edition.is_none()
+            })
+            .collect();
+        junk.sort_by(|&x, &y| hand[x].rank.chips().total_cmp(&hand[y].rank.chips()));
+        junk.truncate(5);
+        if junk.len() >= 3 {
+            push(Move::Play(junk), &mut out);
+        }
+    }
     // A plain dig: discard Mail-In's rank (it pays) and the weakest cards outside the best play
     if discards > 0 {
         if let Some(best) = by_floor.first() {
@@ -225,6 +241,7 @@ pub fn odds_after(b: &Board, start: &RoundStart, first: &Move, sims: usize, seed
                     if total >= start.target {
                         wins += 1;
                         spare += (start.hands - 1) as f64;
+                        cash += seal_bonus(&held);
                     }
                     sum += total;
                     continue;
@@ -247,6 +264,31 @@ pub fn odds_after(b: &Board, start: &RoundStart, first: &Move, sims: usize, seed
     }
     let n = sims.max(1) as f64;
     (wins as f64 / n, sum / n, spare / n, cash / n)
+}
+
+/// The suit worth keeping: the one a suit joker rewards (Wrathful, Greedy, Lusty,
+/// Gluttonous, Arrowhead, Onyx Agate, Bloodstone, Rough Gem), else your deck's commonest.
+pub fn keep_suit(b: &Board, hand: &[Card], deck: &[Card]) -> Option<Suit> {
+    for j in &b.jokers {
+        let s = match j.key.as_str() {
+            "j_wrathful_joker" | "j_arrowhead" => Some(Suit::Spades),
+            "j_greedy_joker" | "j_rough_gem" => Some(Suit::Diamonds),
+            "j_lusty_joker" | "j_bloodstone" => Some(Suit::Hearts),
+            "j_gluttenous_joker" | "j_onyx_agate" => Some(Suit::Clubs),
+            _ => None,
+        };
+        if s.is_some() {
+            return s;
+        }
+    }
+    Suit::ALL.into_iter().max_by_key(|&s| hand.iter().chain(deck).filter(|c| c.suit == s).count())
+}
+
+/// A Blue Seal card still in hand when the round ends makes a planet: counted as about $5
+/// (what a planet costs, plus a little for Constellation), so digs that bring it up and plays
+/// that keep it back rank higher in a tie.
+pub fn seal_bonus(held: &[Card]) -> f64 {
+    5.0 * held.iter().filter(|c| c.seal == Some(crate::model::Seal::Blue) && !c.debuff).count() as f64
 }
 
 /// Money a discard pays: Mail-In Rebate's $5 per card of its rank (card.lua discard).
@@ -597,6 +639,7 @@ pub fn sim_round(board: &Board, start: &RoundStart, rng: &mut Rng) -> RoundResul
                 hand = held;
                 hands -= 1;
                 if total >= start.target {
+                    money += seal_bonus(&hand);
                     return RoundResult { total, won: true, saved: false, best_hand, plays, money, hands_left: hands };
                 }
                 draw(&mut hand, &mut deck, size);
