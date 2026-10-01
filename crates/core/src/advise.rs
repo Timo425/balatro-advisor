@@ -1420,7 +1420,15 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         let per_joker = step * (0.006 * gain(Edition::Polychrome) + 0.014 * gain(Edition::Holo) + 0.02 * gain(Edition::Foil));
         let buys = antes_left;
         let price = long_score(&fill_long(project(&|_| true, run.dollars), None, once(-(o.cost as f64)))) / l0;
-        o.long_mult = Some((1.0 + buys * per_joker).max(0.0) * price);
+        let mut v = (1.0 + buys * per_joker).max(0.0) * price;
+        if step == 1.0 {
+            // Hone also lets Glow Up into the voucher pool: one voucher an ante from ~16, so
+            // about this chance it shows up later; worth it only if Glow Up beats its own price.
+            let shows = 1.0 - (15.0f64 / 16.0).powf(antes_left);
+            let glow = (1.0 + buys * 2.0 * per_joker).max(0.0) * price; // same price, twice the step
+            v += shows * (glow - 1.0).max(0.0);
+        }
+        o.long_mult = Some(v);
         o.note = format!("editions on shop jokers {} as often · ~{:.1}% more of the jokers you'd buy (about one an ante) get one (estimate)", if step > 1.0 { "4×" } else { "2×" }, step * 4.0);
     }
     // Economy vouchers: money they're worth every ante (an estimate, labelled), plus their price
