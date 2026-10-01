@@ -293,7 +293,7 @@ function render(d) {
       }).filter(Boolean).join(" · ");
       return `<div class="joker" style="border-top-color:${rarColor[j.rarity] || "var(--line)"}" ${j.desc || j.note ? `title="${esc([j.desc, j.note].filter(Boolean).join("\n"))}"` : ""}>
         <span class="slot">${i + 1}</span>
-        <div class="jn">${esc(j.name)}</div>
+        <div class="jn">${esc(j.name)}${j.missing_gold ? ' <span class="star" title="No Gold sticker yet">★</span>' : ""}</div>
         <div class="tags">${edTag(j.edition)}${j.roles.map((r) => `<span class="tag">${r}</span>`).join("")}${j.eternal ? '<span class="tag">eternal</span>' : ""}${j.perishable != null ? `<span class="tag" style="color:var(--warn)" title="Debuffed after this many more rounds">perishable ${j.perishable}</span>` : ""}${j.rental ? '<span class="tag" style="color:var(--warn)" title="Costs $3 at the end of every round">rental $3</span>' : ""}${j.debuff ? '<span class="tag" style="color:var(--bad)">debuffed</span>' : ""}</div>
         ${scoring ? `<div class="big">${Math.round(j.score_share * 100)}%</div>` : `<div class="big muted" title="No direct score">—</div>`}
         <div class="lbl">without it: ${sold}</div>

@@ -58,6 +58,9 @@ pub struct Round {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct JokerReport {
+    /// No Gold sticker on it yet (shown, never weighed)
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub missing_gold: bool,
     pub key: String,
     pub name: String,
     pub rarity: String,
@@ -897,6 +900,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                 debuff: j.debuff,
                 note: non_scoring_note(&j.key).map(str::to_string),
                 desc: describe(&j.key, &sj.ability, &dctx),
+                missing_gold: gold.is_some_and(|g| g.is_missing(&j.key)),
             }
         })
         .collect();
@@ -1396,10 +1400,6 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     const NOW_SLACK: f64 = 0.05;
     for (c, (j, _)) in shop.iter_mut().zip(&offers) {
         let sticker = run.shop.as_ref().and_then(|sh| sh.jokers.iter().find(|x| x.key == c.key));
-        if sticker.and_then(|x| x.perishable).is_some_and(|r| (r as f64) < 3.0 * antes_left) {
-            c.long_mult = Some(1.0); // gone before then
-            continue;
-        }
         let rental = sticker.is_some_and(|x| x.rental);
         let today = sell_index(&c.action);
         if !full || j.edition == Some(Edition::Negative) {
@@ -1426,7 +1426,8 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         let now_p = |x: &Candidate| x.p_win.get(key_round).copied().unwrap_or(0.0);
         let (keep_name, sell_name) = (data.name(&ctx.base.jokers[today].key), data.name(&ctx.base.jokers[best].key));
         if now_p(&alt) >= now_p(c) - NOW_SLACK {
-            let note = format!("sell {sell_name} for it, not {keep_name}: better by Ante 8 (selling {keep_name} scores a bit more this ante)");
+            let now_part = if now_p(&alt) > now_p(c) + 0.005 { "and this ante too".to_string() } else { format!("(selling {keep_name} scores a bit more this ante)") };
+            let note = format!("sell {sell_name} for it, not {keep_name}: better by Ante 8 {now_part}");
             *c = Candidate { missing_gold: c.missing_gold, desc: c.desc.take(), long_mult: Some(ratio(best_v, Some(best))), sell_note: Some(note), ..alt };
         } else {
             c.sell_note = Some(format!(
@@ -1434,6 +1435,41 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                 ratio(best_v, Some(best)),
                 (now_p(c) - now_p(&alt)) * 100.0
             ));
+        }
+    }
+    // A perishable that runs out before Ante 8 is gone by then (the joker sold for it was
+    // still picked above, for the long run). Gros Michel leaves something: if it breaks (1 in 6
+    // at the end of each round, card.lua) Cavendish joins the shop pool, and it can take the
+    // slot Gros Michel leaves.
+    for c in shop.iter_mut() {
+        let Some(r) = run.shop.as_ref().and_then(|sh| sh.jokers.iter().find(|x| x.key == c.key)).and_then(|x| x.perishable).filter(|&r| (r as f64) < 3.0 * antes_left) else {
+            continue;
+        };
+        let unlock = (c.key == "j_gros_michel" && !run.pool_flags.iter().any(|f| f == "gros_michel_extinct"))
+            .then(|| Joker::from_key("j_cavendish", data))
+            .flatten()
+            .map(|cav| {
+                let p_break = 1.0 - (1.0 - (run.probability_normal / 6.0).min(1.0)).powi(r as i32);
+                let per_card = joker_share * 0.7 / (per_rarity[1] + 1) as f64;
+                let per_shop = 1.0 - (1.0 - per_card).powi(slots);
+                let p_seen = 1.0 - (1.0 - per_shop).powf((3.0 * antes_left - 1.0).max(0.0));
+                let sold = sell_index(&c.action);
+                let m = ratio(long_of(&cav, sold, cost(data, "j_cavendish"), false), sold);
+                let note = format!("if it breaks ({:.0}% in its {r} rounds), Cavendish (×3 Mult) joins the shop pool: {:.0}% you'd see it by Ante 8 (no rerolls counted), ×{m:.2} by Ante 8 with it", p_break * 100.0, p_seen * 100.0);
+                (p_break * p_seen * (m - 1.0).max(0.0), note)
+            });
+        c.long_mult = Some(1.0 + unlock.as_ref().map_or(0.0, |u| u.0));
+        if let Some((_, note)) = unlock {
+            c.note = Some(c.note.take().map_or(note.clone(), |n| format!("{n} · {note}")));
+        }
+    }
+    // Selling a joker that has no Gold sticker yet, on a Gold Stake run: say so (not weighed)
+    if run.stake >= 8 {
+        for c in shop.iter_mut() {
+            if let Some(i) = sell_index(&c.action).filter(|&i| missing(&ctx.base.jokers[i].key)) {
+                let note = format!("★ {} has no Gold sticker yet: selling it gives that up this run", data.name(&ctx.base.jokers[i].key));
+                c.note = Some(c.note.take().map_or(note.clone(), |n| format!("{n} · {note}")));
+            }
         }
     }
     lap("by ante 8");
@@ -2823,7 +2859,7 @@ fn shop_options(
             v.join(", ")
         }).filter(|s| !s.is_empty());
         let action = c.sell_note.clone().unwrap_or(action);
-        let note = [stickers, Some(action).filter(|a| !a.is_empty()), later].into_iter().flatten().collect::<Vec<_>>().join(" · ");
+        let note = [stickers, Some(action).filter(|a| !a.is_empty()), c.note.clone(), later].into_iter().flatten().collect::<Vec<_>>().join(" · ");
         let from_pack = run.open_pack.iter().any(|p| p.key == c.key);
         out.push(ShopOption { survive: None, survive_next: None, flex: None, reach: None,
             label: {
