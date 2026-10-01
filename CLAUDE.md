@@ -31,7 +31,7 @@ It plans nothing itself: spotting the line is the human's (or agent's) part.
 
 When the owner says a suggestion is wrong, save that game state before fixing it:
 `tests/fixtures/private/<name>.json` = `{"note", "state": <balatro-advisor state --json>,
-"expect": {...}}` (keys: `best_action`, `best_hand`, `best_use_first`, `top_option`).
+"expect": {...}}` (keys: `best_action`, `best_hand`, `best_use_first`, `top_option`, `above`: ["A", "B"]).
 `cargo test --release --test replay` replays every one; it must pass before a commit.
 Other local data (never in the repo): `~/.local/share/balatro-advisor/calibration.jsonl`
 (predicted vs actual blind results, shops seen).

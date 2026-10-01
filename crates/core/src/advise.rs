@@ -1772,6 +1772,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     };
     let held_later = run.dollars + ante_income / 2.0;
     let per_round_interest = |cap: i64| interest(held_later, run.interest_amount, cap) as f64;
+    let mut extra_money: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
     for o in options.iter_mut().filter(|o| o.kind == "voucher" && o.long_mult.is_none()) {
         let reroll = run.shop.as_ref().map_or(run.base_reroll_cost, |s| s.reroll_cost) as f64;
         let flow = match o.key.as_deref() {
@@ -1788,6 +1789,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         };
         o.long_mult = Some(long_score(&fill_long(project(&|_| true, run.dollars + flow), None, once(-(o.cost as f64)))) / l0);
         o.note = format!("{} · worth about ${flow:.0} an ante (estimate)", o.note);
+        extra_money.insert(o.label.clone(), flow * antes_left);
     }
     let now_p = base_odds.get(key_round).map_or(0.0, |o| o.0);
     let keep_money = |label: &str, kind: &str, note: String, long: f64| ShopOption {
@@ -1842,6 +1844,28 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         }
     }
     let base_reach = base_odds.get(key_round).zip(ctx.specs.get(key_round)).map_or(0.0, |(o, sp)| o.1.mean / sp.start.target.max(1.0));
+    // Money a rich run can't turn into more planet levels (`levels_for` reaches its 2 an ante
+    // at the interest line + $30) goes on rerolls: worth the best jokers it finds by Ante 8
+    // (`money_value_with`, valued by their By Ante 8). Each option's money left (plus what an
+    // economy voucher earns by then) against keeping your money.
+    {
+        let saturated = line + 30.0;
+        let shops_long = (3.0 * antes_left).round() as usize;
+        let mut cache: std::collections::HashMap<i64, f64> = std::collections::HashMap::new();
+        let mut reroll_long = |m: f64| {
+            *cache.entry(m.round() as i64).or_insert_with(|| {
+                money_value_with(&ctx, &pool_entries, &|c: &Candidate| c.long_mult.unwrap_or(1.0), 1.0, (m - saturated).max(0.0), false, shops_long, false)
+            })
+        };
+        let base = reroll_long(run.dollars).max(1e-9);
+        for o in options.iter_mut() {
+            let m = o.money_after + extra_money.get(&o.label).copied().unwrap_or(0.0);
+            let f = reroll_long(m) / base;
+            if (f - 1.0).abs() > 1e-6 {
+                o.long_mult = Some(o.long_mult.unwrap_or(1.0) * f);
+            }
+        }
+    }
     rank_options(&mut options, base_reach);
     // Skip or play the blind you're choosing now
     let mut blind_views = blind_views;

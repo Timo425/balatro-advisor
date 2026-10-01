@@ -26,8 +26,15 @@ fn replayed_states_give_the_expected_advice() {
                 "best_hand" => bp["hand"].clone(),
                 "best_use_first" => bp["use_first"].clone(),
                 "top_option" => a["options"][0]["label"].clone(),
+                // ["A", "B"]: option A ranks above option B
+                "above" => {
+                    let pos = |l: &Value| a["options"].as_array().unwrap().iter().position(|o| &o["label"] == l);
+                    let (x, y) = (pos(&want[0]), pos(&want[1]));
+                    Value::Bool(x.is_some() && (y.is_none() || x < y))
+                }
                 other => panic!("{name}: unknown expectation {other}"),
             };
+            let want = if k == "above" { &Value::Bool(true) } else { want };
             if &got != want {
                 failures.push(format!("{name}: {k} = {got}, expected {want} ({})", v["note"].as_str().unwrap_or("")));
             }
