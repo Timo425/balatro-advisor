@@ -1315,7 +1315,10 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                 o.next_strength = Some(reach_draw(&pool_entries, hz, base_hz, cards, share, &mut rng) / base_hz);
             }
         }
-        let price = long_score(&fill_long(project(&|_| true, run.dollars), None, once(-(o.cost as f64)))) / l0;
+        // A Mega pack's second pick is worth at least its sell value (take it and sell it):
+        // about $2.50 for an average joker
+        let second = if o.kind == "pack" && o.label.contains("Mega") { 2.5 } else { 0.0 };
+        let price = long_score(&fill_long(project(&|_| true, run.dollars), None, once(second - o.cost as f64))) / l0;
         o.long_mult = Some(draw * price);
     }
     // Tarots: a changed deck is permanent, so it's projected like everything else; money
@@ -2217,7 +2220,7 @@ fn shop_options(
         let Some(center) = data.center(&pk.key) else { continue };
         let extra = center.config.get("extra").and_then(|v| v.as_u64()).unwrap_or(3) as usize;
         let choose = center.config.get("choose").and_then(|v| v.as_u64()).unwrap_or(1);
-        let pick_note = if choose > 1 { " (you pick 2; counted as your best 1)" } else { "" };
+        let pick_note = if choose > 1 { " (you pick 2: your best 1, plus the other's sell value)" } else { "" };
         if pk.key.starts_with("p_celestial") && !planets.is_empty() {
             // Exact: average over every set of `extra` distinct planets of the best one in it.
             let n = planets.len();
