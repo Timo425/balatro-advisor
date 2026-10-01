@@ -145,6 +145,8 @@ pub struct PlayAdvice {
     /// "play" or "discard"
     pub action: String,
     pub cards: Vec<String>,
+    /// Cards in the play that don't score, sent along to dig (a free discard)
+    pub dig: usize,
     /// The same cards as positions in your hand (0 = leftmost), for bots
     pub indices: Vec<usize>,
     pub hand: String,
@@ -165,6 +167,8 @@ pub struct PlayOption {
     pub action: String,
     pub cards: Vec<String>,
     pub indices: Vec<usize>,
+    /// Cards in the play that don't score, sent along to dig (a free discard)
+    pub dig: usize,
     pub hand: String,
     pub score: f64,
     pub p_win: f64,
@@ -1507,14 +1511,15 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                         sim::Move::Discard(v) => ("discard", v),
                     };
                     let cards: Vec<Card> = idx.iter().map(|&i| start.hand[i]).collect();
-                    let (hand, score) = if action == "play" {
+                    let (hand, score, dig) = if action == "play" {
                         let held: Vec<Card> = (0..start.hand.len()).filter(|i| !idx.contains(i)).map(|i| start.hand[i]).collect();
                         let o = crate::engine::score(&bb, &cards, &held, &mut crate::engine::Unlucky, false);
-                        (o.hand.name().to_string(), o.score)
+                        let scoring = crate::engine::hand::detect(&cards, bb.rule_flags()).scoring.len();
+                        (o.hand.name().to_string(), o.score, cards.len().saturating_sub(scoring))
                     } else {
-                        (String::new(), 0.0)
+                        (String::new(), 0.0, 0)
                     };
-                    PlayOption { action: action.into(), cards: cards.iter().map(Card::label).collect(), indices: idx.clone(), hand, score, p_win: p, mean_total: mean }
+                    PlayOption { action: action.into(), cards: cards.iter().map(Card::label).collect(), indices: idx.clone(), dig, hand, score, p_win: p, mean_total: mean }
                 })
                 .collect();
             // Best chance first; within 2 points (noise), the higher mean round total
@@ -1552,11 +1557,12 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                     )),
                     None => tip,
                 };
-                Some(PlayAdvice { action: best.action, cards: best.cards, indices: best.indices, hand: best.hand, score: best.score, p_win: Some(best.p_win), alternatives: opts, tip })
+                Some(PlayAdvice { action: best.action, cards: best.cards, dig: best.dig, indices: best.indices, hand: best.hand, score: best.score, p_win: Some(best.p_win), alternatives: opts, tip })
             }
             None => sim::best_play(&b, &run.hand).map(|p| PlayAdvice {
                 action: "play".into(),
                 cards: p.cards.iter().map(|&i| run.hand[i].label()).collect(),
+                dig: 0,
                 indices: p.cards.clone(),
                 hand: p.hand.name().to_string(),
                 score: p.floor,
@@ -3581,6 +3587,20 @@ mod tests {
         }
         assert!(s.valued && s.tag.contains('$'), "{}", s.tag);
         assert!(["play", "skip", "close"].contains(&s.verdict.as_str()));
+    }
+
+    #[test]
+    fn short_plays_take_junk_along_to_dig() {
+        let hand = Card::parse_list("KS KH 2C 3D 7S:steel 9H 9H 4H").unwrap();
+        let b = crate::bench::sample_board(&["j_joker"]);
+        let play = sim::with_fillers(&b, &hand, &[0, 1]);
+        let picked: Vec<String> = play.iter().map(|&i| hand[i].label()).collect();
+        // the pair plus junk: not the Steel card, not the paired 9s, not the Hearts you hold 4 of… 
+        assert_eq!(play.len(), 4, "{picked:?}");
+        assert!(picked.contains(&"2♣".to_string()) && picked.contains(&"3♦".to_string()), "{picked:?}");
+        // Half Joker wants 3 cards or fewer: no fillers
+        let half = crate::bench::sample_board(&["j_half"]);
+        assert_eq!(sim::with_fillers(&half, &hand, &[0, 1]), vec![0, 1]);
     }
 
     #[test]

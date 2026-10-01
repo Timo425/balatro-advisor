@@ -68,6 +68,48 @@ pub fn best_play(b: &Board, hand: &[Card]) -> Option<Play> {
     best
 }
 
+/// A play of fewer than 5 cards topped up with junk from the hand, as a free discard (the
+/// extra cards don't score, so they cycle out for new draws). Only when kickers can't
+/// matter (no Half Joker, Square, Psychic, held-card jokers…), never cards worth holding
+/// (Steel, Gold, seals, editions, the suit you hold most of, ranks that pair with another
+/// held card), lowest first, and only fillers that leave the score unchanged.
+pub fn with_fillers(b: &Board, hand: &[Card], play: &[usize]) -> Vec<usize> {
+    let mut out = play.to_vec();
+    if out.len() >= 5 || kickers_matter(b) {
+        return out;
+    }
+    let held: Vec<usize> = (0..hand.len()).filter(|i| !out.contains(i)).collect();
+    let suit_count = |s: Suit| held.iter().filter(|&&i| hand[i].suit == s).count();
+    let flush_suit = Suit::ALL.into_iter().max_by_key(|&s| suit_count(s)).filter(|&s| suit_count(s) >= 3);
+    let pairs = |i: usize| held.iter().any(|&k| k != i && hand[k].rank == hand[i].rank);
+    let mut junk: Vec<usize> = held
+        .iter()
+        .copied()
+        .filter(|&i| {
+            let c = &hand[i];
+            c.enhancement.is_none() && c.seal.is_none() && c.edition.is_none() && !c.debuff && Some(c.suit) != flush_suit && !pairs(i)
+        })
+        .collect();
+    junk.sort_by(|&a, &c| hand[a].rank.chips().total_cmp(&hand[c].rank.chips()));
+    let score_of = |idx: &[usize]| {
+        let played: Vec<Card> = idx.iter().map(|&i| hand[i]).collect();
+        let held: Vec<Card> = (0..hand.len()).filter(|i| !idx.contains(i)).map(|i| hand[i]).collect();
+        score::score(b, &played, &held, &mut Unlucky, false).score
+    };
+    let base = score_of(&out);
+    for i in junk {
+        if out.len() >= 5 {
+            break;
+        }
+        let mut with = out.clone();
+        with.push(i);
+        if (score_of(&with) - base).abs() < 1e-6 {
+            out = with;
+        }
+    }
+    out
+}
+
 /// A first move in a round, for the look-ahead in "Best play".
 #[derive(Debug, Clone, PartialEq)]
 pub enum Move {
@@ -116,6 +158,8 @@ pub fn candidate_moves(b: &Board, hand: &[Card], deck: &[Card], hands: i64, disc
     by_floor.sort_by(|a, b| b.2.total_cmp(&a.2));
     for c in by_floor.iter().take(4) {
         push(Move::Play(c.1.clone()), &mut out);
+        // the same play, topped up with junk to dig
+        push(Move::Play(with_fillers(b, hand, &c.1)), &mut out);
     }
     let mut by_mean = by_floor.clone();
     by_mean.sort_by(|a, b| b.3.total_cmp(&a.3));
@@ -332,7 +376,7 @@ enum Action {
 /// - otherwise discard the cards outside the best play and hope to improve it.
 fn decide(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i64, need: f64, size: usize) -> Action {
     let Some(best) = best_play(b, hand) else { return Action::Play(vec![], false) };
-    let play_best = Action::Play(best.cards.clone(), false);
+    let play_best = Action::Play(with_fillers(b, hand, &best.cards), false);
     if best.floor >= need || hands <= 1 || deck.is_empty() {
         return play_best;
     }
