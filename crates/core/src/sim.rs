@@ -44,9 +44,11 @@ pub fn best_play(b: &Board, hand: &[Card]) -> Option<Play> {
     let mut played: Vec<Card> = Vec::with_capacity(5);
     let mut held: Vec<Card> = Vec::with_capacity(n);
     let mut idx: Vec<usize> = Vec::with_capacity(5);
+    // Face-down cards can't be planned around (you don't know them): only as filler
+    let hidden: u32 = (0..n).filter(|&i| hand[i].face_down).fold(0, |m, i| m | (1 << i));
     for mask in 1u32..(1 << n) {
         let k = mask.count_ones();
-        if k > 5 {
+        if k > 5 || mask & hidden != 0 {
             continue;
         }
         idx.clear();
@@ -127,8 +129,9 @@ pub fn candidate_moves(b: &Board, hand: &[Card], deck: &[Card], hands: i64, disc
     let keep_kickers = kickers_matter(b);
     // (mask, arranged cards, floor, mean)
     let mut all: Vec<(u32, Vec<usize>, f64, f64)> = Vec::new();
+    let hidden: u32 = (0..n).filter(|&i| hand[i].face_down).fold(0, |m, i| m | (1 << i));
     for mask in 1u32..(1 << n) {
-        if mask.count_ones() > 5 {
+        if mask.count_ones() > 5 || mask & hidden != 0 {
             continue;
         }
         let mut idx: Vec<usize> = (0..n).filter(|i| mask & (1 << i) != 0).collect();

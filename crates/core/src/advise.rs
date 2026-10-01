@@ -689,6 +689,46 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         let c = &run.hand[i];
         (std::cmp::Reverse(c.rank.0), c.suit as u8, format!("{:?}{:?}{:?}", c.enhancement, c.seal, c.edition))
     });
+    // Face-down cards are unknown to you, so to the advisor too: each is swapped for a random
+    // card of the draw pile (its real self goes back in the pile; the deck stays the same).
+    let (live_hand, live_pile) = {
+        // What your sorted hand gives away: the game sorts face-down cards by their real rank
+        // and suit, so their neighbours bound them (rank sort: between the ranks around it;
+        // suit sort: one of the suits around it).
+        let shown: Vec<(usize, &Card)> = run.hand.iter().enumerate().filter(|(_, c)| !c.face_down).collect();
+        let by_rank = shown.windows(2).all(|w| w[0].1.rank.0 >= w[1].1.rank.0);
+        let fits = |pos: usize, c: &Card| -> bool {
+            let before = shown.iter().rev().find(|(i, _)| *i < pos).map(|(_, c)| **c);
+            let after = shown.iter().find(|(i, _)| *i > pos).map(|(_, c)| **c);
+            if by_rank {
+                before.is_none_or(|b| c.rank.0 <= b.rank.0) && after.is_none_or(|a| c.rank.0 >= a.rank.0)
+            } else {
+                match (before, after) {
+                    (Some(b), Some(a)) => c.suit == b.suit || c.suit == a.suit,
+                    (Some(x), None) | (None, Some(x)) => c.suit == x.suit,
+                    (None, None) => true,
+                }
+            }
+        };
+        let mut hand: Vec<Card> = hand_order.iter().map(|&i| run.hand[i]).collect();
+        let mut pile = run.draw_pile.clone();
+        let mut rng = crate::engine::Rng::new(opts.seed ^ 0xfd0);
+        for (slot, c) in hand.iter_mut().enumerate() {
+            if !c.face_down || pile.is_empty() {
+                continue;
+            }
+            let pos = hand_order[slot];
+            let ok: Vec<usize> = (0..pile.len()).filter(|&k| fits(pos, &pile[k])).collect();
+            let k = if ok.is_empty() { rng.below(pile.len()) } else { ok[rng.below(ok.len())] };
+            let mut real = *c;
+            real.face_down = false;
+            let mut stand = pile[k];
+            stand.face_down = true;
+            pile[k] = real;
+            *c = stand;
+        }
+        (hand, pile)
+    };
     let dctx = desc_ctx(run);
     let mut fresh_deck = run.full_deck();
     for c in &mut fresh_deck {
@@ -703,8 +743,8 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             blind_key: cb.key.clone(),
             blind_name: cb.name.clone(),
             start: RoundStart {
-                hand: hand_order.iter().map(|&i| run.hand[i]).collect(),
-                deck: run.draw_pile.clone(),
+                hand: live_hand.clone(),
+                deck: live_pile.clone(),
                 hand_size: run.hand_size,
                 hands: run.hands_left,
                 discards: run.discards_left,

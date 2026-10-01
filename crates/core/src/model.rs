@@ -178,6 +178,11 @@ impl Card {
 
     /// `K♠ [glass] (foil) <Red>`
     pub fn label(&self) -> String {
+        // A face-down card (The House, Wheel, Mark, Fish) stays unknown: the save knows it,
+        // the player doesn't, so neither does the advisor
+        if self.face_down {
+            return "face-down card".into();
+        }
         let sym = match self.suit {
             Suit::Spades => "♠",
             Suit::Hearts => "♥",
