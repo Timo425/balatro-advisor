@@ -19,6 +19,9 @@
   header .chip { color: var(--muted); } header .chip b { color: var(--text); }
   .status { margin-left: auto; color: var(--muted); display: flex; align-items: center; gap: 6px; font-size: 12px; }
   .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--good); }
+  .planbar { border: 1px solid var(--gold); }
+  .planbar a { color: var(--gold); }
+  input.plan { margin: 0 4px 0 0; vertical-align: middle; accent-color: var(--gold); cursor: pointer; }
   .dot.busy { background: var(--warn); animation: pulse 1s infinite; }
   .dot.off { background: #56706a; }
   @keyframes pulse { 50% { opacity: .3 } }
@@ -340,6 +343,11 @@ function render(d) {
 
   // Right: shop, dig list
   let right = "";
+  currentPlan = (d.plan && d.plan.items) || [];
+  if (d.plan) {
+    right += `<section class="planbar"><h2>As if bought <small>the whole page is the advice with these already bought · <a href="#" data-plan-clear>back to the real state</a></small></h2>` +
+      d.plan.notes.map((n, i) => `<div>✓ ${esc(n)} <a href="#" data-unplan="${esc(d.plan.items[i] || "")}" title="Remove from the plan">×</a></div>`).join("") + `</section>`;
+  }
   if (a.order_tips && a.order_tips.length) {
     right += `<section><h2>Order tips <small>doing one thing before another</small></h2>${a.order_tips.map((t) => `<div class="order">💡 ${esc(t)}</div>`).join("")}</section>`;
   }
@@ -360,7 +368,7 @@ function render(d) {
     }
     for (const [title, rows] of sections) {
     right += `<section><h2>${title}</h2><table><tr><th></th><th class="num">Cost</th><th class="num" title="Money you'd have left, and the interest it earns per round">Left · interest</th><th class="num">Win chance</th><th class="num" title="${esc(a.long_assumptions || "")}">By Ante 8</th></tr>` +
-      rows.map((o) => `<tr${o.unaffordable ? ' class="broke" title="You can\'t afford this right now"' : ""}><td class="name"${o.desc ? ` title="${esc(o.desc)}"` : ""}>${o.kind === "joker" ? '<span class="muted">🃏</span> ' : ""}<b>${esc(o.label)}</b>${o.kind === "joker" && noGold.has(o.key) ? ' <span class="star" title="No Gold sticker yet">★</span>' : ""}${o.key ? styleTags(a, o.key) : ""}${o.unaffordable ? ' <span class="down">can\'t afford</span>' : ""} <span class="muted">${esc(o.note)}</span>${o.key ? growthLine(a, o.key) : ""}</td><td class="num">$${o.cost}</td>
+      rows.map((o) => `<tr${o.unaffordable ? ' class="broke" title="You can\'t afford this right now"' : ""}><td class="name"${o.desc ? ` title="${esc(o.desc)}"` : ""}>${o.kind === "joker" ? '<span class="muted">🃏</span> ' : ""}${plannable(o) ? `<input type="checkbox" class="plan" data-plan="${esc(o.label)}" title="As if bought: show all the advice with this bought (about 7s)"> ` : ""}<b>${esc(o.label)}</b>${o.kind === "joker" && noGold.has(o.key) ? ' <span class="star" title="No Gold sticker yet">★</span>' : ""}${o.key ? styleTags(a, o.key) : ""}${o.unaffordable ? ' <span class="down">can\'t afford</span>' : ""} <span class="muted">${esc(o.note)}</span>${o.key ? growthLine(a, o.key) : ""}</td><td class="num">$${o.cost}</td>
         <td class="num" title="Money left, and the interest it earns per round ($1 per $5, before payouts)"><span class="${o.interest_after < o.interest_now ? "down" : o.interest_after > o.interest_now || o.money_gain ? "up" : "muted"}">$${Math.round(o.money_after)} · int $${o.interest_after}${o.interest_after < o.interest_now ? ` (−$${o.interest_now - o.interest_after})` : o.interest_after > o.interest_now ? ` (+$${o.interest_after - o.interest_now})` : ""}</span></td>
         <td class="num"><span class="muted">${pct(r.p_win)}</span><span class="arr">→</span>${Math.abs(o.p_win - r.p_win) < NOISE ? `<span class="flat" title="Within simulation noise">±0</span>` : `<span class="${o.p_win > r.p_win ? "up" : "down"}">${pct(o.p_win)}</span>`}</td>
         <td class="num" title="${esc(a.long_assumptions || "")}">${longTxt(o.long_mult)}</td></tr>`).join("") + `</table></section>`;
@@ -397,6 +405,25 @@ function render(d) {
   html += `<footer title="${esc(a.heuristics.join("\n"))}">Heuristic play/discard policy · analysed in ${a.elapsed_ms} ms · save ${a.save_age_secs ?? "?"} s old</footer>`;
   $("#main").innerHTML = html;
 }
+
+// "As if bought": shop jokers, vouchers, tarots and planets can be ticked
+let currentPlan = [];
+const plannable = (o) => ["voucher", "joker", "tarot", "planet"].includes(o.kind) && !o.label.startsWith("pick ") && !o.label.endsWith("(you have it)") && !o.unaffordable;
+function setPlan(list) {
+  currentPlan = list;
+  $("#dot").className = "dot busy";
+  $("#status").textContent = "analysing…";
+  fetch("/api/plan", { method: "POST", body: JSON.stringify(list) }).catch(() => {});
+}
+document.addEventListener("change", (e) => {
+  const l = e.target.dataset && e.target.dataset.plan;
+  if (l != null && e.target.checked) setPlan([...currentPlan.filter((x) => x !== l), l]);
+});
+document.addEventListener("click", (e) => {
+  const t = e.target;
+  if (t.dataset && t.dataset.unplan != null) { e.preventDefault(); setPlan(currentPlan.filter((x) => x !== t.dataset.unplan)); }
+  if (t.dataset && t.dataset.planClear != null) { e.preventDefault(); setPlan([]); }
+});
 
 function goldSection(g) {
   if (!g) return "";

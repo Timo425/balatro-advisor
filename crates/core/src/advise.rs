@@ -3949,7 +3949,8 @@ fn money_value_with(ctx: &Ctx, pool: &[Candidate], value: &dyn Fn(&Candidate) ->
     let open_slots = if best_only { 1 } else { (run.joker_slots - run.jokers.len() as i64).max(1) as usize };
     let mut best = now;
     let mut spent = 0i64;
-    for k in 0..=costs.len().min(16) {
+    // up to 8 rerolls a shop (the costs above), however many shops are left
+    for k in 0..=costs.len() {
         if k > 0 {
             spent += costs[k - 1];
         }

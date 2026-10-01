@@ -17,6 +17,9 @@ struct Shared {
     /// JSON body served at /api/analysis
     body: String,
     busy: bool,
+    /// Shop options ticked "as if bought" (labels), and a counter that changes with them
+    plan: Vec<String>,
+    plan_version: u64,
 }
 
 pub fn run(save_dir: PathBuf, profile: u8, port: u16, open: bool) -> Result<()> {
@@ -32,6 +35,9 @@ pub fn run(save_dir: PathBuf, profile: u8, port: u16, open: bool) -> Result<()> 
             let mut tracker = balatro_advisor::calibration::default_dir().map(balatro_advisor::calibration::Tracker::new);
             let mut last: Option<(PathBuf, Option<SystemTime>)> = None;
             let mut last_fp: Option<String> = None;
+            let mut last_plan = 0u64;
+            // The real state's analysis, reused when only the plan changes
+            let mut real: Option<(save::RunState, advise::Analysis, Option<gold::GoldReport>)> = None;
             let stamp = || {
                 let p = save::run_path(&save_dir, profile);
                 let m = std::fs::metadata(&p).and_then(|m| m.modified()).ok();
@@ -39,6 +45,22 @@ pub fn run(save_dir: PathBuf, profile: u8, port: u16, open: bool) -> Result<()> 
             };
             loop {
                 let m = Some(stamp());
+                let (plan, plan_v) = {
+                    let s = shared.lock().unwrap();
+                    (s.plan.clone(), s.plan_version)
+                };
+                if m == last && plan_v != last_plan {
+                    last_plan = plan_v;
+                    if let Some((r, a, g)) = &real {
+                        shared.lock().unwrap().busy = true;
+                        let body = planned_body(r, a, g.as_ref(), data, &plan);
+                        let mut s = shared.lock().unwrap();
+                        s.body = body;
+                        s.version += 1;
+                        s.busy = false;
+                    }
+                    continue;
+                }
                 if m != last {
                     std::thread::sleep(Duration::from_millis(150));
                     let settled = Some(stamp());
@@ -46,6 +68,8 @@ pub fn run(save_dir: PathBuf, profile: u8, port: u16, open: bool) -> Result<()> 
                         continue;
                     }
                     last = m;
+                    let plan_changed = plan_v != last_plan;
+                    last_plan = plan_v;
                     shared.lock().unwrap().busy = true;
                     let save_path = save::run_path(&save_dir, profile);
                     // Keep a copy of the state being analysed until it finishes: if the
@@ -66,7 +90,7 @@ pub fn run(save_dir: PathBuf, profile: u8, port: u16, open: bool) -> Result<()> 
                         same.snapshot.age_secs = None;
                         same.snapshot.live = false;
                         let fp = serde_json::to_string(&same).unwrap_or_default();
-                        if last_fp.as_deref() == Some(fp.as_str()) {
+                        if last_fp.as_deref() == Some(fp.as_str()) && !plan_changed {
                             shared.lock().unwrap().busy = false;
                             std::thread::sleep(Duration::from_millis(400));
                             continue;
@@ -88,7 +112,17 @@ pub fn run(save_dir: PathBuf, profile: u8, port: u16, open: bool) -> Result<()> 
                                         let p = a.blinds.iter().find(|b| b.state == "Current").and_then(|b| b.p_win);
                                         t.observe(Some(&r), p);
                                     }
-                                    serde_json::json!({ "status": "ok", "analysis": a, "gold": g }).to_string()
+                                    // Ticked options bought for real, or no longer on offer, drop out
+                                    let plan: Vec<String> = plan.into_iter().filter(|l| a.options.iter().any(|o| &o.label == l)).collect();
+                                    {
+                                        let mut s = shared.lock().unwrap();
+                                        if s.plan_version == plan_v {
+                                            s.plan = plan.clone();
+                                        }
+                                    }
+                                    let body = planned_body(&r, &a, g.as_ref(), data, &plan);
+                                    real = Some((r.clone(), a, g));
+                                    body
                                 }
                                 Err(_) => serde_json::json!({
                                     "status": "error",
@@ -122,9 +156,24 @@ pub fn run(save_dir: PathBuf, profile: u8, port: u16, open: bool) -> Result<()> 
     if open {
         open_window(&url);
     }
-    for req in server.incoming_requests() {
+    for mut req in server.incoming_requests() {
         let path = req.url().split('?').next().unwrap_or("/").to_string();
         let resp = match path.as_str() {
+            // The ticked "as if bought" options: a JSON list of option labels
+            "/api/plan" => {
+                let mut body = String::new();
+                let _ = std::io::Read::read_to_string(req.as_reader(), &mut body);
+                match serde_json::from_str::<Vec<String>>(&body) {
+                    Ok(plan) => {
+                        let mut s = shared.lock().unwrap();
+                        s.plan = plan;
+                        s.plan_version += 1;
+                        s.busy = true;
+                        tiny_http::Response::from_string("ok")
+                    }
+                    Err(e) => tiny_http::Response::from_string(format!("bad plan: {e}")).with_status_code(400),
+                }
+            }
             "/" => tiny_http::Response::from_string(PAGE)
                 .with_header(header("Content-Type", "text/html; charset=utf-8")),
             "/api/analysis" => {
@@ -150,6 +199,20 @@ pub fn run(save_dir: PathBuf, profile: u8, port: u16, open: bool) -> Result<()> 
         let _ = req.respond(resp);
     }
     Ok(())
+}
+
+/// The page's JSON for a state: the analysis as it is, or with the ticked options already
+/// bought (the plan's notes say what was applied).
+fn planned_body(r: &save::RunState, a: &advise::Analysis, g: Option<&gold::GoldReport>, data: &GameData, plan: &[String]) -> String {
+    if plan.is_empty() {
+        return serde_json::json!({ "status": "ok", "analysis": a, "gold": g }).to_string();
+    }
+    let (state, notes) = balatro_advisor::plan::apply(r, a, data, plan);
+    let planned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| advise::analyze(&state, data, g, &Options::default())));
+    match planned {
+        Ok(p) => serde_json::json!({ "status": "ok", "analysis": p, "gold": g, "plan": { "items": plan, "notes": notes } }).to_string(),
+        Err(_) => serde_json::json!({ "status": "ok", "analysis": a, "gold": g, "plan": { "items": plan, "notes": ["the planned state crashed the analysis; showing the real one"] } }).to_string(),
+    }
 }
 
 /// A chromeless app window (Chrome/Chromium `--app`), else the default browser.
