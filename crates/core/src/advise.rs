@@ -499,7 +499,8 @@ fn non_scoring_note(key: &str) -> Option<&'static str> {
         "j_chaos" => "Utility: 1 free reroll per shop",
         "j_ring_master" => "Utility: duplicate jokers can appear",
         "j_oops" => "Doubles every probability: simulated",
-        "j_dna" | "j_marble" | "j_sixth_sense" | "j_certificate" | "j_vampire" | "j_midas_mask" => {
+        "j_dna" => "Deck-fixing: a copy of your best card each round (your first hand a single card); copies and their Blue Seal planets projected to Ante 8",
+        "j_marble" | "j_sixth_sense" | "j_certificate" | "j_vampire" | "j_midas_mask" => {
             "Deck-fixing: changes your cards over time (only this hand's effect is simulated)"
         }
         "j_8_ball" | "j_superposition" | "j_seance" | "j_riff_raff" | "j_vagabond" | "j_hallucination"
@@ -1236,6 +1237,62 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         let earns = income_per_ante(key, &ability, run, antes_left.min(1.0));
         long_score(&fill_long(project(&|_| true, run.dollars), None, once(earns - ((cost - sell) as f64) - rent))) / l0
     };
+    // DNA (card.lua: first hand of the round a single card → a permanent copy of it): a copy
+    // of your best card every round until Ante 8, your first hand spent on it, and the copies'
+    // Blue Seal planets (at most 2 a round: consumable slots).
+    let dna_long = |b: Board| -> f64 {
+        use crate::model::{Enhancement, Seal};
+        let deck = &ctx.fresh_deck;
+        let rank = |c: &Card| match (c.seal, c.enhancement) {
+            (Some(Seal::Blue), _) => 5,
+            (Some(Seal::Red), Some(Enhancement::Glass)) => 4,
+            (_, Some(Enhancement::Glass)) => 3,
+            (Some(_), _) => 2,
+            (_, Some(_)) => 1,
+            _ => 0,
+        };
+        let Some(best) = deck.iter().copied().max_by_key(|c| (rank(c), c.rank.0)) else { return 1.0 };
+        let rounds = (3.0 * antes_left).floor() as usize;
+        // The card has to be in your opening hand to be the single first play: each round,
+        // the chance that one of its copies is among the first `hand size` cards.
+        let open = |s: f64, deck: f64| 1.0 - (1.0 - s / deck.max(1.0)).powf(run.hand_size as f64);
+        let s0 = deck.iter().filter(|c| **c == best).count() as f64;
+        let (mut copies, mut planets) = (s0, 0.0);
+        for r in 0..rounds {
+            let dsize = deck.len() as f64 + copies - s0;
+            copies += open(copies, dsize);
+            if best.seal == Some(Seal::Blue) {
+                let _ = r;
+                planets += (2.0f64).min(copies * seal_round_chance(run, dsize as usize)) - (2.0f64).min(s0 * seal_round_chance(run, deck.len()));
+            }
+        }
+        let added = (copies - s0).round() as usize;
+        let mut d = deck.clone();
+        d.extend(std::iter::repeat_n(best, added));
+        let mut b = b;
+        let tally = |e: Enhancement| d.iter().filter(|c| c.enhancement == Some(e)).count() as i64;
+        b.steel_tally = tally(Enhancement::Steel);
+        b.stone_tally = tally(Enhancement::Stone);
+        b.driver_tally = d.iter().filter(|c| c.enhancement.is_some()).count() as i64;
+        b.playing_cards = d.len() as i64;
+        if best.seal == Some(Seal::Blue) {
+            let extra = planets.max(0.0);
+            for j in b.jokers.iter_mut().filter(|j| j.key == "j_constellation") {
+                j.x_mult += 0.1 * extra;
+            }
+            if let Some(top) = top_hand {
+                let l = b.levels[top as usize];
+                let mut lv = l.with_level(l.level + extra.floor() as i64);
+                lv.chips += lv.l_chips * (extra - extra.floor());
+                lv.mult += lv.l_mult * (extra - extra.floor());
+                b.levels[top as usize] = lv;
+            }
+        }
+        let mut sp = long_spec_for(&b);
+        sp.start.deck = d;
+        sp.start.hands = (sp.start.hands - 1).max(1); // the first hand goes on the single card
+        ctx.odds_one(&b, &sp, 48).1.mean.max(1.0)
+    };
     let long_of = |j: &Joker, sell: Option<usize>, cost: i64, rental: bool| -> f64 {
         let back = sell.map_or(0, |i| run.jokers[i].sell_value) as f64;
         let ability = data.center(&j.key).map(|c| crate::engine::joker::ability_from_config(&c.config)).unwrap_or_default();
@@ -1243,7 +1300,8 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         let income = income_per_ante(&j.key, &ability, run, antes_left);
         let horizon = if j.key == "j_madness" { 1.0 } else { antes_left };
         let g = grow_antes(j, &hand_mix, run.dollars + income - rent, line, horizon).map_or_else(|| j.clone(), |g| g.0);
-        long_score(&fill_long(project_rent(&|k| Some(k) != sell, run.dollars, rent - income), Some(g), once(back - cost as f64)))
+        let b = fill_long(project_rent(&|k| Some(k) != sell, run.dollars, rent - income), Some(g), once(back - cost as f64));
+        if j.key == "j_dna" { dna_long(b) } else { long_score(&b) }
     };
     let sell_index = |action: &str| {
         action.strip_prefix("replace ").map(|n| n.trim_end_matches(", put it rightmost")).and_then(|name| ctx.base.jokers.iter().position(|x| data.name(&x.key) == name))
