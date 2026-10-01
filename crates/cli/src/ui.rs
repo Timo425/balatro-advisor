@@ -31,6 +31,7 @@ pub fn run(save_dir: PathBuf, profile: u8, port: u16, open: bool) -> Result<()> 
             // Calibration log: predictions at blind start, and how each blind ended
             let mut tracker = balatro_advisor::calibration::default_dir().map(balatro_advisor::calibration::Tracker::new);
             let mut last: Option<(PathBuf, Option<SystemTime>)> = None;
+            let mut last_fp: Option<String> = None;
             let stamp = || {
                 let p = save::run_path(&save_dir, profile);
                 let m = std::fs::metadata(&p).and_then(|m| m.modified()).ok();
@@ -54,7 +55,22 @@ pub fn run(save_dir: PathBuf, profile: u8, port: u16, open: bool) -> Result<()> 
                         let _ = std::fs::create_dir_all(k.parent().unwrap_or(k));
                         let _ = std::fs::copy(&save_path, k);
                     }
-                    let body = match save::load(&save_path, data) {
+                    // Reordering your hand changes the file but not the run: skip those.
+                    let loaded = save::load(&save_path, data);
+                    if let Ok(r) = &loaded {
+                        let mut same = r.clone();
+                        same.hand.sort_by_key(|c| c.label());
+                        same.snapshot.age_secs = None;
+                        same.snapshot.live = false;
+                        let fp = serde_json::to_string(&same).unwrap_or_default();
+                        if last_fp.as_deref() == Some(fp.as_str()) {
+                            shared.lock().unwrap().busy = false;
+                            std::thread::sleep(Duration::from_millis(400));
+                            continue;
+                        }
+                        last_fp = Some(fp);
+                    }
+                    let body = match loaded {
                         Ok(r) => {
                             let g = gold::load(&save_dir, profile, data).ok();
                             let analysed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
