@@ -531,7 +531,11 @@ pub fn from_value(g: &Value, data: &GameData, path: &Path, age_secs: Option<u64>
     });
 
     let areas = g.get("cardAreas");
-    let limit = |name: &str| int(areas.get(name).at("config.card_limit"));
+    // Steamodded saves (the bot bench) keep sizes in card_limits.total_slots instead
+    let limit = |name: &str| {
+        let c = areas.get(name).get("config");
+        c.get("card_limit").int().or_else(|| c.at("card_limits.total_slots").int()).unwrap_or(0)
+    };
     let state = RunState {
         seed: game.at("pseudorandom.seed").str().unwrap_or_default().to_string(),
         won: game.get("won").truthy(),

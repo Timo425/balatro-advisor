@@ -142,6 +142,8 @@ pub struct PlayAdvice {
     /// "play" or "discard"
     pub action: String,
     pub cards: Vec<String>,
+    /// The same cards as positions in your hand (0 = leftmost), for bots
+    pub indices: Vec<usize>,
     pub hand: String,
     pub score: f64,
     /// Chance to win the round making this move first, then playing on (look-ahead).
@@ -159,6 +161,7 @@ pub struct PlayAdvice {
 pub struct PlayOption {
     pub action: String,
     pub cards: Vec<String>,
+    pub indices: Vec<usize>,
     pub hand: String,
     pub score: f64,
     pub p_win: f64,
@@ -1303,7 +1306,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                     } else {
                         (String::new(), 0.0)
                     };
-                    PlayOption { action: action.into(), cards: cards.iter().map(Card::label).collect(), hand, score, p_win: p, mean_total: mean }
+                    PlayOption { action: action.into(), cards: cards.iter().map(Card::label).collect(), indices: idx.clone(), hand, score, p_win: p, mean_total: mean }
                 })
                 .collect();
             // Best chance first; within 2 points (noise), the higher mean round total
@@ -1341,11 +1344,12 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                     )),
                     None => tip,
                 };
-                Some(PlayAdvice { action: best.action, cards: best.cards, hand: best.hand, score: best.score, p_win: Some(best.p_win), alternatives: opts, tip })
+                Some(PlayAdvice { action: best.action, cards: best.cards, indices: best.indices, hand: best.hand, score: best.score, p_win: Some(best.p_win), alternatives: opts, tip })
             }
             None => sim::best_play(&b, &run.hand).map(|p| PlayAdvice {
                 action: "play".into(),
                 cards: p.cards.iter().map(|&i| run.hand[i].label()).collect(),
+                indices: p.cards.clone(),
                 hand: p.hand.name().to_string(),
                 score: p.floor,
                 p_win: None,
@@ -1815,7 +1819,7 @@ fn shop_options(
                 unaffordable: false,
                 money_gain: 0.0,
                 long_mult: None,
-                key: None,
+                key: Some(pk.key.clone()),
                 desc: None,
                 label: pk.name.clone(),
                 kind: "pack".into(),
@@ -1826,7 +1830,7 @@ fn shop_options(
         } else if pk.key.starts_with("p_buffoon") {
             // Jokers picked from a pack are free: no budget limit on what's inside.
             let e = expected_best(pool, round, now, extra, 1.0, f64::INFINITY, per_rarity, &mut rng);
-            out.push(ShopOption { reach: None, label: pk.name.clone(), kind: "pack".into(), cost: pk.cost, p_win: e, note: format!("{extra} jokers{pick_note}"), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: None, desc: None });
+            out.push(ShopOption { reach: None, label: pk.name.clone(), kind: "pack".into(), cost: pk.cost, p_win: e, note: format!("{extra} jokers{pick_note}"), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: Some(pk.key.clone()), desc: None });
         }
     }
 
@@ -1864,6 +1868,7 @@ fn shop_options(
         for v in shop.vouchers.iter().filter(|v| matches!(v.key.as_str(), "v_directors_cut" | "v_retcon")) {
             let mut o = boss_reroll_option(ctx, run, data, spec, now);
             o.label = v.name.clone();
+            o.key = Some(v.key.clone());
             o.cost = v.cost;
             o.note = format!("{}{}", if v.key == "v_retcon" { "reroll the boss for $10, as often as you like" } else { "reroll the boss once per ante for $10" }, o.note);
             out.push(o);
@@ -1900,7 +1905,7 @@ fn shop_options(
                 _ => (false, "not valued".into()),
             };
             let p = if sim { ctx.odds_one(&ctx.base, &sp, ctx.opts.sims).0 } else { now };
-            out.push(ShopOption { reach: None, label: v.name.clone(), kind: "voucher".into(), cost: v.cost, p_win: p, note, money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: None, desc: None });
+            out.push(ShopOption { reach: None, label: v.name.clone(), kind: "voucher".into(), cost: v.cost, p_win: p, note, money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: Some(v.key.clone()), desc: None });
         }
     }
     // Tarots: applied to the deck the way a player sensibly would, then the round re-simulated.
@@ -1958,7 +1963,7 @@ fn shop_options(
             unaffordable: false,
             money_gain: 0.0,
             long_mult: None,
-            key: None,
+            key: Some(pk.key.clone()),
             desc: None,
         });
     }
