@@ -369,9 +369,13 @@ fn decide(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i64, ne
             }
             let p = flush_odds(group.len(), in_deck.len(), deck.len(), size, need_f, digs);
             let mut cards: Vec<Card> = group.iter().map(|&i| hand[i]).collect();
+            // The cards you'd draw: typical ones of the suit (the middle of what's left), not
+            // the best; with the best, a suit you hold fewer of looked better than it is.
             let mut extra: Vec<Card> = in_deck.iter().map(|c| **c).collect();
             extra.sort_by(|a, c| c.rank.chips().total_cmp(&a.rank.chips()));
-            cards.extend(extra.into_iter().take(need_f - group.len()));
+            let want = need_f - group.len();
+            let start = extra.len().saturating_sub(want) / 2;
+            cards.extend(extra.into_iter().skip(start).take(want));
             cards.truncate(5);
             // Average over a few rolls, so Lucky cards count for their average, not for nothing
             let mut rolls = Rng::new(0x1d1e ^ suit as u64);
