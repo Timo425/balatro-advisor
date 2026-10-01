@@ -416,6 +416,15 @@ enum Action {
 fn decide(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i64, need: f64, size: usize) -> Action {
     let Some(best) = best_play(b, hand) else { return Action::Play(vec![], false) };
     let play_best = Action::Play(with_fillers(b, hand, &best.cards), false);
+    // Mail-In Rebate: cash cards of its rank with a discard before playing (they pay $5
+    // each), as long as the play doesn't need them. That keeps discards for cashing and
+    // makes playing the way to dig.
+    if discards > 0 && b.mail_rank.is_some() {
+        let cash: Vec<usize> = (0..hand.len()).filter(|i| !best.cards.contains(i)).filter(|&i| discard_money(b, hand, &[i]) > 0.0).collect();
+        if !cash.is_empty() {
+            return Action::Discard(cash);
+        }
+    }
     if best.floor >= need || hands <= 1 || deck.is_empty() {
         return play_best;
     }
