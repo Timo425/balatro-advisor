@@ -1030,12 +1030,47 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             b.levels[top as usize] = l.with_level((l.level + buys.round() as i64).max(1));
         }
     };
+    // What the empty slots get filled with, in proportion to how often the shop offers each
+    // type of joker: weighted by rarity odds (70/25/5 split over each rarity's pool), each
+    // joker counted as ×Mult, Chips or +Mult from its game data. Common +Mult jokers make
+    // a +15 Mult find the likeliest, so the scarce types are what an option adds.
+    let fill_types: Vec<u8> = {
+        let mut w = [0.0f64; 3]; // ×Mult, Chips, +Mult
+        for c in &pool_entries {
+            let Some(j) = Joker::from_key(&c.key, data) else { continue };
+            let r = c.rarity_n.min(3) as usize;
+            let weight = [0.0, 0.7, 0.25, 0.05][r] / per_rarity[r].max(1) as f64;
+            let t = if j.x_mult > 1.0 || j.extra.xmult > 0.0 {
+                0
+            } else if j.t_chips > 0.0 || j.extra.chips > 0.0 || j.extra.chip_mod > 0.0 {
+                1
+            } else if j.mult > 0.0 || j.t_mult > 0.0 || j.extra.s_mult > 0.0 || j.extra.mult > 0.0 {
+                2
+            } else {
+                continue;
+            };
+            w[t] += weight;
+        }
+        if w.iter().sum::<f64>() <= 0.0 {
+            w = [1.0, 1.0, 1.0];
+        }
+        // Slot by slot, the type furthest below its share so far
+        let total: f64 = w.iter().sum();
+        let mut got = [0.0f64; 3];
+        (0..8)
+            .map(|n| {
+                let t = (0..3).max_by(|&a, &b| (w[a] / total * (n + 1) as f64 - got[a]).total_cmp(&(w[b] / total * (n + 1) as f64 - got[b]))).unwrap_or(0);
+                got[t] += 1.0;
+                t as u8
+            })
+            .collect()
+    };
     let fill_long = |mut b: Board, option: Option<Joker>, once: f64| -> Board {
         b.jokers.push(option.unwrap_or_else(|| stand_in(1.25, 0.0, 0.0)));
         spend_once(&mut b, once);
         let mut k = 0;
         while (b.jokers.len() as i64) < b.joker_slots {
-            b.jokers.push(match k % 3 {
+            b.jokers.push(match fill_types.get(k).copied().unwrap_or(0) {
                 0 => stand_in(1.5, 0.0, 0.0),
                 1 => stand_in(1.0, 0.0, 60.0),
                 _ => stand_in(1.0, 15.0, 0.0),
@@ -1479,7 +1514,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     }
     let (levels_per_ante, planet_levels) = levels_for(run.dollars - owned_rent(&|_| true), owned_rent(&|_| true));
     let long_note = format!(
-        "Your board projected {antes_left:.1} antes ahead: growing jokers grown, fading ones faded, perishables that run out dropped, {} +{planet_levels} levels (about {levels_per_ante:.1} per ante with your money), empty slots filled with stand-in jokers (×1.5, +60 Chips, +15 Mult). Each option is compared with a typical find (×1.25) in its slot, on whole simulated rounds, with the money it leaves you: its price, what selling a joker gives back or a money card gives (spent once, on pack skips for Red Card/Flash or on planets, ~$5 each; interest lost or gained over the next ante included), and $9 less money held every ante per rental; money jokers (Golden, Rocket, Cloud 9, To the Moon, Egg) add their payout per ante. Your sellable jokers weaker than a typical find are assumed replaced by then, and a sellable option counts at least as a typical find less its price net of what selling it gives back; eternal ones stay, however weak. ×1.00 = as good as a typical find.",
+        "Your board projected {antes_left:.1} antes ahead: growing jokers grown, fading ones faded, perishables that run out dropped, {} +{planet_levels} levels (about {levels_per_ante:.1} per ante with your money), empty slots filled with stand-in jokers (×1.5, +60 Chips or +15 Mult, in proportion to how often your shop pool offers each type). Each option is compared with a typical find (×1.25) in its slot, on whole simulated rounds, with the money it leaves you: its price, what selling a joker gives back or a money card gives (spent once, on pack skips for Red Card/Flash or on planets, ~$5 each; interest lost or gained over the next ante included), and $9 less money held every ante per rental; money jokers (Golden, Rocket, Cloud 9, To the Moon, Egg) add their payout per ante. Your sellable jokers weaker than a typical find are assumed replaced by then, and a sellable option counts at least as a typical find less its price net of what selling it gives back; eternal ones stay, however weak. ×1.00 = as good as a typical find.",
         top_hand.map_or("your main hand", |h| h.name())
     );
     let shares: Vec<f64> = jokers.iter().map(|j| j.score_share).collect();
