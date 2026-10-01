@@ -2027,13 +2027,34 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                 // The Fool copies the last tarot used, so after it The Fool makes another.
                 let fool = run.consumables.iter().any(|c| c.key == "c_fool");
                 // ...or one that's worth a lot in the long run and costs little this round
-                let first = run
-                    .consumables
+                // Cryptid on a Blue Seal card that doesn't help this round: used just before the
+                // hand that wins, the copies are held at round end (planets now) and never take
+                // up hand slots while you play
+                let held: Vec<&TarotValue> = run.consumables.iter().filter_map(|c| tarots.iter().find(|t| t.key == c.key && t.key != "c_fool")).collect();
+                let wait = |t: &TarotValue| t.key == "c_cryptid" && t.planets_per_ante > 0.0 && t.p_win <= best.p_win + 0.02;
+                let first = held
                     .iter()
-                    .filter_map(|c| tarots.iter().find(|t| t.key == c.key && t.key != "c_fool"))
+                    .copied()
+                    .filter(|t| !wait(t))
                     .filter(|t| t.p_win > best.p_win + 0.02 || (t.long_mult.unwrap_or(1.0) >= 1.3 && t.p_win >= best.p_win - 0.05))
                     .max_by(|a, b| (a.p_win * a.long_mult.unwrap_or(1.0)).total_cmp(&(b.p_win * b.long_mult.unwrap_or(1.0))));
-                let tip = match first {
+                let need = ctx.specs.iter().find(|x| x.in_progress).map_or(f64::INFINITY, |s| s.start.target - s.start.scored);
+                let timing = held.iter().copied().find(|t| wait(t)).map(|t| {
+                    let target = t.note.strip_prefix("2 copies of ").unwrap_or("");
+                    if best.action == "play" && best.cards.iter().any(|c| c == target) {
+                        format!("Use {} now ({}), then this play with one of them: the other two stay in hand for planets at round end; ×{:.2} by Ante 8", t.name, t.note, t.long_mult.unwrap_or(1.0))
+                    } else if best.action == "play" && best.score >= need {
+                        format!("Use {} now ({}), then this play: it wins the round, so the copies stay in hand to the end for 2 more planets; ×{:.2} by Ante 8", t.name, t.note, t.long_mult.unwrap_or(1.0))
+                    } else {
+                        format!("Keep {} ({}) for the hand that wins the round: used just before it, the copies are held to the end for 2 more planets and don't take up hand slots meanwhile; ×{:.2} by Ante 8", t.name, t.note, t.long_mult.unwrap_or(1.0))
+                    }
+                });
+                let tip = match (first, timing) {
+                    (None, Some(x)) => Some(match tip {
+                        Some(o) => format!("{x}. {o}"),
+                        None => x,
+                    }),
+                    (first, _) => match first {
                     Some(t) => Some(format!(
                         "First use {} ({}): {:.0}% instead of {:.0}%, ×{:.2} by Ante 8{}{}",
                         t.name,
@@ -2045,6 +2066,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                         tip.map_or(String::new(), |x| format!(". {x}"))
                     )),
                     None => tip,
+                    },
                 };
                 Some(PlayAdvice { spare_hands: Some(best.spare_hands), round_money: Some(best.round_money), action: best.action, cards: best.cards, dig: best.dig, indices: best.indices, hand: best.hand, score: best.score, p_win: Some(best.p_win), alternatives: opts, tip })
             }
