@@ -3158,11 +3158,15 @@ fn boss_reroll_option(ctx: &Ctx, run: &RunState, data: &GameData, spec: &Spec, n
 fn rank_options(out: &mut [ShopOption], base_reach: f64) {
     let top_p = out.iter().map(|o| o.p_win).fold(0.0, f64::max);
     let trouble = top_p < 0.2;
+    // No real chance at the next ante's boss whatever you pick: that factor is 0 for every
+    // option and would erase the ranking, so it's left out (next-ante strength still counts)
+    let next_hopeless = out.iter().filter_map(|o| o.survive_next).fold(0.0, f64::max) < 0.01;
     // The long run as the average (geometric) of the next ante and Ante 8: a card bought now
     // helps in every blind from here, money only once it's spent on something.
     let value = |o: &ShopOption| {
         let long = (o.long_mult.unwrap_or(1.0).max(1e-9) * o.next_strength.unwrap_or(1.0).max(1e-9)).sqrt();
-        o.survive.unwrap_or(o.p_win) * o.survive_next.unwrap_or(1.0) * long
+        let next = if next_hopeless { 1.0 } else { o.survive_next.unwrap_or(1.0) };
+        o.survive.unwrap_or(o.p_win) * next * long
     };
     let top = out.iter().map(value).fold(0.0, f64::max).max(1e-9);
     let tier = |o: &ShopOption| ((top - value(o)) / (0.03 * top)).floor() as i64;
