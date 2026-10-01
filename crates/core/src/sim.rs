@@ -248,6 +248,16 @@ pub fn candidate_moves(b: &Board, hand: &[Card], deck: &[Card], hands: i64, disc
     out
 }
 
+/// Every discard of 1 to 5 cards from the hand (none without a discard left), for screening
+/// all of them instead of guessing which are worth simulating.
+pub fn all_discards(hand: &[Card], discards: i64) -> Vec<Move> {
+    if discards <= 0 {
+        return vec![];
+    }
+    let n = hand.len().min(12);
+    (1u32..(1 << n)).filter(|m| m.count_ones() <= 5).map(|m| Move::Discard((0..n).filter(|i| m & (1 << i) != 0).collect())).collect()
+}
+
 /// Chance to win the round after making `first`, then playing on with the usual policy,
 /// and the mean round total. Same seeds for every move, so moves compare on the same draws.
 /// Also the mean number of hands left over when it's won (each pays at cash out).

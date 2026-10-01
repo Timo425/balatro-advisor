@@ -27,11 +27,25 @@ twice copies it, e.g. Ankh), `--sell` / `--add` change it, `--card "OLD=NEW"` ch
 card in hand or deck ("4D:lucky:red=4D:glass:red"), `--add-cards` / `--remove-cards`.
 It plans nothing itself: spotting the line is the human's (or agent's) part.
 
+## How to improve the advice
+
+When advice is wrong, find which general step failed and improve that step, so every
+similar situation gets better at once:
+- **Which moves get considered**: search them all (every play, every discard, every held
+  consumable), narrowing down by simulation, so no good move depends on someone having
+  thought of it.
+- **How moves are judged**: one measure everywhere (win chance × long-run value, money as
+  what it buys), with values measured by simulating your board, not set by hand.
+- **Noise**: spend more simulation where moves are close, rather than picking between them
+  by a side number.
+If a fix only makes sense for one joker, suit or hand, it's the wrong fix: look for the
+step that should have found it. Add the state as a replay fixture first (below).
+
 ## Replay fixtures (wrong advice the owner caught)
 
 When the owner says a suggestion is wrong, save that game state before fixing it:
 `tests/fixtures/private/<name>.json` = `{"note", "state": <balatro-advisor state --json>,
-"expect": {...}}` (keys: `best_action`, `best_hand`, `best_use_first`, `top_option`, `above`: ["A", "B"]).
+"expect": {...}}` (keys: `best_action`, `best_hand`, `best_use_first`, `best_not_cards`: [..], `top_option`, `above`: ["A", "B"]).
 `cargo test --release --test replay` replays every one; it must pass before a commit.
 Other local data (never in the repo): `~/.local/share/balatro-advisor/calibration.jsonl`
 (predicted vs actual blind results, shops seen).

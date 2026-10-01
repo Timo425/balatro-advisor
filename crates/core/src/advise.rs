@@ -587,6 +587,9 @@ fn apply_mods(start: &RoundStart, added: &[&Joker], removed: &[&Joker], fresh: b
 
 /// Fresh deals per board in the quick screen of the whole pool.
 const SCREEN_DEALS: usize = 100;
+/// Screening every possible discard: (rounds each, how many go on) per stage; the last
+/// stage's survivors join the full simulation.
+const SCREEN_DISCARD_STAGES: &[(usize, usize)] = &[(32, 24), (160, 6)];
 
 struct Ctx<'a> {
     run: &'a RunState,
@@ -2129,7 +2132,33 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                 let indices = idx.iter().filter(|&&i| i < hand_order.len()).map(|&i| hand_order[i]).collect();
                 PlayOption { spare_hands: spare, round_money: cash, action: action.into(), cards: cards.iter().map(Card::label).collect(), indices, dig, hand: name, score, p_win: p, mean_total: mean, use_first, planets }
             };
-            let moves = sim::candidate_moves(&bb, &start.hand, &start.deck, start.hands, start.discards, start.target - start.scored, start.hand_size.max(1) as usize);
+            let mut moves = sim::candidate_moves(&bb, &start.hand, &start.deck, start.hands, start.discards, start.target - start.scored, start.hand_size.max(1) as usize);
+            // Every possible discard, narrowed down in stages (the same draws for each): all of
+            // them on a few quick rounds, the best on more, and the best of those join the full
+            // simulation. So no discard is missed for want of a rule, and rounds go where moves
+            // are close.
+            {
+                let same = |a: &sim::Move, b: &sim::Move| match (a, b) {
+                    (sim::Move::Discard(x), sim::Move::Discard(y)) => {
+                        let (mut x, mut y) = (x.clone(), y.clone());
+                        x.sort();
+                        y.sort();
+                        x == y
+                    }
+                    _ => false,
+                };
+                // win chance (with planets), then hands left over, which is what differs once the
+                // round is safe
+                let key = |r: &(f64, f64, f64, f64, f64)| r.0 + planet_gain * r.4 + 0.01 * r.2;
+                let mut pool: Vec<sim::Move> = sim::all_discards(&start.hand, start.discards).into_iter().filter(|d| !moves.iter().any(|m| same(m, d))).collect();
+                for &(n, keep) in SCREEN_DISCARD_STAGES {
+                    let r = par_map(&pool, |m| sim::odds_after_uses(&bb, &start, m, n, seed, &uses));
+                    let mut order: Vec<usize> = (0..pool.len()).collect();
+                    order.sort_by(|&a, &b| key(&r[b]).total_cmp(&key(&r[a])).then(r[b].1.total_cmp(&r[a].1)));
+                    pool = order.into_iter().take(keep).map(|i| pool[i].clone()).collect();
+                }
+                moves.extend(pool);
+            }
             let res = par_map(&moves, |m| sim::odds_after_uses(&bb, &start, m, sims, seed, &uses));
             let mut opts: Vec<PlayOption> = moves.iter().zip(res).map(|(m, r)| to_opt(m, &start.hand, &bb, r, None)).collect();
             for (k, u) in uses.iter().enumerate() {
