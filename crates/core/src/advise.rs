@@ -936,27 +936,6 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         run.jokers.iter().enumerate().filter(|(i, sj)| keep(*i) && lasts(sj) && !sj.debuff).map(|(_, sj)| income_per_ante(&sj.key, &sj.ability, run, antes_left)).sum::<f64>()
     };
     // The projected board: the jokers kept (by index), grown with the money you'd hold.
-    let project_rent = |keep: &dyn Fn(usize) -> bool, dollars: f64, extra_rent: f64| -> Board {
-        let rent = owned_rent(keep) + extra_rent;
-        let dollars = dollars - rent + owned_income(keep);
-        let mut b = ctx.base.clone();
-        b.blind = Default::default();
-        if let Some(top) = top_hand {
-            let l = b.levels[top as usize];
-            b.levels[top as usize] = l.with_level(l.level + levels_for(dollars, rent).1);
-        }
-        b.jokers = ctx
-            .base
-            .jokers
-            .iter()
-            .zip(&run.jokers)
-            .enumerate()
-            .filter(|(i, (_, sj))| keep(*i) && lasts(sj))
-            .map(|(_, (j, _))| grow_antes(j, &hand_mix, dollars, line, antes_left).map_or_else(|| j.clone(), |g| g.0))
-            .collect();
-        b
-    };
-    let project = |keep: &dyn Fn(usize) -> bool, dollars: f64| project_rent(keep, dollars, 0.0);
     // Stand-ins for the jokers you'd find over the run: empty slots get alternating ×1.5,
     // +60 Chips and +15 Mult jokers, and the option is compared against a ×1.25 "typical
     // find" in its slot. An assumption, labelled as one.
@@ -975,6 +954,36 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         j.key = "stand-in".into();
         j
     };
+    // Your sellable jokers that are weaker by Ante 8 than a typical find are assumed
+    // replaced by then (jokers get cycled); eternal ones can't be, so they stay however weak.
+    let replaced: std::sync::OnceLock<Vec<bool>> = std::sync::OnceLock::new();
+    let project_rent = |keep: &dyn Fn(usize) -> bool, dollars: f64, extra_rent: f64| -> Board {
+        let rent = owned_rent(keep) + extra_rent;
+        let dollars = dollars - rent + owned_income(keep);
+        let mut b = ctx.base.clone();
+        b.blind = Default::default();
+        if let Some(top) = top_hand {
+            let l = b.levels[top as usize];
+            b.levels[top as usize] = l.with_level(l.level + levels_for(dollars, rent).1);
+        }
+        b.jokers = ctx
+            .base
+            .jokers
+            .iter()
+            .zip(&run.jokers)
+            .enumerate()
+            .filter(|(i, (_, sj))| keep(*i) && lasts(sj))
+            .map(|(i, (j, _))| {
+                if replaced.get().is_some_and(|r| r[i]) {
+                    stand_in(1.25, 0.0, 0.0)
+                } else {
+                    grow_antes(j, &hand_mix, dollars, line, antes_left).map_or_else(|| j.clone(), |g| g.0)
+                }
+            })
+            .collect();
+        b
+    };
+    let project = |keep: &dyn Fn(usize) -> bool, dollars: f64| project_rent(keep, dollars, 0.0);
     // One-off money: spent once on pack skips / rerolls for a joker that grows from them
     // (about $5 each), else on planets for your main hand (about $5 a level).
     let spend_once = |b: &mut Board, once: f64| {
@@ -1033,6 +1042,23 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         sp
     };
     let long_score = |b: &Board| ctx.odds_one(b, &long_spec_for(b), 48).1.mean.max(1.0);
+    {
+        let before = long_score(&fill_long(project(&|_| true, run.dollars), None, 0.0));
+        let swap: Vec<bool> = par_map(&(0..run.jokers.len()).collect::<Vec<_>>(), |&i| {
+            let sj = &run.jokers[i];
+            if sj.eternal || !lasts(sj) {
+                return false;
+            }
+            let mut b = project(&|_| true, run.dollars);
+            let pos = (0..i).filter(|&k| lasts(&run.jokers[k])).count();
+            if pos >= b.jokers.len() {
+                return false;
+            }
+            b.jokers[pos] = stand_in(1.25, 0.0, 0.0);
+            long_score(&fill_long(b, None, 0.0)) >= before
+        });
+        let _ = replaced.set(swap);
+    }
     let l0 = long_score(&fill_long(project(&|_| true, run.dollars), None, 0.0));
     let lasting = run.jokers.iter().filter(|sj| lasts(sj)).count() as i64;
     let full = lasting >= ctx.base.joker_slots;
@@ -1051,6 +1077,13 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     let once = |delta: f64| -> f64 {
         let per_round = |m: f64| interest(m, run.interest_amount, run.interest_cap) as f64;
         delta + 3.0 * (per_round(run.dollars + delta) - per_round(run.dollars))
+    };
+    // A sellable option you'd later replace is worth at least a typical find, less what it
+    // costs net: its price minus what selling it gives back (Card:set_cost: half the price
+    // paid, at least $1; a rental sells for $1; a free one from a tag still sells for $1).
+    let floor_for = |cost: i64, rental: bool| {
+        let sell = if rental { 1 } else { (cost / 2).max(1) };
+        long_score(&fill_long(project(&|_| true, run.dollars), None, once(-((cost - sell) as f64)))) / l0
     };
     let long_of = |j: &Joker, sell: Option<usize>, cost: i64, rental: bool| -> f64 {
         let back = sell.map_or(0, |i| run.jokers[i].sell_value) as f64;
@@ -1073,7 +1106,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         if full && sell.is_none() && j.edition != Some(Edition::Negative) {
             return None;
         }
-        Some(ratio(long_of(&j, sell, c.cost, false), sell))
+        Some(ratio(long_of(&j, sell, c.cost, false), sell).max(floor_for(c.cost, false)))
     });
     for (c, m) in pool_entries.iter_mut().zip(long_mults) {
         c.long_mult = m;
@@ -1091,7 +1124,9 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         let rental = sticker.is_some_and(|x| x.rental);
         let today = sell_index(&c.action);
         if !full || j.edition == Some(Edition::Negative) {
-            c.long_mult = Some(ratio(long_of(j, None, c.cost, rental), None));
+            let eternal = sticker.is_some_and(|x| x.eternal);
+            let v = ratio(long_of(j, None, c.cost, rental), None);
+            c.long_mult = Some(if eternal { v } else { v.max(floor_for(c.cost, rental)) });
             continue;
         }
         let Some(today) = today else { continue };
@@ -1102,7 +1137,9 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         });
         let Some(&(best, best_v)) = tries.iter().max_by(|a, b| a.1.total_cmp(&b.1)) else { continue };
         let today_v = tries.iter().find(|t| t.0 == today).map_or(best_v, |t| t.1);
-        c.long_mult = Some(ratio(today_v, Some(today)));
+        let eternal = sticker.is_some_and(|x| x.eternal);
+        let floor = if eternal { 0.0 } else { floor_for(c.cost, rental) };
+        c.long_mult = Some(ratio(today_v, Some(today)).max(floor));
         if best == today {
             continue;
         }
@@ -1296,7 +1333,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     rank_options(&mut options, base_reach);
     let (levels_per_ante, planet_levels) = levels_for(run.dollars - owned_rent(&|_| true), owned_rent(&|_| true));
     let long_note = format!(
-        "Your board projected {antes_left:.1} antes ahead: growing jokers grown, fading ones faded, perishables that run out dropped, {} +{planet_levels} levels (about {levels_per_ante:.1} per ante with your money), empty slots filled with stand-in jokers (×1.5, +60 Chips, +15 Mult). Each option is compared with a typical find (×1.25) in its slot, on whole simulated rounds, with the money it leaves you: its price, what selling a joker gives back or a money card gives (spent once, on pack skips for Red Card/Flash or on planets, ~$5 each; interest lost or gained over the next ante included), and $9 less money held every ante per rental; money jokers (Golden, Rocket, Cloud 9, To the Moon, Egg) add their payout per ante. ×1.00 = as good as a typical find.",
+        "Your board projected {antes_left:.1} antes ahead: growing jokers grown, fading ones faded, perishables that run out dropped, {} +{planet_levels} levels (about {levels_per_ante:.1} per ante with your money), empty slots filled with stand-in jokers (×1.5, +60 Chips, +15 Mult). Each option is compared with a typical find (×1.25) in its slot, on whole simulated rounds, with the money it leaves you: its price, what selling a joker gives back or a money card gives (spent once, on pack skips for Red Card/Flash or on planets, ~$5 each; interest lost or gained over the next ante included), and $9 less money held every ante per rental; money jokers (Golden, Rocket, Cloud 9, To the Moon, Egg) add their payout per ante. Your sellable jokers weaker than a typical find are assumed replaced by then, and a sellable option counts at least as a typical find less its price net of what selling it gives back; eternal ones stay, however weak. ×1.00 = as good as a typical find.",
         top_hand.map_or("your main hand", |h| h.name())
     );
     let shares: Vec<f64> = jokers.iter().map(|j| j.score_share).collect();
@@ -3152,6 +3189,20 @@ mod tests {
         let (one, four) = (glass_presence(1.0), glass_presence(4.5));
         assert!(one > four && four > 0.75f64.powf(1.5 * 4.5), "{one} {four}");
         assert!((0.4..0.5).contains(&four), "{four}");
+    }
+
+    #[test]
+    fn a_weak_eternal_counts_below_the_same_joker_you_could_sell() {
+        let long = |eternal: bool| {
+            let mut r = shop_run(&[("j_cavendish", None, None), ("j_joker", None, None)], &["j_joker"]);
+            r.joker_slots = 5;
+            r.shop.as_mut().unwrap().jokers[0].eternal = eternal;
+            let a = analyze(&r, GameData::bundled(), None, &quick());
+            a.shop.iter().find(|c| c.key == "j_joker").and_then(|c| c.long_mult).unwrap()
+        };
+        let (sellable, eternal) = (long(false), long(true));
+        assert!(sellable > eternal, "sellable ×{sellable:.2}, eternal ×{eternal:.2}");
+        assert!(sellable > 0.9, "a sellable joker is worth about a typical find less its net price: ×{sellable:.2}");
     }
 
     #[test]
