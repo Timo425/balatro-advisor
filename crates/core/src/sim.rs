@@ -195,6 +195,19 @@ pub fn candidate_moves(b: &Board, hand: &[Card], deck: &[Card], hands: i64, disc
             push(Move::Play(junk), &mut out);
         }
     }
+    // Already won: keep the smallest play that still wins and dig with up to 5 of the rest
+    // (the score past the target is worth nothing; new cards might be)
+    if discards > 0 {
+        let winners: Vec<&(u32, Vec<usize>, f64, f64)> = all.iter().filter(|x| x.2 >= need).collect();
+        if let Some(least) = winners.iter().min_by_key(|x| (x.1.len(), std::cmp::Reverse((x.2 * 100.0) as i64))) {
+            let mut toss: Vec<usize> = (0..n).filter(|i| least.0 & (1 << i) == 0).filter(|&i| hand[i].seal.is_none() && hand[i].enhancement.is_none() && hand[i].edition.is_none()).collect();
+            toss.sort_by(|&x, &y| hand[x].rank.chips().total_cmp(&hand[y].rank.chips()));
+            toss.truncate(5);
+            if !toss.is_empty() {
+                push(Move::Discard(toss), &mut out);
+            }
+        }
+    }
     // A plain dig: discard Mail-In's rank (it pays) and the weakest cards outside the best play,
     // keeping the suit your jokers reward and sealed or enhanced cards
     if discards > 0 {
