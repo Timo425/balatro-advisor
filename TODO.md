@@ -10,6 +10,9 @@ check that reuses the engine, not another term in the options ranking.
 - **Fix chance for the next boss**: "the shops before it (with your money on rerolls)
   find what gets you through: X%". A forecast, so a separate line under the boss, never
   part of the win chance. Reuses the shop simulation behind the money value.
+- **Skip or play a blind**: the tag against what skipping costs (the blind's reward, the
+  shop after it, a round of interest), using the shops-ahead projection that now drives
+  the options ranking. E.g. Charm Tag's Mega Arcana vs the Big Blind's shop.
 - **Golden cases**: record a few real hands (`score --golden`, then `golden set`).
 - **Calibration**: let the log collect a few runs; check predicted vs actual win rates.
 - Rentals held "until the danger passes, then sold", not held all run.
