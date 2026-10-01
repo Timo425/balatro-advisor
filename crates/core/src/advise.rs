@@ -1395,26 +1395,52 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             }
         }
     }
-    // With Red Card, skipping an open pack is a pick of its own
-    if !run.open_pack.is_empty() && skip_long > 1.0 {
-        let now = base_odds.get(key_round).map_or(0.0, |o| o.0);
-        options.push(ShopOption {
-            survive: None,
-            reach: None,
-            label: "skip the pack".into(),
-            kind: "skip".into(),
-            cost: 0,
-            p_win: now,
-            note: "Red Card +3 Mult".into(),
-            money_after: run.dollars,
-            interest_now: interest(run.dollars, run.interest_amount, run.interest_cap),
-            interest_after: interest(run.dollars, run.interest_amount, run.interest_cap),
-            unaffordable: false,
-            money_gain: 0.0,
-            long_mult: Some(skip_long),
-            key: None,
-            desc: None,
-        });
+    // Economy vouchers: money they're worth every ante (an estimate, labelled), plus their price
+    let per_round_interest = |cap: i64| interest(run.dollars, run.interest_amount, cap) as f64;
+    for o in options.iter_mut().filter(|o| o.kind == "voucher" && o.long_mult.is_none()) {
+        let reroll = run.shop.as_ref().map_or(run.base_reroll_cost, |s| s.reroll_cost) as f64;
+        let flow = match o.key.as_deref() {
+            // one more card per shop: about half a reroll, 3 shops an ante
+            Some("v_overstock_norm" | "v_overstock_plus") => 0.5 * reroll * 3.0,
+            // $2 off the reroll you'd make in a shop
+            Some("v_reroll_surplus" | "v_reroll_glut") => 2.0 * 3.0,
+            Some("v_seed_money") => 3.0 * (per_round_interest(50) - per_round_interest(run.interest_cap)).max(0.0),
+            Some("v_money_tree") => 3.0 * (per_round_interest(100) - per_round_interest(run.interest_cap)).max(0.0),
+            // off what a shop usually costs you (~$8)
+            Some("v_clearance_sale") => 0.25 * 8.0 * 3.0,
+            Some("v_liquidation") => 0.5 * 8.0 * 3.0,
+            _ => continue,
+        };
+        o.long_mult = Some(long_score(&fill_long(project(&|_| true, run.dollars + flow), None, once(-(o.cost as f64)))) / l0);
+        o.note = format!("{} · worth about ${flow:.0} an ante (estimate)", o.note);
+    }
+    let now_p = base_odds.get(key_round).map_or(0.0, |o| o.0);
+    let keep_money = |label: &str, kind: &str, note: String, long: f64| ShopOption {
+        survive: None,
+        reach: None,
+        label: label.into(),
+        kind: kind.into(),
+        cost: 0,
+        p_win: now_p,
+        note,
+        money_after: run.dollars,
+        interest_now: interest(run.dollars, run.interest_amount, run.interest_cap),
+        interest_after: interest(run.dollars, run.interest_amount, run.interest_cap),
+        unaffordable: false,
+        money_gain: 0.0,
+        long_mult: Some(long),
+        key: None,
+        desc: None,
+    };
+    // Leaving the shop with your money is an option too: everything is measured against it
+    // (By Ante 8 ×1.00), so whatever ranks below it isn't worth its price.
+    if run.screen == crate::save::Screen::Shop && run.open_pack.is_empty() {
+        options.push(keep_money("next round", "leave", format!("keep your ${:.0}", run.dollars), 1.0));
+    }
+    // Skipping an open pack likewise (with Red Card it also grows)
+    if !run.open_pack.is_empty() {
+        let note = if skip_long > 1.0 { "Red Card +3 Mult".to_string() } else { "take nothing".to_string() };
+        options.push(keep_money("skip the pack", "skip", note, skip_long.max(1.0)));
     }
     // Survival with the shops before this ante's hardest round: what the money each option
     // leaves you buys there (rerolls, the best jokers they show), on top of the option.
