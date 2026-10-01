@@ -142,6 +142,11 @@ pub struct Growth {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PlayAdvice {
+    /// Hands left over when it wins, and money earned during the round, on average
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spare_hands: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub round_money: Option<f64>,
     /// "play" or "discard"
     pub action: String,
     pub cards: Vec<String>,
@@ -1912,9 +1917,11 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                     )),
                     None => tip,
                 };
-                Some(PlayAdvice { action: best.action, cards: best.cards, dig: best.dig, indices: best.indices, hand: best.hand, score: best.score, p_win: Some(best.p_win), alternatives: opts, tip })
+                Some(PlayAdvice { spare_hands: Some(best.spare_hands), round_money: Some(best.round_money), action: best.action, cards: best.cards, dig: best.dig, indices: best.indices, hand: best.hand, score: best.score, p_win: Some(best.p_win), alternatives: opts, tip })
             }
             None => sim::best_play(&b, &hand_order.iter().map(|&i| run.hand[i]).collect::<Vec<_>>()).map(|p| PlayAdvice {
+                spare_hands: None,
+                round_money: None,
                 action: "play".into(),
                 cards: p.cards.iter().map(|&i| run.hand[hand_order[i]].label()).collect(),
                 dig: 0,

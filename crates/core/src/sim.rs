@@ -506,8 +506,15 @@ fn decide(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i64, ne
     // each), as long as the play doesn't need them. That keeps discards for cashing and
     // makes playing the way to dig.
     if discards > 0 && b.mail_rank.is_some() {
-        let cash: Vec<usize> = (0..hand.len()).filter(|i| !best.cards.contains(i)).filter(|&i| discard_money(b, hand, &[i]) > 0.0).collect();
-        if !cash.is_empty() {
+        let pays: Vec<usize> = (0..hand.len()).filter(|&i| discard_money(b, hand, &[i]) > 0.0).collect();
+        // also the ones in the best play, when the rest of the hand still keeps you on pace
+        let rest: Vec<Card> = (0..hand.len()).filter(|i| !pays.contains(i)).map(|i| hand[i]).collect();
+        let on_pace_without = best_play(b, &rest).is_some_and(|p| p.floor * hands as f64 >= need);
+        let cash: Vec<usize> = pays.iter().copied().filter(|i| on_pace_without || !best.cards.contains(i)).collect();
+        // With one discard left, collect them and cash them all right before the winning
+        // hand (or the last one)
+        let now = discards > 1 || best.floor >= need || hands <= 1;
+        if !cash.is_empty() && now {
             return Action::Discard(cash);
         }
     }
