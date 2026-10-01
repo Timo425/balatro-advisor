@@ -159,11 +159,11 @@ pub struct Card {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub seal: Option<Seal>,
     /// Permanent extra chips (Hiker, etc.).
-    #[serde(skip_serializing_if = "is_zero")]
+    #[serde(default, skip_serializing_if = "is_zero")]
     pub perma_bonus: f64,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub debuff: bool,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub face_down: bool,
 }
 

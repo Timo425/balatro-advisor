@@ -26,3 +26,12 @@ plan against the blinds ahead, next to the board as it is (`--json` for machines
 twice copies it, e.g. Ankh), `--sell` / `--add` change it, `--card "OLD=NEW"` changes a
 card in hand or deck ("4D:lucky:red=4D:glass:red"), `--add-cards` / `--remove-cards`.
 It plans nothing itself: spotting the line is the human's (or agent's) part.
+
+## Replay fixtures (wrong advice the owner caught)
+
+When the owner says a suggestion is wrong, save that game state before fixing it:
+`tests/fixtures/private/<name>.json` = `{"note", "state": <balatro-advisor state --json>,
+"expect": {...}}` (keys: `best_action`, `best_hand`, `best_use_first`, `top_option`).
+`cargo test --release --test replay` replays every one; it must pass before a commit.
+Other local data (never in the repo): `~/.local/share/balatro-advisor/calibration.jsonl`
+(predicted vs actual blind results, shops seen).
