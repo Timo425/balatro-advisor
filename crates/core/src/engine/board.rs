@@ -68,7 +68,6 @@ impl Board {
             plasma: s.deck == "Plasma Deck",
             mail_rank: s.round_targets.mail_rank.map(|r| r.0),
             seal_seen_value: 0.0,
-            seal_planet_value: 5.0,
             planet_slots: (s.consumable_slots - s.consumables.len() as i64).max(0),
         }
     }

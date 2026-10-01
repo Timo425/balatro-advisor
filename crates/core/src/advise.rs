@@ -162,6 +162,9 @@ pub struct PlayAdvice {
     /// A consumable to use before the move (its effect is in the win chance).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub use_first: Option<String>,
+    /// Planets from Blue Seals held at the end, on average (counted in the ranking)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub planets: Option<f64>,
     /// The other first moves simulated, best first.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub alternatives: Vec<PlayOption>,
@@ -188,6 +191,8 @@ pub struct PlayOption {
     /// A consumable to use before the move.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub use_first: Option<String>,
+    /// Planets from Blue Seals held at the end, on average (counted in the ranking)
+    pub planets: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1966,21 +1971,17 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     lap("outlook");
     let best_play = if run.screen.in_blind() && !run.hand.is_empty() {
         let mut b = ctx.base.clone();
-        // A Blue Seal's planet held at round end: your main hand +1 level and Constellation
-        // ×0.1, put in $ through the same long-run projection as money (against +$10)
-        if let Some(top) = top_hand.filter(|_| run.hand.iter().chain(&run.draw_pile).any(|c| c.seal == Some(crate::model::Seal::Blue))) {
+        // A planet from a Blue Seal held at round end: your main hand +1 level and Constellation
+        // ×0.1, as its gain in the same long-run projection everything else is valued by
+        let planet_gain = top_hand.filter(|_| run.hand.iter().chain(&run.draw_pile).any(|c| c.seal == Some(crate::model::Seal::Blue))).map_or(0.0, |top| {
             let mut p = fill_long(project(&|_| true, run.dollars), None, 0.0);
             for j in p.jokers.iter_mut().filter(|j| j.key == "j_constellation") {
                 j.x_mult += 0.1;
             }
             let l = p.levels[top as usize];
             p.levels[top as usize] = l.with_level(l.level + 1);
-            let gain = long_score(&p) / l0 - 1.0;
-            let per10 = long_score(&fill_long(project(&|_| true, run.dollars), None, once(10.0))) / l0 - 1.0;
-            if per10 > 0.0 {
-                b.seal_planet_value = (10.0 * gain / per10).max(0.0);
-            }
-        }
+            (long_score(&p) / l0 - 1.0).max(0.0)
+        });
         b.deck_remaining = run.draw_pile.len() as i64;
         let has = |k: Kind| b.jokers.iter().any(|j| j.kind == k && !j.debuff);
         let tip = (run.discards_left > 0 && has(Kind::MysticSummit) && !has(Kind::Banner)).then(|| {
@@ -2019,7 +2020,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                     Some(sim::Use { name: center.name.clone(), levels, planet: true, ..Default::default() })
                 })
                 .collect();
-            let to_opt = |m: &sim::Move, hand: &[Card], board: &Board, (p, mean, spare, cash): (f64, f64, f64, f64), use_first: Option<String>| {
+            let to_opt = |m: &sim::Move, hand: &[Card], board: &Board, (p, mean, spare, cash, planets): (f64, f64, f64, f64, f64), use_first: Option<String>| {
                 // A play is shown in the order to play it; a discard by rank (order doesn't matter)
                 let sorted_discard;
                 let (action, idx) = match m {
@@ -2042,7 +2043,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                 };
                 // cards a consumable added aren't in your hand yet: no position
                 let indices = idx.iter().filter(|&&i| i < hand_order.len()).map(|&i| hand_order[i]).collect();
-                PlayOption { spare_hands: spare, round_money: cash, action: action.into(), cards: cards.iter().map(Card::label).collect(), indices, dig, hand: name, score, p_win: p, mean_total: mean, use_first }
+                PlayOption { spare_hands: spare, round_money: cash, action: action.into(), cards: cards.iter().map(Card::label).collect(), indices, dig, hand: name, score, p_win: p, mean_total: mean, use_first, planets }
             };
             let moves = sim::candidate_moves(&bb, &start.hand, &start.deck, start.hands, start.discards, start.target - start.scored, start.hand_size.max(1) as usize);
             let res = par_map(&moves, |m| sim::odds_after_uses(&bb, &start, m, sims, seed, &uses));
@@ -2060,17 +2061,20 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                     .iter()
                     .zip(res2)
                     .map(|(m, r)| to_opt(m, &s2.hand, &b2, r, Some(u.name.clone())))
-                    .max_by(|a, b| a.p_win.total_cmp(&b.p_win).then(a.round_money.total_cmp(&b.round_money)));
+                    .max_by(|a, b| (a.p_win + planet_gain * a.planets).total_cmp(&(b.p_win + planet_gain * b.planets)).then(a.round_money.total_cmp(&b.round_money)));
                 opts.extend(best2);
             }
-            // Best chance first; within 2 points (noise), the one that wins with more hands to
+            // Ranked by what the round leaves you: the chance to win it, plus the planets Blue
+            // Seals held at the end make, each worth its long-run gain (win chance × (1 + gain ×
+            // planets when won)). Within 2 points (noise), the one that wins with more hands to
             // spare ($1 each at cash out; chips past the target are worth nothing), then the
-            // higher mean round total
-            opts.sort_by(|a, b| b.p_win.total_cmp(&a.p_win));
-            let top = opts.first().map_or(0.0, |o| o.p_win);
+            // higher mean round total.
+            let value = |o: &PlayOption| o.p_win + planet_gain * o.planets;
+            opts.sort_by(|a, b| value(b).total_cmp(&value(a)));
+            let top = opts.first().map_or(0.0, value);
             opts.sort_by(|a, b| {
-                let ta = ((top - a.p_win) / 0.02).floor() as i64;
-                let tb = ((top - b.p_win) / 0.02).floor() as i64;
+                let ta = ((top - value(a)) / 0.02).floor() as i64;
+                let tb = ((top - value(b)) / 0.02).floor() as i64;
                 // money from the round: hands left over at cash out, plus what it pays as you go
                 let cash = |o: &PlayOption| ((o.spare_hands * run.money_per_hand + o.round_money) * 4.0).round() as i64;
                 ta.cmp(&tb).then(cash(b).cmp(&cash(a))).then(b.mean_total.total_cmp(&a.mean_total))
@@ -2094,10 +2098,11 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                     let m = format!("Not used in this look-ahead (no modelled effect on this hand): {}", missing.join(", "));
                     Some(tip.map_or(m.clone(), |t| format!("{t}. {m}")))
                 };
-                Some(PlayAdvice { use_first: best.use_first, spare_hands: Some(best.spare_hands), round_money: Some(best.round_money), action: best.action, cards: best.cards, dig: best.dig, indices: best.indices, hand: best.hand, score: best.score, p_win: Some(best.p_win), alternatives: opts, tip })
+                Some(PlayAdvice { planets: Some(best.planets), use_first: best.use_first, spare_hands: Some(best.spare_hands), round_money: Some(best.round_money), action: best.action, cards: best.cards, dig: best.dig, indices: best.indices, hand: best.hand, score: best.score, p_win: Some(best.p_win), alternatives: opts, tip })
             }
             None => sim::best_play(&b, &hand_order.iter().map(|&i| run.hand[i]).collect::<Vec<_>>()).map(|p| PlayAdvice {
                 use_first: None,
+                planets: None,
                 spare_hands: None,
                 round_money: None,
                 action: "play".into(),

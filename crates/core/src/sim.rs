@@ -252,13 +252,15 @@ pub fn candidate_moves(b: &Board, hand: &[Card], deck: &[Card], hands: i64, disc
 /// and the mean round total. Same seeds for every move, so moves compare on the same draws.
 /// Also the mean number of hands left over when it's won (each pays at cash out).
 pub fn odds_after(b: &Board, start: &RoundStart, first: &Move, sims: usize, seed: u64) -> (f64, f64, f64, f64) {
-    odds_after_uses(b, start, first, sims, seed, &[])
+    let (p, mean, spare, cash, _) = odds_after_uses(b, start, first, sims, seed, &[]);
+    (p, mean, spare, cash)
 }
 
-/// `odds_after` with consumables held: the rest of the round may use them (see `Use`).
-pub fn odds_after_uses(b: &Board, start: &RoundStart, first: &Move, sims: usize, seed: u64, uses: &[Use]) -> (f64, f64, f64, f64) {
+/// `odds_after` with consumables held: the rest of the round may use them (see `Use`). Also
+/// the mean number of planets Blue Seal cards held at the end make (0 in a lost round).
+pub fn odds_after_uses(b: &Board, start: &RoundStart, first: &Move, sims: usize, seed: u64, uses: &[Use]) -> (f64, f64, f64, f64, f64) {
     let size = start.hand_size.max(1) as usize;
-    let (mut wins, mut sum, mut spare, mut cash) = (0usize, 0.0, 0.0, 0.0);
+    let (mut wins, mut sum, mut spare, mut cash, mut planets) = (0usize, 0.0, 0.0, 0.0, 0.0);
     for i in 0..sims {
         let mut rng = Rng::new(seed.wrapping_add(i as u64 * 7919));
         let mut deck = start.deck.clone();
@@ -280,7 +282,7 @@ pub fn odds_after_uses(b: &Board, start: &RoundStart, first: &Move, sims: usize,
                     if total >= start.target {
                         wins += 1;
                         spare += (start.hands - 1) as f64;
-                        cash += seal_bonus(&bb, &held);
+                        planets += seal_planets(&bb, &held);
                     }
                     sum += total;
                     continue;
@@ -300,9 +302,10 @@ pub fn odds_after_uses(b: &Board, start: &RoundStart, first: &Move, sims: usize,
         }
         cash += r.money;
         sum += r.total;
+        planets += r.planets;
     }
     let n = sims.max(1) as f64;
-    (wins as f64 / n, sum / n, spare / n, cash / n)
+    (wins as f64 / n, sum / n, spare / n, cash / n, planets / n)
 }
 
 /// The suit worth keeping: the one a suit joker rewards (Wrathful, Greedy, Lusty,
@@ -323,12 +326,26 @@ pub fn keep_suit(b: &Board, hand: &[Card], deck: &[Card]) -> Option<Suit> {
     Suit::ALL.into_iter().max_by_key(|&s| hand.iter().chain(deck).filter(|c| c.suit == s).count())
 }
 
-/// A Blue Seal card still in hand when the round ends makes a planet if a consumable slot is
-/// free (card.lua Card:get_end_of_round_effect: the consumable limit check), worth `seal_planet_value`, so digs that bring it up and
-/// plays that keep it back rank higher in a tie.
-pub fn seal_bonus(b: &Board, held: &[Card]) -> f64 {
+/// Planets the Blue Seal cards still in hand at the end of a won round make: one each while
+/// a consumable slot is free (card.lua Card:get_end_of_round_effect: the consumable limit check).
+pub fn seal_planets(b: &Board, held: &[Card]) -> f64 {
     let n = held.iter().filter(|c| c.seal == Some(crate::model::Seal::Blue) && !c.debuff).count() as i64;
-    b.seal_planet_value * n.min(b.planet_slots.max(0)) as f64
+    n.min(b.planet_slots.max(0)) as f64
+}
+
+/// A play that wins the round now while keeping as many Blue Seal cards in hand as there are
+/// free slots for their planets (none kept: the usual policy decides).
+fn win_keeping_seals(b: &Board, hand: &[Card], need: f64) -> Option<Vec<usize>> {
+    let seals: Vec<usize> = (0..hand.len()).filter(|&i| hand[i].seal == Some(crate::model::Seal::Blue) && !hand[i].debuff).collect();
+    let k = seals.len().min(b.planet_slots.max(0) as usize);
+    for r in (1..=k).rev() {
+        let free: Vec<usize> = (0..hand.len()).filter(|i| !seals[..r].contains(i)).collect();
+        let cards: Vec<Card> = free.iter().map(|&i| hand[i]).collect();
+        if let Some(p) = best_play(b, &cards).filter(|p| p.floor >= need) {
+            return Some(p.cards.iter().map(|&j| free[j]).collect());
+        }
+    }
+    None
 }
 
 /// Money a discard pays: Mail-In Rebate's $5 per card of its rank (card.lua discard).
@@ -444,6 +461,8 @@ pub struct RoundResult {
     pub money: f64,
     /// Hands not used when it was won (each pays at cash out).
     pub hands_left: i64,
+    /// Planets from Blue Seal cards held at the end of a won round.
+    pub planets: f64,
 }
 
 fn draw(hand: &mut Vec<Card>, deck: &mut Vec<Card>, size: usize) {
@@ -732,7 +751,11 @@ pub fn sim_round_uses(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[
         b.discards_left = discards;
         b.deck_remaining = deck.len() as i64;
         use_if_better(&mut b, &mut hand, uses, &mut used);
-        match decide(&b, &hand, &deck, hands, discards, start.target - total, size) {
+        let act = match win_keeping_seals(&b, &hand, start.target - total) {
+            Some(v) => Action::Play(v, false),
+            None => decide(&b, &hand, &deck, hands, discards, start.target - total, size),
+        };
+        match act {
             Action::Play(mut idx, dig) => {
                 if idx.is_empty() {
                     break;
@@ -758,8 +781,7 @@ pub fn sim_round_uses(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[
                 hand = held;
                 hands -= 1;
                 if total >= start.target {
-                    money += seal_bonus(&b, &hand);
-                    return RoundResult { total, won: true, saved: false, best_hand, plays, money, hands_left: hands };
+                    return RoundResult { total, won: true, saved: false, best_hand, plays, money, hands_left: hands, planets: seal_planets(&b, &hand) };
                 }
                 draw(&mut hand, &mut deck, size);
                 if !seen && has_seal(&hand) {
@@ -782,7 +804,7 @@ pub fn sim_round_uses(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[
     // Mr. Bones: a lost round is saved if you reached 25% of the blind (card.lua, game_over)
     let bones = b.jokers.iter().any(|j| j.key == "j_mr_bones" && !j.debuff);
     let won = total >= start.target;
-    RoundResult { total, won, saved: !won && bones && total >= 0.25 * start.target, best_hand, plays, money, hands_left: 0 }
+    RoundResult { total, won, saved: !won && bones && total >= 0.25 * start.target, best_hand, plays, money, hands_left: 0, planets: 0.0 }
 }
 
 /// Mean and quantiles of a sample.
