@@ -275,7 +275,7 @@ pub fn odds_after(b: &Board, start: &RoundStart, first: &Move, sims: usize, seed
                     if total >= start.target {
                         wins += 1;
                         spare += (start.hands - 1) as f64;
-                        cash += seal_bonus(&held);
+                        cash += seal_bonus(&bb, &held);
                     }
                     sum += total;
                     continue;
@@ -318,11 +318,12 @@ pub fn keep_suit(b: &Board, hand: &[Card], deck: &[Card]) -> Option<Suit> {
     Suit::ALL.into_iter().max_by_key(|&s| hand.iter().chain(deck).filter(|c| c.suit == s).count())
 }
 
-/// A Blue Seal card still in hand when the round ends makes a planet: counted as about $5
-/// (what a planet costs, plus a little for Constellation), so digs that bring it up and plays
-/// that keep it back rank higher in a tie.
-pub fn seal_bonus(held: &[Card]) -> f64 {
-    5.0 * held.iter().filter(|c| c.seal == Some(crate::model::Seal::Blue) && !c.debuff).count() as f64
+/// A Blue Seal card still in hand when the round ends makes a planet if a consumable slot is
+/// free (card.lua Card:get_end_of_round_effect: the consumable limit check), worth `seal_planet_value`, so digs that bring it up and
+/// plays that keep it back rank higher in a tie.
+pub fn seal_bonus(b: &Board, held: &[Card]) -> f64 {
+    let n = held.iter().filter(|c| c.seal == Some(crate::model::Seal::Blue) && !c.debuff).count() as i64;
+    b.seal_planet_value * n.min(b.planet_slots.max(0)) as f64
 }
 
 /// Money a discard pays: Mail-In Rebate's $5 per card of its rank (card.lua discard).
@@ -688,7 +689,7 @@ pub fn sim_round(board: &Board, start: &RoundStart, rng: &mut Rng) -> RoundResul
                 hand = held;
                 hands -= 1;
                 if total >= start.target {
-                    money += seal_bonus(&hand);
+                    money += seal_bonus(&b, &hand);
                     return RoundResult { total, won: true, saved: false, best_hand, plays, money, hands_left: hands };
                 }
                 draw(&mut hand, &mut deck, size);

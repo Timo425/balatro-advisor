@@ -105,6 +105,10 @@ pub struct Board {
     /// Worth (in $) of drawing a Blue Seal card at all this round, e.g. to use a held
     /// Cryptid on it (the round simulation counts it once).
     pub seal_seen_value: f64,
+    /// Worth (in $) of the planet a Blue Seal card held at round end makes.
+    pub seal_planet_value: f64,
+    /// Consumable slots free for those planets (a full slot makes none).
+    pub planet_slots: i64,
     pub mail_rank: Option<u8>,
     pub plasma: bool,
 }
@@ -138,6 +142,8 @@ impl Board {
             plasma: false,
             mail_rank: None,
             seal_seen_value: 0.0,
+            seal_planet_value: 5.0,
+            planet_slots: 2,
         }
     }
 

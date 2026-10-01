@@ -1957,6 +1957,21 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     lap("outlook");
     let best_play = if run.screen.in_blind() && !run.hand.is_empty() {
         let mut b = ctx.base.clone();
+        // A Blue Seal's planet held at round end: your main hand +1 level and Constellation
+        // ×0.1, put in $ through the same long-run projection as money (against +$10)
+        if let Some(top) = top_hand.filter(|_| run.hand.iter().chain(&run.draw_pile).any(|c| c.seal == Some(crate::model::Seal::Blue))) {
+            let mut p = fill_long(project(&|_| true, run.dollars), None, 0.0);
+            for j in p.jokers.iter_mut().filter(|j| j.key == "j_constellation") {
+                j.x_mult += 0.1;
+            }
+            let l = p.levels[top as usize];
+            p.levels[top as usize] = l.with_level(l.level + 1);
+            let gain = long_score(&p) / l0 - 1.0;
+            let per10 = long_score(&fill_long(project(&|_| true, run.dollars), None, once(10.0))) / l0 - 1.0;
+            if per10 > 0.0 {
+                b.seal_planet_value = (10.0 * gain / per10).max(0.0);
+            }
+        }
         b.deck_remaining = run.draw_pile.len() as i64;
         let has = |k: Kind| b.jokers.iter().any(|j| j.kind == k && !j.debuff);
         let tip = (run.discards_left > 0 && has(Kind::MysticSummit) && !has(Kind::Banner)).then(|| {
