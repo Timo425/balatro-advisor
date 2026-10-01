@@ -192,10 +192,16 @@ pub fn candidate_moves(b: &Board, hand: &[Card], deck: &[Card], hands: i64, disc
             push(Move::Play(junk), &mut out);
         }
     }
-    // A plain dig: discard Mail-In's rank (it pays) and the weakest cards outside the best play
+    // A plain dig: discard Mail-In's rank (it pays) and the weakest cards outside the best play,
+    // keeping the suit your jokers reward and sealed or enhanced cards
     if discards > 0 {
         if let Some(best) = by_floor.first() {
-            let mut toss: Vec<usize> = (0..n).filter(|i| best.0 & (1 << i) == 0).collect();
+            let keep = keep_suit(b, hand, deck);
+            let pays = |i: usize| b.mail_rank == Some(hand[i].rank.0);
+            let mut toss: Vec<usize> = (0..n)
+                .filter(|i| best.0 & (1 << i) == 0)
+                .filter(|&i| pays(i) || (Some(hand[i].suit) != keep && hand[i].seal.is_none() && hand[i].enhancement.is_none() && hand[i].edition.is_none()))
+                .collect();
             toss.sort_by(|&x, &y| {
                 let pays = |i: usize| b.mail_rank == Some(hand[i].rank.0);
                 pays(y).cmp(&pays(x)).then(hand[x].rank.chips().total_cmp(&hand[y].rank.chips()))
