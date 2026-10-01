@@ -7,9 +7,10 @@
 //! sets how many pack skips, rerolls and planets you buy each ante; one-off money (a price, a
 //! sell-back, Temperance) buys them once. Nothing is valued twice.
 
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
-use super::{grow_antes, income_per_ante, interest, par_map, round_mods, seal_round_chance, Candidate, Ctx, HandShare, Spec};
+use super::{best_of_subsets, grow_antes, income_per_ante, interest, money_value_with, par_map, round_mods, seal_round_chance, Candidate, Ctx, HandShare, Spec, TarotValue};
+use crate::engine::HandType;
 use crate::data::GameData;
 use crate::engine::{Board, Joker, Kind};
 use crate::model::Card;
@@ -41,6 +42,31 @@ pub(super) struct LongRun<'a> {
     pub full: bool,
     /// Baselines with a typical find in place of each joker you could sell
     pub sell_base: Vec<Option<f64>>,
+    /// `planet(h)` per hand type, computed once
+    planets: OnceLock<Vec<f64>>,
+}
+
+/// What an option or event adds to your run, applied to the projected board the same way
+/// everywhere (`LongRun::value`).
+#[derive(Debug, Clone, Default)]
+pub(super) struct Gain {
+    /// One-off money (a price is negative), spent once (`LongRun::once`)
+    pub money: f64,
+    /// Extra money held every ante (an economy voucher's interest)
+    pub held: f64,
+    /// Planets used: (hand, how many). Each levels its hand and grows Constellation ×0.1
+    /// (card.lua: Constellation grows on every planet used).
+    pub planets: Vec<(HandType, f64)>,
+    /// Planets used on hands that don't matter here: they only grow Constellation
+    pub other_planets: f64,
+    /// Levels on every hand, without planets (Black Hole)
+    pub all_levels: i64,
+}
+
+impl Gain {
+    pub fn money(m: f64) -> Gain {
+        Gain { money: m, ..Default::default() }
+    }
 }
 
 impl<'a> LongRun<'a> {
@@ -120,6 +146,7 @@ impl<'a> LongRun<'a> {
             l0: 0.0,
             full: false,
             sell_base: vec![],
+            planets: OnceLock::new(),
         };
         {
             let before = lr.long_score(&lr.fill_long(lr.project(&|_| true, run.dollars), None, 0.0));
@@ -371,15 +398,9 @@ impl<'a> LongRun<'a> {
         b.playing_cards = d.len() as i64;
         if best.seal == Some(Seal::Blue) {
             let extra = planets.max(0.0);
-            for j in b.jokers.iter_mut().filter(|j| j.key == "j_constellation") {
-                j.x_mult += 0.1 * extra;
-            }
-            if let Some(top) = self.top_hand {
-                let l = b.levels[top as usize];
-                let mut lv = l.with_level(l.level + extra.floor() as i64);
-                lv.chips += lv.l_chips * (extra - extra.floor());
-                lv.mult += lv.l_mult * (extra - extra.floor());
-                b.levels[top as usize] = lv;
+            match self.top_hand {
+                Some(top) => Self::add_planets(&mut b, &[(top, extra)], 0.0),
+                None => Self::add_planets(&mut b, &[], extra),
             }
         }
         let mut sp = self.long_spec_for(&b);
@@ -402,6 +423,44 @@ impl<'a> LongRun<'a> {
         if j.key == "j_dna" { self.dna_long(b) } else { self.long_score(&b) }
     }
 
+    /// Planets used on a board: whole levels and the rest as a share of a level's chips and
+    /// mult; Constellation ×0.1 for each (and for each of `other`).
+    pub fn add_planets(b: &mut Board, planets: &[(HandType, f64)], other: f64) {
+        let n_all: f64 = planets.iter().map(|p| p.1).sum::<f64>() + other;
+        for j in b.jokers.iter_mut().filter(|j| j.key == "j_constellation") {
+            j.x_mult += 0.1 * n_all;
+        }
+        for &(h, n) in planets {
+            let l = b.levels[h as usize];
+            let mut lv = l.with_level(l.level + n.floor() as i64);
+            lv.chips += lv.l_chips * (n - n.floor());
+            lv.mult += lv.l_mult * (n - n.floor());
+            b.levels[h as usize] = lv;
+        }
+    }
+
+    /// Your projected board with `g` added
+    pub fn board_with(&self, g: &Gain) -> Board {
+        let mut b = self.fill_long(self.project(&|_| true, self.run.dollars + g.held), None, self.once(g.money));
+        if g.all_levels != 0 {
+            for l in b.levels.iter_mut() {
+                *l = l.with_level(l.level + g.all_levels);
+            }
+        }
+        Self::add_planets(&mut b, &g.planets, g.other_planets);
+        b
+    }
+
+    /// What `g` makes your run worth by Ante 8, as a ratio of your board as it is
+    pub fn value(&self, g: &Gain) -> f64 {
+        self.long_score(&self.board_with(g)) / self.l0
+    }
+
+    /// One planet of hand `h` used (its level, and Constellation), by Ante 8
+    pub fn planet(&self, h: HandType) -> f64 {
+        self.planets.get_or_init(|| par_map(&HandType::ALL, |&h| self.value(&Gain { planets: vec![(h, 1.0)], ..Default::default() })))[h as usize]
+    }
+
     /// The joker a shop action ("replace NAME[, put it rightmost]") sells
     pub fn sell_index(&self, action: &str) -> Option<usize> {
         action.strip_prefix("replace ").map(|n| n.trim_end_matches(", put it rightmost")).and_then(|name| self.ctx.base.jokers.iter().position(|x| self.data.name(&x.key) == name))
@@ -410,5 +469,57 @@ impl<'a> LongRun<'a> {
     /// A projected score as a ratio of the baseline (with a typical find in place of `sell`)
     pub fn ratio(&self, v: f64, sell: Option<usize>) -> f64 {
         v / sell.and_then(|i| self.sell_base.get(i).copied().flatten()).unwrap_or(self.l0)
+    }
+}
+
+/// Money a rich run can't turn into more planet levels (`levels_for` reaches its 2 an ante at
+/// the interest line + $30) goes on rerolls and packs, whichever split is worth more by Ante 8:
+/// rerolls by the best jokers they find (`money_value_with`, by their By Ante 8), packs ($4, 2
+/// a shop) by a typical pack's best pick, each further pack worth ×0.8 of the one before (a
+/// heuristic). The typical pack: Arcana, Celestial, Buffoon, Spectral and Standard by their
+/// shop weights (game.lua P_CENTERS: 4, 4, 1.2, 0.6, 4; Standard counted as nothing).
+pub(super) struct Spending<'a> {
+    lr: &'a LongRun<'a>,
+    pool: &'a [Candidate],
+    pack_gain: f64,
+    shops: usize,
+    rerolls: Mutex<std::collections::HashMap<i64, f64>>,
+}
+
+impl<'a> Spending<'a> {
+    pub fn new(lr: &'a LongRun<'a>, pool: &'a [Candidate], tarots: &[TarotValue], tarot_long: &[f64]) -> Spending<'a> {
+        let gain = |vals: Vec<f64>, k: usize| if vals.is_empty() { 0.0 } else { (best_of_subsets(&vals, k).0 - 1.0).max(0.0) };
+        let arcana = gain(tarot_long.iter().zip(tarots).filter(|(_, t)| !t.spectral).map(|(v, _)| v.max(1.0)).collect(), 3);
+        let spectral = gain(tarot_long.iter().zip(tarots).filter(|(_, t)| t.spectral).map(|(v, _)| v.max(1.0)).collect(), 2);
+        let celestial = gain(HandType::ALL.iter().map(|&h| lr.planet(h).max(1.0)).collect(), 3);
+        let buffoon = gain(pool.iter().map(|c| c.long_mult.unwrap_or(1.0).max(1.0)).collect(), 2);
+        let pack_gain = (4.0 * arcana + 4.0 * celestial + 1.2 * buffoon + 0.6 * spectral) / (4.0 + 4.0 + 4.0 + 1.2 + 0.6);
+        Spending { lr, pool, pack_gain, shops: (3.0 * lr.antes_left).round() as usize, rerolls: Mutex::new(Default::default()) }
+    }
+
+    fn rerolls(&self, excess: f64) -> f64 {
+        let k = (excess / 5.0).round() as i64;
+        if let Some(v) = self.rerolls.lock().unwrap().get(&k) {
+            return *v;
+        }
+        let v = money_value_with(self.lr.ctx, self.pool, &|c: &Candidate| c.long_mult.unwrap_or(1.0), 1.0, k as f64 * 5.0, false, self.shops, false);
+        self.rerolls.lock().unwrap().insert(k, v);
+        v
+    }
+
+    /// What holding `m` is worth by Ante 8 through rerolls and packs (a factor; compare two
+    /// amounts by their ratio)
+    pub fn factor(&self, m: f64) -> f64 {
+        let excess = (m - (self.lr.line + 30.0)).max(0.0);
+        let mut best = self.rerolls(excess);
+        let mut packs = 0.0;
+        for p in 1..=(2 * self.shops) {
+            if 4.0 * p as f64 > excess {
+                break;
+            }
+            packs += self.pack_gain * 0.8f64.powi(p as i32 - 1);
+            best = best.max((1.0 + packs) * self.rerolls(excess - 4.0 * p as f64));
+        }
+        best
     }
 }

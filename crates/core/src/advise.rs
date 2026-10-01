@@ -19,6 +19,7 @@ use crate::sim::{self, RoundRules, RoundStart, Stats};
 mod compare;
 mod play;
 mod value;
+use value::Gain;
 
 #[derive(Debug, Clone)]
 pub struct Options {
@@ -1085,7 +1086,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     fill(&mut rescue);
     // By Ante 8: every board projected to then, valued in one measure (see `value`)
     let lr = value::LongRun::new(&ctx, &hand_mix, &pool_entries, per_rarity);
-    let (antes_left, line, top_hand, l0, full) = (lr.antes_left, lr.line, lr.top_hand, lr.l0, lr.full);
+    let (antes_left, top_hand, l0, full) = (lr.antes_left, lr.top_hand, lr.l0, lr.full);
     let long_mults: Vec<Option<f64>> = par_map(&pool_entries, |c| {
         let mut j = Joker::from_key(&c.key, data)?;
         j.edition = c.edition;
@@ -1184,15 +1185,12 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     let long_idx: Vec<usize> = options.iter().enumerate().filter(|(_, o)| o.kind == "planet" || o.money_gain > 0.0).map(|(i, _)| i).collect();
     let long_opts: Vec<Option<f64>> = par_map(&long_idx, |&i| {
         let o = &options[i];
-        let mut b = lr.fill_long(lr.project(&|_| true, run.dollars), None, lr.once(o.money_after - run.dollars));
+        let mut g = Gain::money(o.money_after - run.dollars);
         if o.kind == "planet" {
             let hand = o.key.as_ref().and_then(|k| data.center(k)).and_then(|c| c.config.get("hand_type")).and_then(|v| v.as_str()).and_then(crate::engine::HandType::from_name);
-            let h = hand?;
-            let l = b.levels[h as usize];
-            b.levels[h as usize] = l.with_level(l.level + 1);
-            grow_constellation(&mut b);
+            g.planets.push((hand?, 1.0));
         }
-        Some(lr.long_score(&b) / l0)
+        Some(lr.value(&g))
     });
     for (i, m) in long_idx.into_iter().zip(long_opts) {
         options[i].long_mult = m;
@@ -1222,7 +1220,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         // A Mega pack's second pick is worth at least its sell value (take it and sell it):
         // about $2.50 for an average joker
         let second = if o.kind == "pack" && o.label.contains("Mega") { 2.5 } else { 0.0 };
-        let price = lr.long_score(&lr.fill_long(lr.project(&|_| true, run.dollars), None, lr.once(second - o.cost as f64))) / l0;
+        let price = lr.value(&Gain::money(second - o.cost as f64));
         o.long_mult = Some(draw * price);
     }
     // Tarots: a changed deck is permanent, so it's projected like everything else; money
@@ -1260,16 +1258,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             let mut b = lr.fill_long(lr.project(&|_| true, run.dollars), None, 0.0);
             let deck_now = t.deck.clone().unwrap_or_else(|| ctx.fresh_deck.clone());
             b.playing_cards = deck_now.len() as i64;
-            for j in b.jokers.iter_mut().filter(|j| j.key == "j_constellation") {
-                j.x_mult += 0.1 * n;
-            }
-            if let Some(top) = top_hand {
-                let l = b.levels[top as usize];
-                let mut lv = l.with_level(l.level + n.floor() as i64);
-                lv.chips += lv.l_chips * (n - n.floor());
-                lv.mult += lv.l_mult * (n - n.floor());
-                b.levels[top as usize] = lv;
-            }
+            value::LongRun::add_planets(&mut b, &top_hand.map(|t| vec![(t, n)]).unwrap_or_default(), if top_hand.is_none() { n } else { 0.0 });
             let mut sp = lr.long_spec_for(&b);
             sp.start.deck = deck_now;
             return ctx.odds_one(&b, &sp, TAROT_ROUNDS).1.mean.max(1.0) / deck_base.mean.max(1.0);
@@ -1291,20 +1280,16 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                 gain
             }
         } else if t.money_gain > 0.0 {
-            lr.long_score(&lr.fill_long(lr.project(&|_| true, run.dollars), None, t.money_gain)) / l0
+            lr.value(&Gain::money(t.money_gain))
         } else if t.key == "c_judgement" {
             long_draw(&pool_entries, 1, 1.0, &mut crate::engine::Rng::new(opts.seed ^ 0x1d6e))
         } else if t.key == "c_black_hole" {
-            let mut b = lr.fill_long(lr.project(&|_| true, run.dollars), None, 0.0);
-            for l in b.levels.iter_mut() {
-                *l = l.with_level(l.level + 1);
-            }
-            lr.long_score(&b) / l0
+            lr.value(&Gain { all_levels: 1, ..Default::default() })
         } else if t.key == "c_wraith" && t.simulated {
             // a random Rare (bad ones are sold), paid for with all your money
             let rares: Vec<f64> = pool_entries.iter().filter(|c| c.rarity_n == 3).map(|c| c.long_mult.unwrap_or(1.0).max(1.0)).collect();
             let avg = if rares.is_empty() { 1.0 } else { rares.iter().sum::<f64>() / rares.len() as f64 };
-            avg * lr.long_score(&lr.fill_long(lr.project(&|_| true, run.dollars), None, lr.once(t.money_gain))) / l0
+            avg * lr.value(&Gain::money(t.money_gain))
         } else {
             1.0
         }
@@ -1347,14 +1332,8 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         .filter(|c| c.set == "Planet")
         .filter_map(|c| c.config.get("hand_type").and_then(|v| v.as_str()).and_then(crate::engine::HandType::from_name))
         .collect();
-    let planet_long: Vec<f64> = par_map(&planet_hands, |&h| {
-        let mut b = lr.fill_long(lr.project(&|_| true, run.dollars), None, 0.0);
-        let l = b.levels[h as usize];
-        b.levels[h as usize] = l.with_level(l.level + 1);
-        grow_constellation(&mut b);
-        lr.long_score(&b) / l0
-    });
-    let price = |cost: i64| if cost == 0 { 1.0 } else { lr.long_score(&lr.fill_long(lr.project(&|_| true, run.dollars), None, lr.once(-(cost as f64)))) / l0 };
+    let planet_long: Vec<f64> = planet_hands.iter().map(|&h| lr.planet(h)).collect();
+    let price = |cost: i64| if cost == 0 { 1.0 } else { lr.value(&Gain::money(-(cost as f64))) };
     for o in options.iter_mut() {
         if o.kind == "tarot" && o.money_gain <= 0.0 {
             if let Some(i) = o.key.as_ref().and_then(|k| tarots.iter().position(|t| &t.key == k)) {
@@ -1428,7 +1407,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         };
         let per_joker = step * (0.006 * gain(Edition::Polychrome) + 0.014 * gain(Edition::Holo) + 0.02 * gain(Edition::Foil));
         let buys = antes_left;
-        let price = lr.long_score(&lr.fill_long(lr.project(&|_| true, run.dollars), None, lr.once(-(o.cost as f64)))) / l0;
+        let price = lr.value(&Gain::money(-(o.cost as f64)));
         let mut v = (1.0 + buys * per_joker).max(0.0) * price;
         if step == 1.0 {
             // Hone also lets Glow Up into the voucher pool: one voucher an ante from ~16, so
@@ -1452,19 +1431,10 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         let extra = ((p1 - p0) * r.slots.max(1) as f64 * 3.0 * antes_left).max(0.0);
         // The money model already lets spare money buy planets; what the voucher adds is
         // planets to buy, so only its own price is charged.
-        let mut b = lr.fill_long(lr.project(&|_| true, run.dollars), None, lr.once(-(o.cost as f64)));
-        for j in b.jokers.iter_mut().filter(|j| j.key == "j_constellation") {
-            j.x_mult += 0.1 * extra;
-        }
-        if let Some(top) = top_hand {
-            let l = b.levels[top as usize];
-            let mut n = l.with_level(l.level + (extra / 12.0).floor() as i64);
-            let frac = extra / 12.0 - (extra / 12.0).floor();
-            n.chips += n.l_chips * frac;
-            n.mult += n.l_mult * frac;
-            b.levels[top as usize] = n;
-        }
-        o.long_mult = Some(lr.long_score(&b) / l0);
+        // a twelfth of them on your main hand, the rest only grow Constellation
+        let main: Vec<(crate::engine::HandType, f64)> = top_hand.map(|t| vec![(t, extra / 12.0)]).unwrap_or_default();
+        let other = extra - main.iter().map(|m| m.1).sum::<f64>();
+        o.long_mult = Some(lr.value(&Gain { money: -(o.cost as f64), planets: main, other_planets: other, ..Default::default() }));
         o.note = format!("{} · about {extra:.0} more planets by Ante 8 (estimate)", o.note);
     }
     // Economy vouchers: money they're worth every ante (an estimate, labelled), plus their price
@@ -1492,7 +1462,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             Some("v_liquidation") => 0.5 * 8.0 * 3.0,
             _ => continue,
         };
-        o.long_mult = Some(lr.long_score(&lr.fill_long(lr.project(&|_| true, run.dollars + flow), None, lr.once(-(o.cost as f64)))) / l0);
+        o.long_mult = Some(lr.value(&Gain { money: -(o.cost as f64), held: flow, ..Default::default() }));
         o.note = format!("{} · worth about ${flow:.0} an ante (estimate)", o.note);
         extra_money.insert(o.label.clone(), flow * antes_left);
     }
@@ -1549,47 +1519,21 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         }
     }
     let base_reach = base_odds.get(key_round).zip(ctx.specs.get(key_round)).map_or(0.0, |(o, sp)| o.1.mean / sp.start.target.max(1.0));
-    // Money a rich run can't turn into more planet levels (`levels_for` reaches its 2 an ante
-    // at the interest line + $30) goes on rerolls and packs, whichever split is worth more by
-    // Ante 8: rerolls by the best jokers they find (`money_value_with`, by their By Ante 8),
-    // packs ($4, 2 a shop) by a typical pack's best pick, each further pack worth ×0.8 of the
-    // one before (a heuristic). The typical pack: Arcana, Celestial, Buffoon, Spectral and
-    // Standard by their shop weights (game.lua P_CENTERS: 4, 4, 1.2, 0.6, 4; Standard counted
-    // as nothing). Each option's money left (plus what an economy voucher earns by then)
-    // against keeping your money.
+    // Money past the planet-level cap is worth the rerolls and packs it buys (`Spending`):
+    // each option's money left (plus what an economy voucher earns by then) against keeping
+    // your money.
+    let spending = value::Spending::new(&lr, &pool_entries, &tarots, &tarot_long);
     {
-        let saturated = line + 30.0;
-        let shops_long = (3.0 * antes_left).round() as usize;
-        let gain = |vals: Vec<f64>, k: usize| if vals.is_empty() { 0.0 } else { (best_of_subsets(&vals, k).0 - 1.0).max(0.0) };
-        let arcana = gain(tarot_long.iter().zip(&tarots).filter(|(_, t)| !t.spectral).map(|(v, _)| v.max(1.0)).collect(), 3);
-        let spectral = gain(tarot_long.iter().zip(&tarots).filter(|(_, t)| t.spectral).map(|(v, _)| v.max(1.0)).collect(), 2);
-        let celestial = gain(planet_long.iter().map(|v| v.max(1.0)).collect(), 3);
-        let buffoon = gain(pool_entries.iter().map(|c| c.long_mult.unwrap_or(1.0).max(1.0)).collect(), 2);
-        let pack_gain = (4.0 * arcana + 4.0 * celestial + 1.2 * buffoon + 0.6 * spectral) / (4.0 + 4.0 + 4.0 + 1.2 + 0.6);
-        let mut cache: std::collections::HashMap<i64, f64> = std::collections::HashMap::new();
-        let mut rerolls = |excess: f64| {
-            let k = (excess / 5.0).round() as i64;
-            *cache.entry(k).or_insert_with(|| {
-                money_value_with(&ctx, &pool_entries, &|c: &Candidate| c.long_mult.unwrap_or(1.0), 1.0, k as f64 * 5.0, false, shops_long, false)
-            })
-        };
-        let mut reroll_long = |m: f64| {
-            let excess = (m - saturated).max(0.0);
-            let mut best = rerolls(excess);
-            let mut packs = 0.0;
-            for p in 1..=(2 * shops_long) {
-                if 4.0 * p as f64 > excess {
-                    break;
-                }
-                packs += pack_gain * 0.8f64.powi(p as i32 - 1);
-                best = best.max((1.0 + packs) * rerolls(excess - 4.0 * p as f64));
+        let base = spending.factor(run.dollars).max(1e-9);
+        // money tarots' own values too (The Hermit, Temperance): their money is held as well
+        for t in tarots.iter_mut().filter(|t| t.money_gain > 0.0 && t.deck.is_none() && t.decks.is_empty()) {
+            if let Some(l) = t.long_mult.as_mut() {
+                *l *= spending.factor(run.dollars + t.money_gain) / base;
             }
-            best
-        };
-        let base = reroll_long(run.dollars).max(1e-9);
+        }
         for o in options.iter_mut() {
             let m = o.money_after + extra_money.get(&o.label).copied().unwrap_or(0.0);
-            let f = reroll_long(m) / base;
+            let f = spending.factor(m) / base;
             if (f - 1.0).abs() > 1e-6 {
                 o.long_mult = Some(o.long_mult.unwrap_or(1.0) * f);
             }
@@ -1605,7 +1549,8 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         let value = |c: &Candidate| c.p_win.get(key_round).copied().unwrap_or(p_boss);
         let (_, k) = shops_ahead(run, false);
         let survive_with = |money: f64, shops: usize, p0: f64| money_value_with(&ctx, &pool_entries, &value, p0, money, false, shops, true).max(p0).min(1.0);
-        let money_long = |delta: f64| lr.long_score(&lr.fill_long(lr.project(&|_| true, run.dollars), None, lr.once(delta))) / l0;
+        // money spent once, and held (rerolls and packs), as for every option
+        let money_long = |delta: f64| lr.value(&Gain::money(delta)) * spending.factor(run.dollars + delta) / spending.factor(run.dollars).max(1e-9);
         // Money cards you hold (Immolate, Hermit…) get used either way: in the blind when you
         // play it, or inside the pack / before the boss when you skip.
         let held: f64 = run.consumables.iter().filter_map(|c| tarots.iter().find(|t| t.key == c.key)).map(|t| t.money_gain.max(0.0)).sum();
@@ -1622,18 +1567,8 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         let play_survive = p_blind * survive_with(run.dollars + gain, k, p_boss);
         let mut play_long = money_long(gain);
         if seal_planets > 0.0 {
-            let mut b = lr.fill_long(lr.project(&|_| true, run.dollars), None, lr.once(gain));
-            for j in b.jokers.iter_mut().filter(|j| j.key == "j_constellation") {
-                j.x_mult += 0.1 * seal_planets;
-            }
-            if let Some(top) = top_hand {
-                let l = b.levels[top as usize];
-                let mut lv = l;
-                lv.chips += lv.l_chips * seal_planets;
-                lv.mult += lv.l_mult * seal_planets;
-                b.levels[top as usize] = lv;
-            }
-            play_long = lr.long_score(&b) / l0;
+            let main: Vec<(crate::engine::HandType, f64)> = top_hand.map(|t| vec![(t, seal_planets)]).unwrap_or_default();
+            play_long = lr.value(&Gain { money: gain, planets: main, ..Default::default() });
         }
         // Skipping: one shop fewer before the boss, plus the tag
         let key = bv.skip_tag.as_ref().map_or("", |t| t.key.as_str()).to_string();
@@ -1703,11 +1638,9 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                     boss_p = (hit * ctx.odds_one(&with_now, sp, opts.sims).0 + (1.0 - hit) * ctx.odds_one(&without_now, sp, opts.sims).0).max(p_boss);
                 }
                 next_boards = vec![(hit, with_now), (1.0 - hit, without_now)];
-                let mut with = lr.fill_long(lr.project(&|_| true, run.dollars), None, 0.0);
-                grow(&mut with, true);
-                let mut without = lr.fill_long(lr.project(&|_| true, run.dollars), None, 0.0);
-                grow(&mut without, false);
-                long = (hit * lr.long_score(&with) + (1.0 - hit) * lr.long_score(&without)) / l0;
+                // two planets: your main hand's and another, or two others
+                let with = Gain { planets: top_hand.map(|t| vec![(t, 1.0)]).unwrap_or_default(), other_planets: if top_hand.is_some() { 1.0 } else { 2.0 }, ..Default::default() };
+                long = hit * lr.value(&with) + (1.0 - hit) * lr.value(&Gain { other_planets: 2.0, ..Default::default() });
                 let cons = run.jokers.iter().any(|j| j.key == "j_constellation");
                 format!("a Mega Celestial pack (5 planets, pick 2){}", if cons { "; Constellation +×0.2 from the two planets" } else { "" })
             }
@@ -1758,7 +1691,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     let outlook = if quick_blind { None } else { archetype_outlook(&ctx, run, data, &pool_entries, &shares, &hand_mix) };
 
     lap("outlook");
-    let best_play = play::best_play(&ctx, &lr, &tarots, &hand_order);
+    let best_play = play::best_play(&ctx, &lr, &spending, &tarots, &hand_order);
 
     let tips = order_tips(run, data, &tarots);
     Analysis {

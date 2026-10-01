@@ -4,11 +4,11 @@
 //! measure (`sim::RoundGoals`) until the best is clear.
 
 use super::*;
-use super::value::LongRun;
+use super::value::{Gain, LongRun, Spending};
 
-pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, tarots: &[TarotValue], hand_order: &[usize]) -> Option<PlayAdvice> {
+pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[TarotValue], hand_order: &[usize]) -> Option<PlayAdvice> {
     let (run, data) = (ctx.run, ctx.data);
-    let (l0, top_hand) = (lr.l0, lr.top_hand);
+    let top_hand = lr.top_hand;
     if !(run.screen.in_blind() && !run.hand.is_empty()) {
         return None;
     }
@@ -17,23 +17,12 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, tarots: &[TarotValue], hand_ord
     // (card.lua): that hand +1 level and Constellation ×0.1, as its gain in the same
     // long-run projection everything else is valued by. One value per hand type.
     let has_seals = run.hand.iter().chain(&run.draw_pile).any(|c| c.seal == Some(crate::model::Seal::Blue));
-    let planet_gain_by: Vec<f64> = if has_seals {
-        par_map(&crate::engine::HandType::ALL.to_vec(), |&h| {
-            let mut p = lr.fill_long(lr.project(&|_| true, run.dollars), None, 0.0);
-            for j in p.jokers.iter_mut().filter(|j| j.key == "j_constellation") {
-                j.x_mult += 0.1;
-            }
-            let l = p.levels[h as usize];
-            p.levels[h as usize] = l.with_level(l.level + 1);
-            (lr.long_score(&p) / l0 - 1.0).max(0.0)
-        })
-    } else {
-        vec![0.0; 12]
-    };
+    let planet_gain_by: Vec<f64> = if has_seals { crate::engine::HandType::ALL.iter().map(|&h| (lr.planet(h) - 1.0).max(0.0)).collect() } else { vec![0.0; 12] };
     // for estimates that don't know which hand ends the round: your main hand's
     let planet_gain = top_hand.map_or(0.0, |t| planet_gain_by[t as usize]);
-    // A dollar won this round, in the same long-run measure: what +$10 does to the projection
-    let dollar_gain = ((lr.long_score(&lr.fill_long(lr.project(&|_| true, run.dollars), None, lr.once(10.0))) / l0 - 1.0) / 10.0).max(0.0);
+    // A dollar won this round, in the same long-run measure: what +$10 does, spent once and
+    // held (rerolls and packs, `Spending`)
+    let dollar_gain = ((lr.value(&Gain::money(10.0)) * spending.factor(run.dollars + 10.0) / spending.factor(run.dollars).max(1e-9) - 1.0) / 10.0).max(0.0);
     b.deck_remaining = run.draw_pile.len() as i64;
     let has = |k: Kind| b.jokers.iter().any(|j| j.kind == k && !j.debuff);
     let tip = (run.discards_left > 0 && has(Kind::MysticSummit) && !has(Kind::Banner)).then(|| {
