@@ -1194,11 +1194,14 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     // A sellable option you'd later replace is worth at least a typical find, less what it
     // costs net: its price minus what selling it gives back (Card:set_cost: half the price
     // paid, at least $1; a rental sells for $1; a free one from a tag still sells for $1).
-    let floor_for = |cost: i64, rental: bool| {
+    // A money joker earns while you hold it (about an ante before it's replaced), as a
+    // rental pays rent.
+    let floor_for = |cost: i64, rental: bool, key: &str| {
         let sell = if rental { 1 } else { (cost / 2).max(1) };
-        // a rental also pays rent until you replace it: about an ante's worth
         let rent = if rental { RENT_PER_ANTE } else { 0.0 };
-        long_score(&fill_long(project(&|_| true, run.dollars), None, once(-((cost - sell) as f64) - rent))) / l0
+        let ability = data.center(key).map(|c| crate::engine::joker::ability_from_config(&c.config)).unwrap_or_default();
+        let earns = income_per_ante(key, &ability, run, antes_left.min(1.0));
+        long_score(&fill_long(project(&|_| true, run.dollars), None, once(earns - ((cost - sell) as f64) - rent))) / l0
     };
     let long_of = |j: &Joker, sell: Option<usize>, cost: i64, rental: bool| -> f64 {
         let back = sell.map_or(0, |i| run.jokers[i].sell_value) as f64;
@@ -1221,7 +1224,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         if full && sell.is_none() && j.edition != Some(Edition::Negative) {
             return None;
         }
-        Some(ratio(long_of(&j, sell, c.cost, false), sell).max(floor_for(c.cost, false)))
+        Some(ratio(long_of(&j, sell, c.cost, false), sell).max(floor_for(c.cost, false, &c.key)))
     });
     for (c, m) in pool_entries.iter_mut().zip(long_mults) {
         c.long_mult = m;
@@ -1241,7 +1244,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         if !full || j.edition == Some(Edition::Negative) {
             let eternal = sticker.is_some_and(|x| x.eternal);
             let v = ratio(long_of(j, None, c.cost, rental), None);
-            c.long_mult = Some(if eternal { v } else { v.max(floor_for(c.cost, rental)) });
+            c.long_mult = Some(if eternal { v } else { v.max(floor_for(c.cost, rental, &c.key)) });
             continue;
         }
         let Some(today) = today else { continue };
@@ -1253,7 +1256,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         let Some(&(best, best_v)) = tries.iter().max_by(|a, b| a.1.total_cmp(&b.1)) else { continue };
         let today_v = tries.iter().find(|t| t.0 == today).map_or(best_v, |t| t.1);
         let eternal = sticker.is_some_and(|x| x.eternal);
-        let floor = if eternal { 0.0 } else { floor_for(c.cost, rental) };
+        let floor = if eternal { 0.0 } else { floor_for(c.cost, rental, &c.key) };
         c.long_mult = Some(ratio(today_v, Some(today)).max(floor));
         if best == today {
             continue;
