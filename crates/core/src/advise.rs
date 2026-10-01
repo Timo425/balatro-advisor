@@ -1500,8 +1500,11 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         }
         if t.planets_per_ante > 0.0 {
             // planets of your main hand from the seal: levels and Constellation by Ante 8
+            // (with its deck change, e.g. Cryptid's copies, counted too)
             let n = t.planets_per_ante * antes_left;
             let mut b = fill_long(project(&|_| true, run.dollars), None, 0.0);
+            let deck_now = t.deck.clone().unwrap_or_else(|| ctx.fresh_deck.clone());
+            b.playing_cards = deck_now.len() as i64;
             for j in b.jokers.iter_mut().filter(|j| j.key == "j_constellation") {
                 j.x_mult += 0.1 * n;
             }
@@ -1512,7 +1515,9 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                 lv.mult += lv.l_mult * (n - n.floor());
                 b.levels[top as usize] = lv;
             }
-            return long_score(&b) / l0;
+            let mut sp = long_spec_for(&b);
+            sp.start.deck = deck_now;
+            return ctx.odds_one(&b, &sp, TAROT_ROUNDS).1.mean.max(1.0) / deck_base.mean.max(1.0);
         }
         if let Some(d) = &t.deck {
             // Immolate's $20 comes with its deck change
@@ -2021,19 +2026,21 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                 // A tarot you hold that beats the best play (valued on this round): use it first.
                 // The Fool copies the last tarot used, so after it The Fool makes another.
                 let fool = run.consumables.iter().any(|c| c.key == "c_fool");
+                // ...or one that's worth a lot in the long run and costs little this round
                 let first = run
                     .consumables
                     .iter()
                     .filter_map(|c| tarots.iter().find(|t| t.key == c.key && t.key != "c_fool"))
-                    .filter(|t| t.p_win > best.p_win + 0.02)
-                    .max_by(|a, b| a.p_win.total_cmp(&b.p_win));
+                    .filter(|t| t.p_win > best.p_win + 0.02 || (t.long_mult.unwrap_or(1.0) >= 1.3 && t.p_win >= best.p_win - 0.05))
+                    .max_by(|a, b| (a.p_win * a.long_mult.unwrap_or(1.0)).total_cmp(&(b.p_win * b.long_mult.unwrap_or(1.0))));
                 let tip = match first {
                     Some(t) => Some(format!(
-                        "First use {} ({}): {:.0}% instead of {:.0}%{}{}",
+                        "First use {} ({}): {:.0}% instead of {:.0}%, ×{:.2} by Ante 8{}{}",
                         t.name,
                         t.note,
                         t.p_win * 100.0,
                         best.p_win * 100.0,
+                        t.long_mult.unwrap_or(1.0),
                         if fool { format!(". Then The Fool makes another {}: worth using on a second card", t.name) } else { String::new() },
                         tip.map_or(String::new(), |x| format!(". {x}"))
                     )),
@@ -3302,7 +3309,10 @@ fn tarot_values(
             picked
         };
         // The card worth putting something on: Red Seal / Glass first, else your main suit's highest
-        let best_card = red_first(&is_main).first().copied()
+        // A Blue Seal card first (more of it, more planets), then Red Seal / Glass, then your
+        // main suit's highest
+        let best_card = hand_cards.iter().copied().find(|&i| deck[i].seal == Some(Seal::Blue))
+            .or_else(|| red_first(&is_main).first().copied())
             .or_else(|| hand_cards.iter().copied().filter(|&i| is_main(&deck[i])).max_by_key(|&i| deck[i].rank.0))
             .or_else(|| hand_cards.iter().copied().max_by_key(|&i| deck[i].rank.0));
         let free_slot = (run.jokers.len() as i64) < run.joker_slots;
@@ -3352,8 +3362,20 @@ fn tarot_values(
                 let mut d = deck.clone();
                 let c = d[i];
                 d.extend([c, c]);
-                let (p, r) = simulate(d.clone());
-                tv(p, r, format!("2 copies of {}", c.label()), true, Some(d), 0.0)
+                // the copies come into your hand (card.lua Cryptid): in a blind, the round goes
+                // on with them in hand
+                let (p, r) = if spec.in_progress && from_hand {
+                    let mut live = spec.clone();
+                    live.start.hand.extend([c, c]);
+                    let mut b = board_for_deck(&d);
+                    b.playing_cards = d.len() as i64;
+                    (ctx.odds_one(&b, &live, sims).0, reach_of(&d))
+                } else {
+                    simulate(d.clone())
+                };
+                // copies of a Blue Seal card make planets too
+                let planets = if c.seal == Some(Seal::Blue) { 2.0 * 3.0 * seal_round_chance(run, d.len()) } else { 0.0 };
+                TarotValue { planets_per_ante: planets, ..tv(p, r, format!("2 copies of {}", c.label()), true, Some(d), 0.0) }
             }
             "c_aura" => {
                 // poll_edition(guaranteed, no negative): Polychrome 15%, Holo 35%, Foil 50%

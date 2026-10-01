@@ -129,7 +129,10 @@ pub fn candidate_moves(b: &Board, hand: &[Card], deck: &[Card], hands: i64, disc
     let keep_kickers = kickers_matter(b);
     // (mask, arranged cards, floor, mean)
     let mut all: Vec<(u32, Vec<usize>, f64, f64)> = Vec::new();
-    let hidden: u32 = (0..n).filter(|&i| hand[i].face_down).fold(0, |m, i| m | (1 << i));
+    let hidden: u32 = (0..n)
+        // face-down cards can't be planned around; Blue Seal cards are kept for their planet
+        .filter(|&i| hand[i].face_down || hand[i].seal == Some(crate::model::Seal::Blue))
+        .fold(0, |m, i| m | (1 << i));
     for mask in 1u32..(1 << n) {
         if mask.count_ones() > 5 || mask & hidden != 0 {
             continue;
