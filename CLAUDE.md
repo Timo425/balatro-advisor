@@ -57,6 +57,16 @@ because the simulated rest of the round spent the 3♠ Blue Seal in a Flush.
 - Ask the same each time: what general group is this an example of, and where does the game
   (or the simulation) already define it?
 
+**Before every fix, three steps:**
+1. Name the stage that failed: *moves tried*, *simulated player*, *valuation* or *noise*
+   (the four bullets above).
+2. Run `git log --oneline | grep -i '<stage>'` (or read the recent log) for earlier fixes
+   to that stage. If there is one, the stage itself is the problem: change how it works
+   for every case (as "the simulated player plays toward `RoundGoals`" did), don't add
+   another rule to it.
+3. Start the commit message with the stage, e.g. `simulated player: …`, so step 2 finds it
+   next time.
+
 ## Replay fixtures (wrong advice the owner caught)
 
 When the owner says a suggestion is wrong, save that game state before fixing it:
