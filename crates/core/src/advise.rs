@@ -2994,8 +2994,10 @@ fn tarot_values(
         let (sim, note): (bool, String) = if let Some(suit) = cfg.get("suit_conv").and_then(|v| v.as_str()).and_then(Suit::from_name) {
             // 3 cards of your least-used suit (lowest first) become this suit
             // Take from your least-used suit (or the next one, if that's the target suit)
-            let source = Suit::ALL.into_iter().filter(|&x| x != suit && Some(x) != main).min_by_key(|&x| count(x))
-                .or_else(|| Suit::ALL.into_iter().filter(|&x| x != suit).min_by_key(|&x| count(x)))
+            // (with a hand shown, only suits you hold can be converted)
+            let held = |x: Suit| !plain(&|c: &Card| c.suit == x, false).is_empty();
+            let source = Suit::ALL.into_iter().filter(|&x| x != suit && Some(x) != main && held(x)).min_by_key(|&x| count(x))
+                .or_else(|| Suit::ALL.into_iter().filter(|&x| x != suit && held(x)).min_by_key(|&x| count(x)))
                 .unwrap_or(weakest_suit);
             for &i in plain(&|c: &Card| c.suit == source, false).iter().take(n) {
                 d[i].suit = suit;
