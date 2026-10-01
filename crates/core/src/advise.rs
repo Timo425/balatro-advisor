@@ -456,7 +456,8 @@ fn round_mods(j: &Joker) -> (i64, i64, i64) {
 
 impl Joker {
     fn extra_h_size(&self) -> f64 {
-        if self.key == "j_turtle_bean" { 5.0 } else { 0.0 }
+        // its current size (5 when bought, −1 each round: card.lua end_of_round)
+        if self.key == "j_turtle_bean" { if self.extra.h_size > 0.0 { self.extra.h_size } else { 5.0 } } else { 0.0 }
     }
 }
 
@@ -922,8 +923,12 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     };
     // Planets on the hand that earns most of your points: half a level per ante as a base,
     // plus more when money sits above the interest line (runs vary from 0 to 10+ levels).
-    let levels_for = |dollars: f64| {
-        let per_ante = (0.5 + (dollars - line).max(0.0) / 20.0).min(2.0);
+    // `rent`: what rentals take per ante. Above the interest line it already came off the
+    // spare money; the part that takes you below the line comes off the planets you'd buy
+    // (about $18 of rent an ante = one planet level fewer), so rent costs even when poor.
+    let levels_for = |dollars: f64, rent: f64| {
+        let below = rent.min((line - dollars).max(0.0));
+        let per_ante = (0.5 + (dollars - line).max(0.0) / 20.0 - below / 18.0).clamp(0.0, 2.0);
         (per_ante, (per_ante * antes_left).round() as i64)
     };
     // Money jokers you keep pay every ante, like rent in reverse.
@@ -931,13 +936,14 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         run.jokers.iter().enumerate().filter(|(i, sj)| keep(*i) && lasts(sj) && !sj.debuff).map(|(_, sj)| income_per_ante(&sj.key, &sj.ability, run, antes_left)).sum::<f64>()
     };
     // The projected board: the jokers kept (by index), grown with the money you'd hold.
-    let project = |keep: &dyn Fn(usize) -> bool, dollars: f64| -> Board {
-        let dollars = dollars - owned_rent(keep) + owned_income(keep);
+    let project_rent = |keep: &dyn Fn(usize) -> bool, dollars: f64, extra_rent: f64| -> Board {
+        let rent = owned_rent(keep) + extra_rent;
+        let dollars = dollars - rent + owned_income(keep);
         let mut b = ctx.base.clone();
         b.blind = Default::default();
         if let Some(top) = top_hand {
             let l = b.levels[top as usize];
-            b.levels[top as usize] = l.with_level(l.level + levels_for(dollars).1);
+            b.levels[top as usize] = l.with_level(l.level + levels_for(dollars, rent).1);
         }
         b.jokers = ctx
             .base
@@ -950,6 +956,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             .collect();
         b
     };
+    let project = |keep: &dyn Fn(usize) -> bool, dollars: f64| project_rent(keep, dollars, 0.0);
     // Stand-ins for the jokers you'd find over the run: empty slots get alternating ×1.5,
     // +60 Chips and +15 Mult jokers, and the option is compared against a ×1.25 "typical
     // find" in its slot. An assumption, labelled as one.
@@ -1013,7 +1020,19 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         in_progress: false,
         horizon: true,
     };
-    let long_score = |b: &Board| ctx.odds_one(b, &long_spec, 48).1.mean.max(1.0);
+    // Hand size, hands and discards from the jokers on the projected board: the game's
+    // numbers already include the jokers you own now, so only the difference counts. Turtle
+    // Bean has shrunk away by then (−1 hand size a round).
+    let mods_now: (i64, i64, i64) = ctx.base.jokers.iter().map(round_mods).fold((0, 0, 0), |a, m| (a.0 + m.0, a.1 + m.1, a.2 + m.2.max(-run.round_discards)));
+    let long_spec_for = |b: &Board| -> Spec {
+        let later = b.jokers.iter().map(|j| if j.key == "j_turtle_bean" { (0, 0, 0) } else { round_mods(j) }).fold((0, 0, 0), |a, m| (a.0 + m.0, a.1 + m.1, a.2 + m.2.max(-run.round_discards)));
+        let mut sp = long_spec.clone();
+        sp.start.hand_size = (sp.start.hand_size + later.0 - mods_now.0).max(1);
+        sp.start.hands = (sp.start.hands + later.1 - mods_now.1).max(1);
+        sp.start.discards = (sp.start.discards + later.2 - mods_now.2).max(0);
+        sp
+    };
+    let long_score = |b: &Board| ctx.odds_one(b, &long_spec_for(b), 48).1.mean.max(1.0);
     let l0 = long_score(&fill_long(project(&|_| true, run.dollars), None, 0.0));
     let lasting = run.jokers.iter().filter(|sj| lasts(sj)).count() as i64;
     let full = lasting >= ctx.base.joker_slots;
@@ -1036,10 +1055,11 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     let long_of = |j: &Joker, sell: Option<usize>, cost: i64, rental: bool| -> f64 {
         let back = sell.map_or(0, |i| run.jokers[i].sell_value) as f64;
         let ability = data.center(&j.key).map(|c| crate::engine::joker::ability_from_config(&c.config)).unwrap_or_default();
-        let dollars = run.dollars - if rental { RENT_PER_ANTE } else { 0.0 } + income_per_ante(&j.key, &ability, run, antes_left);
+        let rent = if rental { RENT_PER_ANTE } else { 0.0 };
+        let dollars = run.dollars + income_per_ante(&j.key, &ability, run, antes_left);
         let horizon = if j.key == "j_madness" { 1.0 } else { antes_left };
-        let g = grow_antes(j, &hand_mix, dollars, line, horizon).map_or_else(|| j.clone(), |g| g.0);
-        long_score(&fill_long(project(&|k| Some(k) != sell, dollars), Some(g), once(back - cost as f64)))
+        let g = grow_antes(j, &hand_mix, dollars - rent, line, horizon).map_or_else(|| j.clone(), |g| g.0);
+        long_score(&fill_long(project_rent(&|k| Some(k) != sell, dollars, rent), Some(g), once(back - cost as f64)))
     };
     let sell_index = |action: &str| {
         action.strip_prefix("replace ").map(|n| n.trim_end_matches(", put it rightmost")).and_then(|name| ctx.base.jokers.iter().position(|x| data.name(&x.key) == name))
@@ -1155,7 +1175,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         b.stone_tally = tally(crate::model::Enhancement::Stone);
         b.driver_tally = d.iter().filter(|c| c.enhancement.is_some()).count() as i64;
         b.playing_cards = d.len() as i64;
-        let mut sp = long_spec.clone();
+        let mut sp = long_spec_for(&b);
         sp.start.deck = d.to_vec();
         ctx.odds_one(&b, &sp, TAROT_ROUNDS).1
     };
@@ -1274,7 +1294,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     }
     let base_reach = base_odds.get(key_round).zip(ctx.specs.get(key_round)).map_or(0.0, |(o, sp)| o.1.mean / sp.start.target.max(1.0));
     rank_options(&mut options, base_reach);
-    let (levels_per_ante, planet_levels) = levels_for(run.dollars - owned_rent(&|_| true));
+    let (levels_per_ante, planet_levels) = levels_for(run.dollars - owned_rent(&|_| true), owned_rent(&|_| true));
     let long_note = format!(
         "Your board projected {antes_left:.1} antes ahead: growing jokers grown, fading ones faded, perishables that run out dropped, {} +{planet_levels} levels (about {levels_per_ante:.1} per ante with your money), empty slots filled with stand-in jokers (×1.5, +60 Chips, +15 Mult). Each option is compared with a typical find (×1.25) in its slot, on whole simulated rounds, with the money it leaves you: its price, what selling a joker gives back or a money card gives (spent once, on pack skips for Red Card/Flash or on planets, ~$5 each; interest lost or gained over the next ante included), and $9 less money held every ante per rental; money jokers (Golden, Rocket, Cloud 9, To the Moon, Egg) add their payout per ante. ×1.00 = as good as a typical find.",
         top_hand.map_or("your main hand", |h| h.name())

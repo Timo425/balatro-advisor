@@ -210,6 +210,9 @@ pub struct Extra {
     pub hand_add: f64,
     pub min: f64,
     pub max: f64,
+    /// Turtle Bean's current extra hand size (shrinks each round)
+    #[serde(default)]
+    pub h_size: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -257,6 +260,7 @@ impl Joker {
                 hand_add: f(e, "hand_add"),
                 min: f(e, "min"),
                 max: f(e, "max"),
+                h_size: f(e, "h_size"),
             },
             _ => Extra::default(),
         };

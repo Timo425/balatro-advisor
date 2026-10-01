@@ -98,7 +98,13 @@ def play_hand(sims):
 def worth(o):
     """The advisor ranks options; take one only when it's an improvement: better by Ante 8,
     a better win chance now, or (with a free joker slot) a higher score this round."""
-    if (o.get("long_mult") or 1.0) > 1.0 or o.get("p_win", 0) > o.get("_now", 0) + 0.02:
+    long = o.get("long_mult") or 1.0
+    note = o.get("note", "")
+    # Rentals drain money every round and eternals take a slot for good: only when they're
+    # worth it by Ante 8, or when the run is in trouble now.
+    if ("rental" in note or "eternal" in note) and long < 1.0 and o.get("_now", 0) >= 0.5:
+        return False
+    if long > 1.0 or o.get("p_win", 0) > o.get("_now", 0) + 0.02:
         return True
     return o["kind"] == "joker" and o.get("_free_slot") and (o.get("reach") or 0) > o.get("_reach", 0) * 1.03
 
