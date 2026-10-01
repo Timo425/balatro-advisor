@@ -1566,6 +1566,34 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                 long = money_long(25.0);
                 "+$25 after the boss".to_string()
             }
+            "tag_meteor" => {
+                // Mega Celestial: 5 planets, pick 2. Your main hand's planet is in it about 5 times
+                // in 12; each planet used grows Constellation by ×0.1 (card.lua).
+                let hit = 5.0 / 12.0;
+                let grow = |b: &mut Board, level: bool| {
+                    for j in b.jokers.iter_mut().filter(|j| j.key == "j_constellation") {
+                        j.x_mult += 0.2;
+                    }
+                    if let (true, Some(top)) = (level, top_hand) {
+                        let l = b.levels[top as usize];
+                        b.levels[top as usize] = l.with_level(l.level + 1);
+                    }
+                };
+                if let Some(sp) = ctx.specs.get(key_round) {
+                    let mut with = ctx.base.clone();
+                    grow(&mut with, true);
+                    let mut without = ctx.base.clone();
+                    grow(&mut without, false);
+                    boss_p = (hit * ctx.odds_one(&with, sp, opts.sims).0 + (1.0 - hit) * ctx.odds_one(&without, sp, opts.sims).0).max(p_boss);
+                }
+                let mut with = fill_long(project(&|_| true, run.dollars), None, 0.0);
+                grow(&mut with, true);
+                let mut without = fill_long(project(&|_| true, run.dollars), None, 0.0);
+                grow(&mut without, false);
+                long = (hit * long_score(&with) + (1.0 - hit) * long_score(&without)) / l0;
+                let cons = run.jokers.iter().any(|j| j.key == "j_constellation");
+                format!("a Mega Celestial pack (5 planets, pick 2){}", if cons { "; Constellation +×0.2 from the two planets" } else { "" })
+            }
             "tag_juggle" if bv.slot == "Big" => {
                 if let Some(sp) = ctx.specs.get(key_round) {
                     let mut sp = sp.clone();
