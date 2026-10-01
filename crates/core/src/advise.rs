@@ -1310,11 +1310,13 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             _ => continue,
         };
         let draw = long_draw(&pool_entries, cards, share, &mut rng);
-        o.reach = Some(reach_draw(&pool_entries, key_round, base_reach_now, cards, share, &mut rng));
+        // a reroll's jokers still have to be paid for; a pack's are free
+        let budget = if o.kind == "reroll" { (run.dollars - o.cost as f64).max(0.0) } else { f64::INFINITY };
+        o.reach = Some(reach_draw(&pool_entries, key_round, base_reach_now, cards, share, budget, &mut rng));
         if let Some(hz) = ctx.specs.iter().position(|x| x.horizon) {
             let base_hz = base_odds.get(hz).map_or(0.0, |o| o.1.mean / ctx.specs[hz].start.target.max(1.0));
             if base_hz > 0.0 {
-                o.next_strength = Some(reach_draw(&pool_entries, hz, base_hz, cards, share, &mut rng) / base_hz);
+                o.next_strength = Some(reach_draw(&pool_entries, hz, base_hz, cards, share, budget, &mut rng) / base_hz);
             }
         }
         // A Mega pack's second pick is worth at least its sell value (take it and sell it):
@@ -1411,11 +1413,37 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             None => 1.0,
         }
     };
+    // Every planet the game can offer, projected: its hand +1 level, Constellation +×0.1
+    let planet_hands: Vec<crate::engine::HandType> = data
+        .centers
+        .iter()
+        .filter(|c| c.set == "Planet")
+        .filter_map(|c| c.config.get("hand_type").and_then(|v| v.as_str()).and_then(crate::engine::HandType::from_name))
+        .collect();
+    let planet_long: Vec<f64> = par_map(&planet_hands, |&h| {
+        let mut b = fill_long(project(&|_| true, run.dollars), None, 0.0);
+        let l = b.levels[h as usize];
+        b.levels[h as usize] = l.with_level(l.level + 1);
+        grow_constellation(&mut b);
+        long_score(&b) / l0
+    });
     let price = |cost: i64| if cost == 0 { 1.0 } else { long_score(&fill_long(project(&|_| true, run.dollars), None, once(-(cost as f64)))) / l0 };
     for o in options.iter_mut() {
         if o.kind == "tarot" && o.money_gain <= 0.0 {
             if let Some(i) = o.key.as_ref().and_then(|k| tarots.iter().position(|t| &t.key == k)) {
                 o.long_mult = Some(tarot_long[i] * price(o.cost));
+            }
+        } else if o.kind == "pack" && o.label.contains("Celestial") {
+            // planets: a level for their hand, and ×0.1 for Constellation each; a Mega pack's
+            // second pick used too (about an average planet)
+            let k = if o.label.contains("Jumbo") || o.label.contains("Mega") { 5 } else { 3 };
+            let vals: Vec<f64> = planet_long.iter().map(|v| v.max(1.0)).collect();
+            if !vals.is_empty() {
+                let mut v = best_of_subsets(&vals, k).0;
+                if o.label.contains("Mega") {
+                    v *= vals.iter().sum::<f64>() / vals.len() as f64;
+                }
+                o.long_mult = Some(v * price(o.cost));
             }
         } else if o.kind == "pack" && o.label.contains("Spectral") {
             let k = if o.label.contains("Jumbo") || o.label.contains("Mega") { 4 } else { 2 };
@@ -1484,6 +1512,33 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         }
         o.long_mult = Some(v);
         o.note = format!("editions on shop jokers {} as often · ~{:.1}% more of the jokers you'd buy (about one an ante) get one (estimate)", if step > 1.0 { "4×" } else { "2×" }, step * 4.0);
+    }
+    // Planet Merchant / Tycoon: planets in the shop 2.4× / 8× as often (planet_rate 4 → 9.6
+    // / 32). The extra planets you'd see (2 cards a shop, 3 shops an ante): each a level for
+    // a random hand and ×0.1 for Constellation. Fewer jokers per card is not counted (an
+    // estimate).
+    for o in options.iter_mut().filter(|o| matches!(o.key.as_deref(), Some("v_planet_merchant" | "v_planet_tycoon"))) {
+        let r = &run.shop_rates;
+        let total = r.joker + r.tarot + r.planet + r.spectral + r.playing_card;
+        let new_planet = if o.key.as_deref() == Some("v_planet_tycoon") { 32.0 } else { 9.6 };
+        let (p0, p1) = (r.planet / total.max(1e-9), new_planet / (total - r.planet + new_planet).max(1e-9));
+        let extra = ((p1 - p0) * r.slots.max(1) as f64 * 3.0 * antes_left).max(0.0);
+        // The money model already lets spare money buy planets; what the voucher adds is
+        // planets to buy, so only its own price is charged.
+        let mut b = fill_long(project(&|_| true, run.dollars), None, once(-(o.cost as f64)));
+        for j in b.jokers.iter_mut().filter(|j| j.key == "j_constellation") {
+            j.x_mult += 0.1 * extra;
+        }
+        if let Some(top) = top_hand {
+            let l = b.levels[top as usize];
+            let mut n = l.with_level(l.level + (extra / 12.0).floor() as i64);
+            let frac = extra / 12.0 - (extra / 12.0).floor();
+            n.chips += n.l_chips * frac;
+            n.mult += n.l_mult * frac;
+            b.levels[top as usize] = n;
+        }
+        o.long_mult = Some(long_score(&b) / l0);
+        o.note = format!("{} · about {extra:.0} more planets by Ante 8 (estimate)", o.note);
     }
     // Economy vouchers: money they're worth every ante (an estimate, labelled), plus their price
     let per_round_interest = |cap: i64| interest(run.dollars, run.interest_amount, cap) as f64;
@@ -2263,7 +2318,7 @@ fn shop_options(
                 kind: "pack".into(),
                 cost: pk.cost,
                 p_win: sum / count.max(1.0),
-                note: format!("{extra} planets, best is usually {} ({:.0}% of packs){pick_note}", planets[top].0.name, best_counts[top] as f64 * 100.0 / count.max(1.0)),
+                note: format!("{extra} planets, best is usually {} ({:.0}% of packs){}", planets[top].0.name, best_counts[top] as f64 * 100.0 / count.max(1.0), if choose > 1 { " (you pick 2: both used)" } else { "" }),
             });
         } else if pk.key.starts_with("p_buffoon") {
             // Jokers picked from a pack are free: no budget limit on what's inside.
@@ -2516,6 +2571,30 @@ fn shop_options(
         });
     }
     let base_reach = base_odds.get(round).map_or(0.0, |o| o.1.mean / spec.start.target.max(1.0));
+    // Packs: the best of what they hold, at the next ante too
+    let tarot_next = |spectral: bool| -> Vec<f64> {
+        tarots.iter().filter(|t| t.spectral == spectral && t.reach_now > 0.0).map(|t| (t.reach / t.reach_now).max(1.0)).collect()
+    };
+    for o in out.iter_mut().filter(|o| o.kind == "pack") {
+        let big = o.label.contains("Jumbo") || o.label.contains("Mega");
+        let (vals, k): (Vec<f64>, usize) = if o.label.contains("Celestial") {
+            (planet_next.iter().map(|v| v.unwrap_or(1.0).max(1.0)).collect(), if big { 5 } else { 3 })
+        } else if o.label.contains("Arcana") {
+            (tarot_next(false), if big { 5 } else { 3 })
+        } else if o.label.contains("Spectral") {
+            (tarot_next(true), if big { 4 } else { 2 })
+        } else {
+            continue;
+        };
+        if vals.is_empty() {
+            continue;
+        }
+        let mut v = best_of_subsets(&vals, k).0;
+        if o.label.contains("Mega") {
+            v *= vals.iter().sum::<f64>() / vals.len() as f64;
+        }
+        o.next_strength = Some(v);
+    }
     for o in &mut out {
         if o.kind == "tarot" {
             if let Some(t) = o.key.as_ref().and_then(|k| tarots.iter().find(|t| &t.key == k)) {
@@ -2576,9 +2655,12 @@ fn income_per_ante(key: &str, ability: &serde_json::Value, run: &RunState, antes
 
 /// Like `long_draw`, for the share of this round's target reached: the best joker seen,
 /// never below what you reach now.
-fn reach_draw(pool: &[Candidate], round: usize, now: f64, cards: usize, joker_share: f64, rng: &mut crate::engine::Rng) -> f64 {
+/// `budget`: only jokers you could pay for count (a pack's are free: pass infinity).
+fn reach_draw(pool: &[Candidate], round: usize, now: f64, cards: usize, joker_share: f64, budget: f64, rng: &mut crate::engine::Rng) -> f64 {
     use crate::engine::Rolls;
-    let by_rarity: [Vec<f64>; 4] = [0u8, 1, 2, 3].map(|r| pool.iter().filter(|c| c.rarity_n == r).filter_map(|c| c.reach.get(round).copied()).collect());
+    let by_rarity: [Vec<f64>; 4] = [0u8, 1, 2, 3].map(|r| {
+        pool.iter().filter(|c| c.rarity_n == r).map(|c| if c.cost as f64 <= budget { c.reach.get(round).copied().unwrap_or(now) } else { now }).collect()
+    });
     let trials = 2000;
     let mut total = 0.0;
     for _ in 0..trials {
