@@ -284,6 +284,8 @@ pub struct Outcome {
     pub spare: f64,
     pub cash: f64,
     pub planets: f64,
+    /// The first hand played for points after a discard (not a junk hand played to dig)
+    pub next: Option<(HandType, f64)>,
 }
 
 /// The rounds numbered `range` after `first` (round i always draws the same cards, whatever
@@ -335,6 +337,7 @@ pub fn outcomes_after(b: &Board, start: &RoundStart, first: &Move, range: std::o
             o.cash += r.money;
             o.total = r.total;
             o.planets = r.planets;
+            o.next = r.plays.iter().find(|p| !p.2).map(|p| (p.0, p.1));
             o
         })
         .collect()

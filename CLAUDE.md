@@ -41,6 +41,17 @@ similar situation gets better at once:
 If a fix only makes sense for one joker, suit or hand, it's the wrong fix: look for the
 step that should have found it. Add the state as a replay fixture first (below).
 
+**Example.** The advice played a junk Spade instead of digging with the off-suit cards,
+because the simulated rest of the round spent the 3♠ Blue Seal in a Flush.
+- First fix (wrong scope): "keep Blue Seal cards in hand while on pace". Right step (the
+  round policy), but named after the card on screen.
+- Right fix: ask what the card is an example of: "cards that pay at the end of the round
+  while held". The game defines that group (card.lua `get_end_of_round_effect`: Blue Seal,
+  Gold card), so the policy keeps whatever is in it, and Gold cards were covered without
+  anyone noticing them.
+- Ask the same each time: what general group is this an example of, and where does the game
+  (or the simulation) already define it?
+
 ## Replay fixtures (wrong advice the owner caught)
 
 When the owner says a suggestion is wrong, save that game state before fixing it:

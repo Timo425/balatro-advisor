@@ -165,6 +165,12 @@ pub struct PlayAdvice {
     /// A consumable to use before the move (its effect is in the win chance).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub use_first: Option<String>,
+    /// After a discard: the hand you most often go on to play (see `PlayOption::then`)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub then: Option<(String, f64, f64)>,
+    /// How many other moves are as good, as far as the simulation can tell
+    #[serde(skip_serializing_if = "is_zero_usize")]
+    pub ties: usize,
     /// Planets from Blue Seals held at the end, on average (counted in the ranking)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub planets: Option<f64>,
@@ -199,6 +205,10 @@ pub struct PlayOption {
     /// As good as the best move, as far as the simulation can tell
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub tie: bool,
+    /// After a discard: the hand you most often go on to play, its average score, and the
+    /// share of simulated rounds it's played in
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub then: Option<(String, f64, f64)>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -593,6 +603,10 @@ const SCREEN_DEALS: usize = 100;
 /// Screening every possible discard: (rounds each, how many go on) per stage; the last
 /// stage's survivors join the full simulation.
 const SCREEN_DISCARD_STAGES: &[(usize, usize)] = &[(32, 24), (160, 6)];
+fn is_zero_usize(n: &usize) -> bool {
+    *n == 0
+}
+
 /// Best play's comparison: rounds in the first batch (each batch doubles), the most rounds a
 /// move gets, and how close (as a share of the round's value) counts as equally good.
 const RACE_FIRST: usize = 64;
@@ -2140,7 +2154,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                 };
                 // cards a consumable added aren't in your hand yet: no position
                 let indices = idx.iter().filter(|&&i| i < hand_order.len()).map(|&i| hand_order[i]).collect();
-                PlayOption { spare_hands: spare, round_money: cash, action: action.into(), cards: cards.iter().map(Card::label).collect(), indices, dig, hand: name, score, p_win: p, mean_total: mean, use_first, planets, tie: false }
+                PlayOption { spare_hands: spare, round_money: cash, action: action.into(), cards: cards.iter().map(Card::label).collect(), indices, dig, hand: name, score, p_win: p, mean_total: mean, use_first, planets, tie: false, then: None }
             };
             let mut moves = sim::candidate_moves(&bb, &start.hand, &start.deck, start.hands, start.discards, start.target - start.scored, start.hand_size.max(1) as usize);
             // Exact ties are broken by the cards themselves, so the order your hand is sorted in
@@ -2259,6 +2273,15 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                     let (m, b, st, _, use_first) = &cands[c];
                     let mut o = to_opt(m, &st.hand, b, (avg(|o| o.won), avg(|o| o.total), avg(|o| o.spare), avg(|o| o.cash), avg(|o| o.planets)), use_first.clone());
                     o.tie = tied[c];
+                    if matches!(m, sim::Move::Discard(_)) {
+                        let mut by: std::collections::HashMap<crate::engine::HandType, (usize, f64)> = std::collections::HashMap::new();
+                        for (h, sc) in v.iter().filter_map(|o| o.next) {
+                            let e = by.entry(h).or_insert((0, 0.0));
+                            e.0 += 1;
+                            e.1 += sc;
+                        }
+                        o.then = by.into_iter().max_by_key(|(h, (n, _))| (*n, *h as u8)).map(|(h, (n, sum))| (h.name().to_string(), sum / n as f64, n as f64 / k));
+                    }
                     o
                 })
                 .collect();
@@ -2300,11 +2323,13 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                     let m = format!("Not used in this look-ahead (no modelled effect on this hand): {}", missing.join(", "));
                     Some(tip.map_or(m.clone(), |t| format!("{t}. {m}")))
                 };
-                Some(PlayAdvice { planets: Some(best.planets), use_first: best.use_first, spare_hands: Some(best.spare_hands), round_money: Some(best.round_money), action: best.action, cards: best.cards, dig: best.dig, indices: best.indices, hand: best.hand, score: best.score, p_win: Some(best.p_win), alternatives: opts, tip })
+                Some(PlayAdvice { then: best.then.clone(), ties: opts.iter().filter(|o| o.tie).count(), planets: Some(best.planets), use_first: best.use_first, spare_hands: Some(best.spare_hands), round_money: Some(best.round_money), action: best.action, cards: best.cards, dig: best.dig, indices: best.indices, hand: best.hand, score: best.score, p_win: Some(best.p_win), alternatives: opts, tip })
             }
             None => sim::best_play(&b, &hand_order.iter().map(|&i| run.hand[i]).collect::<Vec<_>>()).map(|p| PlayAdvice {
                 use_first: None,
                 planets: None,
+                then: None,
+                ties: 0,
                 spare_hands: None,
                 round_money: None,
                 action: "play".into(),
