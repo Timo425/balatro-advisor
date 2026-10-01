@@ -356,8 +356,11 @@ pub struct BlindView {
 #[derive(Debug, Clone, Serialize)]
 pub struct SkipCompare {
     pub play_survive: f64,
+    /// Chance against the next ante's boss, with the shops before it
+    pub play_next: f64,
     pub play_long: f64,
     pub skip_survive: f64,
+    pub skip_next: f64,
     pub skip_long: f64,
     /// "play", "skip" or "close"
     pub verdict: String,
@@ -1525,6 +1528,8 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         let key = bv.skip_tag.as_ref().map_or("", |t| t.key.as_str()).to_string();
         let name = bv.skip_tag.as_ref().map_or(String::new(), |t| t.name.clone());
         let (mut money, mut boss_p, mut long, mut valued) = (0.0, p_boss, 1.0, true);
+        // The tag's lasting change to your board, for the next ante's boss (Meteor's planets)
+        let mut next_boards: Vec<(f64, Board)> = vec![];
         let mut rng = crate::engine::Rng::new(opts.seed ^ 0x5e1b);
         let shop_before_boss = k > 1;
         let rarity_avg = |r: u8| {
@@ -1579,13 +1584,14 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                         b.levels[top as usize] = l.with_level(l.level + 1);
                     }
                 };
+                let mut with_now = ctx.base.clone();
+                grow(&mut with_now, true);
+                let mut without_now = ctx.base.clone();
+                grow(&mut without_now, false);
                 if let Some(sp) = ctx.specs.get(key_round) {
-                    let mut with = ctx.base.clone();
-                    grow(&mut with, true);
-                    let mut without = ctx.base.clone();
-                    grow(&mut without, false);
-                    boss_p = (hit * ctx.odds_one(&with, sp, opts.sims).0 + (1.0 - hit) * ctx.odds_one(&without, sp, opts.sims).0).max(p_boss);
+                    boss_p = (hit * ctx.odds_one(&with_now, sp, opts.sims).0 + (1.0 - hit) * ctx.odds_one(&without_now, sp, opts.sims).0).max(p_boss);
                 }
+                next_boards = vec![(hit, with_now), (1.0 - hit, without_now)];
                 let mut with = fill_long(project(&|_| true, run.dollars), None, 0.0);
                 grow(&mut with, true);
                 let mut without = fill_long(project(&|_| true, run.dollars), None, 0.0);
@@ -1609,9 +1615,26 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         };
         let skip_survive = survive_with(run.dollars + held + money, k.saturating_sub(1), boss_p);
         let skip_long = long * money_long(held + money);
-        let (pv, sv) = (play_survive * play_long, skip_survive * skip_long);
+        // The next ante's boss: the board's chance there plus the shops before it (one fewer
+        // when you skip), so being stronger sooner counts.
+        let (play_next, skip_next) = match ctx.specs.iter().position(|x| x.horizon) {
+            Some(hz) => {
+                let p_next = base_odds.get(hz).map_or(0.0, |o| o.0);
+                let value_next = |c: &Candidate| c.p_win.get(hz).copied().unwrap_or(p_next);
+                let shops_next = k + 3;
+                let next_with = |money: f64, shops: usize, p0: f64| money_value_with(&ctx, &pool_entries, &value_next, p0, money, false, shops, true).max(p0).min(1.0);
+                let skip_p0 = if next_boards.is_empty() {
+                    p_next
+                } else {
+                    next_boards.iter().map(|(w, b)| w * ctx.odds_one(b, &ctx.specs[hz], opts.sims).0).sum::<f64>().max(p_next)
+                };
+                (next_with(run.dollars + gain, shops_next, p_next), next_with(run.dollars + held + money, shops_next - 1, skip_p0))
+            }
+            None => (1.0, 1.0),
+        };
+        let (pv, sv) = (play_survive * play_next * play_long, skip_survive * skip_next * skip_long);
         let verdict = if (pv - sv).abs() <= 0.03 * pv.max(sv) { "close" } else if sv > pv { "skip" } else { "play" };
-        blind_views[bi].skip = Some(SkipCompare { play_survive, play_long, skip_survive, skip_long, verdict: verdict.into(), tag: what, valued });
+        blind_views[bi].skip = Some(SkipCompare { play_survive, play_next, play_long, skip_survive, skip_next, skip_long, verdict: verdict.into(), tag: what, valued });
     }
     let (levels_per_ante, planet_levels) = levels_for(run.dollars - owned_rent(&|_| true), owned_rent(&|_| true));
     let long_note = format!(
