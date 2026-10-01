@@ -1972,7 +1972,10 @@ fn evaluate_candidate(ctx: &Ctx, j: Joker, cost: i64, base_odds: &[(f64, Stats)]
         let perished = ctx.run.jokers.iter().position(|sj| sj.perishable == Some(0) && !sj.eternal);
         // Screening only tries the weakest non-eternal joker; the full pass tries every swap.
         // Ties in score go against jokers that don't score but do something else (Mr. Bones).
-        let keeps_value = |i: usize| base.jokers.get(i).is_some_and(|j| j.key == "j_mr_bones") as u8;
+        // Jokers whose value isn't in the score (Mr. Bones' save, money jokers' income) aren't
+        // "weakest" just because they score nothing.
+        let protected = |k: &str| k == "j_mr_bones" || economy_key(k) || k == "j_mail";
+        let keeps_value = |i: usize| base.jokers.get(i).is_some_and(|j| protected(&j.key)) as u8;
         let weakest = perished.or_else(|| {
             ctx.shares.iter().enumerate()
                 .filter(|(i, _)| ctx.run.jokers.get(*i).is_some_and(|sj| !sj.eternal))
@@ -1980,7 +1983,7 @@ fn evaluate_candidate(ctx: &Ctx, j: Joker, cost: i64, base_odds: &[(f64, Stats)]
                 .map(|(i, _)| i)
         });
         // Mr. Bones scores nothing but saves a run: he's only sold when nothing else can be.
-        let others = ctx.run.jokers.iter().zip(&base.jokers).filter(|(sj, j)| !sj.eternal && j.key != "j_mr_bones").count();
+        let others = ctx.run.jokers.iter().zip(&base.jokers).filter(|(sj, j)| !sj.eternal && !protected(&j.key)).count();
         let weakest = weakest.filter(|&i| others == 0 || keeps_value(i) == 0).or_else(|| {
             ctx.shares.iter().enumerate()
                 .filter(|(i, _)| ctx.run.jokers.get(*i).is_some_and(|sj| !sj.eternal) && keeps_value(*i) == 0)
@@ -1989,7 +1992,7 @@ fn evaluate_candidate(ctx: &Ctx, j: Joker, cost: i64, base_odds: &[(f64, Stats)]
         });
         for (i, (cur, sj)) in base.jokers.iter().zip(&ctx.run.jokers).enumerate() {
             let only_weakest = perished.is_some() || (!full && sims < ctx.opts.sims);
-            if sj.eternal || (sell.is_none() && others > 0 && cur.key == "j_mr_bones") || sell.is_some_and(|x| x != i) || (sell.is_none() && only_weakest && Some(i) != weakest) {
+            if sj.eternal || (sell.is_none() && others > 0 && protected(&cur.key)) || sell.is_some_and(|x| x != i) || (sell.is_none() && only_weakest && Some(i) != weakest) {
                 continue;
             }
             // You can reorder freely: try the freed slot and the right end (where ×Mult goes);
