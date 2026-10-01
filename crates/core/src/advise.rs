@@ -1026,13 +1026,20 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         vec![]
     };
     // An option's projected score: bought for `cost` (selling `sell`, if any), rent paid if rental.
+    // One-off money with its interest: dropping below an interest step costs that interest
+    // every round until you've saved back up (counted as one ante: 3 rounds); rising
+    // above one earns it.
+    let once = |delta: f64| -> f64 {
+        let per_round = |m: f64| interest(m, run.interest_amount, run.interest_cap) as f64;
+        delta + 3.0 * (per_round(run.dollars + delta) - per_round(run.dollars))
+    };
     let long_of = |j: &Joker, sell: Option<usize>, cost: i64, rental: bool| -> f64 {
         let back = sell.map_or(0, |i| run.jokers[i].sell_value) as f64;
         let ability = data.center(&j.key).map(|c| crate::engine::joker::ability_from_config(&c.config)).unwrap_or_default();
         let dollars = run.dollars - if rental { RENT_PER_ANTE } else { 0.0 } + income_per_ante(&j.key, &ability, run, antes_left);
         let horizon = if j.key == "j_madness" { 1.0 } else { antes_left };
         let g = grow_antes(j, &hand_mix, dollars, line, horizon).map_or_else(|| j.clone(), |g| g.0);
-        long_score(&fill_long(project(&|k| Some(k) != sell, dollars), Some(g), back - cost as f64))
+        long_score(&fill_long(project(&|k| Some(k) != sell, dollars), Some(g), once(back - cost as f64)))
     };
     let sell_index = |action: &str| {
         action.strip_prefix("replace ").map(|n| n.trim_end_matches(", put it rightmost")).and_then(|name| ctx.base.jokers.iter().position(|x| data.name(&x.key) == name))
@@ -1100,7 +1107,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     let long_idx: Vec<usize> = options.iter().enumerate().filter(|(_, o)| o.kind == "planet" || o.money_gain > 0.0).map(|(i, _)| i).collect();
     let long_opts: Vec<Option<f64>> = par_map(&long_idx, |&i| {
         let o = &options[i];
-        let mut b = fill_long(project(&|_| true, run.dollars), None, o.money_after - run.dollars);
+        let mut b = fill_long(project(&|_| true, run.dollars), None, once(o.money_after - run.dollars));
         if o.kind == "planet" {
             let hand = o.key.as_ref().and_then(|k| data.center(k)).and_then(|c| c.config.get("hand_type")).and_then(|v| v.as_str()).and_then(crate::engine::HandType::from_name);
             let h = hand?;
@@ -1126,7 +1133,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         };
         let draw = long_draw(&pool_entries, cards, share, &mut rng);
         o.reach = Some(reach_draw(&pool_entries, key_round, base_reach_now, cards, share, &mut rng));
-        let price = long_score(&fill_long(project(&|_| true, run.dollars), None, -(o.cost as f64))) / l0;
+        let price = long_score(&fill_long(project(&|_| true, run.dollars), None, once(-(o.cost as f64)))) / l0;
         o.long_mult = Some(draw * price);
     }
     // Tarots: a changed deck is permanent, so it's projected like everything else; money
@@ -1204,7 +1211,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             None => 1.0,
         }
     };
-    let price = |cost: i64| if cost == 0 { 1.0 } else { long_score(&fill_long(project(&|_| true, run.dollars), None, -(cost as f64))) / l0 };
+    let price = |cost: i64| if cost == 0 { 1.0 } else { long_score(&fill_long(project(&|_| true, run.dollars), None, once(-(cost as f64)))) / l0 };
     for o in options.iter_mut() {
         if o.kind == "tarot" && o.money_gain == 0.0 {
             if let Some(i) = o.key.as_ref().and_then(|k| tarots.iter().position(|t| &t.key == k)) {
@@ -1269,7 +1276,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     rank_options(&mut options, base_reach);
     let (levels_per_ante, planet_levels) = levels_for(run.dollars - owned_rent(&|_| true));
     let long_note = format!(
-        "Your board projected {antes_left:.1} antes ahead: growing jokers grown, fading ones faded, perishables that run out dropped, {} +{planet_levels} levels (about {levels_per_ante:.1} per ante with your money), empty slots filled with stand-in jokers (×1.5, +60 Chips, +15 Mult). Each option is compared with a typical find (×1.25) in its slot, on whole simulated rounds, with the money it leaves you: its price, what selling a joker gives back or a money card gives (spent once, on pack skips for Red Card/Flash or on planets, ~$5 each), and $9 less money held every ante per rental; money jokers (Golden, Rocket, Cloud 9, To the Moon, Egg) add their payout per ante. ×1.00 = as good as a typical find.",
+        "Your board projected {antes_left:.1} antes ahead: growing jokers grown, fading ones faded, perishables that run out dropped, {} +{planet_levels} levels (about {levels_per_ante:.1} per ante with your money), empty slots filled with stand-in jokers (×1.5, +60 Chips, +15 Mult). Each option is compared with a typical find (×1.25) in its slot, on whole simulated rounds, with the money it leaves you: its price, what selling a joker gives back or a money card gives (spent once, on pack skips for Red Card/Flash or on planets, ~$5 each; interest lost or gained over the next ante included), and $9 less money held every ante per rental; money jokers (Golden, Rocket, Cloud 9, To the Moon, Egg) add their payout per ante. ×1.00 = as good as a typical find.",
         top_hand.map_or("your main hand", |h| h.name())
     );
     let shares: Vec<f64> = jokers.iter().map(|j| j.score_share).collect();

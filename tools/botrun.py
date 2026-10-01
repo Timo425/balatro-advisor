@@ -192,6 +192,7 @@ def one_run(args, n):
     seed = f"BOT{int(time.time()) % 100000:05d}{n}"
     rpc("start", deck=args.deck, stake=args.stake, seed=seed)
     log, best_ante, t0 = [], 1, time.time()
+    checked, restarted = False, False
     while True:
         gs = rpc("gamestate")
         st = gs["state"]
@@ -199,7 +200,18 @@ def one_run(args, n):
         if st == "GAME_OVER" or gs.get("won"):
             break
         try:
-            if st == "BLIND_SELECT":
+            if st == "BLIND_SELECT" and args.restart_below and gs.get("ante_num") == 2 and not checked:
+                # Gold Stake habit: a weak start isn't worth playing out. After Ante 1, if the
+                # board reaches less than this share of a plain Ante 3 boss, start over.
+                checked = True
+                a = analyze(args.sims)
+                hz = next((r for r in a.get("rounds", []) if r.get("horizon")), None)
+                if hz and hz.get("reach", 1) < args.restart_below:
+                    log.append(f"restart: next-ante reach {hz['reach']:.2f}")
+                    restarted = True
+                    break
+                rpc("select")
+            elif st == "BLIND_SELECT":
                 rpc("select")
             elif st == "SELECTING_HAND":
                 play_hand(args.sims)
@@ -219,13 +231,13 @@ def one_run(args, n):
     gs = rpc("gamestate")
     result = {
         "strategy": args.strategy, "deck": args.deck, "stake": args.stake, "seed": seed,
-        "won": bool(gs.get("won")), "ante": best_ante,
+        "won": bool(gs.get("won")), "ante": best_ante, "restarted": restarted,
         "jokers": [j.get("label") for j in cards(gs, "jokers")],
         "minutes": round((time.time() - t0) / 60, 1), "log": log[-60:], "time": int(time.time()),
     }
     with open(OUT / "runs.jsonl", "a") as f:
         f.write(json.dumps(result) + "\n")
-    print(f"run {n + 1}: ante {best_ante}{' WON' if result['won'] else ''} · {result['minutes']} min · {', '.join(result['jokers'])}")
+    print(f"run {n + 1}: {'restarted after Ante 1' if restarted else f'ante {best_ante}'}{' WON' if result['won'] else ''} · {result['minutes']} min · {', '.join(result['jokers'])}")
     return result
 
 
@@ -237,6 +249,8 @@ def main():
     p.add_argument("--sims", type=int, default=100, help="advisor round simulations (fewer = faster)")
     p.add_argument("--strategy", default="advisor")
     p.add_argument("-v", "--verbose", action="store_true", help="print every hand")
+    p.add_argument("--restart-below", type=float, default=0.0,
+                   help="after Ante 1, start over if the board reaches less than this share of the next plain boss (e.g. 0.5)")
     args = p.parse_args()
     global VERBOSE
     VERBOSE = args.verbose
