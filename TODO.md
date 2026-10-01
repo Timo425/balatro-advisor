@@ -10,6 +10,9 @@ check that reuses the engine, not another term in the options ranking.
 - **Fix chance for the next boss**: "the shops before it (with your money on rerolls)
   find what gets you through: X%". A forecast, so a separate line under the boss, never
   part of the win chance. Reuses the shop simulation behind the money value.
+- **Stand-ins by pool odds**: By Ante 8's future finds rotate ×1.5 / +60 Chips / +15 Mult
+  equally; weight them by how often the shop pool actually offers good jokers of each
+  type (good +Mult ~3× as common as good Chips or ×Mult), so scarce types are valued higher.
 - **Golden cases**: record a few real hands (`score --golden`, then `golden set`).
 - **Calibration**: let the log collect a few runs; check predicted vs actual win rates.
 - Rentals held "until the danger passes, then sold", not held all run.
