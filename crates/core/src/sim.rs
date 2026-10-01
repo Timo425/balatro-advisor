@@ -208,7 +208,16 @@ pub fn candidate_moves(b: &Board, hand: &[Card], deck: &[Card], hands: i64, disc
             });
             toss.truncate(5);
             if !toss.is_empty() {
-                push(Move::Discard(toss), &mut out);
+                push(Move::Discard(toss.clone()), &mut out);
+            }
+            // Mail-In's rank pays even when it's in the best play: try cashing those too, and
+            // let the win chance say whether the round can spare them
+            let all_pay: Vec<usize> = (0..n).filter(|&i| pays(i)).collect();
+            if all_pay.iter().any(|i| !toss.contains(i)) {
+                let mut with: Vec<usize> = all_pay.clone();
+                with.extend(toss.iter().copied().filter(|i| !all_pay.contains(i)));
+                with.truncate(5);
+                push(Move::Discard(with), &mut out);
             }
         }
     }
