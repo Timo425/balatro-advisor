@@ -159,6 +159,9 @@ pub struct PlayAdvice {
     /// Chance to win the round making this move first, then playing on (look-ahead).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub p_win: Option<f64>,
+    /// A consumable to use before the move (its effect is in the win chance).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub use_first: Option<String>,
     /// The other first moves simulated, best first.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub alternatives: Vec<PlayOption>,
@@ -182,6 +185,9 @@ pub struct PlayOption {
     pub score: f64,
     pub p_win: f64,
     pub mean_total: f64,
+    /// A consumable to use before the move.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub use_first: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -354,6 +360,9 @@ pub struct TarotValue {
     /// By Ante 8 value (see `Candidate::long_mult`)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub long_mult: Option<f64>,
+    /// What it does to the round being played, for the Best play look-ahead
+    #[serde(skip)]
+    pub use_effect: Option<sim::Use>,
 }
 
 /// One of this ante's three blinds.
@@ -1991,35 +2000,69 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                 bb.seal_seen_value = 15.0;
             }
             let start = ctx.start_for(spec, &bb);
-            let moves = sim::candidate_moves(&bb, &start.hand, &start.deck, start.hands, start.discards, start.target - start.scored, start.hand_size.max(1) as usize);
-            let res = par_map(&moves, |m| sim::odds_after(&bb, &start, m, ctx.opts.sims, ctx.opts.seed));
-            let mut opts: Vec<PlayOption> = moves
+            let (sims, seed) = (ctx.opts.sims, ctx.opts.seed);
+            // Consumables you hold, as the round can use them: tarots and spectral cards by
+            // what they do to your hand, planets by the level they add. Every move is simulated
+            // with them still held (used once they improve the best play in hand), and each
+            // gets a row of its own: use it now, then the best move after it.
+            let uses: Vec<sim::Use> = run
+                .consumables
                 .iter()
-                .zip(res)
-                .map(|(m, (p, mean, spare, cash))| {
-                    // A play is shown in the order to play it; a discard by rank (order doesn't matter)
-                    let sorted_discard;
-                    let (action, idx) = match m {
-                        sim::Move::Play(v) => ("play", v),
-                        sim::Move::Discard(v) => {
-                            let mut v = v.clone();
-                            v.sort_by_key(|&i| (std::cmp::Reverse(start.hand[i].rank.0), start.hand[i].suit as u8));
-                            sorted_discard = v;
-                            ("discard", &sorted_discard)
-                        }
-                    };
-                    let cards: Vec<Card> = idx.iter().map(|&i| start.hand[i]).collect();
-                    let (hand, score, dig) = if action == "play" {
-                        let held: Vec<Card> = (0..start.hand.len()).filter(|i| !idx.contains(i)).map(|i| start.hand[i]).collect();
-                        let o = crate::engine::score(&bb, &cards, &held, &mut crate::engine::Unlucky, false);
-                        let scoring = crate::engine::hand::detect(&cards, bb.rule_flags()).scoring.len();
-                        (o.hand.name().to_string(), o.score, cards.len().saturating_sub(scoring))
-                    } else {
-                        (String::new(), 0.0, 0)
-                    };
-                    PlayOption { spare_hands: spare, round_money: cash, action: action.into(), cards: cards.iter().map(Card::label).collect(), indices: idx.iter().map(|&i| hand_order[i]).collect(), dig, hand, score, p_win: p, mean_total: mean }
+                .filter_map(|c| {
+                    if let Some(t) = tarots.iter().find(|t| t.key == c.key) {
+                        return t.use_effect.clone();
+                    }
+                    let center = data.center(&c.key).filter(|x| x.set == "Planet")?;
+                    let h = center.config.get("hand_type")?.as_str().and_then(crate::engine::HandType::from_name)?;
+                    let mut levels = [0; 12];
+                    levels[h as usize] = 1;
+                    Some(sim::Use { name: center.name.clone(), levels, planet: true, ..Default::default() })
                 })
                 .collect();
+            let to_opt = |m: &sim::Move, hand: &[Card], board: &Board, (p, mean, spare, cash): (f64, f64, f64, f64), use_first: Option<String>| {
+                // A play is shown in the order to play it; a discard by rank (order doesn't matter)
+                let sorted_discard;
+                let (action, idx) = match m {
+                    sim::Move::Play(v) => ("play", v),
+                    sim::Move::Discard(v) => {
+                        let mut v = v.clone();
+                        v.sort_by_key(|&i| (std::cmp::Reverse(hand[i].rank.0), hand[i].suit as u8));
+                        sorted_discard = v;
+                        ("discard", &sorted_discard)
+                    }
+                };
+                let cards: Vec<Card> = idx.iter().map(|&i| hand[i]).collect();
+                let (name, score, dig) = if action == "play" {
+                    let held: Vec<Card> = (0..hand.len()).filter(|i| !idx.contains(i)).map(|i| hand[i]).collect();
+                    let o = crate::engine::score(board, &cards, &held, &mut crate::engine::Unlucky, false);
+                    let scoring = crate::engine::hand::detect(&cards, board.rule_flags()).scoring.len();
+                    (o.hand.name().to_string(), o.score, cards.len().saturating_sub(scoring))
+                } else {
+                    (String::new(), 0.0, 0)
+                };
+                // cards a consumable added aren't in your hand yet: no position
+                let indices = idx.iter().filter(|&&i| i < hand_order.len()).map(|&i| hand_order[i]).collect();
+                PlayOption { spare_hands: spare, round_money: cash, action: action.into(), cards: cards.iter().map(Card::label).collect(), indices, dig, hand: name, score, p_win: p, mean_total: mean, use_first }
+            };
+            let moves = sim::candidate_moves(&bb, &start.hand, &start.deck, start.hands, start.discards, start.target - start.scored, start.hand_size.max(1) as usize);
+            let res = par_map(&moves, |m| sim::odds_after_uses(&bb, &start, m, sims, seed, &uses));
+            let mut opts: Vec<PlayOption> = moves.iter().zip(res).map(|(m, r)| to_opt(m, &start.hand, &bb, r, None)).collect();
+            for (k, u) in uses.iter().enumerate() {
+                if uses[..k].iter().any(|x| x.name == u.name) {
+                    continue;
+                }
+                let Some((b2, h2)) = u.apply(&bb, &start.hand) else { continue };
+                let rest: Vec<sim::Use> = uses.iter().enumerate().filter(|(j, _)| *j != k).map(|(_, x)| x.clone()).collect();
+                let s2 = RoundStart { hand: h2, ..start.clone() };
+                let moves2 = sim::candidate_moves(&b2, &s2.hand, &s2.deck, s2.hands, s2.discards, s2.target - s2.scored, s2.hand_size.max(1) as usize);
+                let res2 = par_map(&moves2, |m| sim::odds_after_uses(&b2, &s2, m, sims, seed, &rest));
+                let best2 = moves2
+                    .iter()
+                    .zip(res2)
+                    .map(|(m, r)| to_opt(m, &s2.hand, &b2, r, Some(u.name.clone())))
+                    .max_by(|a, b| a.p_win.total_cmp(&b.p_win).then(a.round_money.total_cmp(&b.round_money)));
+                opts.extend(best2);
+            }
             // Best chance first; within 2 points (noise), the one that wins with more hands to
             // spare ($1 each at cash out; chips past the target are worth nothing), then the
             // higher mean round total
@@ -2038,35 +2081,23 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             Some(mut opts) => {
                 let best = opts.remove(0);
                 opts.truncate(4);
-                // When to use a consumable you hold: its win chance for this round if used now
-                // against the best play without it (a 2-point band is noise). Its long-run value
-                // comes either way, so a card that doesn't change this round can wait.
-                // The Fool copies the last tarot used, so after it The Fool makes another.
-                let fool = run.consumables.iter().any(|c| c.key == "c_fool");
-                let held: Vec<&TarotValue> = run.consumables.iter().filter_map(|c| tarots.iter().find(|t| t.key == c.key && t.key != "c_fool")).collect();
-                let long = |t: &TarotValue| t.long_mult.unwrap_or(1.0);
-                let now = held.iter().copied().filter(|t| t.p_win > best.p_win + 0.02).max_by(|a, b| (a.p_win * long(a)).total_cmp(&(b.p_win * long(b))));
-                let timing = match now {
-                    Some(t) => Some(format!(
-                        "Use {} now ({}): {:.0}% this round instead of {:.0}%{}",
-                        t.name,
-                        t.note,
-                        t.p_win * 100.0,
-                        best.p_win * 100.0,
-                        if fool { format!(". Then The Fool makes another {}: worth using on a second card", t.name) } else { String::new() }
-                    )),
-                    None => held.iter().copied().filter(|t| long(t) >= 1.3).max_by(|a, b| long(a).total_cmp(&long(b))).map(|t| {
-                        let when = if t.p_win < best.p_win - 0.02 { "hold it until this round is safe" } else { "no rush" };
-                        format!("{} ({}): {when}, {:.0}% this round used now vs {:.0}% without; ×{:.2} by Ante 8 once used", t.name, t.note, t.p_win * 100.0, best.p_win * 100.0, long(t))
-                    }),
+                // Held consumables the look-ahead can't use: say so
+                let missing: Vec<&str> = run
+                    .consumables
+                    .iter()
+                    .filter(|c| data.center(&c.key).is_none_or(|x| x.set != "Planet") && !tarots.iter().any(|t| t.key == c.key && t.use_effect.is_some()))
+                    .map(|c| c.name.as_str())
+                    .collect();
+                let tip = if missing.is_empty() {
+                    tip
+                } else {
+                    let m = format!("Not used in this look-ahead (no modelled effect on this hand): {}", missing.join(", "));
+                    Some(tip.map_or(m.clone(), |t| format!("{t}. {m}")))
                 };
-                let tip = match (timing, tip) {
-                    (Some(x), Some(o)) => Some(format!("{x}. {o}")),
-                    (x, o) => x.or(o),
-                };
-                Some(PlayAdvice { spare_hands: Some(best.spare_hands), round_money: Some(best.round_money), action: best.action, cards: best.cards, dig: best.dig, indices: best.indices, hand: best.hand, score: best.score, p_win: Some(best.p_win), alternatives: opts, tip })
+                Some(PlayAdvice { use_first: best.use_first, spare_hands: Some(best.spare_hands), round_money: Some(best.round_money), action: best.action, cards: best.cards, dig: best.dig, indices: best.indices, hand: best.hand, score: best.score, p_win: Some(best.p_win), alternatives: opts, tip })
             }
             None => sim::best_play(&b, &hand_order.iter().map(|&i| run.hand[i]).collect::<Vec<_>>()).map(|p| PlayAdvice {
+                use_first: None,
                 spare_hands: None,
                 round_money: None,
                 action: "play".into(),
@@ -3310,7 +3341,7 @@ fn tarot_values(
     let spectral_value = |t: &crate::data::Center| -> TarotValue {
         use crate::model::Seal;
         let tv = |p: f64, reach: f64, note: String, simulated: bool, deck: Option<Vec<Card>>, gain: f64| TarotValue {
-            long_mult: None, decks: vec![], planets_per_ante: 0.0, spectral: true, deck, key: t.key.clone(), name: t.name.clone(), p_win: p, note, simulated,
+            use_effect: None, long_mult: None, decks: vec![], planets_per_ante: 0.0, spectral: true, deck, key: t.key.clone(), name: t.name.clone(), p_win: p, note, simulated,
             per_shop: spectral_per_shop, reach, reach_now, money_gain: gain,
         };
         let mut rng = crate::engine::Rng::new(ctx.opts.seed ^ 0x5bec ^ t.order as u64);
@@ -3365,7 +3396,8 @@ fn tarot_values(
                     *l = l.with_level(l.level + 1);
                 }
                 let (p, r) = sim_board(&b);
-                tv(p, r, "+1 level to every poker hand".into(), true, None, 0.0)
+                let use_effect = spec.in_progress.then(|| sim::Use { levels: [1; 12], ..Default::default() });
+                TarotValue { use_effect, ..tv(p, r, "+1 level to every poker hand".into(), true, None, 0.0) }
             }
             "c_talisman" | "c_deja_vu" => {
                 let Some(i) = best_card else { return tv(now, reach_now, "needs a card in hand".into(), false, None, 0.0) };
@@ -3605,14 +3637,14 @@ fn tarot_values(
                 "c_judgement" => {
                     let mut rng = crate::engine::Rng::new(ctx.opts.seed ^ 0x7a70);
                     let reach = pool_reach(pool, 1, &mut rng).unwrap_or(reach_now).max(reach_now);
-                    return TarotValue { long_mult: None, decks: vec![], planets_per_ante: 0.0, spectral: false, deck: None, key: t.key.clone(), name: t.name.clone(), p_win: expected_best(pool, round, now, 1, 1.0, f64::INFINITY, per_rarity, &mut rng).max(now), note, simulated: true, per_shop, reach, reach_now, money_gain: 0.0 };
+                    return TarotValue { use_effect: None, long_mult: None, decks: vec![], planets_per_ante: 0.0, spectral: false, deck: None, key: t.key.clone(), name: t.name.clone(), p_win: expected_best(pool, round, now, 1, 1.0, f64::INFINITY, per_rarity, &mut rng).max(now), note, simulated: true, per_shop, reach, reach_now, money_gain: 0.0 };
                 }
                 "c_wheel_of_fortune" => {
                     // card.lua: 1 in 4 hits a random joker without an edition; the edition is
                     // poll_edition(guaranteed, no negative): Polychrome 15%, Holo 35%, Foil 50%.
                     let plain: Vec<usize> = ctx.base.jokers.iter().enumerate().filter(|(_, j)| j.edition.is_none()).map(|(i, _)| i).collect();
                     if plain.is_empty() {
-                        return TarotValue { long_mult: None, decks: vec![], planets_per_ante: 0.0, spectral: false, deck: None, key: t.key.clone(), name: t.name.clone(), p_win: now, note: "no joker without an edition to hit".into(), simulated: true, per_shop, reach: reach_now, reach_now, money_gain: 0.0 };
+                        return TarotValue { use_effect: None, long_mult: None, decks: vec![], planets_per_ante: 0.0, spectral: false, deck: None, key: t.key.clone(), name: t.name.clone(), p_win: now, note: "no joker without an edition to hit".into(), simulated: true, per_shop, reach: reach_now, reach_now, money_gain: 0.0 };
                     }
                     let hit = (run.probability_normal / 4.0).min(1.0);
                     let (mut p, mut r) = (0.0, 0.0);
@@ -3630,18 +3662,18 @@ fn tarot_values(
                     let p = (1.0 - hit) * now + hit * p / k;
                     let reach = (1.0 - hit) * reach_now + hit * r / k;
                     let note = format!("{:.0}% chance: one of your {} jokers without an edition gets Polychrome 15% / Holo 35% / Foil 50%", hit * 100.0, plain.len());
-                    return TarotValue { long_mult: None, decks: vec![], planets_per_ante: 0.0, spectral: false, deck: None, key: t.key.clone(), name: t.name.clone(), p_win: p, note, simulated: true, per_shop, reach, reach_now, money_gain: 0.0 };
+                    return TarotValue { use_effect: None, long_mult: None, decks: vec![], planets_per_ante: 0.0, spectral: false, deck: None, key: t.key.clone(), name: t.name.clone(), p_win: p, note, simulated: true, per_shop, reach, reach_now, money_gain: 0.0 };
                 }
                 "c_high_priestess" if !planet_p.is_empty() => best_of_subsets(planet_p, 2).0.max(now),
                 _ => now,
             };
-            return TarotValue { long_mult: None, decks: vec![], planets_per_ante: 0.0, spectral: false, deck: None, key: t.key.clone(), name: t.name.clone(), p_win: p, note, simulated: p != now, per_shop, reach: reach_now, reach_now, money_gain: 0.0 };
+            return TarotValue { use_effect: None, long_mult: None, decks: vec![], planets_per_ante: 0.0, spectral: false, deck: None, key: t.key.clone(), name: t.name.clone(), p_win: p, note, simulated: p != now, per_shop, reach: reach_now, reach_now, money_gain: 0.0 };
         };
         let changed = sim.then(|| d.clone());
         let (p, reach) = if sim { simulate(d) } else { (now, reach_now) };
         // Card-targeting tarots only work on cards in hand (in a blind or an opened pack)
         let note = if n > 0 && !from_hand { format!("{note}, if you hold suitable cards") } else if n > 0 { format!("{note} (from your hand)") } else { note };
-        TarotValue { long_mult: None, decks: vec![], planets_per_ante: 0.0, spectral: false, deck: changed, key: t.key.clone(), name: t.name.clone(), p_win: p, note, simulated: sim, per_shop, reach, reach_now, money_gain: 0.0 }
+        TarotValue { use_effect: None, long_mult: None, decks: vec![], planets_per_ante: 0.0, spectral: false, deck: changed, key: t.key.clone(), name: t.name.clone(), p_win: p, note, simulated: sim, per_shop, reach, reach_now, money_gain: 0.0 }
     });
     // Money tarots: valued by what the extra money buys (rerolls, then the best joker found)
     for t in &mut out {
@@ -3664,6 +3696,35 @@ fn tarot_values(
         t.p_win = now + (money_value(ctx, pool, &pv, now, run.dollars + g, false) - money_value(ctx, pool, &pv, now, run.dollars, false)).max(0.0);
         t.simulated = true;
         t.note = if how.is_empty() { t.note.clone() } else { format!("{} · {how}", t.note) };
+    }
+    // In a blind: what each one does to your hand, read off the deck it leaves (cards in hand
+    // changed, or copies of one added to it). Random or destroying effects aren't turned into
+    // moves (not modelled in the Best play look-ahead).
+    if spec.in_progress && from_hand {
+        for t in out.iter_mut() {
+            t.use_effect = t.use_effect.take().or_else(|| {
+                let d = t.deck.as_ref()?;
+                let n = deck.len();
+                if !t.decks.is_empty() || d.len() < n || (0..n).any(|i| !in_hand[i] && d[i] != deck[i]) {
+                    return None;
+                }
+                let add = d[n..].to_vec();
+                if !add.iter().all(|c| (0..n).any(|i| in_hand[i] && deck[i] == *c)) {
+                    return None;
+                }
+                let mut swap: Vec<(Card, Card)> = (0..n).filter(|&i| in_hand[i] && d[i] != deck[i]).map(|i| (deck[i], d[i])).collect();
+                // copies of a card need it in hand
+                for c in &add {
+                    if !swap.iter().any(|(f, _)| f == c) {
+                        swap.push((*c, *c));
+                    }
+                }
+                (!swap.is_empty()).then(|| sim::Use { swap, add, ..Default::default() })
+            });
+            if let Some(u) = &mut t.use_effect {
+                u.name = t.name.clone();
+            }
+        }
     }
     out
 }

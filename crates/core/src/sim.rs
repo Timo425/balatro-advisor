@@ -252,6 +252,11 @@ pub fn candidate_moves(b: &Board, hand: &[Card], deck: &[Card], hands: i64, disc
 /// and the mean round total. Same seeds for every move, so moves compare on the same draws.
 /// Also the mean number of hands left over when it's won (each pays at cash out).
 pub fn odds_after(b: &Board, start: &RoundStart, first: &Move, sims: usize, seed: u64) -> (f64, f64, f64, f64) {
+    odds_after_uses(b, start, first, sims, seed, &[])
+}
+
+/// `odds_after` with consumables held: the rest of the round may use them (see `Use`).
+pub fn odds_after_uses(b: &Board, start: &RoundStart, first: &Move, sims: usize, seed: u64, uses: &[Use]) -> (f64, f64, f64, f64) {
     let size = start.hand_size.max(1) as usize;
     let (mut wins, mut sum, mut spare, mut cash) = (0usize, 0.0, 0.0, 0.0);
     for i in 0..sims {
@@ -288,7 +293,7 @@ pub fn odds_after(b: &Board, start: &RoundStart, first: &Move, sims: usize, seed
                 RoundStart { hand: kept, deck, discards: (start.discards - 1).max(0), ..start.clone() }
             }
         };
-        let r = sim_round(b, &next, &mut rng);
+        let r = sim_round_uses(b, &next, &mut rng, uses);
         wins += r.won as usize;
         if r.won {
             spare += r.hands_left as f64;
@@ -642,6 +647,69 @@ fn decide(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i64, ne
 
 /// Simulates the rest of a round with the `decide` policy.
 pub fn sim_round(board: &Board, start: &RoundStart, rng: &mut Rng) -> RoundResult {
+    sim_round_uses(board, start, rng, &[])
+}
+
+/// A consumable held in a blind, as the round simulation can use it: the cards it changes in
+/// hand (each must still be there), the cards it puts into your hand, and levels it adds.
+#[derive(Debug, Clone, Default)]
+pub struct Use {
+    pub name: String,
+    pub swap: Vec<(Card, Card)>,
+    pub add: Vec<Card>,
+    pub levels: [i64; 12],
+    /// A Planet card: Constellation grows ×0.1 when it's used
+    pub planet: bool,
+}
+
+impl Use {
+    pub fn apply(&self, b: &Board, hand: &[Card]) -> Option<(Board, Vec<Card>)> {
+        let same = |a: &Card, c: &Card| a.rank == c.rank && a.suit == c.suit && a.enhancement == c.enhancement && a.edition == c.edition && a.seal == c.seal;
+        let mut h = hand.to_vec();
+        let mut done = vec![false; h.len()];
+        for (from, to) in &self.swap {
+            let i = (0..h.len()).find(|&i| !done[i] && same(&h[i], from))?;
+            h[i] = Card { debuff: h[i].debuff, face_down: h[i].face_down, ..*to };
+            done[i] = true;
+        }
+        h.extend(self.add.iter().copied());
+        let mut b = b.clone();
+        b.playing_cards += self.add.len() as i64;
+        for (l, d) in b.levels.iter_mut().zip(self.levels) {
+            if d != 0 {
+                *l = l.with_level(l.level + d);
+            }
+        }
+        if self.planet {
+            for j in b.jokers.iter_mut().filter(|j| j.key == "j_constellation") {
+                j.x_mult += 0.1;
+            }
+        }
+        // its slot is free for a Blue Seal's planet
+        b.planet_slots += 1;
+        Some((b, h))
+    }
+}
+
+/// Uses a held consumable once it improves the best play in hand (by more than 1%).
+fn use_if_better(b: &mut Board, hand: &mut Vec<Card>, uses: &[Use], used: &mut [bool]) {
+    for (k, u) in uses.iter().enumerate() {
+        if used[k] {
+            continue;
+        }
+        let Some((b2, h2)) = u.apply(b, hand) else { continue };
+        let now = best_play(b, hand).map_or(0.0, |p| p.floor);
+        if best_play(&b2, &h2).is_some_and(|p| p.floor > now * 1.01) {
+            *b = b2;
+            *hand = h2;
+            used[k] = true;
+        }
+    }
+}
+
+/// `sim_round` with consumables held (see `Use`).
+pub fn sim_round_uses(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[Use]) -> RoundResult {
+    let mut used = vec![false; uses.len()];
     let mut b = board.clone();
     let mut deck = start.deck.clone();
     shuffle(&mut deck, rng);
@@ -663,6 +731,7 @@ pub fn sim_round(board: &Board, start: &RoundStart, rng: &mut Rng) -> RoundResul
         b.hands_left = hands;
         b.discards_left = discards;
         b.deck_remaining = deck.len() as i64;
+        use_if_better(&mut b, &mut hand, uses, &mut used);
         match decide(&b, &hand, &deck, hands, discards, start.target - total, size) {
             Action::Play(mut idx, dig) => {
                 if idx.is_empty() {
