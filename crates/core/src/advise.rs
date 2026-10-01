@@ -2077,7 +2077,10 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                 let tb = ((top - value(b)) / 0.02).floor() as i64;
                 // money from the round: hands left over at cash out, plus what it pays as you go
                 let cash = |o: &PlayOption| ((o.spare_hands * run.money_per_hand + o.round_money) * 4.0).round() as i64;
-                ta.cmp(&tb).then(cash(b).cmp(&cash(a))).then(b.mean_total.total_cmp(&a.mean_total))
+                // then a play that wins the round right now (nothing to gain by waiting)
+                let need = start.target - start.scored;
+                let wins_now = |o: &PlayOption| o.action == "play" && o.use_first.is_none() && o.score >= need;
+                ta.cmp(&tb).then(cash(b).cmp(&cash(a))).then(wins_now(b).cmp(&wins_now(a))).then(b.mean_total.total_cmp(&a.mean_total))
             });
             opts
         });
