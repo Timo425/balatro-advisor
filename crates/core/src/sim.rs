@@ -286,9 +286,6 @@ pub struct Outcome {
     pub planets: f64,
     /// The first hand played for points after a discard (not a junk hand played to dig)
     pub next: Option<(HandType, f64)>,
-    /// The hand played last in a won round: a Blue Seal's planet is that hand's
-    /// (card.lua Card:get_end_of_round_effect, G.GAME.last_hand_played)
-    pub last: Option<HandType>,
 }
 
 /// The rounds numbered `range` after `first` (round i always draws the same cards, whatever
@@ -318,7 +315,6 @@ pub fn outcomes_after(b: &Board, start: &RoundStart, first: &Move, range: std::o
                         if total >= start.target {
                             o.won = 1.0;
                             o.spare = (start.hands - 1) as f64;
-                            o.last = Some(s.hand);
                             o.planets = seal_planets(&bb, &held);
                             o.cash += held_dollars(&held);
                         }
@@ -342,7 +338,6 @@ pub fn outcomes_after(b: &Board, start: &RoundStart, first: &Move, range: std::o
             o.total = r.total;
             o.planets = r.planets;
             o.next = r.plays.iter().find(|p| !p.2).map(|p| (p.0, p.1));
-            o.last = r.plays.last().map(|p| p.0);
             o
         })
         .collect()

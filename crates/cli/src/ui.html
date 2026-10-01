@@ -336,19 +336,7 @@ function render(d) {
     const useFirst = (o) => o.use_first ? `<b>use ${esc(o.use_first)}</b>, then ` : "";
     const thenTxt = (o) => o.then ? ` <span class="muted" title="In the simulated rounds after this discard, the hand most often played next">→ then usually <b>${esc(o.then[0])}</b> ~${num(o.then[1])} (${pct(o.then[2])} of rounds)</span>` : "";
     const tieTxt = (o) => o.tie ? ' <span class="flat" title="As good as the best move, as far as the simulation can tell">≈ as good</span>' : "";
-    // Why a move ranks where it does: its difference from the best in win chance, planets and money
-    const whyTxt = (o) => {
-      const d = [];
-      const dp = o.p_win - bp.p_win;
-      if (Math.abs(dp) >= 0.005) d.push(`${dp > 0 ? "+" : "−"}${pct(Math.abs(dp))} win`);
-      const dpl = (o.planets || 0) - (bp.planets || 0);
-      if (Math.abs(dpl) >= 0.01) d.push(`${dpl > 0 ? "+" : "−"}${Math.abs(dpl).toFixed(2)} planets`);
-      const money = (x) => (x.spare_hands || 0) * ((a.shop_odds && a.shop_odds.money_per_hand) || 1) + (x.round_money || 0);
-      const dm = money(o) - money(bp);
-      if (Math.abs(dm) >= 0.1) d.push(`${dm > 0 ? "+" : "−"}$${Math.abs(dm).toFixed(2)}`);
-      return d.length ? ` <span class="muted" title="Difference from the best move: win chance, planets from Blue Seals held at the end, money (hands left over and what the round pays)">(${d.join(", ")})</span>` : "";
-    };
-    const alts = (bp.alternatives || []).map((o) => `<tr><td>${useFirst(o)}${o.action === "discard" ? "discard " : ""}${cardsHtml(o.cards)}${thenTxt(o)}</td><td class="num muted">${o.action === "play" ? esc(o.hand) : ""}</td><td class="num">${pct(o.p_win)}${planets(o)}${tieTxt(o)}${whyTxt(o)}</td></tr>`).join("");
+    const alts = (bp.alternatives || []).map((o) => `<tr><td>${useFirst(o)}${o.action === "discard" ? "discard " : ""}${cardsHtml(o.cards)}${thenTxt(o)}</td><td class="num muted">${o.action === "play" ? esc(o.hand) : ""}</td><td class="num">${pct(o.p_win)}${planets(o)}${tieTxt(o)}</td></tr>`).join("");
     left += `<section><h2>Best play now <small>${bp.p_win != null ? "each move for this hand simulated through the rest of the round, until the best is clear · heuristic play after it" : ""} · <span title="How the game sorts by suit (and breaks rank ties)">suit order ♠ ♥ ♣ ♦</span></small></h2>
       <div class="play">${bp.use_first ? `<b>Use ${esc(bp.use_first)}</b>, then ` : ""}${bp.action === "discard" ? "<b>discard</b> " : ""}${cardsHtml(bp.cards)}<span style="margin-left:6px">${what(bp)}${bp.p_win != null ? ` · <b style="color:${color(bp.p_win)}">${pct(bp.p_win)}</b> to win` : ""}${thenTxt(bp)}${bp.ties ? ` <span class="muted" title="Other moves the simulation can't tell apart from this one">· ${bp.ties} other move${bp.ties > 1 ? "s" : ""} just as good (below)</span>` : ""}</span></div>
       ${bp.tip ? `<div class="order" style="margin-top:8px">💡 ${esc(bp.tip)}</div>` : ""}
