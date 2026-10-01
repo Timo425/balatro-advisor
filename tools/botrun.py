@@ -18,6 +18,7 @@ import time
 import urllib.request
 
 API = "http://127.0.0.1:12346"
+VERBOSE = False
 HOME = pathlib.Path.home()
 OUT = HOME / ".local/share/balatro-advisor/bot"
 STATE = OUT / "state.jkr"
@@ -43,10 +44,10 @@ def rpc(method, **params):
     return data.get("result")
 
 
-def analyze(sims):
+def analyze(sims, quick=False):
     rpc("save", path=WIN_STATE)
     out = subprocess.run(
-        ["balatro-advisor", "analyze", "--file", str(STATE), "--sims", str(sims)],
+        ["balatro-advisor", "analyze", "--file", str(STATE), "--sims", str(sims)] + (["--quick"] if quick else []),
         capture_output=True, text=True, timeout=300,
     )
     if out.returncode != 0:
@@ -74,7 +75,7 @@ def sell_named(gs, name):
 
 
 def play_hand(sims):
-    a = analyze(sims)
+    a = analyze(sims, quick=True)
     bp = a.get("best_play")
     gs = rpc("gamestate")
     hand = cards(gs, "hand")
@@ -83,6 +84,11 @@ def play_hand(sims):
         rpc("play", cards=idx)
         return
     idx = [i for i in bp["indices"] if i < len(hand)]
+    blind = next((b for b in (gs.get("blinds") or {}).values() if isinstance(b, dict) and b.get("status") == "CURRENT"), {})
+    if VERBOSE:
+        print(f"  ante {gs['ante_num']} {blind.get('name', '?')}: {gs['round'].get('chips')}/{blind.get('score', '?')} · "
+              f"hands {gs['round']['hands_left']} discards {gs['round']['discards_left']} · {bp['action']} {' '.join(bp['cards'])} "
+              f"({bp.get('hand', '')} {bp.get('score', 0):.0f}, win {bp.get('p_win')})")
     if bp["action"] == "discard" and gs["round"]["discards_left"] > 0:
         rpc("discard", cards=idx)
     else:
@@ -90,8 +96,11 @@ def play_hand(sims):
 
 
 def worth(o):
-    """The advisor ranks options; take one only when it's an improvement."""
-    return (o.get("long_mult") or 1.0) > 1.0 or o.get("p_win", 0) > o.get("_now", 0) + 0.02
+    """The advisor ranks options; take one only when it's an improvement: better by Ante 8,
+    a better win chance now, or (with a free joker slot) a higher score this round."""
+    if (o.get("long_mult") or 1.0) > 1.0 or o.get("p_win", 0) > o.get("_now", 0) + 0.02:
+        return True
+    return o["kind"] == "joker" and o.get("_free_slot") and (o.get("reach") or 0) > o.get("_reach", 0) * 1.03
 
 
 def shop(sims, log):
@@ -100,10 +109,15 @@ def shop(sims, log):
         a = analyze(sims)
         gs = rpc("gamestate")
         money = gs["money"]
-        now = a["rounds"][a["options_round"]]["p_win"] if a.get("rounds") else 0
+        rnd = a["rounds"][a["options_round"]] if a.get("rounds") else {}
+        now, reach = rnd.get("p_win", 0), rnd.get("reach", 0)
+        free = len(cards(gs, "jokers")) < (gs.get("jokers") or {}).get("limit", 5)
         acted = False
+        if VERBOSE:
+            print(f"  shop ${money} · now {now:.2f} reach {reach:.2f} free slot {free} · " + " | ".join(
+                f"{o['kind']} {o['label']} ${o['cost']} p{o['p_win']:.2f} r{o.get('reach') or 0:.2f} L{o.get('long_mult') or 0:.2f}" for o in a.get("options", [])))
         for o in a.get("options", []):
-            o["_now"] = now
+            o["_now"], o["_reach"], o["_free_slot"] = now, reach, free
             if o.get("unaffordable") or o["label"].endswith("(you have it)") or o["label"].startswith("pick "):
                 continue
             kind, key = o["kind"], o.get("key")
@@ -222,7 +236,10 @@ def main():
     p.add_argument("--stake", default="WHITE")
     p.add_argument("--sims", type=int, default=100, help="advisor round simulations (fewer = faster)")
     p.add_argument("--strategy", default="advisor")
+    p.add_argument("-v", "--verbose", action="store_true", help="print every hand")
     args = p.parse_args()
+    global VERBOSE
+    VERBOSE = args.verbose
     OUT.mkdir(parents=True, exist_ok=True)
     try:
         rpc("health")

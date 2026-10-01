@@ -61,6 +61,9 @@ enum Cmd {
         /// Analyse this save file instead of the profile's (e.g. one the bot wrote)
         #[arg(long)]
         file: Option<PathBuf>,
+        /// In a blind, only what the play decision needs (much faster; for bots)
+        #[arg(long)]
+        quick: bool,
     },
     /// Simulate a plan against the blinds ahead, next to the board as it is. For "what if I…"
     /// questions (meant for agents too): e.g. --sell mystic_summit,misprint
@@ -234,7 +237,7 @@ fn main() -> Result<()> {
                 println!("\nSaved {}. After playing it: balatro-advisor golden set {name} <score the game showed>", p.display());
             }
         }
-        Cmd::Analyze { sims, seed, file } => {
+        Cmd::Analyze { sims, seed, file, quick } => {
             let (run, g) = match file {
                 Some(f) => (save::load(f, data)?, None),
                 None => {
@@ -243,7 +246,7 @@ fn main() -> Result<()> {
                     (save::load(&save::run_path(&dir, p), data)?, gold::load(&dir, p, data).ok())
                 }
             };
-            let opts = balatro_advisor::advise::Options { sims: *sims, seed: *seed, ..Default::default() };
+            let opts = balatro_advisor::advise::Options { sims: *sims, seed: *seed, quick: *quick, ..Default::default() };
             let a = balatro_advisor::advise::analyze(&run, data, g.as_ref(), &opts);
             println!("{}", serde_json::to_string_pretty(&a)?);
         }

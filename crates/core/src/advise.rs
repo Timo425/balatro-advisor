@@ -27,11 +27,14 @@ pub struct Options {
     pub seed: u64,
     /// How many rescue candidates to report.
     pub rescue_top: usize,
+    /// In a blind, only what a play decision needs: skips the joker pool (dig list),
+    /// the style outlook and tarots you don't hold. For bots.
+    pub quick: bool,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Options { sims: 300, screen_sims: 60, hand_samples: 300, seed: 42, rescue_top: 12 }
+        Options { sims: 300, screen_sims: 60, hand_samples: 300, seed: 42, rescue_top: 12, quick: false }
     }
 }
 
@@ -792,7 +795,8 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
 
     lap("shop jokers");
     // Rescue: every joker the shop could still offer.
-    let pool = shop_pool(run, data);
+    let quick_blind = opts.quick && run.screen.in_blind();
+    let pool = if quick_blind { vec![] } else { shop_pool(run, data) };
     let per_rarity: [usize; 4] = [0, 1, 2, 3].map(|r| pool.iter().filter(|k| data.center(k).and_then(|c| c.rarity) == Some(r as u8)).count());
     let joker_share = run.shop_rates.joker_share();
     let slots = run.shop_rates.slots.max(1) as i32;
@@ -1269,7 +1273,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         top_hand.map_or("your main hand", |h| h.name())
     );
     let shares: Vec<f64> = jokers.iter().map(|j| j.score_share).collect();
-    let outlook = archetype_outlook(&ctx, run, data, &pool_entries, &shares, &hand_mix);
+    let outlook = if quick_blind { None } else { archetype_outlook(&ctx, run, data, &pool_entries, &shares, &hand_mix) };
 
     lap("outlook");
     let best_play = if run.screen.in_blind() && !run.hand.is_empty() {
@@ -2286,7 +2290,9 @@ fn tarot_values(
     planet_p: &[f64],
 ) -> Vec<TarotValue> {
     use crate::model::{Enhancement, Rank, Suit};
-    let tarots: Vec<&crate::data::Center> = data.centers.iter().filter(|c| c.set == "Tarot").collect();
+    let quick = ctx.opts.quick && run.screen.in_blind();
+    let tarots: Vec<&crate::data::Center> =
+        data.centers.iter().filter(|c| c.set == "Tarot").filter(|c| !quick || run.consumables.iter().any(|h| h.key == c.key)).collect();
     let total_rate = run.shop_rates.joker + run.shop_rates.tarot + run.shop_rates.planet + run.shop_rates.spectral + run.shop_rates.playing_card;
     let per_card = if total_rate > 0.0 { run.shop_rates.tarot / total_rate / tarots.len().max(1) as f64 } else { 0.0 };
     let per_shop = 1.0 - (1.0 - per_card).powi(run.shop_rates.slots.max(1) as i32);
@@ -3034,7 +3040,7 @@ mod tests {
     }
 
     fn quick() -> Options {
-        Options { sims: 60, screen_sims: 20, hand_samples: 80, seed: 7, rescue_top: 2 }
+        Options { sims: 60, screen_sims: 20, hand_samples: 80, seed: 7, rescue_top: 2, quick: false }
     }
 
     fn shop_action(owned: &[(&str, Option<Edition>, Option<i64>)], buy: &str) -> String {
