@@ -250,6 +250,7 @@ function render(d) {
   }
   if (d.status !== "ok") return;
   const a = d.analysis;
+  const noGold = new Set(((d.gold && d.gold.missing) || []).map((j) => j.key));
   $("#h-deck").innerHTML = `<b>${esc(a.deck)}</b>`;
   $("#h-ante").innerHTML = `Ante <b>${a.ante}</b> · <b>${STAKES[a.stake] || a.stake}</b>`;
   $("#h-money").innerHTML = `<b>$${a.dollars}</b>`;
@@ -359,7 +360,7 @@ function render(d) {
     }
     for (const [title, rows] of sections) {
     right += `<section><h2>${title}</h2><table><tr><th></th><th class="num">Cost</th><th class="num" title="Money you'd have left, and the interest it earns per round">Left · interest</th><th class="num">Win chance</th><th class="num" title="${esc(a.long_assumptions || "")}">By Ante 8</th></tr>` +
-      rows.map((o) => `<tr${o.unaffordable ? ' class="broke" title="You can\'t afford this right now"' : ""}><td class="name"${o.desc ? ` title="${esc(o.desc)}"` : ""}>${o.kind === "joker" ? '<span class="muted">🃏</span> ' : ""}<b>${esc(o.label)}</b>${o.key ? styleTags(a, o.key) : ""}${o.unaffordable ? ' <span class="down">can\'t afford</span>' : ""} <span class="muted">${esc(o.note)}</span>${o.key ? growthLine(a, o.key) : ""}</td><td class="num">$${o.cost}</td>
+      rows.map((o) => `<tr${o.unaffordable ? ' class="broke" title="You can\'t afford this right now"' : ""}><td class="name"${o.desc ? ` title="${esc(o.desc)}"` : ""}>${o.kind === "joker" ? '<span class="muted">🃏</span> ' : ""}<b>${esc(o.label)}</b>${o.kind === "joker" && noGold.has(o.key) ? ' <span class="star" title="No Gold sticker yet">★</span>' : ""}${o.key ? styleTags(a, o.key) : ""}${o.unaffordable ? ' <span class="down">can\'t afford</span>' : ""} <span class="muted">${esc(o.note)}</span>${o.key ? growthLine(a, o.key) : ""}</td><td class="num">$${o.cost}</td>
         <td class="num" title="Money left, and the interest it earns per round ($1 per $5, before payouts)"><span class="${o.interest_after < o.interest_now ? "down" : o.interest_after > o.interest_now || o.money_gain ? "up" : "muted"}">$${Math.round(o.money_after)} · int $${o.interest_after}${o.interest_after < o.interest_now ? ` (−$${o.interest_now - o.interest_after})` : o.interest_after > o.interest_now ? ` (+$${o.interest_after - o.interest_now})` : ""}</span></td>
         <td class="num"><span class="muted">${pct(r.p_win)}</span><span class="arr">→</span>${Math.abs(o.p_win - r.p_win) < NOISE ? `<span class="flat" title="Within simulation noise">±0</span>` : `<span class="${o.p_win > r.p_win ? "up" : "down"}">${pct(o.p_win)}</span>`}</td>
         <td class="num" title="${esc(a.long_assumptions || "")}">${longTxt(o.long_mult)}</td></tr>`).join("") + `</table></section>`;
