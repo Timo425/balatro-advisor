@@ -269,53 +269,75 @@ pub fn odds_after(b: &Board, start: &RoundStart, first: &Move, sims: usize, seed
 /// `odds_after` with consumables held: the rest of the round may use them (see `Use`). Also
 /// the mean number of planets Blue Seal cards held at the end make (0 in a lost round).
 pub fn odds_after_uses(b: &Board, start: &RoundStart, first: &Move, sims: usize, seed: u64, uses: &[Use]) -> (f64, f64, f64, f64, f64) {
-    let size = start.hand_size.max(1) as usize;
-    let (mut wins, mut sum, mut spare, mut cash, mut planets) = (0usize, 0.0, 0.0, 0.0, 0.0);
-    for i in 0..sims {
-        let mut rng = Rng::new(seed.wrapping_add(i as u64 * 7919));
-        let mut deck = start.deck.clone();
-        shuffle(&mut deck, &mut rng);
-        let mut hand = start.hand.clone();
-        draw(&mut hand, &mut deck, size);
-        let mut bb = b.clone();
-        bb.hands_left = start.hands;
-        bb.discards_left = start.discards;
-        bb.deck_remaining = deck.len() as i64;
-        let next = match first {
-            Move::Play(idx) => {
-                let played: Vec<Card> = idx.iter().filter_map(|&k| hand.get(k).copied()).collect();
-                let held: Vec<Card> = (0..hand.len()).filter(|k| !idx.contains(k)).map(|k| hand[k]).collect();
-                let o = score::score(&bb, &played, &held, &mut rng, false);
-                cash += o.dollars;
-                let total = start.scored + o.score;
-                if total >= start.target || start.hands <= 1 {
-                    if total >= start.target {
-                        wins += 1;
-                        spare += (start.hands - 1) as f64;
-                        planets += seal_planets(&bb, &held);
-                    }
-                    sum += total;
-                    continue;
-                }
-                RoundStart { hand: held, deck, hands: start.hands - 1, scored: total, ..start.clone() }
-            }
-            Move::Discard(idx) => {
-                cash += discard_money(&bb, &hand, idx);
-                let kept: Vec<Card> = (0..hand.len()).filter(|k| !idx.contains(k)).map(|k| hand[k]).collect();
-                RoundStart { hand: kept, deck, discards: (start.discards - 1).max(0), ..start.clone() }
-            }
-        };
-        let r = sim_round_uses(b, &next, &mut rng, uses);
-        wins += r.won as usize;
-        if r.won {
-            spare += r.hands_left as f64;
-        }
-        cash += r.money;
-        sum += r.total;
-        planets += r.planets;
-    }
+    let outs = outcomes_after(b, start, first, 0..sims, seed, uses);
     let n = sims.max(1) as f64;
-    (wins as f64 / n, sum / n, spare / n, cash / n, planets / n)
+    let sum = |f: fn(&Outcome) -> f64| outs.iter().map(f).sum::<f64>() / n;
+    (sum(|o| o.won), sum(|o| o.total), sum(|o| o.spare), sum(|o| o.cash), sum(|o| o.planets))
+}
+
+/// One simulated round after a first move. `won` is 0 or 1; hands left over and planets count
+/// only in a won round.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Outcome {
+    pub won: f64,
+    pub total: f64,
+    pub spare: f64,
+    pub cash: f64,
+    pub planets: f64,
+}
+
+/// The rounds numbered `range` after `first` (round i always draws the same cards, whatever
+/// the move, so moves compare on the same draws and more rounds can be added later).
+pub fn outcomes_after(b: &Board, start: &RoundStart, first: &Move, range: std::ops::Range<usize>, seed: u64, uses: &[Use]) -> Vec<Outcome> {
+    let size = start.hand_size.max(1) as usize;
+    range
+        .map(|i| {
+            let mut rng = Rng::new(seed.wrapping_add(i as u64 * 7919));
+            let mut deck = start.deck.clone();
+            shuffle(&mut deck, &mut rng);
+            let mut hand = start.hand.clone();
+            draw(&mut hand, &mut deck, size);
+            let mut bb = b.clone();
+            bb.hands_left = start.hands;
+            bb.discards_left = start.discards;
+            bb.deck_remaining = deck.len() as i64;
+            let mut o = Outcome::default();
+            let next = match first {
+                Move::Play(idx) => {
+                    let played: Vec<Card> = idx.iter().filter_map(|&k| hand.get(k).copied()).collect();
+                    let held: Vec<Card> = (0..hand.len()).filter(|k| !idx.contains(k)).map(|k| hand[k]).collect();
+                    let s = score::score(&bb, &played, &held, &mut rng, false);
+                    o.cash += s.dollars;
+                    let total = start.scored + s.score;
+                    if total >= start.target || start.hands <= 1 {
+                        if total >= start.target {
+                            o.won = 1.0;
+                            o.spare = (start.hands - 1) as f64;
+                            o.planets = seal_planets(&bb, &held);
+                            o.cash += held_dollars(&held);
+                        }
+                        o.total = total;
+                        return o;
+                    }
+                    RoundStart { hand: held, deck, hands: start.hands - 1, scored: total, ..start.clone() }
+                }
+                Move::Discard(idx) => {
+                    o.cash += discard_money(&bb, &hand, idx);
+                    let kept: Vec<Card> = (0..hand.len()).filter(|k| !idx.contains(k)).map(|k| hand[k]).collect();
+                    RoundStart { hand: kept, deck, discards: (start.discards - 1).max(0), ..start.clone() }
+                }
+            };
+            let r = sim_round_uses(b, &next, &mut rng, uses);
+            o.won = r.won as u8 as f64;
+            if r.won {
+                o.spare = r.hands_left as f64;
+            }
+            o.cash += r.money;
+            o.total = r.total;
+            o.planets = r.planets;
+            o
+        })
+        .collect()
 }
 
 /// The suit worth keeping: the one a suit joker rewards (Wrathful, Greedy, Lusty,
@@ -343,13 +365,30 @@ pub fn seal_planets(b: &Board, held: &[Card]) -> f64 {
     n.min(b.planet_slots.max(0)) as f64
 }
 
-/// A play that wins the round now while keeping as many Blue Seal cards in hand as there are
-/// free slots for their planets (none kept: the usual policy decides).
+/// Cards that pay at the end of a won round while still in hand (card.lua
+/// Card:get_end_of_round_effect): a Blue Seal's planet while a consumable slot is free, and a
+/// Gold card's $3 (`h_dollars`). Blue Seals first, as many as there are free slots.
+pub fn pays_at_end(b: &Board, hand: &[Card]) -> Vec<usize> {
+    let mut v: Vec<usize> = (0..hand.len())
+        .filter(|&i| hand[i].seal == Some(crate::model::Seal::Blue) && !hand[i].debuff)
+        .take(b.planet_slots.max(0) as usize)
+        .collect();
+    let gold: Vec<usize> = (0..hand.len()).filter(|&i| hand[i].enhancement == Some(Enhancement::Gold) && !hand[i].debuff && !v.contains(&i)).collect();
+    v.extend(gold);
+    v
+}
+
+/// The money Gold cards still in hand pay at the end of a won round ($3 each).
+pub fn held_dollars(held: &[Card]) -> f64 {
+    3.0 * held.iter().filter(|c| c.enhancement == Some(Enhancement::Gold) && !c.debuff).count() as f64
+}
+
+/// A play that wins the round now while keeping as many of the cards that pay at round end
+/// in hand as it can (none kept: the usual policy decides).
 fn win_keeping_seals(b: &Board, hand: &[Card], need: f64) -> Option<Vec<usize>> {
-    let seals: Vec<usize> = (0..hand.len()).filter(|&i| hand[i].seal == Some(crate::model::Seal::Blue) && !hand[i].debuff).collect();
-    let k = seals.len().min(b.planet_slots.max(0) as usize);
-    for r in (1..=k).rev() {
-        let free: Vec<usize> = (0..hand.len()).filter(|i| !seals[..r].contains(i)).collect();
+    let keep = pays_at_end(b, hand);
+    for r in (1..=keep.len()).rev() {
+        let free: Vec<usize> = (0..hand.len()).filter(|i| !keep[..r].contains(i)).collect();
         let cards: Vec<Card> = free.iter().map(|&i| hand[i]).collect();
         if let Some(p) = best_play(b, &cards).filter(|p| p.floor >= need) {
             return Some(p.cards.iter().map(|&j| free[j]).collect());
@@ -547,13 +586,31 @@ enum Action {
     Discard(Vec<usize>),
 }
 
+/// Cards that pay at the end of the round while held (`pays_at_end`) stay out of play as long
+/// as the rest of the hand keeps you on pace for the target; then the usual policy decides
+/// with the rest.
+fn decide(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i64, need: f64, size: usize) -> Action {
+    let keep = pays_at_end(b, hand);
+    if !keep.is_empty() && hands > 1 {
+        let free: Vec<usize> = (0..hand.len()).filter(|i| !keep.contains(i)).collect();
+        let cards: Vec<Card> = free.iter().map(|&i| hand[i]).collect();
+        if best_play(b, &cards).is_some_and(|p| p.floor * hands as f64 >= need) {
+            return match decide_cards(b, &cards, deck, hands, discards, need, size.saturating_sub(keep.len()).max(1)) {
+                Action::Play(v, d) => Action::Play(v.into_iter().map(|k| free[k]).collect(), d),
+                Action::Discard(v) => Action::Discard(v.into_iter().map(|k| free[k]).collect()),
+            };
+        }
+    }
+    decide_cards(b, hand, deck, hands, discards, need, size)
+}
+
 /// The heuristic play/discard policy (labelled as a heuristic everywhere it shows):
 /// - play the best hand if it wins, if it's the last hand, or if repeating it keeps pace;
 /// - otherwise, if chasing a flush is worth more than the best hand (exact draw odds ×
 ///   what that flush would score), throw away off-suit cards: with a discard, or by
 ///   playing them as a junk hand once discards are gone;
 /// - otherwise discard the cards outside the best play and hope to improve it.
-fn decide(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i64, need: f64, size: usize) -> Action {
+fn decide_cards(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i64, need: f64, size: usize) -> Action {
     let Some(best) = best_play(b, hand) else { return Action::Play(vec![], false) };
     let play_best = Action::Play(with_fillers(b, hand, &best.cards), false);
     // Mail-In Rebate: cash cards of its rank with a discard before playing (they pay $5
@@ -791,6 +848,7 @@ pub fn sim_round_uses(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[
                 hand = held;
                 hands -= 1;
                 if total >= start.target {
+                    money += held_dollars(&hand);
                     return RoundResult { total, won: true, saved: false, best_hand, plays, money, hands_left: hands, planets: seal_planets(&b, &hand) };
                 }
                 draw(&mut hand, &mut deck, size);

@@ -196,6 +196,9 @@ pub struct PlayOption {
     pub use_first: Option<String>,
     /// Planets from Blue Seals held at the end, on average (counted in the ranking)
     pub planets: f64,
+    /// As good as the best move, as far as the simulation can tell
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub tie: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -590,6 +593,11 @@ const SCREEN_DEALS: usize = 100;
 /// Screening every possible discard: (rounds each, how many go on) per stage; the last
 /// stage's survivors join the full simulation.
 const SCREEN_DISCARD_STAGES: &[(usize, usize)] = &[(32, 24), (160, 6)];
+/// Best play's comparison: rounds in the first batch (each batch doubles), the most rounds a
+/// move gets, and how close (as a share of the round's value) counts as equally good.
+const RACE_FIRST: usize = 64;
+const RACE_MAX: usize = 1600;
+const RACE_EQUAL: f64 = 0.003;
 
 struct Ctx<'a> {
     run: &'a RunState,
@@ -2069,6 +2077,8 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             p.levels[top as usize] = l.with_level(l.level + 1);
             (long_score(&p) / l0 - 1.0).max(0.0)
         });
+        // A dollar won this round, in the same long-run measure: what +$10 does to the projection
+        let dollar_gain = ((long_score(&fill_long(project(&|_| true, run.dollars), None, once(10.0))) / l0 - 1.0) / 10.0).max(0.0);
         b.deck_remaining = run.draw_pile.len() as i64;
         let has = |k: Kind| b.jokers.iter().any(|j| j.kind == k && !j.debuff);
         let tip = (run.discards_left > 0 && has(Kind::MysticSummit) && !has(Kind::Banner)).then(|| {
@@ -2088,7 +2098,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                 bb.seal_seen_value = 15.0;
             }
             let start = ctx.start_for(spec, &bb);
-            let (sims, seed) = (ctx.opts.sims, ctx.opts.seed);
+            let seed = ctx.opts.seed;
             // Consumables you hold, as the round can use them: tarots and spectral cards by
             // what they do to your hand, planets by the level they add. Every move is simulated
             // with them still held (used once they improve the best play in hand), and each
@@ -2130,9 +2140,20 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                 };
                 // cards a consumable added aren't in your hand yet: no position
                 let indices = idx.iter().filter(|&&i| i < hand_order.len()).map(|&i| hand_order[i]).collect();
-                PlayOption { spare_hands: spare, round_money: cash, action: action.into(), cards: cards.iter().map(Card::label).collect(), indices, dig, hand: name, score, p_win: p, mean_total: mean, use_first, planets }
+                PlayOption { spare_hands: spare, round_money: cash, action: action.into(), cards: cards.iter().map(Card::label).collect(), indices, dig, hand: name, score, p_win: p, mean_total: mean, use_first, planets, tie: false }
             };
             let mut moves = sim::candidate_moves(&bb, &start.hand, &start.deck, start.hands, start.discards, start.target - start.scored, start.hand_size.max(1) as usize);
+            // Exact ties are broken by the cards themselves, so the order your hand is sorted in
+            // never changes the advice
+            let canon = |m: &sim::Move, hand: &[Card]| {
+                let (kind, idx) = match m {
+                    sim::Move::Play(v) => (0, v),
+                    sim::Move::Discard(v) => (1, v),
+                };
+                let mut l: Vec<String> = idx.iter().map(|&i| hand[i].label()).collect();
+                l.sort();
+                (kind, l)
+            };
             // Every possible discard, narrowed down in stages (the same draws for each): all of
             // them on a few quick rounds, the best on more, and the best of those join the full
             // simulation. So no discard is missed for want of a rule, and rounds go where moves
@@ -2154,13 +2175,15 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                 for &(n, keep) in SCREEN_DISCARD_STAGES {
                     let r = par_map(&pool, |m| sim::odds_after_uses(&bb, &start, m, n, seed, &uses));
                     let mut order: Vec<usize> = (0..pool.len()).collect();
-                    order.sort_by(|&a, &b| key(&r[b]).total_cmp(&key(&r[a])).then(r[b].1.total_cmp(&r[a].1)));
+                    order.sort_by(|&a, &b| key(&r[b]).total_cmp(&key(&r[a])).then(r[b].1.total_cmp(&r[a].1)).then(canon(&pool[a], &start.hand).cmp(&canon(&pool[b], &start.hand))));
                     pool = order.into_iter().take(keep).map(|i| pool[i].clone()).collect();
                 }
                 moves.extend(pool);
             }
-            let res = par_map(&moves, |m| sim::odds_after_uses(&bb, &start, m, sims, seed, &uses));
-            let mut opts: Vec<PlayOption> = moves.iter().zip(res).map(|(m, r)| to_opt(m, &start.hand, &bb, r, None)).collect();
+            // Every candidate: the moves above with your consumables kept, and each held
+            // consumable used first, then any of the moves after it
+            type Cand = (sim::Move, Board, RoundStart, Vec<sim::Use>, Option<String>);
+            let mut cands: Vec<Cand> = moves.iter().map(|m| (m.clone(), bb.clone(), start.clone(), uses.clone(), None)).collect();
             for (k, u) in uses.iter().enumerate() {
                 if uses[..k].iter().any(|x| x.name == u.name) {
                     continue;
@@ -2168,33 +2191,96 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                 let Some((b2, h2)) = u.apply(&bb, &start.hand) else { continue };
                 let rest: Vec<sim::Use> = uses.iter().enumerate().filter(|(j, _)| *j != k).map(|(_, x)| x.clone()).collect();
                 let s2 = RoundStart { hand: h2, ..start.clone() };
-                let moves2 = sim::candidate_moves(&b2, &s2.hand, &s2.deck, s2.hands, s2.discards, s2.target - s2.scored, s2.hand_size.max(1) as usize);
-                let res2 = par_map(&moves2, |m| sim::odds_after_uses(&b2, &s2, m, sims, seed, &rest));
-                let best2 = moves2
-                    .iter()
-                    .zip(res2)
-                    .map(|(m, r)| to_opt(m, &s2.hand, &b2, r, Some(u.name.clone())))
-                    .max_by(|a, b| (a.p_win + planet_gain * a.planets).total_cmp(&(b.p_win + planet_gain * b.planets)).then(a.round_money.total_cmp(&b.round_money)));
-                opts.extend(best2);
+                for m in sim::candidate_moves(&b2, &s2.hand, &s2.deck, s2.hands, s2.discards, s2.target - s2.scored, s2.hand_size.max(1) as usize) {
+                    cands.push((m, b2.clone(), s2.clone(), rest.clone(), Some(u.name.clone())));
+                }
             }
-            // Ranked by what the round leaves you: the chance to win it, plus the planets Blue
-            // Seals held at the end make, each worth its long-run gain (win chance × (1 + gain ×
-            // planets when won)). Within 2 points (noise), the one that wins with more hands to
-            // spare ($1 each at cash out; chips past the target are worth nothing), then the
-            // higher mean round total.
-            let value = |o: &PlayOption| o.p_win + planet_gain * o.planets;
-            opts.sort_by(|a, b| value(b).total_cmp(&value(a)));
-            let top = opts.first().map_or(0.0, value);
-            opts.sort_by(|a, b| {
-                let ta = ((top - value(a)) / 0.02).floor() as i64;
-                let tb = ((top - value(b)) / 0.02).floor() as i64;
-                // money from the round: hands left over at cash out, plus what it pays as you go
-                let cash = |o: &PlayOption| ((o.spare_hands * run.money_per_hand + o.round_money) * 4.0).round() as i64;
-                // then a play that wins the round right now (nothing to gain by waiting)
-                let need = start.target - start.scored;
-                let wins_now = |o: &PlayOption| o.action == "play" && o.use_first.is_none() && o.score >= need;
-                ta.cmp(&tb).then(cash(b).cmp(&cash(a))).then(wins_now(b).cmp(&wins_now(a))).then(b.mean_total.total_cmp(&a.mean_total))
-            });
+            // Compared on one measure per simulated round, as the shop ranking does: winning it,
+            // times the long-run value of what it leaves you (the planets Blue Seals held at the
+            // end make, and its money: hands left over at cash out and what it pays as you go,
+            // each by its gain in the long-run projection). A lost round counts 0. All on the same draws,
+            // in batches: a move clearly worse than the leader (95%) stops, one provably as good
+            // (within RACE_EQUAL) is a tie and stops, the rest go on, up to RACE_MAX rounds.
+            let money_per_hand = run.money_per_hand;
+            let utility = |o: &sim::Outcome| o.won * (1.0 + planet_gain * o.planets + dollar_gain * (o.spare * money_per_hand + o.cash));
+            let mut outs: Vec<Vec<sim::Outcome>> = vec![Vec::new(); cands.len()];
+            let mut alive: Vec<usize> = (0..cands.len()).collect();
+            let mut tied = vec![false; cands.len()];
+            let mean_u = |v: &[sim::Outcome]| v.iter().map(utility).sum::<f64>() / v.len().max(1) as f64;
+            let (mut n, mut batch) = (0usize, RACE_FIRST);
+            let mut leader = 0usize;
+            while n < RACE_MAX && !alive.is_empty() {
+                let to = (n + batch).min(RACE_MAX);
+                let new = par_map(&alive, |&c| {
+                    let (m, b, st, u, _) = &cands[c];
+                    sim::outcomes_after(b, st, m, n..to, seed, u)
+                });
+                for (&c, v) in alive.iter().zip(new) {
+                    outs[c].extend(v);
+                }
+                n = to;
+                batch = n;
+                let ck = |c: usize| (cands[c].4.clone(), canon(&cands[c].0, &cands[c].2.hand));
+                leader = *alive.iter().max_by(|&&x, &&y| mean_u(&outs[x]).total_cmp(&mean_u(&outs[y])).then(ck(y).cmp(&ck(x)))).unwrap();
+                let lead = &outs[leader];
+                alive.retain(|&c| {
+                    if c == leader {
+                        return true;
+                    }
+                    // paired differences on the same draws
+                    let d: Vec<f64> = lead.iter().zip(&outs[c]).map(|(x, y)| utility(x) - utility(y)).collect();
+                    let k = d.len() as f64;
+                    let m = d.iter().sum::<f64>() / k;
+                    let se = (d.iter().map(|x| (x - m) * (x - m)).sum::<f64>() / (k - 1.0).max(1.0) / k).sqrt();
+                    if m - 2.0 * se > 0.0 {
+                        return false;
+                    }
+                    if m.abs() + 2.0 * se < RACE_EQUAL {
+                        tied[c] = true;
+                        return false;
+                    }
+                    true
+                });
+                if alive.len() == 1 {
+                    break;
+                }
+            }
+            // still undecided at the cap: as good as the leader as far as can be told
+            for &c in &alive {
+                if c != leader {
+                    tied[c] = true;
+                }
+            }
+            let mut opts: Vec<PlayOption> = (0..cands.len())
+                .map(|c| {
+                    let v = &outs[c];
+                    let k = v.len().max(1) as f64;
+                    let avg = |f: fn(&sim::Outcome) -> f64| v.iter().map(f).sum::<f64>() / k;
+                    let (m, b, st, _, use_first) = &cands[c];
+                    let mut o = to_opt(m, &st.hand, b, (avg(|o| o.won), avg(|o| o.total), avg(|o| o.spare), avg(|o| o.cash), avg(|o| o.planets)), use_first.clone());
+                    o.tie = tied[c];
+                    o
+                })
+                .collect();
+            let score_of = |c: usize| mean_u(&outs[c]);
+            let mut order: Vec<usize> = (0..cands.len()).collect();
+            // the leader, then its ties, then the rest by their measure
+            let ck = |c: usize| (cands[c].4.clone(), canon(&cands[c].0, &cands[c].2.hand));
+            order.sort_by(|&x, &y| (y == leader).cmp(&(x == leader)).then(tied[y].cmp(&tied[x])).then(score_of(y).total_cmp(&score_of(x))).then(ck(x).cmp(&ck(y))));
+            // Moves as good as the leader are equal as far as can be told: among them a play that
+            // wins the round right now goes first (nothing to gain by waiting), then by the cards
+            // themselves (which one leads among equals is noise, e.g. from how the hand is sorted)
+            let need = start.target - start.scored;
+            let wins_now = |o: &PlayOption| o.action == "play" && o.use_first.is_none() && o.score >= need;
+            let group = order.iter().take_while(|&&c| c == leader || tied[c]).count();
+            order[..group].sort_by(|&x, &y| wins_now(&opts[y]).cmp(&wins_now(&opts[x])).then(ck(x).cmp(&ck(y))));
+            let first = order[0];
+            for &c in &order {
+                opts[c].tie = c != first && (c == leader || tied[c]);
+            }
+            let mut sorted: Vec<PlayOption> = order.into_iter().map(|c| opts[c].clone()).collect();
+            sorted.dedup_by(|a, b| a.action == b.action && a.cards == b.cards && a.use_first == b.use_first);
+            let opts = sorted;
             opts
         });
         match look.filter(|o| !o.is_empty()) {
