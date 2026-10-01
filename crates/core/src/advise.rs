@@ -692,23 +692,37 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     // Face-down cards are unknown to you, so to the advisor too: each is swapped for a random
     // card of the draw pile (its real self goes back in the pile; the deck stays the same).
     let (live_hand, live_pile) = {
-        // What your sorted hand gives away: the game sorts face-down cards by their real rank
-        // and suit, so their neighbours bound them (rank sort: between the ranks around it;
-        // suit sort: one of the suits around it).
-        let shown: Vec<(usize, &Card)> = run.hand.iter().enumerate().filter(|(_, c)| !c.face_down).collect();
-        let by_rank = shown.windows(2).all(|w| w[0].1.rank.0 >= w[1].1.rank.0);
+        // What you can find out by sorting: the game sorts by a fixed key (cardarea.lua sort,
+        // card.lua get_nominal: rank value, then face, then suit; or suit first), face-down
+        // cards by their real one. Where a card lands in rank order and in suit order bounds it,
+        // just as flipping between the two sorts shows you.
+        let suit_nom = |c: &Card| match c.suit {
+            crate::model::Suit::Spades => 0.04,
+            crate::model::Suit::Hearts => 0.03,
+            crate::model::Suit::Clubs => 0.02,
+            crate::model::Suit::Diamonds => 0.01,
+        };
+        let face_nom = |c: &Card| match c.rank.0 {
+            14 => 0.4,
+            13 => 0.3,
+            12 => 0.2,
+            11 => 0.1,
+            _ => 0.0,
+        };
+        let rank_key = |c: &Card| c.rank.chips() + suit_nom(c) + face_nom(c);
+        let suit_key = |c: &Card| suit_nom(c) * 1000.0 + c.rank.chips() + face_nom(c);
+        // the known cards just above and below a hidden one, sorted by `key`
+        let bounds = |pos: usize, key: &dyn Fn(&Card) -> f64| -> (f64, f64) {
+            let k = key(&run.hand[pos]);
+            let shown = run.hand.iter().filter(|c| !c.face_down).map(key);
+            let above = shown.clone().filter(|&x| x >= k).fold(f64::INFINITY, f64::min);
+            let below = shown.filter(|&x| x <= k).fold(f64::NEG_INFINITY, f64::max);
+            (below, above)
+        };
         let fits = |pos: usize, c: &Card| -> bool {
-            let before = shown.iter().rev().find(|(i, _)| *i < pos).map(|(_, c)| **c);
-            let after = shown.iter().find(|(i, _)| *i > pos).map(|(_, c)| **c);
-            if by_rank {
-                before.is_none_or(|b| c.rank.0 <= b.rank.0) && after.is_none_or(|a| c.rank.0 >= a.rank.0)
-            } else {
-                match (before, after) {
-                    (Some(b), Some(a)) => c.suit == b.suit || c.suit == a.suit,
-                    (Some(x), None) | (None, Some(x)) => c.suit == x.suit,
-                    (None, None) => true,
-                }
-            }
+            let (rl, rh) = bounds(pos, &rank_key);
+            let (sl, sh) = bounds(pos, &suit_key);
+            (rl..=rh).contains(&rank_key(c)) && (sl..=sh).contains(&suit_key(c))
         };
         let mut hand: Vec<Card> = hand_order.iter().map(|&i| run.hand[i]).collect();
         let mut pile = run.draw_pile.clone();

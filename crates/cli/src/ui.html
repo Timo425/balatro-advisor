@@ -329,7 +329,7 @@ function render(d) {
     const cardsHtml = (cs) => cs.map((c) => `<span class="card" style="color:${suitColour(c)}">${esc(c)}</span>`).join("");
     const what = (o) => o.action === "discard" ? "<b>discard</b>" : `<b>${esc(o.hand)}</b> · ${num(o.score)}${o.dig ? ` <span class="muted" title="These don't score: sent along to draw new cards (a free discard)">· last ${o.dig} to dig</span>` : ""}`;
     const alts = (bp.alternatives || []).map((o) => `<tr><td>${o.action === "discard" ? "discard " : ""}${cardsHtml(o.cards)}</td><td class="num muted">${o.action === "play" ? esc(o.hand) : ""}</td><td class="num">${pct(o.p_win)}</td></tr>`).join("");
-    left += `<section><h2>Best play now <small>${bp.p_win != null ? "each move for this hand simulated through the rest of the round · heuristic play after it" : ""}</small></h2>
+    left += `<section><h2>Best play now <small>${bp.p_win != null ? "each move for this hand simulated through the rest of the round · heuristic play after it" : ""} · <span title="How the game sorts by suit (and breaks rank ties)">suit order ♠ ♥ ♣ ♦</span></small></h2>
       <div class="play">${bp.action === "discard" ? "<b>Discard</b> " : ""}${cardsHtml(bp.cards)}<span style="margin-left:6px">${what(bp)}${bp.p_win != null ? ` · <b style="color:${color(bp.p_win)}">${pct(bp.p_win)}</b> to win` : ""}</span></div>
       ${bp.tip ? `<div class="order" style="margin-top:8px">💡 ${esc(bp.tip)}</div>` : ""}
       ${alts ? `<details style="margin-top:6px"><summary class="muted">other moves for this hand</summary><table class="mix">${alts}</table></details>` : ""}</section>`;
