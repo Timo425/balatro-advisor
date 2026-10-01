@@ -1845,17 +1845,41 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     }
     let base_reach = base_odds.get(key_round).zip(ctx.specs.get(key_round)).map_or(0.0, |(o, sp)| o.1.mean / sp.start.target.max(1.0));
     // Money a rich run can't turn into more planet levels (`levels_for` reaches its 2 an ante
-    // at the interest line + $30) goes on rerolls: worth the best jokers it finds by Ante 8
-    // (`money_value_with`, valued by their By Ante 8). Each option's money left (plus what an
-    // economy voucher earns by then) against keeping your money.
+    // at the interest line + $30) goes on rerolls and packs, whichever split is worth more by
+    // Ante 8: rerolls by the best jokers they find (`money_value_with`, by their By Ante 8),
+    // packs ($4, 2 a shop) by a typical pack's best pick, each further pack worth ×0.8 of the
+    // one before (a heuristic). The typical pack: Arcana, Celestial, Buffoon, Spectral and
+    // Standard by their shop weights (game.lua P_CENTERS: 4, 4, 1.2, 0.6, 4; Standard counted
+    // as nothing). Each option's money left (plus what an economy voucher earns by then)
+    // against keeping your money.
     {
         let saturated = line + 30.0;
         let shops_long = (3.0 * antes_left).round() as usize;
+        let gain = |vals: Vec<f64>, k: usize| if vals.is_empty() { 0.0 } else { (best_of_subsets(&vals, k).0 - 1.0).max(0.0) };
+        let arcana = gain(tarot_long.iter().zip(&tarots).filter(|(_, t)| !t.spectral).map(|(v, _)| v.max(1.0)).collect(), 3);
+        let spectral = gain(tarot_long.iter().zip(&tarots).filter(|(_, t)| t.spectral).map(|(v, _)| v.max(1.0)).collect(), 2);
+        let celestial = gain(planet_long.iter().map(|v| v.max(1.0)).collect(), 3);
+        let buffoon = gain(pool_entries.iter().map(|c| c.long_mult.unwrap_or(1.0).max(1.0)).collect(), 2);
+        let pack_gain = (4.0 * arcana + 4.0 * celestial + 1.2 * buffoon + 0.6 * spectral) / (4.0 + 4.0 + 4.0 + 1.2 + 0.6);
         let mut cache: std::collections::HashMap<i64, f64> = std::collections::HashMap::new();
-        let mut reroll_long = |m: f64| {
-            *cache.entry(m.round() as i64).or_insert_with(|| {
-                money_value_with(&ctx, &pool_entries, &|c: &Candidate| c.long_mult.unwrap_or(1.0), 1.0, (m - saturated).max(0.0), false, shops_long, false)
+        let mut rerolls = |excess: f64| {
+            let k = (excess / 5.0).round() as i64;
+            *cache.entry(k).or_insert_with(|| {
+                money_value_with(&ctx, &pool_entries, &|c: &Candidate| c.long_mult.unwrap_or(1.0), 1.0, k as f64 * 5.0, false, shops_long, false)
             })
+        };
+        let mut reroll_long = |m: f64| {
+            let excess = (m - saturated).max(0.0);
+            let mut best = rerolls(excess);
+            let mut packs = 0.0;
+            for p in 1..=(2 * shops_long) {
+                if 4.0 * p as f64 > excess {
+                    break;
+                }
+                packs += pack_gain * 0.8f64.powi(p as i32 - 1);
+                best = best.max((1.0 + packs) * rerolls(excess - 4.0 * p as f64));
+            }
+            best
         };
         let base = reroll_long(run.dollars).max(1e-9);
         for o in options.iter_mut() {
