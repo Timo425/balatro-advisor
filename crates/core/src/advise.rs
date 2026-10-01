@@ -333,6 +333,25 @@ pub struct BlindView {
     /// Cash for beating it, before unused-hand money and interest.
     pub reward: i64,
     pub skip_tag: Option<TagView>,
+    /// For the blind you're choosing now: skipping it for its tag against playing it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skip: Option<SkipCompare>,
+}
+
+/// Skip or play: the chance to get through this ante (the shops before the boss count, one
+/// fewer if you skip) and the long-run value (By Ante 8), each way. An estimate.
+#[derive(Debug, Clone, Serialize)]
+pub struct SkipCompare {
+    pub play_survive: f64,
+    pub play_long: f64,
+    pub skip_survive: f64,
+    pub skip_long: f64,
+    /// "play", "skip" or "close"
+    pub verdict: String,
+    /// What the tag was counted as
+    pub tag: String,
+    /// False when the tag's effect isn't valued (then skipping only shows its cost)
+    pub valued: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -892,6 +911,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                     key: k.clone(),
                     name: data.tag(k).map_or_else(|| k.clone(), |t| t.name.clone()),
                 }),
+                skip: None,
             }
         })
         .collect();
@@ -1370,6 +1390,87 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     }
     let base_reach = base_odds.get(key_round).zip(ctx.specs.get(key_round)).map_or(0.0, |(o, sp)| o.1.mean / sp.start.target.max(1.0));
     rank_options(&mut options, base_reach);
+    // Skip or play the blind you're choosing now
+    let mut blind_views = blind_views;
+    if let Some(bi) = blind_views.iter().position(|b| b.state == "Select" && b.slot != "Boss") {
+        let bv = blind_views[bi].clone();
+        let p_blind = bv.p_win.unwrap_or(1.0);
+        let p_boss = base_odds.get(key_round).map_or(0.0, |o| o.0);
+        let value = |c: &Candidate| c.p_win.get(key_round).copied().unwrap_or(p_boss);
+        let (_, k) = shops_ahead(run, false);
+        let survive_with = |money: f64, shops: usize, p0: f64| money_value_with(&ctx, &pool_entries, &value, p0, money, false, shops).max(p0).min(1.0);
+        let money_long = |delta: f64| long_score(&fill_long(project(&|_| true, run.dollars), None, once(delta))) / l0;
+        // Money cards you hold (Immolate, Hermit…) get used either way: in the blind when you
+        // play it, or inside the pack / before the boss when you skip.
+        let held: f64 = run.consumables.iter().filter_map(|c| tarots.iter().find(|t| t.key == c.key)).map(|t| t.money_gain.max(0.0)).sum();
+        // Playing: this blind, then its reward, interest and a hand's money for the shops ahead
+        let gain = held + bv.reward as f64 + interest(run.dollars + held, run.interest_amount, run.interest_cap) as f64 + run.money_per_hand;
+        let play_survive = p_blind * survive_with(run.dollars + gain, k, p_boss);
+        let play_long = money_long(gain);
+        // Skipping: one shop fewer before the boss, plus the tag
+        let key = bv.skip_tag.as_ref().map_or("", |t| t.key.as_str()).to_string();
+        let name = bv.skip_tag.as_ref().map_or(String::new(), |t| t.name.clone());
+        let (mut money, mut boss_p, mut long, mut valued) = (0.0, p_boss, 1.0, true);
+        let mut rng = crate::engine::Rng::new(opts.seed ^ 0x5e1b);
+        let shop_before_boss = k > 1;
+        let rarity_avg = |r: u8| {
+            let xs: Vec<&Candidate> = pool_entries.iter().filter(|c| c.rarity_n == r).collect();
+            let n = xs.len().max(1) as f64;
+            (xs.iter().map(|c| value(c).max(p_boss)).sum::<f64>() / n, xs.iter().map(|c| c.long_mult.unwrap_or(1.0).max(1.0)).sum::<f64>() / n)
+        };
+        let what = match key.as_str() {
+            "tag_charm" | "tag_ethereal" => {
+                let spectral = key == "tag_ethereal";
+                let picks: Vec<(f64, f64)> = tarots.iter().zip(&tarot_long).filter(|(t, _)| t.spectral == spectral).map(|(t, l)| (t.p_win.max(p_boss), l.max(1.0))).collect();
+                let k_cards = if spectral { 2 } else { 5 };
+                boss_p = best_of_subsets(&picks.iter().map(|x| x.0).collect::<Vec<_>>(), k_cards).0;
+                long = best_of_subsets(&picks.iter().map(|x| x.1).collect::<Vec<_>>(), k_cards).0;
+                if spectral { "a Spectral pack (2 cards, pick 1)".to_string() } else { "a Mega Arcana pack (5 tarots, pick 2; counted as your best 1)".to_string() }
+            }
+            "tag_buffoon" => {
+                boss_p = expected_best(&pool_entries, key_round, p_boss, 4, 1.0, f64::INFINITY, per_rarity, &mut rng).max(p_boss);
+                long = long_draw(&pool_entries, 4, 1.0, &mut rng);
+                "a Mega Buffoon pack (4 jokers, pick 2; counted as your best 1)".to_string()
+            }
+            "tag_rare" | "tag_uncommon" => {
+                let (p, l) = rarity_avg(if key == "tag_rare" { 3 } else { 2 });
+                if shop_before_boss {
+                    boss_p = p;
+                }
+                long = l;
+                format!("a free {} joker in the next shop{}", if key == "tag_rare" { "Rare" } else { "Uncommon" }, if shop_before_boss { "" } else { " (after the boss)" })
+            }
+            "tag_economy" => {
+                money = run.dollars.clamp(0.0, 40.0);
+                format!("+${money:.0} now")
+            }
+            "tag_skip" => {
+                money = 5.0 * (run.skips + 1) as f64;
+                format!("+${money:.0} now")
+            }
+            "tag_investment" => {
+                long = money_long(25.0);
+                "+$25 after the boss".to_string()
+            }
+            "tag_juggle" if bv.slot == "Big" => {
+                if let Some(sp) = ctx.specs.get(key_round) {
+                    let mut sp = sp.clone();
+                    sp.start.hand_size += 3;
+                    boss_p = ctx.odds_one(&ctx.base, &sp, opts.sims).0.max(p_boss);
+                }
+                "+3 hand size for the boss".to_string()
+            }
+            _ => {
+                valued = false;
+                format!("{name}: its effect isn't valued, only what skipping costs")
+            }
+        };
+        let skip_survive = survive_with(run.dollars + held + money, k.saturating_sub(1), boss_p);
+        let skip_long = long * money_long(held + money);
+        let (pv, sv) = (play_survive * play_long, skip_survive * skip_long);
+        let verdict = if (pv - sv).abs() <= 0.03 * pv.max(sv) { "close" } else if sv > pv { "skip" } else { "play" };
+        blind_views[bi].skip = Some(SkipCompare { play_survive, play_long, skip_survive, skip_long, verdict: verdict.into(), tag: what, valued });
+    }
     let (levels_per_ante, planet_levels) = levels_for(run.dollars - owned_rent(&|_| true), owned_rent(&|_| true));
     let long_note = format!(
         "Your board projected {antes_left:.1} antes ahead: growing jokers grown, fading ones faded, perishables that run out dropped, {} +{planet_levels} levels (about {levels_per_ante:.1} per ante with your money), empty slots filled with stand-in jokers (×1.5, +60 Chips, +15 Mult). Each option is compared with a typical find (×1.25) in its slot, on whole simulated rounds, with the money it leaves you: its price, what selling a joker gives back or a money card gives (spent once, on pack skips for Red Card/Flash or on planets, ~$5 each; interest lost or gained over the next ante included), and $9 less money held every ante per rental; money jokers (Golden, Rocket, Cloud 9, To the Moon, Egg) add their payout per ante. Your sellable jokers weaker than a typical find are assumed replaced by then, and a sellable option counts at least as a typical find less its price net of what selling it gives back; eternal ones stay, however weak. ×1.00 = as good as a typical find.",
@@ -2920,10 +3021,15 @@ fn shops_ahead(run: &RunState, next_ante: bool) -> (bool, usize) {
 /// (blind reward, a hand's cash, interest) is added. Same seed on every call, so two
 /// amounts are compared on the same shops.
 fn money_value(ctx: &Ctx, pool: &[Candidate], value: &dyn Fn(&Candidate) -> f64, now: f64, money: f64, next_ante: bool) -> f64 {
+    let (in_shop, future) = shops_ahead(ctx.run, next_ante);
+    money_value_with(ctx, pool, value, now, money, in_shop, future)
+}
+
+/// `money_value` for a given number of shops ahead (and whether you're in one now).
+fn money_value_with(ctx: &Ctx, pool: &[Candidate], value: &dyn Fn(&Candidate) -> f64, now: f64, money: f64, in_shop: bool, future: usize) -> f64 {
     let run = ctx.run;
     let slots = run.shop_rates.slots.max(1) as usize;
     let share = run.shop_rates.joker_share();
-    let (in_shop, future) = shops_ahead(run, next_ante);
     // Every reroll you could buy, cheapest first
     let mut costs: Vec<i64> = Vec::new();
     if in_shop {
@@ -3458,6 +3564,23 @@ mod tests {
         let (sellable, eternal) = (long(false), long(true));
         assert!(sellable > eternal, "sellable ×{sellable:.2}, eternal ×{eternal:.2}");
         assert!(sellable > 0.9, "a sellable joker is worth about a typical find less its net price: ×{sellable:.2}");
+    }
+
+    #[test]
+    fn skip_or_play_compares_a_blind_against_its_tag() {
+        let mut r = shop_run(&[("j_joker", None, None)], &[]);
+        r.screen = crate::save::Screen::BlindSelect;
+        r.shop = None;
+        r.joker_slots = 5;
+        r.blinds[0].state = "Select".into();
+        r.blinds[0].skip_tag = Some("tag_economy".into());
+        let a = analyze(&r, GameData::bundled(), None, &quick());
+        let s = a.blinds[0].skip.as_ref().expect("the blind being chosen gets a skip-or-play comparison");
+        for p in [s.play_survive, s.skip_survive] {
+            assert!((0.0..=1.0).contains(&p), "{p}");
+        }
+        assert!(s.valued && s.tag.contains('$'), "{}", s.tag);
+        assert!(["play", "skip", "close"].contains(&s.verdict.as_str()));
     }
 
     #[test]
