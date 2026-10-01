@@ -176,6 +176,20 @@ pub fn candidate_moves(b: &Board, hand: &[Card], deck: &[Card], hands: i64, disc
             }
         }
     }
+    // A plain dig: discard Mail-In's rank (it pays) and the weakest cards outside the best play
+    if discards > 0 {
+        if let Some(best) = by_floor.first() {
+            let mut toss: Vec<usize> = (0..n).filter(|i| best.0 & (1 << i) == 0).collect();
+            toss.sort_by(|&x, &y| {
+                let pays = |i: usize| b.mail_rank == Some(hand[i].rank.0);
+                pays(y).cmp(&pays(x)).then(hand[x].rank.chips().total_cmp(&hand[y].rank.chips()))
+            });
+            toss.truncate(5);
+            if !toss.is_empty() {
+                push(Move::Discard(toss), &mut out);
+            }
+        }
+    }
     match decide(b, hand, deck, hands, discards, need, size) {
         Action::Play(idx, _) if !idx.is_empty() => push(Move::Play(idx), &mut out),
         Action::Discard(idx) if !idx.is_empty() => push(Move::Discard(idx), &mut out),
@@ -187,9 +201,9 @@ pub fn candidate_moves(b: &Board, hand: &[Card], deck: &[Card], hands: i64, disc
 /// Chance to win the round after making `first`, then playing on with the usual policy,
 /// and the mean round total. Same seeds for every move, so moves compare on the same draws.
 /// Also the mean number of hands left over when it's won (each pays at cash out).
-pub fn odds_after(b: &Board, start: &RoundStart, first: &Move, sims: usize, seed: u64) -> (f64, f64, f64) {
+pub fn odds_after(b: &Board, start: &RoundStart, first: &Move, sims: usize, seed: u64) -> (f64, f64, f64, f64) {
     let size = start.hand_size.max(1) as usize;
-    let (mut wins, mut sum, mut spare) = (0usize, 0.0, 0.0);
+    let (mut wins, mut sum, mut spare, mut cash) = (0usize, 0.0, 0.0, 0.0);
     for i in 0..sims {
         let mut rng = Rng::new(seed.wrapping_add(i as u64 * 7919));
         let mut deck = start.deck.clone();
@@ -204,7 +218,9 @@ pub fn odds_after(b: &Board, start: &RoundStart, first: &Move, sims: usize, seed
             Move::Play(idx) => {
                 let played: Vec<Card> = idx.iter().filter_map(|&k| hand.get(k).copied()).collect();
                 let held: Vec<Card> = (0..hand.len()).filter(|k| !idx.contains(k)).map(|k| hand[k]).collect();
-                let total = start.scored + score::score(&bb, &played, &held, &mut rng, false).score;
+                let o = score::score(&bb, &played, &held, &mut rng, false);
+                cash += o.dollars;
+                let total = start.scored + o.score;
                 if total >= start.target || start.hands <= 1 {
                     if total >= start.target {
                         wins += 1;
@@ -216,6 +232,7 @@ pub fn odds_after(b: &Board, start: &RoundStart, first: &Move, sims: usize, seed
                 RoundStart { hand: held, deck, hands: start.hands - 1, scored: total, ..start.clone() }
             }
             Move::Discard(idx) => {
+                cash += discard_money(&bb, &hand, idx);
                 let kept: Vec<Card> = (0..hand.len()).filter(|k| !idx.contains(k)).map(|k| hand[k]).collect();
                 RoundStart { hand: kept, deck, discards: (start.discards - 1).max(0), ..start.clone() }
             }
@@ -225,10 +242,22 @@ pub fn odds_after(b: &Board, start: &RoundStart, first: &Move, sims: usize, seed
         if r.won {
             spare += r.hands_left as f64;
         }
+        cash += r.money;
         sum += r.total;
     }
     let n = sims.max(1) as f64;
-    (wins as f64 / n, sum / n, spare / n)
+    (wins as f64 / n, sum / n, spare / n, cash / n)
+}
+
+/// Money a discard pays: Mail-In Rebate's $5 per card of its rank (card.lua discard).
+pub fn discard_money(b: &Board, hand: &[Card], idx: &[usize]) -> f64 {
+    let Some(rank) = b.mail_rank else { return 0.0 };
+    let jokers = b.jokers.iter().filter(|j| j.key == "j_mail" && !j.debuff).count() as f64;
+    if jokers == 0.0 {
+        return 0.0;
+    }
+    let n = idx.iter().filter_map(|&i| hand.get(i)).filter(|c| c.rank.0 == rank && c.enhancement != Some(Enhancement::Stone) && !c.debuff).count();
+    5.0 * jokers * n as f64
 }
 
 /// Fisher–Yates.
@@ -535,6 +564,7 @@ pub fn sim_round(board: &Board, start: &RoundStart, rng: &mut Rng) -> RoundResul
                 draw(&mut hand, &mut deck, size);
             }
             Action::Discard(idx) => {
+                money += discard_money(&b, &hand, &idx);
                 hand = (0..hand.len()).filter(|i| !idx.contains(i)).map(|i| hand[i]).collect();
                 draw(&mut hand, &mut deck, size);
                 discards -= 1;

@@ -166,6 +166,8 @@ pub struct PlayAdvice {
 pub struct PlayOption {
     /// Hands left over on average when it wins ($ each at cash out)
     pub spare_hands: f64,
+    /// Money earned during the round on average (Mail-In discards, Gold Seals, Lucky cards)
+    pub round_money: f64,
     pub action: String,
     pub cards: Vec<String>,
     pub indices: Vec<usize>,
@@ -1718,7 +1720,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             let mut opts: Vec<PlayOption> = moves
                 .iter()
                 .zip(res)
-                .map(|(m, (p, mean, spare))| {
+                .map(|(m, (p, mean, spare, cash))| {
                     let (action, idx) = match m {
                         sim::Move::Play(v) => ("play", v),
                         sim::Move::Discard(v) => ("discard", v),
@@ -1732,7 +1734,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                     } else {
                         (String::new(), 0.0, 0)
                     };
-                    PlayOption { spare_hands: spare, action: action.into(), cards: cards.iter().map(Card::label).collect(), indices: idx.iter().map(|&i| hand_order[i]).collect(), dig, hand, score, p_win: p, mean_total: mean }
+                    PlayOption { spare_hands: spare, round_money: cash, action: action.into(), cards: cards.iter().map(Card::label).collect(), indices: idx.iter().map(|&i| hand_order[i]).collect(), dig, hand, score, p_win: p, mean_total: mean }
                 })
                 .collect();
             // Best chance first; within 2 points (noise), the one that wins with more hands to
@@ -1743,8 +1745,9 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             opts.sort_by(|a, b| {
                 let ta = ((top - a.p_win) / 0.02).floor() as i64;
                 let tb = ((top - b.p_win) / 0.02).floor() as i64;
-                let spare = |o: &PlayOption| (o.spare_hands * 10.0).round() as i64;
-                ta.cmp(&tb).then(spare(b).cmp(&spare(a))).then(b.mean_total.total_cmp(&a.mean_total))
+                // money from the round: hands left over at cash out, plus what it pays as you go
+                let cash = |o: &PlayOption| ((o.spare_hands * run.money_per_hand + o.round_money) * 4.0).round() as i64;
+                ta.cmp(&tb).then(cash(b).cmp(&cash(a))).then(b.mean_total.total_cmp(&a.mean_total))
             });
             opts
         });

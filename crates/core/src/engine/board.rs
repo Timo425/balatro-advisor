@@ -66,6 +66,7 @@ impl Board {
             most_played: HandType::from_name(&s.most_played_hand),
             blind,
             plasma: s.deck == "Plasma Deck",
+            mail_rank: s.round_targets.mail_rank.map(|r| r.0),
         }
     }
 }

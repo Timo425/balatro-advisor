@@ -101,6 +101,8 @@ pub struct Board {
     pub ancient_suit: Option<Suit>,
     pub most_played: Option<HandType>,
     pub blind: BlindRules,
+    /// Mail-In Rebate's rank this round (it pays $5 per discarded card of it).
+    pub mail_rank: Option<u8>,
     pub plasma: bool,
 }
 
@@ -131,6 +133,7 @@ impl Board {
             most_played: None,
             blind: BlindRules::default(),
             plasma: false,
+            mail_rank: None,
         }
     }
 
