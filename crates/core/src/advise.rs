@@ -1521,7 +1521,10 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         // play it, or inside the pack / before the boss when you skip.
         let held: f64 = run.consumables.iter().filter_map(|c| tarots.iter().find(|t| t.key == c.key)).map(|t| t.money_gain.max(0.0)).sum();
         // Playing: this blind, then its reward, interest and a hand's money for the shops ahead
-        let gain = held + bv.reward as f64 + interest(run.dollars + held, run.interest_amount, run.interest_cap) as f64 + run.money_per_hand;
+        // Rent is charged at the end of a round you play (card.lua calculate_rental): a
+        // skipped blind has no round end, so skipping saves it.
+        let rent_now = run.jokers.iter().filter(|j| j.rental).count() as f64 * 3.0;
+        let gain = held + bv.reward as f64 + interest(run.dollars + held, run.interest_amount, run.interest_cap) as f64 + run.money_per_hand - rent_now;
         let play_survive = p_blind * survive_with(run.dollars + gain, k, p_boss);
         let play_long = money_long(gain);
         // Skipping: one shop fewer before the boss, plus the tag
