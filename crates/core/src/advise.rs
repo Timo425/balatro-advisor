@@ -653,6 +653,13 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         }
     };
     let base = Board::from_run(run, data);
+    // The hand in a fixed order (how you've sorted it doesn't matter, and the search breaks
+    // ties by position): every play is worked out on this order and mapped back to yours.
+    let mut hand_order: Vec<usize> = (0..run.hand.len()).collect();
+    hand_order.sort_by_key(|&i| {
+        let c = &run.hand[i];
+        (std::cmp::Reverse(c.rank.0), c.suit as u8, format!("{:?}{:?}{:?}", c.enhancement, c.seal, c.edition))
+    });
     let dctx = desc_ctx(run);
     let mut fresh_deck = run.full_deck();
     for c in &mut fresh_deck {
@@ -667,7 +674,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             blind_key: cb.key.clone(),
             blind_name: cb.name.clone(),
             start: RoundStart {
-                hand: run.hand.clone(),
+                hand: hand_order.iter().map(|&i| run.hand[i]).collect(),
                 deck: run.draw_pile.clone(),
                 hand_size: run.hand_size,
                 hands: run.hands_left,
@@ -1683,7 +1690,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                     } else {
                         (String::new(), 0.0, 0)
                     };
-                    PlayOption { spare_hands: spare, action: action.into(), cards: cards.iter().map(Card::label).collect(), indices: idx.clone(), dig, hand, score, p_win: p, mean_total: mean }
+                    PlayOption { spare_hands: spare, action: action.into(), cards: cards.iter().map(Card::label).collect(), indices: idx.iter().map(|&i| hand_order[i]).collect(), dig, hand, score, p_win: p, mean_total: mean }
                 })
                 .collect();
             // Best chance first; within 2 points (noise), the one that wins with more hands to
@@ -1726,11 +1733,11 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                 };
                 Some(PlayAdvice { action: best.action, cards: best.cards, dig: best.dig, indices: best.indices, hand: best.hand, score: best.score, p_win: Some(best.p_win), alternatives: opts, tip })
             }
-            None => sim::best_play(&b, &run.hand).map(|p| PlayAdvice {
+            None => sim::best_play(&b, &hand_order.iter().map(|&i| run.hand[i]).collect::<Vec<_>>()).map(|p| PlayAdvice {
                 action: "play".into(),
-                cards: p.cards.iter().map(|&i| run.hand[i].label()).collect(),
+                cards: p.cards.iter().map(|&i| run.hand[hand_order[i]].label()).collect(),
                 dig: 0,
-                indices: p.cards.clone(),
+                indices: p.cards.iter().map(|&i| hand_order[i]).collect(),
                 hand: p.hand.name().to_string(),
                 score: p.floor,
                 p_win: None,
@@ -3802,6 +3809,34 @@ mod tests {
         assert!(o.survive_next > keep.survive_next, "next-ante survival: joker {:?} vs keeping the money {:?}", o.survive_next, keep.survive_next);
         assert!(keep.survive_next.unwrap() < 1.0, "survival with shops ahead must not saturate");
         assert!(pos("joker") < pos("leave"), "joker {:?} next {:?}", (o.p_win, o.survive, o.survive_next, o.long_mult), keep.survive_next);
+    }
+
+    #[test]
+    fn the_suggested_play_doesnt_depend_on_how_the_hand_is_sorted() {
+        let in_blind = |hand: &str| {
+            let mut r = shop_run(&[("j_joker", None, None)], &[]);
+            r.screen = crate::save::Screen::SelectingHand;
+            r.shop = None;
+            r.hand = Card::parse_list(hand).unwrap();
+            let pile: Vec<Card> = crate::bench::standard_deck().into_iter().filter(|c| !r.hand.contains(c)).collect();
+            r.draw_pile = pile;
+            r.blinds[0].state = "Current".into();
+            r.current_blind = Some(crate::save::CurrentBlind {
+                key: "bl_small".into(), name: "Small Blind".into(), target: 800.0, scored: 0.0, disabled: false, hands_seen: vec![], only_hand: None,
+            });
+            let a = analyze(&r, GameData::bundled(), None, &quick());
+            let bp = a.best_play.unwrap();
+            let mut cards = bp.cards.clone();
+            cards.sort();
+            // the positions point at the same cards in this ordering
+            for (i, c) in bp.indices.iter().zip(&bp.cards) {
+                assert_eq!(&r.hand[*i].label(), c);
+            }
+            (bp.action, cards)
+        };
+        let by_suit = in_blind("AH 9H 5H KS 7S 3D QC 2C");
+        let by_rank = in_blind("AH KS QC 9H 7S 5H 3D 2C");
+        assert_eq!(by_suit, by_rank);
     }
 
     #[test]
