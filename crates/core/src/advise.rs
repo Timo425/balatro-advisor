@@ -1038,13 +1038,30 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     // One-off money: spent once on pack skips / rerolls for a joker that grows from them
     // (about $5 each), else on planets for your main hand (about $5 a level).
     let spend_once = |b: &mut Board, once: f64| {
+        // Pack skips / rerolls cost about $5 each; a level of your main hand about $12 (its
+        // planet is only in some shops and packs: a Celestial pack holds it ~1 time in 4);
+        // any planet about $4, and each one used grows Constellation by ×0.1.
         let buys = once / 5.0;
+        for j in b.jokers.iter_mut().filter(|j| j.key == "j_constellation") {
+            j.x_mult = (j.x_mult + 0.1 * once / 4.0).max(1.0);
+        }
+        let buys_main = once / 12.0;
         if let Some(j) = b.jokers.iter_mut().find(|j| j.key == "j_red_card" || j.key == "j_flash") {
             let per = if j.key == "j_red_card" { 3.0 } else { 2.0 };
             j.mult = (j.mult + per * buys).max(0.0);
         } else if let Some(top) = top_hand {
+            let buys = buys_main;
+            // Fractional levels (as their chips and mult): rounding made any small purchase
+            // cost a whole level
             let l = b.levels[top as usize];
-            b.levels[top as usize] = l.with_level((l.level + buys.round() as i64).max(1));
+            let whole = buys.floor();
+            let mut n = l.with_level((l.level + whole as i64).max(1));
+            if n.level + 1 > 1 || buys - whole > 0.0 {
+                let frac = buys - whole;
+                n.chips += n.l_chips * frac;
+                n.mult += n.l_mult * frac;
+            }
+            b.levels[top as usize] = n;
         }
     };
     // What the empty slots get filled with, in proportion to how often the shop offers each
@@ -1169,7 +1186,9 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     // paid, at least $1; a rental sells for $1; a free one from a tag still sells for $1).
     let floor_for = |cost: i64, rental: bool| {
         let sell = if rental { 1 } else { (cost / 2).max(1) };
-        long_score(&fill_long(project(&|_| true, run.dollars), None, once(-((cost - sell) as f64)))) / l0
+        // a rental also pays rent until you replace it: about an ante's worth
+        let rent = if rental { RENT_PER_ANTE } else { 0.0 };
+        long_score(&fill_long(project(&|_| true, run.dollars), None, once(-((cost - sell) as f64) - rent))) / l0
     };
     let long_of = |j: &Joker, sell: Option<usize>, cost: i64, rental: bool| -> f64 {
         let back = sell.map_or(0, |i| run.jokers[i].sell_value) as f64;
@@ -1256,6 +1275,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             let h = hand?;
             let l = b.levels[h as usize];
             b.levels[h as usize] = l.with_level(l.level + 1);
+            grow_constellation(&mut b);
         }
         Some(long_score(&b) / l0)
     });
@@ -1648,7 +1668,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     }
     let (levels_per_ante, planet_levels) = levels_for(run.dollars - owned_rent(&|_| true), owned_rent(&|_| true));
     let long_note = format!(
-        "Your board projected {antes_left:.1} antes ahead: growing jokers grown, fading ones faded, perishables that run out dropped, {} +{planet_levels} levels (about {levels_per_ante:.1} per ante with your money), empty slots filled with stand-in jokers (×1.5, +60 Chips or +15 Mult, in proportion to how often your shop pool offers each type). Each option is compared with a typical find (×1.25) in its slot, on whole simulated rounds, with the money it leaves you: its price, what selling a joker gives back or a money card gives (spent once, on pack skips for Red Card/Flash or on planets, ~$5 each; interest lost or gained over the next ante included), and $9 less money held every ante per rental; money jokers (Golden, Rocket, Cloud 9, To the Moon, Egg) add their payout per ante. Your sellable jokers weaker than a typical find are assumed replaced by then, and a sellable option counts at least as a typical find less its price net of what selling it gives back; eternal ones stay, however weak. ×1.00 = as good as a typical find.",
+        "Your board projected {antes_left:.1} antes ahead: growing jokers grown, fading ones faded, perishables that run out dropped, {} +{planet_levels} levels (about {levels_per_ante:.1} per ante with your money), empty slots filled with stand-in jokers (×1.5, +60 Chips or +15 Mult, in proportion to how often your shop pool offers each type). Each option is compared with a typical find (×1.25) in its slot, on whole simulated rounds, with the money it leaves you: its price, what selling a joker gives back or a money card gives (spent once: pack skips for Red Card/Flash ~$5 each, else ~$12 a level of your main hand, and ~$4 a planet for Constellation; interest lost or gained over the next ante included), and $9 less money held every ante per rental; money jokers (Golden, Rocket, Cloud 9, To the Moon, Egg) add their payout per ante. Your sellable jokers weaker than a typical find are assumed replaced by then, and a sellable option counts at least as a typical find less its price net of what selling it gives back; eternal ones stay, however weak. ×1.00 = as good as a typical find.",
         top_hand.map_or("your main hand", |h| h.name())
     );
     let shares: Vec<f64> = jokers.iter().map(|j| j.score_share).collect();
@@ -2142,6 +2162,7 @@ fn shop_options(
         let mut b = ctx.base.clone();
         let l = b.levels[*h as usize];
         b.levels[*h as usize] = l.with_level(l.level + 1);
+        grow_constellation(&mut b);
         let (p, st) = ctx.odds_one(&b, spec, ctx.opts.sims);
         (p, st.mean / spec.start.target.max(1.0))
     });
@@ -2531,6 +2552,13 @@ fn reach_draw(pool: &[Candidate], round: usize, now: f64, cards: usize, joker_sh
         total += best;
     }
     total / trials as f64
+}
+
+/// Using a planet grows Constellation by ×0.1 (card.lua: Constellation, using_consumeable).
+fn grow_constellation(b: &mut Board) {
+    for j in b.jokers.iter_mut().filter(|j| j.key == "j_constellation") {
+        j.x_mult += 0.1;
+    }
 }
 
 /// Average over random draws of the best By Ante 8 value among `cards` shop cards (each a
