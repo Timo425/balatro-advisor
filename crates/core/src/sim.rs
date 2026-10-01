@@ -260,6 +260,35 @@ pub fn discard_money(b: &Board, hand: &[Card], idx: &[usize]) -> f64 {
     5.0 * jokers * n as f64
 }
 
+/// How often each poker hand can be made at all from a fresh deal of your deck: deal
+/// `hand_size` cards, try every 5-card subset, and note every hand it contains. High Card
+/// always can; a Straight rarely does without deck-building. Indexed like the hand levels.
+pub fn hand_reachability(b: &Board, deck: &[Card], hand_size: usize, samples: usize, seed: u64) -> [f64; 12] {
+    let flags = b.rule_flags();
+    let mut rng = Rng::new(seed ^ 0x7ea4);
+    let mut counts = [0usize; 12];
+    let n = hand_size.min(deck.len()).min(10);
+    for _ in 0..samples {
+        let mut d = deck.to_vec();
+        shuffle(&mut d, &mut rng);
+        let hand = &d[..n];
+        let mut seen: u16 = 0;
+        for mask in 1u32..(1 << n) {
+            if mask.count_ones() > 5 {
+                continue;
+            }
+            let played: Vec<Card> = (0..n).filter(|i| mask & (1 << i) != 0).map(|i| hand[i]).collect();
+            seen |= hand::detect(&played, flags).contains;
+        }
+        for (h, c) in counts.iter_mut().enumerate() {
+            if seen & (1 << h) != 0 {
+                *c += 1;
+            }
+        }
+    }
+    counts.map(|c| c as f64 / samples.max(1) as f64)
+}
+
 /// Fisher–Yates.
 pub fn shuffle<T>(v: &mut [T], rng: &mut Rng) {
     for i in (1..v.len()).rev() {
