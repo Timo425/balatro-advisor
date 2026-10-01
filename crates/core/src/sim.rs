@@ -186,9 +186,10 @@ pub fn candidate_moves(b: &Board, hand: &[Card], deck: &[Card], hands: i64, disc
 
 /// Chance to win the round after making `first`, then playing on with the usual policy,
 /// and the mean round total. Same seeds for every move, so moves compare on the same draws.
-pub fn odds_after(b: &Board, start: &RoundStart, first: &Move, sims: usize, seed: u64) -> (f64, f64) {
+/// Also the mean number of hands left over when it's won (each pays at cash out).
+pub fn odds_after(b: &Board, start: &RoundStart, first: &Move, sims: usize, seed: u64) -> (f64, f64, f64) {
     let size = start.hand_size.max(1) as usize;
-    let (mut wins, mut sum) = (0usize, 0.0);
+    let (mut wins, mut sum, mut spare) = (0usize, 0.0, 0.0);
     for i in 0..sims {
         let mut rng = Rng::new(seed.wrapping_add(i as u64 * 7919));
         let mut deck = start.deck.clone();
@@ -205,7 +206,10 @@ pub fn odds_after(b: &Board, start: &RoundStart, first: &Move, sims: usize, seed
                 let held: Vec<Card> = (0..hand.len()).filter(|k| !idx.contains(k)).map(|k| hand[k]).collect();
                 let total = start.scored + score::score(&bb, &played, &held, &mut rng, false).score;
                 if total >= start.target || start.hands <= 1 {
-                    wins += (total >= start.target) as usize;
+                    if total >= start.target {
+                        wins += 1;
+                        spare += (start.hands - 1) as f64;
+                    }
                     sum += total;
                     continue;
                 }
@@ -218,9 +222,13 @@ pub fn odds_after(b: &Board, start: &RoundStart, first: &Move, sims: usize, seed
         };
         let r = sim_round(b, &next, &mut rng);
         wins += r.won as usize;
+        if r.won {
+            spare += r.hands_left as f64;
+        }
         sum += r.total;
     }
-    (wins as f64 / sims.max(1) as f64, sum / sims.max(1) as f64)
+    let n = sims.max(1) as f64;
+    (wins as f64 / n, sum / n, spare / n)
 }
 
 /// Fisher–Yates.
@@ -294,6 +302,8 @@ pub struct RoundResult {
     pub plays: Vec<(HandType, f64, bool)>,
     /// Money earned while scoring (Lucky cards, gold seals, …).
     pub money: f64,
+    /// Hands not used when it was won (each pays at cash out).
+    pub hands_left: i64,
 }
 
 fn draw(hand: &mut Vec<Card>, deck: &mut Vec<Card>, size: usize) {
@@ -520,7 +530,7 @@ pub fn sim_round(board: &Board, start: &RoundStart, rng: &mut Rng) -> RoundResul
                 hand = held;
                 hands -= 1;
                 if total >= start.target {
-                    return RoundResult { total, won: true, saved: false, best_hand, plays, money };
+                    return RoundResult { total, won: true, saved: false, best_hand, plays, money, hands_left: hands };
                 }
                 draw(&mut hand, &mut deck, size);
             }
@@ -534,7 +544,7 @@ pub fn sim_round(board: &Board, start: &RoundStart, rng: &mut Rng) -> RoundResul
     // Mr. Bones: a lost round is saved if you reached 25% of the blind (card.lua, game_over)
     let bones = b.jokers.iter().any(|j| j.key == "j_mr_bones" && !j.debuff);
     let won = total >= start.target;
-    RoundResult { total, won, saved: !won && bones && total >= 0.25 * start.target, best_hand, plays, money }
+    RoundResult { total, won, saved: !won && bones && total >= 0.25 * start.target, best_hand, plays, money, hands_left: 0 }
 }
 
 /// Mean and quantiles of a sample.
