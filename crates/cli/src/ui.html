@@ -408,6 +408,8 @@ function render(d) {
   $("#main").innerHTML = html;
 }
 
+let boot = null;
+
 // "As if bought": shop jokers, vouchers, tarots and planets can be ticked
 let currentPlan = [];
 const plannable = (o) => ["voucher", "joker", "tarot", "planet"].includes(o.kind) && !o.label.startsWith("pick ") && !o.label.endsWith("(you have it)") && !o.unaffordable;
@@ -453,6 +455,11 @@ async function poll() {
   try {
     const r = await fetch("/api/analysis", { cache: "no-store" });
     const j = await r.json();
+    // A restarted advisor (a new build) gets the page reloaded with its own code
+    if (j.boot != null) {
+      if (boot == null) boot = j.boot;
+      else if (j.boot !== boot) { location.reload(); return; }
+    }
     const seen = j.game_seen_secs;
     const gameUp = seen != null && seen < 6;
     $("#dot").className = "dot" + (j.busy ? " busy" : gameUp ? "" : " off");

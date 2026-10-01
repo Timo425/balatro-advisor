@@ -149,6 +149,8 @@ pub fn run(save_dir: PathBuf, profile: u8, port: u16, open: bool) -> Result<()> 
         });
     }
 
+    // Changes on every start, so an open page can tell it's talking to a new build and reload
+    let boot = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_millis());
     let addr = format!("127.0.0.1:{port}");
     let server = tiny_http::Server::http(&addr).map_err(|e| anyhow::anyhow!("can't listen on {addr}: {e}"))?;
     let url = format!("http://{addr}/");
@@ -189,7 +191,7 @@ pub fn run(save_dir: PathBuf, profile: u8, port: u16, open: bool) -> Result<()> 
                     .ok()
                     .is_some_and(|v| v.get("colourblind_option").truthy());
                 let body = format!(
-                    r#"{{"version":{},"busy":{},"game_seen_secs":{seen},"high_contrast":{high_contrast},"data":{}}}"#,
+                    r#"{{"boot":"{boot}","version":{},"busy":{},"game_seen_secs":{seen},"high_contrast":{high_contrast},"data":{}}}"#,
                     s.version, s.busy, s.body
                 );
                 tiny_http::Response::from_string(body).with_header(header("Content-Type", "application/json"))
