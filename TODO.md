@@ -13,7 +13,7 @@ check that reuses the engine, not another term in the options ranking.
 - **Order tips**: a short list of known orderings checked against the state, each with its
   exact gain, shown as one-line tips (not a search over sequences): Temperance after cheap
   jokers (buy, use, sell: +sell value), Hone before rerolls and packs, Immolate before the
-  Hermit, the Fool after your best tarot, sell before Ankh/Hex, Wheel of Fortune before Ankh.
+  Hermit, the Fool after your best tarot, sell before Ankh/Hex, Wheel of Fortune before Ankh, Cryptid on a sealed card (Trance's Blue Seal ×3).
 - **Golden cases**: record a few real hands (`score --golden`, then `golden set`).
 - **Calibration**: let the log collect a few runs; check predicted vs actual win rates.
 - Rentals held "until the danger passes, then sold", not held all run.
