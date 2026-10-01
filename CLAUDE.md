@@ -29,22 +29,12 @@ It plans nothing itself: spotting the line is the human's (or agent's) part.
 
 ## How to improve the advice
 
-When advice is wrong, find which general step failed and improve that step, so every
-similar situation gets better at once:
-- **Which moves get considered**: search them all (every play, every discard, every held
-  consumable), narrowing down by simulation, so no good move depends on someone having
-  thought of it.
-- **How moves are judged**: one measure everywhere (win chance × long-run value, money as
-  what it buys), with values measured by simulating your board, not set by hand.
-- **How the simulated player plays**: the rest of a round is played by a simulated player,
-  and the advice can only value lines that player would play. It plays toward the same
-  measure the advice ranks by (`sim::RoundGoals`: winning, then planets by the hand that ends
-  the round, and money), weighing "win now" against playing on with a few simulated futures.
-  When the advice misses a line, first check whether the simulated player would ever play it.
-- **Noise**: spend more simulation where moves are close, rather than picking between them
-  by a side number.
-If a fix only makes sense for one joker, suit or hand, it's the wrong fix: look for the
-step that should have found it. Add the state as a replay fixture first (below).
+Read `docs/design.md` first: the four stages every piece of advice goes through (moves
+tried, simulated player, valuation, noise), where each lives, the rules for changing them,
+and the register of hand-set values. When advice is wrong, find which stage failed and
+improve that stage, so every similar situation gets better at once. If a fix only makes
+sense for one joker, suit or hand, it's the wrong fix: look for the step that should have
+found it. Add the state as a replay fixture first (below).
 
 **Example.** The advice played a junk Spade instead of digging with the off-suit cards,
 because the simulated rest of the round spent the 3♠ Blue Seal in a Flush.
@@ -59,7 +49,7 @@ because the simulated rest of the round spent the 3♠ Blue Seal in a Flush.
 
 **Before every fix, three steps:**
 1. Name the stage that failed: *moves tried*, *simulated player*, *valuation* or *noise*
-   (the four bullets above).
+   (`docs/design.md`).
 2. Run `git log --oneline | grep -i '<stage>'` (or read the recent log) for earlier fixes
    to that stage. If there is one, the stage itself is the problem: change how it works
    for every case (as "the simulated player plays toward `RoundGoals`" did), don't add
@@ -73,6 +63,9 @@ When the owner says a suggestion is wrong, save that game state before fixing it
 `tests/fixtures/private/<name>.json` = `{"note", "state": <balatro-advisor state --json>,
 "expect": {...}}` (keys: `best_action`, `best_hand`, `best_use_first`, `best_not_cards`: [..], `top_option`, `above`: ["A", "B"]).
 `cargo test --release --test replay` replays every one; it must pass before a commit
-(check the exit status, not the printed output).
+(check the exit status, not the printed output). A pure restructuring must also leave the
+full analysis of every fixture unchanged (same seed, same JSON): snapshot before and after
+with `BAV_SNAPSHOT_DIR=/tmp/before cargo test --release --test replay -- --ignored snapshot`
+(then `/tmp/after`) and `diff -r /tmp/before /tmp/after`.
 Other local data (never in the repo): `~/.local/share/balatro-advisor/calibration.jsonl`
 (predicted vs actual blind results, shops seen).

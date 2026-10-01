@@ -47,3 +47,27 @@ fn replayed_states_give_the_expected_advice() {
     }
     assert!(failures.is_empty(), "\n{}", failures.join("\n"));
 }
+
+/// For refactoring: writes the full analysis of every fixture (timing fields dropped) to
+/// `$BAV_SNAPSHOT_DIR`, so the output before and after a change can be compared with
+/// `diff -r`. Run: `BAV_SNAPSHOT_DIR=/tmp/before cargo test --release --test replay -- --ignored snapshot`
+#[test]
+#[ignore]
+fn snapshot() {
+    let Some(out) = std::env::var_os("BAV_SNAPSHOT_DIR") else { panic!("set BAV_SNAPSHOT_DIR") };
+    let out = std::path::PathBuf::from(out);
+    std::fs::create_dir_all(&out).unwrap();
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/private");
+    let Ok(entries) = std::fs::read_dir(&dir) else { return };
+    let mut files: Vec<_> = entries.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")).collect();
+    files.sort();
+    for f in &files {
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(f).unwrap()).unwrap();
+        let run: RunState = serde_json::from_value(v["state"].clone()).unwrap();
+        let mut a = serde_json::to_value(advise::analyze(&run, GameData::bundled(), None, &advise::Options { sims: 300, seed: 42, ..Default::default() })).unwrap();
+        for k in ["elapsed_ms", "save_age_secs", "live"] {
+            a.as_object_mut().unwrap().remove(k);
+        }
+        std::fs::write(out.join(f.file_name().unwrap()), serde_json::to_string_pretty(&a).unwrap()).unwrap();
+    }
+}
