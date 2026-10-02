@@ -681,10 +681,14 @@ impl Ctx<'_> {
         let mut bb = b.clone();
         bb.blind = Default::default();
         bb.hands_left = self.run.round_hands.max(1);
-        // With Mystic Summit (and no Banner) you'd burn your discards first, so hands are
-        // played with none left
-        let mystic = b.jokers.iter().any(|j| j.kind == Kind::MysticSummit) && !b.jokers.iter().any(|j| j.kind == Kind::Banner);
-        bb.discards_left = if mystic { 0 } else { self.run.round_discards };
+        // You'd burn your discards first when the board scores more with none left (jokers
+        // that pay by discards left), so hands are then played with none left. Checked on a
+        // reference pair: those jokers pay on any hand.
+        bb.discards_left = self.run.round_discards;
+        let pair = [Card::new(crate::model::Rank(14), crate::model::Suit::Spades), Card::new(crate::model::Rank(14), crate::model::Suit::Hearts)];
+        if sim::scores_more_without_discards(&bb, &pair) {
+            bb.discards_left = 0;
+        }
         Stats::of(sim::typical_hands(&bb, &self.fresh_deck, size, samples, self.opts.seed))
     }
 }

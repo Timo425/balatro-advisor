@@ -78,3 +78,18 @@ fn simulations_are_reproducible() {
     assert_eq!(a.0, c.0);
     assert_eq!(a.1.mean, c.1.mean);
 }
+
+#[test]
+fn burning_discards_pays_only_when_the_board_scores_more_without_them() {
+    // Decided by the engine's scoring, not by joker names: Mystic Summit pays with no
+    // discards left, Banner per discard kept, a plain joker doesn't care.
+    let pair = Card::parse_list("AS AH").unwrap();
+    let burn = |keys: &[&str]| {
+        let mut b = sample_board(keys);
+        b.discards_left = 3;
+        sim::scores_more_without_discards(&b, &pair)
+    };
+    assert!(burn(&["j_mystic_summit"]));
+    assert!(!burn(&["j_banner"]));
+    assert!(!burn(&["j_joker"]));
+}

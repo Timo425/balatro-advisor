@@ -21,14 +21,7 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
     // held (rerolls and packs, `Spending`)
     let dollar_gain = ((lr.value(&Gain::money(10.0)) * spending.factor(run.dollars + 10.0) / spending.factor(run.dollars).max(1e-9) - 1.0) / 10.0).max(0.0);
     b.deck_remaining = run.draw_pile.len() as i64;
-    let has = |k: Kind| b.jokers.iter().any(|j| j.kind == k && !j.debuff);
-    let tip = (run.discards_left > 0 && has(Kind::MysticSummit) && !has(Kind::Banner)).then(|| {
-        format!(
-            "Use your {} discard{} first on cards outside this play: Mystic Summit gives +15 Mult on every hand once none are left",
-            run.discards_left,
-            if run.discards_left > 1 { "s" } else { "" }
-        )
-    });
+    let tip: Option<String> = None;
     // Look-ahead: each candidate first move is simulated through the rest of the round.
     let look = ctx.specs.iter().find(|x| x.in_progress).map(|spec| {
         let mut bb = ctx.board_for(&b, spec);

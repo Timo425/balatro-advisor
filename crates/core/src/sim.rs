@@ -481,6 +481,21 @@ fn decide(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i64, ne
     decide_cards(b, hand, deck, hands, discards, need, size)
 }
 
+/// Whether the best play in `hand` scores more with no discards left than with the board's
+/// discards (jokers that pay by discards left, scored by the engine; e.g. Mystic Summit pays
+/// with none left, Banner per discard kept).
+pub fn scores_more_without_discards(b: &Board, hand: &[Card]) -> bool {
+    if b.discards_left <= 0 {
+        return false;
+    }
+    let mut none = b.clone();
+    none.discards_left = 0;
+    match (best_play(b, hand), best_play(&none, hand)) {
+        (Some(now), Some(later)) => later.floor > now.floor * 1.001,
+        _ => false,
+    }
+}
+
 /// The heuristic play/discard policy (labelled as a heuristic everywhere it shows):
 /// - play the best hand if it wins, if it's the last hand, or if repeating it keeps pace;
 /// - otherwise, if chasing a flush is worth more than the best hand (exact draw odds ×
@@ -512,10 +527,9 @@ fn decide_cards(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i
         return play_best;
     }
     let on_pace = best.floor * hands as f64 >= need;
-    // Mystic Summit pays +Mult on every hand once no discards are left: burn them first on
-    // the worst cards (which also digs), unless Banner pays more for keeping them.
-    let has = |k: crate::engine::Kind| b.jokers.iter().any(|j| j.kind == k && !j.debuff);
-    if discards > 0 && has(crate::engine::Kind::MysticSummit) && !has(crate::engine::Kind::Banner) {
+    // When your board scores more with no discards left (the engine knows which jokers pay
+    // that way), burn them first on the worst cards outside the play (which also digs).
+    if discards > 0 && scores_more_without_discards(b, hand) {
         let mut toss: Vec<usize> = (0..hand.len()).filter(|i| !best.cards.contains(i)).collect();
         toss.sort_by(|&a, &c| hand[a].rank.chips().total_cmp(&hand[c].rank.chips()));
         toss.truncate(5);

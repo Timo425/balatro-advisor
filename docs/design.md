@@ -95,7 +95,7 @@ vs actual blind results and every shop seen).
 | A dollar in Best play: what +$10 does, taken as linear | `play.rs` `dollar_gain` | money won this round | — |
 | Comparison: at most 1,600 rounds an option, "clearly worse" at 95% (paired), "equal" within 1% of the leader's value | `compare.rs` `MAX`, `EQUAL` | when a difference is real enough to act on | — |
 | Best play's search budget: first batch 16 rounds (batches double); at most 48 undecided moves after 16 rounds, 24 after 32, 12 after 64, 8 after that, kept by value then how close lost rounds came to the target | `advise.rs` `SEARCH_FIRST`, `SEARCH_BUDGET` | cost vs. coverage | check if better moves are ever cut by the budget |
-| Simulated player's policy: flush chase when odds > 10%, 1.5× better than the best hand when on pace; Mail-In and Mystic Summit rules | `sim.rs` `decide_cards` | how a player digs | replay fixtures; calibration of win chances |
+| Simulated player's policy: flush chase when odds > 10%, 1.5× better than the best hand when on pace; Mail-In rules; discards burned first when the board scores > 0.1% more with none left (`scores_more_without_discards`) | `sim.rs` `decide_cards` | how a player digs | replay fixtures; calibration of win chances |
 | Look-ahead: 8 futures, only when a better finish could add ≥ 1% in seal planets | `sim.rs` `play_on_instead`, `LOOKAHEAD_ROLLOUTS` | cost vs. depth | replay fixtures |
 | Consumable used in a simulated round when it lifts the best play by > 1% | `sim.rs` `use_if_better` | when a player uses one | — |
 | Blue Seal: drawn with the hand plus 3 cards an action; Mail-In rank 4 in 13 | `advise.rs` `seal_round_chance`, Mail-In income | how often a card shows up | game source + logged rounds |
@@ -114,7 +114,6 @@ add to this list's kind; remove from it.
 
 | Rule | Where | General replacement |
 |---|---|---|
-| Mystic Summit: discard first, and its tip | `sim.rs` `decide_cards`, `play.rs` tip | the simulated round values what it ends with (gap 2) |
 | Mail-In: cash its rank first | `sim.rs` `decide_cards` | the same: discard money counted in the round's value, choices weighed by it |
 | Holding Cryptid: drawing a Blue Seal is worth $15 (also inflates the round money shown) | `play.rs`, `sim.rs` `seal_seen_value` | the round's end state (deck, consumables) valued by `LongRun` |
 | The Lovers makes a pack card Wild | `advise.rs` standard pack cards | consumables used on pack cards, searched |
@@ -130,7 +129,7 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
 1. **Tarot targets aren't searched** (see the retire list).
 2. **The simulated round only reports planets, money and hands left.** It should report the
    board, deck and consumables it ends with, valued by `LongRun`. That would retire the
-   Cryptid, Mystic Summit and Mail-In rules, and let the look-ahead weigh more than seal planets.
+   Cryptid and Mail-In rules, and let the look-ahead weigh more than seal planets.
 3. **Valuation is still split.** `deck_long` (tarot deck changes), the voucher, tag and Emperor
    formulas, and the shop ranking spend leftover money on rerolls in each of its three
    factors. The general fix: deck, joker and hand-size fields in `Gain`, and each dollar spent
