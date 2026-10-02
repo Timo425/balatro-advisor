@@ -274,15 +274,10 @@ fn win_keeping_seals(b: &Board, hand: &[Card], need: f64) -> Option<Vec<usize>> 
     None
 }
 
-/// Money a discard pays: Mail-In Rebate's $5 per card of its rank (card.lua discard).
+/// Money discarding `idx` from `hand` pays (the engine's discard effects).
 pub fn discard_money(b: &Board, hand: &[Card], idx: &[usize]) -> f64 {
-    let Some(rank) = b.mail_rank else { return 0.0 };
-    let jokers = b.jokers.iter().filter(|j| j.key == "j_mail" && !j.debuff).count() as f64;
-    if jokers == 0.0 {
-        return 0.0;
-    }
-    let n = idx.iter().filter_map(|&i| hand.get(i)).filter(|c| c.rank.0 == rank && c.enhancement != Some(Enhancement::Stone) && !c.debuff).count();
-    5.0 * jokers * n as f64
+    let cards: Vec<Card> = idx.iter().filter_map(|&i| hand.get(i).copied()).collect();
+    crate::engine::discard_money(b, &cards)
 }
 
 /// How often each poker hand can be made at all from a fresh deal of your deck: deal
@@ -504,6 +499,8 @@ fn burn_pays(b: &Board, hand: &[Card], play: &[usize]) -> bool {
 }
 
 /// The heuristic play/discard policy (labelled as a heuristic everywhere it shows):
+/// - while safe, cash the discard that pays most (`discard_money`); the last discard right
+///   before the round ends;
 /// - with discards left and a best play that scores more with none left, discard first;
 /// - play the best hand if it wins, if it's the last hand, or if repeating it keeps pace;
 /// - otherwise, if chasing a flush is worth more than the best hand (exact draw odds ×
@@ -515,22 +512,47 @@ fn burn_pays(b: &Board, hand: &[Card], play: &[usize]) -> bool {
 fn decide_cards(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i64, need: f64, size: usize, burn: bool) -> Action {
     let Some(best) = best_play(b, hand) else { return Action::Play(vec![], false) };
     let play_best = Action::Play(with_fillers(b, hand, &best.cards), false);
-    // Mail-In Rebate: cash cards of its rank with a discard before playing (they pay $5
-    // each), as long as the play doesn't need them. That keeps discards for cashing and
-    // makes playing the way to dig.
-    // Only when the round is safe (on pace with this hand): in a tight round the discards
-    // are worth more for digging than $5.
-    if discards > 0 && b.mail_rank.is_some() && best.floor * hands as f64 >= need {
-        let pays: Vec<usize> = (0..hand.len()).filter(|&i| discard_money(b, hand, &[i]) > 0.0).collect();
-        // also the ones in the best play, when the rest of the hand still keeps you on pace
-        let rest: Vec<Card> = (0..hand.len()).filter(|i| !pays.contains(i)).map(|i| hand[i]).collect();
-        let on_pace_without = best_play(b, &rest).is_some_and(|p| p.floor * hands as f64 >= need);
-        let cash: Vec<usize> = pays.iter().copied().filter(|i| on_pace_without || !best.cards.contains(i)).collect();
-        // With one discard left, collect them and cash them all right before the winning
-        // hand (or the last one)
+    // Discards that pay money (`discard_money`, the engine's discard effects): while the
+    // round is safe (on pace with this hand), cash the discard that pays most: from the cards
+    // the best play doesn't need, or from any, if the rest still keeps you on pace. With one
+    // discard left, cash it right before the winning hand (or the last one): more paying
+    // cards may come by then.
+    let all: Vec<usize> = (0..hand.len()).collect();
+    if discards > 0 && best.floor * hands as f64 >= need && discard_money(b, hand, &all) > 0.0 {
+        // the most money from up to 5 of `pool`; fewer cards on a tie (keep the rest), then a
+        // fixed order
+        let best_set = |pool: &[usize]| -> Option<(Vec<usize>, f64)> {
+            let n = pool.len().min(12);
+            (1u32..(1 << n))
+                .filter(|m| m.count_ones() <= 5)
+                .map(|m| (0..n).filter(|i| m & (1 << i) != 0).map(|i| pool[i]).collect::<Vec<usize>>())
+                .map(|v| {
+                    let money = discard_money(b, hand, &v);
+                    (v, money)
+                })
+                .filter(|(_, money)| *money > 0.0)
+                .max_by(|x, y| {
+                    let key = |v: &[usize]| {
+                        let mut k: Vec<_> = v.iter().map(|&i| hand[i].order_key()).collect();
+                        k.sort();
+                        k
+                    };
+                    x.1.total_cmp(&y.1).then(y.0.len().cmp(&x.0.len())).then(key(&y.0).cmp(&key(&x.0)))
+                })
+        };
+        let outside: Vec<usize> = (0..hand.len()).filter(|i| !best.cards.contains(i)).collect();
+        let mut cash = best_set(&outside);
+        if let Some((v, money)) = best_set(&all) {
+            if money > cash.as_ref().map_or(0.0, |c| c.1) {
+                let rest: Vec<Card> = (0..hand.len()).filter(|i| !v.contains(i)).map(|i| hand[i]).collect();
+                if best_play(b, &rest).is_some_and(|p| p.floor * hands as f64 >= need) {
+                    cash = Some((v, money));
+                }
+            }
+        }
         let now = discards > 1 || best.floor >= need || hands <= 1;
-        if !cash.is_empty() && now {
-            return Action::Discard(cash);
+        if let (Some((v, _)), true) = (cash, now) {
+            return Action::Discard(v);
         }
     }
     if best.floor >= need || hands <= 1 || deck.is_empty() {
@@ -983,6 +1005,38 @@ mod tests {
         };
         assert!(matches!(act(&["j_mystic_summit"]), Action::Discard(_)), "Mystic Summit: burn first");
         assert!(matches!(act(&["j_joker"]), Action::Play(..)), "a plain joker: play the Pair");
+    }
+
+    #[test]
+    fn discards_that_pay_are_cashed_while_safe() {
+        // Money for discards comes from the engine (`discard_money`), the policy names no
+        // joker: Mail-In pays per card of its rank, Faceless Joker for 3+ faces at once.
+        let deck: Vec<Card> = standard_deck();
+        let decide_on = |keys: &[&str], hand: &str, discards: i64, need_mult: f64| {
+            let hand = Card::parse_list(hand).unwrap();
+            let mut b = sample_board(keys);
+            b.mail_rank = Some(4);
+            b.discards_left = discards;
+            b.hands_left = 3;
+            let pair = best_play(&b, &hand).unwrap().floor;
+            let act = decide(&b, &hand, &deck, 3, discards, pair * need_mult, 8);
+            match act {
+                Action::Discard(v) => Some(v.iter().map(|&i| hand[i].label()).collect::<Vec<_>>()),
+                Action::Play(..) => None,
+            }
+        };
+        // safe (the Pair of Aces twice beats the target): cash the 4 the play doesn't need
+        assert_eq!(decide_on(&["j_mail"], "AS AH 4C 9D 8S 7H 3D 2C", 2, 2.0), Some(vec!["4♣".to_string()]));
+        // behind (the Pair can't get there): discards are for digging, not cashing the 4 alone
+        assert_ne!(decide_on(&["j_mail"], "AS AH 4C 9D 8S 7H 3D 2C", 2, 10.0), Some(vec!["4♣".to_string()]));
+        // the last discard waits for the hand that wins
+        assert_eq!(decide_on(&["j_mail"], "AS AH 4C 9D 8S 7H 3D 2C", 1, 2.0), None);
+        // Faceless Joker: three faces at once pay $5
+        let faces = decide_on(&["j_faceless"], "AS AH KC QD JS 7H 3D 2C", 2, 2.0).expect("discard three faces");
+        assert_eq!(faces.len(), 3);
+        assert!(faces.iter().all(|l| l.starts_with('K') || l.starts_with('Q') || l.starts_with('J')), "{faces:?}");
+        // a plain joker: no discard pays, play the Pair
+        assert_eq!(decide_on(&["j_joker"], "AS AH 4C 9D 8S 7H 3D 2C", 2, 2.0), None);
     }
 
     #[test]

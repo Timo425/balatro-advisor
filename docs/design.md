@@ -95,7 +95,7 @@ vs actual blind results and every shop seen).
 | A dollar in Best play: what +$10 does, taken as linear | `play.rs` `dollar_gain` | money won this round | — |
 | Comparison: at most 1,600 rounds an option, "clearly worse" at 95% (paired), "equal" within 1% of the leader's value | `compare.rs` `MAX`, `EQUAL` | when a difference is real enough to act on | — |
 | Best play's search budget: first batch 16 rounds (batches double); at most 48 undecided moves after 16 rounds, 24 after 32, 12 after 64, 8 after that, kept by value then how close lost rounds came to the target | `advise.rs` `SEARCH_FIRST`, `SEARCH_BUDGET` | cost vs. coverage | check if better moves are ever cut by the budget |
-| Simulated player's policy: flush chase when odds > 10%, 1.5× better than the best hand when on pace; Mail-In rules; discards burned first when the chosen play scores > 0.1% more with none left (`burn_pays`; which cards, the policy's own dig choice) | `sim.rs` `decide_cards` | how a player digs | replay fixtures; calibration of win chances |
+| Simulated player's policy: flush chase when odds > 10%, 1.5× better than the best hand when on pace; discards that pay money (`engine::discard_money`) cashed while on pace, the last one right before the round ends; discards burned first when the chosen play scores > 0.1% more with none left (`burn_pays`; which cards, the policy's own dig choice) | `sim.rs` `decide_cards` | how a player digs | replay fixtures; calibration of win chances |
 | Typical hands with jokers that pay by discards left: scored with your discards and with none, the better counts (only when a reference Pair scores differently) | `advise.rs` `Ctx::typical_n` | you'd keep or burn them | — |
 | Look-ahead: 8 futures, only when a better finish could add ≥ 1% in seal planets | `sim.rs` `play_on_instead`, `LOOKAHEAD_ROLLOUTS` | cost vs. depth | replay fixtures |
 | Consumable used in a simulated round when it lifts the best play by > 1% | `sim.rs` `use_if_better` | when a player uses one | — |
@@ -115,7 +115,6 @@ add to this list's kind; remove from it.
 
 | Rule | Where | General replacement |
 |---|---|---|
-| Mail-In: cash its rank first | `sim.rs` `decide_cards` | the same: discard money counted in the round's value, choices weighed by it |
 | Holding Cryptid: drawing a Blue Seal is worth $15 (also inflates the round money shown) | `play.rs`, `sim.rs` `seal_seen_value` | the round's end state (deck, consumables) valued by `LongRun` |
 | The Lovers makes a pack card Wild | `advise.rs` standard pack cards | consumables used on pack cards, searched |
 | Tarot targets by a fixed priority (Blue Seal, then Red/Glass, then main suit); two other "best card" orderings (DNA, Cryptid tip) | `advise.rs` `tarot_values`, `value.rs` `dna_long` | search every target in hand |
@@ -130,7 +129,7 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
 1. **Tarot targets aren't searched** (see the retire list).
 2. **The simulated round only reports planets, money and hands left.** It should report the
    board, deck and consumables it ends with, valued by `LongRun`. That would retire the
-   Cryptid and Mail-In rules, and let the look-ahead weigh more than seal planets.
+   Cryptid rule, and let the look-ahead weigh more than seal planets.
 3. **Valuation is still split.** `deck_long` (tarot deck changes), the voucher, tag and Emperor
    formulas, and the shop ranking spend leftover money on rerolls in each of its three
    factors. The general fix: deck, joker and hand-size fields in `Gain`, and each dollar spent
@@ -142,8 +141,9 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    using `compare.rs`, because their options are valued by separate simulations, not round by
    round on the same draws.
 6. **Simulated discards change nothing but the hand.** Jokers that change with discards used
-   (Green Joker, Ramen, Castle, Yorick, Hit the Road, Burnt Joker, Faceless, Trading Card) and
-   money paid for discards left (Delayed Gratification) aren't modelled there: e.g. with
+   (Green Joker, Ramen, Castle, Yorick, Hit the Road, Burnt Joker, Trading Card) and money paid
+   for discards left (Delayed Gratification) aren't modelled there (discard money from Mail-In
+   Rebate and Faceless Joker is: `engine::discard_money`): e.g. with
    Mystic Summit and Green Joker, burning discards looks free. The general fix belongs in the
    engine's discard step (the game's own discard effects), not in the policy.
 7. **The long-run projection spends money on your main hand's planets.** A board that wants

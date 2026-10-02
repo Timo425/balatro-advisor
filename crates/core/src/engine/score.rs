@@ -244,6 +244,24 @@ struct Pass<'a, R: Rolls + ?Sized> {
 }
 
 /// Scores `played` (in play order) with `held` staying in hand.
+/// Money a discard pays (card.lua `calculate_joker`, discard context): Mail-In Rebate $5 per
+/// discarded card of the round's rank (not debuffed); Faceless Joker $5 when 3 or more of the
+/// discarded cards are faces (Pareidolia: every card is; debuffed cards aren't).
+pub fn discard_money(b: &Board, discarded: &[Card]) -> f64 {
+    let count = |key: &str| b.jokers.iter().filter(|j| j.key == key && !j.debuff).count() as f64;
+    let mut money = 0.0;
+    if let Some(rank) = b.mail_rank {
+        let n = discarded.iter().filter(|c| c.rank.0 == rank && c.enhancement != Some(crate::model::Enhancement::Stone) && !c.debuff).count();
+        money += 5.0 * count("j_mail") * n as f64;
+    }
+    let pareidolia = b.has(Kind::Pareidolia);
+    let faces = discarded.iter().filter(|c| !c.debuff && (pareidolia || (11..=13).contains(&c.rank.0))).count();
+    if faces >= 3 {
+        money += 5.0 * count("j_faceless");
+    }
+    money
+}
+
 pub fn score<R: Rolls + ?Sized>(b: &Board, played: &[Card], held: &[Card], rolls: &mut R, trace: bool) -> Outcome {
     let info = hand::detect(played, b.rule_flags());
     score_detected(b, played, held, info, rolls, trace)
