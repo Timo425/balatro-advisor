@@ -96,6 +96,7 @@ vs actual blind results and every shop seen).
 | Comparison: at most 1,600 rounds an option, "clearly worse" at 95% (paired), "equal" within 1% of the leader's value | `compare.rs` `MAX`, `EQUAL` | when a difference is real enough to act on | — |
 | Best play's search budget: first batch 16 rounds (batches double); at most 48 undecided moves after 16 rounds, 24 after 32, 12 after 64, 8 after that, kept by value then how close lost rounds came to the target | `advise.rs` `SEARCH_FIRST`, `SEARCH_BUDGET` | cost vs. coverage | check if better moves are ever cut by the budget |
 | Simulated player's policy: flush chase when odds > 10%, 1.5× better than the best hand when on pace; discards that pay money (`engine::discard_money`) cashed while on pace (a threshold, not yet weighed against `RoundGoals` money), the best-paying one whose remaining hand keeps pace, at most 16 tried, the last one right before the round ends; discards burned first when the chosen play scores > 0.1% more with none left (`burn_pays`; which cards, the policy's own dig choice) | `sim.rs` `decide_cards` | how a player digs | replay fixtures; calibration of win chances |
+| Cards worth drawing this round: for each held consumable that goes on one card, its value on each kind of card in the draw pile minus its value on the best card in hand (48-round projection, Blue Seal planets counted); a simulated round counts the best one it draws | `play.rs` `seen`, `sim::RoundGoals::seen` | a better target may come | — |
 | A held consumable's targets: every target set in hand on a 48-round projection, the best 4 on the full one; a deck's extra Blue Seal cards counted as planets (drawn with `seal_round_chance`, 3 rounds an ante) | `advise.rs` `TARGET_SCREEN_ROUNDS`, `value.rs` `deck_value_with` | cost vs. accuracy | — |
 | Typical hands with jokers that pay by discards left: scored with your discards and with none, the better counts (only when a reference Pair scores differently) | `advise.rs` `Ctx::typical_n` | you'd keep or burn them | — |
 | Look-ahead: 8 futures, only when a better finish could add ≥ 1% in seal planets | `sim.rs` `play_on_instead`, `LOOKAHEAD_ROLLOUTS` | cost vs. depth | replay fixtures |
@@ -116,7 +117,6 @@ add to this list's kind; remove from it.
 
 | Rule | Where | General replacement |
 |---|---|---|
-| Holding Cryptid: drawing a Blue Seal is worth $15 (also inflates the round money shown) | `play.rs`, `sim.rs` `seal_seen_value` | the round's end state (deck, consumables) valued by `LongRun` |
 | The Lovers makes a pack card Wild | `advise.rs` standard pack cards | consumables used on pack cards, searched |
 | Tarot targets by a fixed priority (Blue Seal, then Red/Glass, then main suit) where no hand is on screen (shop valuation on sampled hands); two other "best card" orderings (DNA, Cryptid tip). With a hand on screen, targets are searched (`engine::consumable`) | `advise.rs` `tarot_values`, `value.rs` `dna_long` | search every target on the sampled hands too |
 | Suit-joker map, `kickers_matter` list, `income_per_ante` per joker | `sim.rs` `keep_suit`, `advise.rs` | game facts: move to `data/` or the engine; or work out what to keep by scoring with and without a card |
@@ -128,9 +128,9 @@ add to this list's kind; remove from it.
 Ranked by how likely each is to cause the next round of patch-on-patch.
 
 1. **Tarot targets aren't searched** (see the retire list).
-2. **The simulated round only reports planets, money and hands left.** It should report the
-   board, deck and consumables it ends with, valued by `LongRun`. That would retire the
-   Cryptid rule, and let the look-ahead weigh more than seal planets.
+2. **The simulated round only reports planets, money, hands left and the best card it drew
+   for a held consumable (`seen`).** It should report the board, deck and consumables it ends
+   with, valued by `LongRun`, and let the look-ahead weigh more than seal planets.
 3. **Valuation is still split.** Deck changes are valued in `value.rs` (`deck_stats`) but not
    yet through `Gain`; the voucher, tag and Emperor
    formulas, and the shop ranking spend leftover money on rerolls in each of its three
