@@ -155,6 +155,8 @@ pub struct Outcome {
     pub planets: f64,
     /// The first hand played for points after a discard (not a junk hand played to dig)
     pub next: Option<(HandType, f64)>,
+    /// The most a card drawn this round adds (`RoundGoals::seen`)
+    pub seen: f64,
     /// The hand played last in a won round: a Blue Seal's planet is that hand's
     /// (card.lua Card:get_end_of_round_effect, G.GAME.last_hand_played)
     pub last: Option<HandType>,
@@ -188,6 +190,7 @@ pub fn outcomes_after(b: &Board, start: &RoundStart, first: &Move, range: std::o
                             o.won = 1.0;
                             o.spare = (start.hands - 1) as f64;
                             o.last = Some(s.hand);
+                            o.seen = bb.goals.as_ref().map_or(0.0, |g| g.seen_gain(&hand));
                             o.planets = seal_planets(&bb, &held);
                             o.cash += held_dollars(&held);
                         }
@@ -212,6 +215,7 @@ pub fn outcomes_after(b: &Board, start: &RoundStart, first: &Move, range: std::o
             o.planets = r.planets;
             o.next = r.plays.iter().find(|p| !p.2).map(|p| (p.0, p.1));
             o.last = r.plays.last().map(|p| p.0);
+            o.seen = r.seen;
             o
         })
         .collect()
@@ -384,6 +388,8 @@ pub struct RoundResult {
     pub hands_left: i64,
     /// Planets from Blue Seal cards held at the end of a won round.
     pub planets: f64,
+    /// The most a card drawn this round adds (`RoundGoals::seen`)
+    pub seen: f64,
 }
 
 fn draw(hand: &mut Vec<Card>, deck: &mut Vec<Card>, size: usize) {
@@ -699,18 +705,27 @@ impl Use {
 /// What a won round is worth beyond winning it, in the advice's long-run measure: each planet
 /// a Blue Seal makes, by the hand played last (it's that hand's planet), and each dollar.
 /// The round simulation uses it to choose between winning now and playing on for more.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct RoundGoals {
     pub planet: [f64; 12],
     pub dollar: f64,
     pub per_hand: f64,
+    /// Cards worth drawing this round, and by how much: a held consumable would be worth that
+    /// much more used on one of them than on the best card in your hand
+    pub seen: Vec<(Card, f64)>,
 }
 
 impl RoundGoals {
     /// A simulated round's value: 0 if lost, else 1 plus what it leaves you.
     pub fn value(&self, o: &Outcome) -> f64 {
         let planet = o.last.map_or(0.0, |h| self.planet[h as usize]);
-        o.won * (1.0 + planet * o.planets + self.dollar * (o.spare * self.per_hand + o.cash))
+        o.won * (1.0 + planet * o.planets + self.dollar * (o.spare * self.per_hand + o.cash) + o.seen)
+    }
+
+    /// The most a card in `cards` adds (`seen`)
+    pub fn seen_gain(&self, cards: &[Card]) -> f64 {
+        let same = |a: &Card, b: &Card| a.rank == b.rank && a.suit == b.suit && a.enhancement == b.enhancement && a.seal == b.seal && a.edition == b.edition;
+        cards.iter().filter_map(|c| self.seen.iter().find(|(k, _)| same(k, c)).map(|(_, g)| *g)).fold(0.0, f64::max)
     }
 }
 
@@ -724,7 +739,7 @@ const LOOKAHEAD_ROLLOUTS: usize = 8;
 /// when a better finish could be worth something; the futures play on without looking ahead.
 #[allow(clippy::too_many_arguments)]
 fn play_on_instead(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i64, scored: f64, target: f64, size: usize, win: &[usize], uses: &[Use], rng: &mut Rng) -> Option<Action> {
-    let g = b.goals?;
+    let g = b.goals.as_ref()?;
     if hands <= 1 {
         return None;
     }
@@ -797,12 +812,9 @@ pub fn sim_round_uses(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[
     let mut best_hand: f64 = 0.0;
     let mut plays = Vec::new();
     let mut money = 0.0;
-    let has_seal = |h: &[Card]| h.iter().any(|c| c.seal == Some(crate::model::Seal::Blue));
-    let mut seen = b.seal_seen_value <= 0.0 || has_seal(&start.hand);
-    if b.seal_seen_value > 0.0 && !seen && has_seal(&hand) {
-        money += b.seal_seen_value;
-        seen = true;
-    }
+    let goals = b.goals.clone();
+    let seen_of = |h: &[Card]| goals.as_ref().map_or(0.0, |g| g.seen_gain(h));
+    let mut seen = seen_of(&hand);
     while hands > 0 && !hand.is_empty() {
         b.hands_left = hands;
         b.discards_left = discards;
@@ -839,30 +851,24 @@ pub fn sim_round_uses(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[
                 hands -= 1;
                 if total >= start.target {
                     money += held_dollars(&hand);
-                    return RoundResult { total, won: true, saved: false, best_hand, plays, money, hands_left: hands, planets: seal_planets(&b, &hand) };
+                    return RoundResult { total, won: true, saved: false, best_hand, plays, money, hands_left: hands, planets: seal_planets(&b, &hand), seen };
                 }
                 draw(&mut hand, &mut deck, size);
-                if !seen && has_seal(&hand) {
-                    money += b.seal_seen_value;
-                    seen = true;
-                }
+                seen = seen.max(seen_of(&hand));
             }
             Action::Discard(idx) => {
                 money += discard_money(&b, &hand, &idx);
                 hand = (0..hand.len()).filter(|i| !idx.contains(i)).map(|i| hand[i]).collect();
                 draw(&mut hand, &mut deck, size);
                 discards -= 1;
-                if !seen && has_seal(&hand) {
-                    money += b.seal_seen_value;
-                    seen = true;
-                }
+                seen = seen.max(seen_of(&hand));
             }
         }
     }
     // Mr. Bones: a lost round is saved if you reached 25% of the blind (card.lua, game_over)
     let bones = b.jokers.iter().any(|j| j.key == "j_mr_bones" && !j.debuff);
     let won = total >= start.target;
-    RoundResult { total, won, saved: !won && bones && total >= 0.25 * start.target, best_hand, plays, money, hands_left: 0, planets: 0.0 }
+    RoundResult { total, won, saved: !won && bones && total >= 0.25 * start.target, best_hand, plays, money, hands_left: 0, planets: 0.0, seen }
 }
 
 /// Mean and quantiles of a sample.
@@ -1075,6 +1081,28 @@ mod tests {
         let need = (kings * 3.0 + two_pair * 3.0) / 2.0;
         if let Action::Discard(v) = decide(&b, &hand, &deck, 3, 2, need, 8) {
             assert!(!aces(&v), "the Kings alone don't keep pace: keep the Aces");
+        }
+    }
+
+    #[test]
+    fn drawing_a_card_worth_having_adds_its_gain_to_the_round() {
+        // A held consumable would be worth 0.5 more on the 3♠ with a Blue Seal (e.g. Cryptid's
+        // copies): a simulated round that draws it is worth that much more; one that doesn't,
+        // nothing extra. No rule names the consumable or the card.
+        let seal = Card::parse_list("3S:blue").unwrap()[0];
+        let hand = Card::parse_list("AS AH KD 9C 7S 5H 4D 2C").unwrap();
+        let mut deck: Vec<Card> = standard_deck().into_iter().filter(|c| !hand.iter().any(|h| h.rank == c.rank && h.suit == c.suit) && !(c.rank == seal.rank && c.suit == seal.suit)).collect();
+        deck.push(seal);
+        let mut b = sample_board(&["j_joker"]);
+        b.goals = Some(RoundGoals { seen: vec![(seal, 0.5)], ..Default::default() });
+        let start = RoundStart { hand: hand.clone(), deck, hand_size: 8, hands: 4, discards: 3, scored: 0.0, target: 1.0 };
+        let outs = outcomes_after(&b, &start, &Move::Discard(vec![4, 5, 6, 7]), 0..400, 7, &[]);
+        let g = b.goals.clone().unwrap();
+        let drew = outs.iter().filter(|o| o.seen > 0.0).count();
+        assert!(drew > 0 && drew < outs.len(), "some rounds draw it, some don't: {drew}");
+        for o in &outs {
+            assert!(o.seen == 0.0 || o.seen == 0.5);
+            assert_eq!(g.value(o), o.won * (1.0 + o.seen));
         }
     }
 

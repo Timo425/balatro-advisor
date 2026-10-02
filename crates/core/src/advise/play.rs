@@ -21,17 +21,45 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
     // held (rerolls and packs, `Spending`)
     let dollar_gain = ((lr.value(&Gain::money(10.0)) * spending.factor(run.dollars + 10.0) / spending.factor(run.dollars).max(1e-9) - 1.0) / 10.0).max(0.0);
     b.deck_remaining = run.draw_pile.len() as i64;
+    // Cards worth drawing this round: for each consumable you hold that goes on one card, how
+    // much more your run is worth with it used on a card in the draw pile than on the best card
+    // in your hand (`LongRun::deck_value`, quick projection; Blue Seal planets counted). A
+    // simulated round that draws one is worth that much more (`RoundGoals::seen`).
+    let seen: Vec<(Card, f64)> = {
+        use crate::engine::consumable;
+        let deck = &ctx.fresh_deck;
+        let same = |a: &Card, b: &Card| a.rank == b.rank && a.suit == b.suit && a.enhancement == b.enhancement && a.seal == b.seal && a.edition == b.edition;
+        let idx_of = |c: &Card| deck.iter().position(|d| same(d, c));
+        let mut kinds: Vec<Card> = vec![];
+        for c in &run.draw_pile {
+            if !kinds.iter().any(|k| same(k, c)) {
+                kinds.push(*c);
+            }
+        }
+        let mut out: Vec<(Card, f64)> = vec![];
+        for held in &run.consumables {
+            let Some((effect, 1, 1)) = data.center(&held.key).and_then(|x| consumable::card_effect(&held.key, &x.config)) else { continue };
+            let val = |card: &Card| idx_of(card).map(|i| lr.deck_value_with(&consumable::apply(effect, deck, &[i]), 0.0, TARGET_SCREEN_ROUNDS, true));
+            let now = run.hand.iter().filter_map(val).fold(1.0f64, f64::max);
+            let vals = par_map(&kinds, |k| val(k).unwrap_or(0.0));
+            for (k, v) in kinds.iter().zip(vals) {
+                let gain = v - now;
+                if gain > 0.0 {
+                    match out.iter_mut().find(|(c, _)| same(c, k)) {
+                        Some(e) => e.1 = e.1.max(gain),
+                        None => out.push((*k, gain)),
+                    }
+                }
+            }
+        }
+        out
+    };
     // Look-ahead: each candidate first move is simulated through the rest of the round.
     let look = ctx.specs.iter().find(|x| x.in_progress).map(|spec| {
         let mut bb = ctx.board_for(&b, spec);
         // The simulated player plays toward the same measure the advice ranks by
-        let goals = sim::RoundGoals { planet: std::array::from_fn(|i| planet_gain_by[i]), dollar: dollar_gain, per_hand: run.money_per_hand };
-        bb.goals = Some(goals);
-        // Holding Cryptid: drawing a Blue Seal card this round means two more of it (an
-        // estimate: about three planets' worth)
-        if run.consumables.iter().any(|c| c.key == "c_cryptid") && !run.hand.iter().any(|c| c.seal == Some(crate::model::Seal::Blue)) {
-            bb.seal_seen_value = 15.0;
-        }
+        let goals = sim::RoundGoals { planet: std::array::from_fn(|i| planet_gain_by[i]), dollar: dollar_gain, per_hand: run.money_per_hand, seen: seen.clone() };
+        bb.goals = Some(goals.clone());
         let start = ctx.start_for(spec, &bb);
         let seed = ctx.opts.seed;
         // Consumables you hold, as the round can use them: tarots and spectral cards by

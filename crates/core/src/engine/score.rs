@@ -102,9 +102,6 @@ pub struct Board {
     pub most_played: Option<HandType>,
     pub blind: BlindRules,
     /// Mail-In Rebate's rank this round (it pays $5 per discarded card of it).
-    /// Worth (in $) of drawing a Blue Seal card at all this round, e.g. to use a held
-    /// Cryptid on it (the round simulation counts it once).
-    pub seal_seen_value: f64,
     /// Consumable slots free for the planets Blue Seal cards held at round end make.
     pub planet_slots: i64,
     /// What a round is worth beyond winning it, for the round simulation's own choices
@@ -143,7 +140,6 @@ impl Board {
             blind: BlindRules::default(),
             plasma: false,
             mail_rank: None,
-            seal_seen_value: 0.0,
             planet_slots: 2,
             goals: None,
         }
