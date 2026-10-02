@@ -8,7 +8,7 @@
 use super::par_map;
 
 /// Rounds in the first batch (each batch doubles), the most rounds an option gets, and how
-/// close (as a share of the value) counts as equally good.
+/// close (as a share of the leader's value) counts as equally good.
 pub(super) const FIRST: usize = 64;
 pub(super) const MAX: usize = 1600;
 pub(super) const EQUAL: f64 = 0.01;
@@ -46,6 +46,7 @@ pub(super) fn race<T: Send + Sync>(
         batch = done;
         leader = *alive.iter().max_by(|&&x, &&y| mean(&samples[x]).total_cmp(&mean(&samples[y])).then(tie_order(x, y))).unwrap();
         let lead = &samples[leader];
+        let lead_mean = mean(lead).abs().max(1e-9);
         alive.retain(|&c| {
             if c == leader {
                 return true;
@@ -58,7 +59,7 @@ pub(super) fn race<T: Send + Sync>(
             if m - 2.0 * se > 0.0 {
                 return false;
             }
-            if m.abs() + 2.0 * se < EQUAL {
+            if m.abs() + 2.0 * se < EQUAL * lead_mean {
                 tied[c] = true;
                 return false;
             }

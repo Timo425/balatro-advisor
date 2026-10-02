@@ -8,7 +8,6 @@ use super::value::{Gain, LongRun, Spending};
 
 pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[TarotValue], hand_order: &[usize]) -> Option<PlayAdvice> {
     let (run, data) = (ctx.run, ctx.data);
-    let top_hand = lr.top_hand;
     if !(run.screen.in_blind() && !run.hand.is_empty()) {
         return None;
     }
@@ -18,8 +17,6 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
     // long-run projection everything else is valued by. One value per hand type.
     let has_seals = run.hand.iter().chain(&run.draw_pile).any(|c| c.seal == Some(crate::model::Seal::Blue));
     let planet_gain_by: Vec<f64> = if has_seals { crate::engine::HandType::ALL.iter().map(|&h| (lr.planet(h) - 1.0).max(0.0)).collect() } else { vec![0.0; 12] };
-    // for estimates that don't know which hand ends the round: your main hand's
-    let planet_gain = top_hand.map_or(0.0, |t| planet_gain_by[t as usize]);
     // A dollar won this round, in the same long-run measure: what +$10 does, spent once and
     // held (rerolls and packs, `Spending`)
     let dollar_gain = ((lr.value(&Gain::money(10.0)) * spending.factor(run.dollars + 10.0) / spending.factor(run.dollars).max(1e-9) - 1.0) / 10.0).max(0.0);
@@ -89,7 +86,6 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
             let indices = idx.iter().filter(|&&i| i < hand_order.len()).map(|&i| hand_order[i]).collect();
             PlayOption { spare_hands: spare, round_money: cash, action: action.into(), cards: cards.iter().map(Card::label).collect(), indices, dig, hand: name, score, p_win: p, mean_total: mean, use_first, planets, tie: false, then: None }
         };
-        let mut moves = sim::candidate_moves(&bb, &start.hand, &start.deck, start.hands, start.discards, start.target - start.scored, start.hand_size.max(1) as usize);
         // Exact ties are broken by the cards themselves, so the order your hand is sorted in
         // never changes the advice
         let canon = |m: &sim::Move, hand: &[Card]| {
@@ -101,36 +97,27 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
             l.sort();
             (kind, l)
         };
-        // Every possible discard, narrowed down in stages (the same draws for each): all of
-        // them on a few quick rounds, the best on more, and the best of those join the full
-        // simulation. So no discard is missed for want of a rule, and rounds go where moves
-        // are close.
-        {
-            let same = |a: &sim::Move, b: &sim::Move| match (a, b) {
-                (sim::Move::Discard(x), sim::Move::Discard(y)) => {
-                    let (mut x, mut y) = (x.clone(), y.clone());
-                    x.sort();
-                    y.sort();
-                    x == y
-                }
-                _ => false,
-            };
-            // win chance (with planets), then hands left over, which is what differs once the
-            // round is safe
-            let key = |r: &(f64, f64, f64, f64, f64)| r.0 + planet_gain * r.4 + 0.01 * r.2;
-            let mut pool: Vec<sim::Move> = sim::all_discards(&start.hand, start.discards).into_iter().filter(|d| !moves.iter().any(|m| same(m, d))).collect();
-            for &(n, keep) in SCREEN_DISCARD_STAGES {
-                let r = par_map(&pool, |m| sim::odds_after_uses(&bb, &start, m, n, seed, &uses));
+        // Every move, narrowed down in stages on the same draws and the same measure as the
+        // final comparison: every play and every discard on a few quick rounds, the best on
+        // more, the best of those into the comparison. No move needs a rule to be considered.
+        let screen = |b: &Board, st: &RoundStart, u: &[sim::Use]| -> Vec<sim::Move> {
+            let mut pool: Vec<sim::Move> = sim::all_plays(&st.hand);
+            pool.extend(sim::all_discards(&st.hand, st.discards));
+            for &(n, keep) in SCREEN_STAGES {
+                let r: Vec<f64> = par_map(&pool, |m| {
+                    let o = sim::outcomes_after(b, st, m, 0..n, seed, u);
+                    o.iter().map(|x| goals.value(x)).sum::<f64>() / n as f64
+                });
                 let mut order: Vec<usize> = (0..pool.len()).collect();
-                order.sort_by(|&a, &b| key(&r[b]).total_cmp(&key(&r[a])).then(r[b].1.total_cmp(&r[a].1)).then(canon(&pool[a], &start.hand).cmp(&canon(&pool[b], &start.hand))));
+                order.sort_by(|&a, &c| r[c].total_cmp(&r[a]).then(canon(&pool[a], &st.hand).cmp(&canon(&pool[c], &st.hand))));
                 pool = order.into_iter().take(keep).map(|i| pool[i].clone()).collect();
             }
-            moves.extend(pool);
-        }
-        // Every candidate: the moves above with your consumables kept, and each held
-        // consumable used first, then any of the moves after it
+            pool
+        };
+        // Every candidate: the moves with your consumables kept, and each held consumable used
+        // first, then the moves after it
         type Cand = (sim::Move, Board, RoundStart, Vec<sim::Use>, Option<String>);
-        let mut cands: Vec<Cand> = moves.iter().map(|m| (m.clone(), bb.clone(), start.clone(), uses.clone(), None)).collect();
+        let mut cands: Vec<Cand> = screen(&bb, &start, &uses).into_iter().map(|m| (m, bb.clone(), start.clone(), uses.clone(), None)).collect();
         for (k, u) in uses.iter().enumerate() {
             if uses[..k].iter().any(|x| x.name == u.name) {
                 continue;
@@ -138,7 +125,7 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
             let Some((b2, h2)) = u.apply(&bb, &start.hand) else { continue };
             let rest: Vec<sim::Use> = uses.iter().enumerate().filter(|(j, _)| *j != k).map(|(_, x)| x.clone()).collect();
             let s2 = RoundStart { hand: h2, ..start.clone() };
-            for m in sim::candidate_moves(&b2, &s2.hand, &s2.deck, s2.hands, s2.discards, s2.target - s2.scored, s2.hand_size.max(1) as usize) {
+            for m in screen(&b2, &s2, &rest) {
                 cands.push((m, b2.clone(), s2.clone(), rest.clone(), Some(u.name.clone())));
             }
         }

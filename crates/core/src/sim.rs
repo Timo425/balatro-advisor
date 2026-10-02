@@ -119,133 +119,19 @@ pub enum Move {
     Discard(Vec<usize>),
 }
 
-/// First moves worth simulating: the best few plays by score with every roll failing and
-/// by average score (Lucky rolls averaged), the best play holding back each special card
-/// (enhanced, sealed or with an edition), and what the usual policy would do (which may
-/// be a dig or a discard).
-pub fn candidate_moves(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i64, need: f64, size: usize) -> Vec<Move> {
+/// Every play of 1 to 5 cards, each in the order to play it. Face-down cards are left out:
+/// you can't plan around a card you can't see.
+pub fn all_plays(hand: &[Card]) -> Vec<Move> {
     let n = hand.len().min(12);
-    let flags = b.rule_flags();
-    let keep_kickers = kickers_matter(b);
-    // (mask, arranged cards, floor, mean)
-    let mut all: Vec<(u32, Vec<usize>, f64, f64)> = Vec::new();
-    let hidden: u32 = (0..n)
-        // face-down cards can't be planned around; Blue Seal cards are kept for their planet
-        .filter(|&i| hand[i].face_down || hand[i].seal == Some(crate::model::Seal::Blue))
-        .fold(0, |m, i| m | (1 << i));
-    for mask in 1u32..(1 << n) {
-        if mask.count_ones() > 5 || mask & hidden != 0 {
-            continue;
-        }
-        let mut idx: Vec<usize> = (0..n).filter(|i| mask & (1 << i) != 0).collect();
-        arrange(hand, &mut idx);
-        let played: Vec<Card> = idx.iter().map(|&i| hand[i]).collect();
-        let info = hand::detect(&played, flags);
-        if !keep_kickers && info.scoring.len() != played.len() {
-            continue;
-        }
-        let held: Vec<Card> = (0..n).filter(|i| mask & (1 << i) == 0).map(|i| hand[i]).collect();
-        let floor = score::score_detected(b, &played, &held, info.clone(), &mut Unlucky, false).score;
-        let mut rng = Rng::new(0x5eed ^ mask as u64);
-        let mean = (0..6).map(|_| score::score_detected(b, &played, &held, info.clone(), &mut rng, false).score).sum::<f64>() / 6.0;
-        all.push((mask, idx, floor, mean));
-    }
-    let mut out: Vec<Move> = Vec::new();
-    let push = |m: Move, out: &mut Vec<Move>| {
-        let key = |m: &Move| match m {
-            Move::Play(v) => (0, { let mut v = v.clone(); v.sort(); v }),
-            Move::Discard(v) => (1, { let mut v = v.clone(); v.sort(); v }),
-        };
-        if !out.iter().any(|x| key(x) == key(&m)) {
-            out.push(m);
-        }
-    };
-    let mut by_floor: Vec<&(u32, Vec<usize>, f64, f64)> = all.iter().collect();
-    by_floor.sort_by(|a, b| b.2.total_cmp(&a.2));
-    for c in by_floor.iter().take(4) {
-        push(Move::Play(c.1.clone()), &mut out);
-        // the same play, topped up with junk to dig
-        push(Move::Play(with_fillers(b, hand, &c.1)), &mut out);
-    }
-    let mut by_mean = by_floor.clone();
-    by_mean.sort_by(|a, b| b.3.total_cmp(&a.3));
-    for c in by_mean.iter().take(3) {
-        push(Move::Play(c.1.clone()), &mut out);
-    }
-    // Hold one special card back for later
-    for k in 0..n {
-        let c = &hand[k];
-        let special = !c.debuff && (c.enhancement.is_some() || c.seal.is_some() || c.edition.is_some());
-        if special {
-            if let Some(best) = by_floor.iter().find(|x| x.0 & (1 << k) == 0) {
-                push(Move::Play(best.1.clone()), &mut out);
-            }
-        }
-    }
-    // A dig play: 5 junk cards (outside the suit your jokers reward, else your deck's commonest;
-    // no sealed or enhanced cards), so a whole hand's worth of new cards comes in
-    {
-        let keep = keep_suit(b, hand, deck);
-        let mut junk: Vec<usize> = (0..n)
-            .filter(|&i| {
-                let c = &hand[i];
-                Some(c.suit) != keep && c.seal.is_none() && c.enhancement.is_none() && c.edition.is_none()
-            })
-            .collect();
-        junk.sort_by(|&x, &y| hand[x].rank.chips().total_cmp(&hand[y].rank.chips()));
-        junk.truncate(5);
-        if junk.len() >= 3 {
-            push(Move::Play(junk), &mut out);
-        }
-    }
-    // Already won: keep the smallest play that still wins and dig with up to 5 of the rest
-    // (the score past the target is worth nothing; new cards might be)
-    if discards > 0 {
-        let winners: Vec<&(u32, Vec<usize>, f64, f64)> = all.iter().filter(|x| x.2 >= need).collect();
-        if let Some(least) = winners.iter().min_by_key(|x| (x.1.len(), std::cmp::Reverse((x.2 * 100.0) as i64))) {
-            let mut toss: Vec<usize> = (0..n).filter(|i| least.0 & (1 << i) == 0).filter(|&i| hand[i].seal.is_none() && hand[i].enhancement.is_none() && hand[i].edition.is_none()).collect();
-            toss.sort_by(|&x, &y| hand[x].rank.chips().total_cmp(&hand[y].rank.chips()));
-            toss.truncate(5);
-            if !toss.is_empty() {
-                push(Move::Discard(toss), &mut out);
-            }
-        }
-    }
-    // A plain dig: discard Mail-In's rank (it pays) and the weakest cards outside the best play,
-    // keeping the suit your jokers reward and sealed or enhanced cards
-    if discards > 0 {
-        if let Some(best) = by_floor.first() {
-            let keep = keep_suit(b, hand, deck);
-            let pays = |i: usize| b.mail_rank == Some(hand[i].rank.0);
-            let mut toss: Vec<usize> = (0..n)
-                .filter(|i| best.0 & (1 << i) == 0)
-                .filter(|&i| pays(i) || (Some(hand[i].suit) != keep && hand[i].seal.is_none() && hand[i].enhancement.is_none() && hand[i].edition.is_none()))
-                .collect();
-            toss.sort_by(|&x, &y| {
-                let pays = |i: usize| b.mail_rank == Some(hand[i].rank.0);
-                pays(y).cmp(&pays(x)).then(hand[x].rank.chips().total_cmp(&hand[y].rank.chips()))
-            });
-            toss.truncate(5);
-            if !toss.is_empty() {
-                push(Move::Discard(toss.clone()), &mut out);
-            }
-            // Mail-In's rank pays even when it's in the best play: try cashing those too, and
-            // let the win chance say whether the round can spare them
-            let all_pay: Vec<usize> = (0..n).filter(|&i| pays(i)).collect();
-            if all_pay.iter().any(|i| !toss.contains(i)) {
-                let mut with: Vec<usize> = all_pay.clone();
-                with.extend(toss.iter().copied().filter(|i| !all_pay.contains(i)));
-                with.truncate(5);
-                push(Move::Discard(with), &mut out);
-            }
-        }
-    }
-    match decide(b, hand, deck, hands, discards, need, size) {
-        Action::Play(idx, _) if !idx.is_empty() => push(Move::Play(idx), &mut out),
-        Action::Discard(idx) if !idx.is_empty() => push(Move::Discard(idx), &mut out),
-        _ => {}
-    }
-    out
+    let hidden: u32 = (0..n).filter(|&i| hand[i].face_down).fold(0, |m, i| m | (1 << i));
+    (1u32..(1 << n))
+        .filter(|m| m.count_ones() <= 5 && m & hidden == 0)
+        .map(|m| {
+            let mut idx: Vec<usize> = (0..n).filter(|i| m & (1 << i) != 0).collect();
+            arrange(hand, &mut idx);
+            Move::Play(idx)
+        })
+        .collect()
 }
 
 /// Every discard of 1 to 5 cards from the hand (none without a discard left), for screening

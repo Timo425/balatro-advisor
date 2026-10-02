@@ -605,9 +605,9 @@ fn apply_mods(start: &RoundStart, added: &[&Joker], removed: &[&Joker], fresh: b
 
 /// Fresh deals per board in the quick screen of the whole pool.
 const SCREEN_DEALS: usize = 100;
-/// Screening every possible discard: (rounds each, how many go on) per stage; the last
-/// stage's survivors join the full simulation.
-const SCREEN_DISCARD_STAGES: &[(usize, usize)] = &[(32, 24), (160, 6)];
+/// Best play's screening of every possible move: (rounds each, how many go on) per stage;
+/// the last stage's survivors go into the comparison (`compare`).
+const SCREEN_STAGES: &[(usize, usize)] = &[(16, 48), (64, 16), (256, 6)];
 fn is_zero_usize(n: &usize) -> bool {
     *n == 0
 }
@@ -783,6 +783,8 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             pile[k] = real;
             *c = stand;
         }
+        // the simulation shuffles the pile: start it from a fixed order, not the game's
+        pile.sort_by_key(|c| (std::cmp::Reverse(c.rank.0), c.suit as u8, format!("{:?}{:?}{:?}{}", c.enhancement, c.seal, c.edition, c.perma_bonus)));
         (hand, pile)
     };
     let dctx = desc_ctx(run);
@@ -792,6 +794,9 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         c.face_down = false;
         c.debuff = false;
     }
+    // In a fixed order before anything shuffles it, so how the game (or you) happen to order
+    // your hand and piles never changes the advice
+    fresh_deck.sort_by_key(|c| (std::cmp::Reverse(c.rank.0), c.suit as u8, format!("{:?}{:?}{:?}{}", c.enhancement, c.seal, c.edition, c.perma_bonus)));
 
     // Which rounds to simulate: the one in progress (or the next blind), and the boss.
     let mut specs = Vec::new();
