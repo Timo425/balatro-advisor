@@ -27,45 +27,47 @@ twice copies it, e.g. Ankh), `--sell` / `--add` change it, `--card "OLD=NEW"` ch
 card in hand or deck ("4D:lucky:red=4D:glass:red"), `--add-cards` / `--remove-cards`.
 It plans nothing itself: spotting the line is the human's (or agent's) part.
 
-## How to improve the advice
+## Refining the advice (required workflow)
 
-Read `docs/design.md` first: the four stages every piece of advice goes through (moves
-tried, simulated player, valuation, noise), where each lives, the rules for changing them,
-and the register of hand-set values. When advice is wrong, find which stage failed and
-improve that stage, so every similar situation gets better at once. If a fix only makes
-sense for one joker, suit or hand, it's the wrong fix: look for the step that should have
-found it. Add the state as a replay fixture first (below).
+`docs/design.md` is the architecture: the four stages every piece of advice goes through
+(moves tried, simulated player, valuation, noise), the patterns and rules, the register of
+hand-set values and the retire list. Read it before changing what the advice says. Every
+change to how the advice decides or values things follows these steps, in order:
+
+1. **Capture.** When the owner says a suggestion is wrong, save that state as a replay
+   fixture before touching code: `tests/fixtures/private/<name>.json` = `{"note", "state":
+   <balatro-advisor state --json>, "expect": {...}}` (keys: `best_action`, `best_hand`,
+   `best_use_first`, `best_not_cards`: [..], `top_option`, `above`: ["A", "B"]). The folder is
+   git-ignored (real runs aren't committed).
+2. **Diagnose before fixing.** Find out why, by reading the code and simulating the state
+   (scratch programs or `whatif`), not by guessing. Name the stage that failed. Run
+   `git log --oneline | grep -i '<stage>'` for earlier fixes to it (commits before d8c27ef
+   aren't prefixed: read the recent log too); if there are any, change how the stage works
+   for every case rather than adding another rule to it.
+3. **Fix the stage, generally.** Ask what the case is an example of and where the game (or
+   the simulation) already defines that group. If the fix only makes sense for one joker,
+   suit, hand or card, it's the wrong fix. New hand-set numbers go in the register.
+4. **Prove it.** `cargo test --release` must exit 0 (check the exit status, not the printed
+   output), the replay fixtures included. A pure restructuring must leave the full analysis
+   of every fixture unchanged: `BAV_SNAPSHOT_DIR=/tmp/before cargo test --release --test
+   replay -- --ignored snapshot` before and `/tmp/after` after, then `diff -r`. A behaviour
+   change: diff the snapshots and explain every difference.
+5. **Review.** Spawn the `advisor-reviewer` agent (`.claude/agents/`) on the change. It hasn't
+   seen your reasoning, which is why it finds what you missed. Apply what holds up (check its
+   claims in the code first; it can be wrong), then run it once more on the fixes. Skip only
+   for changes that don't touch how advice is decided or valued (UI text, docs).
+6. **Record.** Commit message starts with the stage (`valuation: …`, `simulated player: …`,
+   `moves tried: …`, `noise: …`; `refactor`/`docs` otherwise). Update `docs/design.md` when a
+   stage, rule, register entry or known gap changed. Then commit and push.
 
 **Example.** The advice played a junk Spade instead of digging with the off-suit cards,
 because the simulated rest of the round spent the 3♠ Blue Seal in a Flush.
-- First fix (wrong scope): "keep Blue Seal cards in hand while on pace". Right step (the
-  round policy), but named after the card on screen.
-- Right fix: ask what the card is an example of: "cards that pay at the end of the round
-  while held". The game defines that group (card.lua `get_end_of_round_effect`: Blue Seal,
-  Gold card), so the policy keeps whatever is in it, and Gold cards were covered without
-  anyone noticing them.
-- Ask the same each time: what general group is this an example of, and where does the game
-  (or the simulation) already define it?
+- First fix (wrong scope): "keep Blue Seal cards in hand while on pace". Right stage (the
+  simulated player), but named after the card on screen.
+- Right fix: "cards that pay at the end of the round while held". The game defines that group
+  (card.lua `get_end_of_round_effect`: Blue Seal, Gold card), so the policy keeps whatever is
+  in it, and Gold cards were covered without anyone noticing them.
 
-**Before every fix, three steps:**
-1. Name the stage that failed: *moves tried*, *simulated player*, *valuation* or *noise*
-   (`docs/design.md`).
-2. Run `git log --oneline | grep -i '<stage>'` (or read the recent log) for earlier fixes
-   to that stage. If there is one, the stage itself is the problem: change how it works
-   for every case (as "the simulated player plays toward `RoundGoals`" did), don't add
-   another rule to it.
-3. Start the commit message with the stage, e.g. `simulated player: …`, so step 2 finds it
-   next time.
-
-## Replay fixtures (wrong advice the owner caught)
-
-When the owner says a suggestion is wrong, save that game state before fixing it:
-`tests/fixtures/private/<name>.json` = `{"note", "state": <balatro-advisor state --json>,
-"expect": {...}}` (keys: `best_action`, `best_hand`, `best_use_first`, `best_not_cards`: [..], `top_option`, `above`: ["A", "B"]).
-`cargo test --release --test replay` replays every one; it must pass before a commit
-(check the exit status, not the printed output). A pure restructuring must also leave the
-full analysis of every fixture unchanged (same seed, same JSON): snapshot before and after
-with `BAV_SNAPSHOT_DIR=/tmp/before cargo test --release --test replay -- --ignored snapshot`
-(then `/tmp/after`) and `diff -r /tmp/before /tmp/after`.
 Other local data (never in the repo): `~/.local/share/balatro-advisor/calibration.jsonl`
-(predicted vs actual blind results, shops seen).
+(predicted vs actual blind results, every shop seen): the evidence for replacing a register
+entry with a measurement.
