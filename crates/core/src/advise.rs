@@ -182,7 +182,7 @@ pub struct PlayAdvice {
     /// The other first moves simulated, best first.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub alternatives: Vec<PlayOption>,
-    /// A tip about how to play the round (e.g. burn discards for Mystic Summit).
+    /// A tip about how to play the round
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tip: Option<String>,
 }
@@ -681,15 +681,22 @@ impl Ctx<'_> {
         let mut bb = b.clone();
         bb.blind = Default::default();
         bb.hands_left = self.run.round_hands.max(1);
-        // You'd burn your discards first when the board scores more with none left (jokers
-        // that pay by discards left), so hands are then played with none left. Checked on a
-        // reference pair: those jokers pay on any hand.
+        // With jokers that pay by discards left you'd keep or burn them, whichever scores
+        // more: when discards left change the score at all (checked on a reference pair),
+        // hands are scored both ways and the better counts.
         bb.discards_left = self.run.round_discards;
-        let pair = [Card::new(crate::model::Rank(14), crate::model::Suit::Spades), Card::new(crate::model::Rank(14), crate::model::Suit::Hearts)];
-        if sim::scores_more_without_discards(&bb, &pair) {
-            bb.discards_left = 0;
+        let mut none = bb.clone();
+        none.discards_left = 0;
+        let pair = Card::parse_list("AS AH").unwrap_or_default();
+        let with = Stats::of(sim::typical_hands(&bb, &self.fresh_deck, size, samples, self.opts.seed));
+        let differs = crate::engine::score(&bb, &pair, &[], &mut crate::engine::Unlucky, false).score != crate::engine::score(&none, &pair, &[], &mut crate::engine::Unlucky, false).score;
+        if differs {
+            let without = Stats::of(sim::typical_hands(&none, &self.fresh_deck, size, samples, self.opts.seed));
+            if without.mean > with.mean {
+                return without;
+            }
         }
-        Stats::of(sim::typical_hands(&bb, &self.fresh_deck, size, samples, self.opts.seed))
+        with
     }
 }
 
@@ -4036,6 +4043,26 @@ mod tests {
         assert!(o.survive_next > keep.survive_next, "next-ante survival: joker {:?} vs keeping the money {:?}", o.survive_next, keep.survive_next);
         assert!(keep.survive_next.unwrap() < 1.0, "survival with shops ahead must not saturate");
         assert!(pos("joker") < pos("leave"), "joker {:?} next {:?}", (o.p_win, o.survive, o.survive_next, o.long_mult), keep.survive_next);
+    }
+
+    #[test]
+    fn a_board_that_scores_more_without_discards_discards_first() {
+        // Mystic Summit (+15 Mult once no discards are left) and a round not won yet: burning
+        // the discards first is worth more than playing now. Decided by the engine and the
+        // search, with no rule naming the joker.
+        let mut r = shop_run(&[("j_mystic_summit", None, None)], &[]);
+        r.screen = crate::save::Screen::SelectingHand;
+        r.shop = None;
+        r.hand = Card::parse_list("KS 9H 7D 5C 4S 3H 2D 8C").unwrap();
+        r.draw_pile = crate::bench::standard_deck().into_iter().filter(|c| !r.hand.iter().any(|h| h.rank == c.rank && h.suit == c.suit)).collect();
+        r.hands_left = 4;
+        r.discards_left = 3;
+        r.blinds[0].state = "Current".into();
+        r.current_blind = Some(crate::save::CurrentBlind {
+            key: "bl_small".into(), name: "Small Blind".into(), target: 1200.0, scored: 0.0, disabled: false, hands_seen: vec![], only_hand: None,
+        });
+        let bp = analyze(&r, GameData::bundled(), None, &quick()).best_play.unwrap();
+        assert_eq!(bp.action, "discard", "{:?} {:?}", bp.cards, bp.p_win);
     }
 
     #[test]

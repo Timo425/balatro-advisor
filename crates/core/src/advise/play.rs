@@ -21,7 +21,6 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
     // held (rerolls and packs, `Spending`)
     let dollar_gain = ((lr.value(&Gain::money(10.0)) * spending.factor(run.dollars + 10.0) / spending.factor(run.dollars).max(1e-9) - 1.0) / 10.0).max(0.0);
     b.deck_remaining = run.draw_pile.len() as i64;
-    let tip: Option<String> = None;
     // Look-ahead: each candidate first move is simulated through the rest of the round.
     let look = ctx.specs.iter().find(|x| x.in_progress).map(|spec| {
         let mut bb = ctx.board_for(&b, spec);
@@ -187,10 +186,10 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
                 .map(|c| c.name.as_str())
                 .collect();
             let tip = if missing.is_empty() {
-                tip
+                None
             } else {
                 let m = format!("Not used in this look-ahead (no modelled effect on this hand): {}", missing.join(", "));
-                Some(tip.map_or(m.clone(), |t| format!("{t}. {m}")))
+                Some(m)
             };
             Some(PlayAdvice { then: best.then.clone(), ties: opts.iter().filter(|o| o.tie).count(), planets: Some(best.planets), use_first: best.use_first, spare_hands: Some(best.spare_hands), round_money: Some(best.round_money), action: best.action, cards: best.cards, dig: best.dig, indices: best.indices, hand: best.hand, score: best.score, p_win: Some(best.p_win), alternatives: opts, tip })
         }
@@ -209,7 +208,7 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
             score: p.floor,
             p_win: None,
             alternatives: vec![],
-            tip,
+            tip: None,
         }),
     }
 }

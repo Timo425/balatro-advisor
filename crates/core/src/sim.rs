@@ -472,28 +472,34 @@ fn decide(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i64, ne
         let free: Vec<usize> = (0..hand.len()).filter(|i| !keep.contains(i)).collect();
         let cards: Vec<Card> = free.iter().map(|&i| hand[i]).collect();
         if best_play(b, &cards).is_some_and(|p| p.floor * hands as f64 >= need) {
-            return match decide_cards(b, &cards, deck, hands, discards, need, size.saturating_sub(keep.len()).max(1)) {
+            return match decide_cards(b, &cards, deck, hands, discards, need, size.saturating_sub(keep.len()).max(1), true) {
                 Action::Play(v, d) => Action::Play(v.into_iter().map(|k| free[k]).collect(), d),
                 Action::Discard(v) => Action::Discard(v.into_iter().map(|k| free[k]).collect()),
             };
         }
     }
-    decide_cards(b, hand, deck, hands, discards, need, size)
+    decide_cards(b, hand, deck, hands, discards, need, size, true)
 }
 
 /// Whether the best play in `hand` scores more with no discards left than with the board's
 /// discards (jokers that pay by discards left, scored by the engine; e.g. Mystic Summit pays
 /// with none left, Banner per discard kept).
 pub fn scores_more_without_discards(b: &Board, hand: &[Card]) -> bool {
-    if b.discards_left <= 0 {
+    best_play(b, hand).is_some_and(|p| burn_pays(b, hand, &p.cards))
+}
+
+/// Whether `play` (cards of `hand`) scores more with no discards left than with the board's:
+/// two scoring passes, cheap enough for every decision.
+fn burn_pays(b: &Board, hand: &[Card], play: &[usize]) -> bool {
+    if b.discards_left <= 0 || play.is_empty() {
         return false;
     }
     let mut none = b.clone();
     none.discards_left = 0;
-    match (best_play(b, hand), best_play(&none, hand)) {
-        (Some(now), Some(later)) => later.floor > now.floor * 1.001,
-        _ => false,
-    }
+    let played: Vec<Card> = play.iter().map(|&i| hand[i]).collect();
+    let held: Vec<Card> = (0..hand.len()).filter(|i| !play.contains(i)).map(|i| hand[i]).collect();
+    let now = score::score(b, &played, &held, &mut Unlucky, false).score;
+    score::score(&none, &played, &held, &mut Unlucky, false).score > now * 1.001
 }
 
 /// The heuristic play/discard policy (labelled as a heuristic everywhere it shows):
@@ -502,7 +508,9 @@ pub fn scores_more_without_discards(b: &Board, hand: &[Card]) -> bool {
 ///   what that flush would score), throw away off-suit cards: with a discard, or by
 ///   playing them as a junk hand once discards are gone;
 /// - otherwise discard the cards outside the best play and hope to improve it.
-fn decide_cards(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i64, need: f64, size: usize) -> Action {
+/// `burn`: whether to check if burning discards pays (off inside that check itself).
+#[allow(clippy::too_many_arguments)]
+fn decide_cards(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i64, need: f64, size: usize, burn: bool) -> Action {
     let Some(best) = best_play(b, hand) else { return Action::Play(vec![], false) };
     let play_best = Action::Play(with_fillers(b, hand, &best.cards), false);
     // Mail-In Rebate: cash cards of its rank with a discard before playing (they pay $5
@@ -527,9 +535,13 @@ fn decide_cards(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i
         return play_best;
     }
     let on_pace = best.floor * hands as f64 >= need;
-    // When your board scores more with no discards left (the engine knows which jokers pay
-    // that way), burn them first on the worst cards outside the play (which also digs).
-    if discards > 0 && scores_more_without_discards(b, hand) {
+    // When your best play scores more with no discards left (the engine knows which jokers
+    // pay that way), discard before playing: the cards are the policy's own choice when it
+    // digs (a flush chase, or what's outside the best play), else the worst cards.
+    if burn && discards > 0 && burn_pays(b, hand, &best.cards) {
+        if let Action::Discard(v) = decide_cards(b, hand, deck, hands, discards, f64::INFINITY, size, false) {
+            return Action::Discard(v);
+        }
         let mut toss: Vec<usize> = (0..hand.len()).filter(|i| !best.cards.contains(i)).collect();
         toss.sort_by(|&a, &c| hand[a].rank.chips().total_cmp(&hand[c].rank.chips()));
         toss.truncate(5);
@@ -714,7 +726,7 @@ fn play_on_instead(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards
     let keep = pays_at_end(b, hand);
     let free: Vec<usize> = (0..hand.len()).filter(|i| !keep.contains(i)).collect();
     let cards: Vec<Card> = free.iter().map(|&i| hand[i]).collect();
-    let alt = match decide_cards(b, &cards, deck, hands, discards, f64::INFINITY, size.saturating_sub(keep.len()).max(1)) {
+    let alt = match decide_cards(b, &cards, deck, hands, discards, f64::INFINITY, size.saturating_sub(keep.len()).max(1), true) {
         Action::Play(v, _) => Move::Play(v.into_iter().map(|k| free[k]).collect()),
         Action::Discard(v) => Move::Discard(v.into_iter().map(|k| free[k]).collect()),
     };
@@ -951,4 +963,27 @@ pub fn rng(seed: u64) -> Rng {
     let mut r = Rng::new(seed);
     let _ = r.unit();
     r
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bench::{sample_board, standard_deck};
+
+    #[test]
+    fn the_simulated_player_burns_discards_only_when_the_board_scores_more_without_them() {
+        // On pace with a Pair, so without a reason to discard the player plays it. With
+        // Mystic Summit the best play scores more with no discards left: discard first.
+        let hand = Card::parse_list("AS AH KD 9C 7S 5H 3D 2C").unwrap();
+        let deck: Vec<Card> = standard_deck().into_iter().filter(|c| !hand.iter().any(|h| h.rank == c.rank && h.suit == c.suit)).collect();
+        let act = |keys: &[&str]| {
+            let mut b = sample_board(keys);
+            b.discards_left = 2;
+            b.hands_left = 3;
+            let pair = best_play(&b, &hand).unwrap().floor;
+            decide(&b, &hand, &deck, 3, 2, pair * 2.0, 8)
+        };
+        assert!(matches!(act(&["j_mystic_summit"]), Action::Discard(_)), "Mystic Summit: burn first");
+        assert!(matches!(act(&["j_joker"]), Action::Play(..)), "a plain joker: play the Pair");
+    }
 }

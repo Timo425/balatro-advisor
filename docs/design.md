@@ -95,7 +95,7 @@ vs actual blind results and every shop seen).
 | A dollar in Best play: what +$10 does, taken as linear | `play.rs` `dollar_gain` | money won this round | — |
 | Comparison: at most 1,600 rounds an option, "clearly worse" at 95% (paired), "equal" within 1% of the leader's value | `compare.rs` `MAX`, `EQUAL` | when a difference is real enough to act on | — |
 | Best play's search budget: first batch 16 rounds (batches double); at most 48 undecided moves after 16 rounds, 24 after 32, 12 after 64, 8 after that, kept by value then how close lost rounds came to the target | `advise.rs` `SEARCH_FIRST`, `SEARCH_BUDGET` | cost vs. coverage | check if better moves are ever cut by the budget |
-| Simulated player's policy: flush chase when odds > 10%, 1.5× better than the best hand when on pace; Mail-In rules; discards burned first when the board scores > 0.1% more with none left (`scores_more_without_discards`) | `sim.rs` `decide_cards` | how a player digs | replay fixtures; calibration of win chances |
+| Simulated player's policy: flush chase when odds > 10%, 1.5× better than the best hand when on pace; Mail-In rules; discards burned first when the chosen play scores > 0.1% more with none left (`burn_pays`; which cards, the policy's own dig choice) | `sim.rs` `decide_cards` | how a player digs | replay fixtures; calibration of win chances |
 | Look-ahead: 8 futures, only when a better finish could add ≥ 1% in seal planets | `sim.rs` `play_on_instead`, `LOOKAHEAD_ROLLOUTS` | cost vs. depth | replay fixtures |
 | Consumable used in a simulated round when it lifts the best play by > 1% | `sim.rs` `use_if_better` | when a player uses one | — |
 | Blue Seal: drawn with the hand plus 3 cards an action; Mail-In rank 4 in 13 | `advise.rs` `seal_round_chance`, Mail-In income | how often a card shows up | game source + logged rounds |
@@ -140,8 +140,13 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
 5. **Shop ranking and skip-or-play aren't confidence-based.** They tie within 3% instead of
    using `compare.rs`, because their options are valued by separate simulations, not round by
    round on the same draws.
-6. **The long-run projection spends money on your main hand's planets.** A board that wants
+6. **Simulated discards change nothing but the hand.** Jokers that change with discards used
+   (Green Joker, Ramen, Castle, Yorick, Hit the Road, Burnt Joker, Faceless, Trading Card) and
+   money paid for discards left (Delayed Gratification) aren't modelled there: e.g. with
+   Mystic Summit and Green Joker, burning discards looks free. The general fix belongs in the
+   engine's discard step (the game's own discard effects), not in the policy.
+7. **The long-run projection spends money on your main hand's planets.** A board that wants
    several hands levelled is valued as if it wanted one.
-7. **`advise.rs` still holds the shop options, tarot valuation and outlook inline,** and the
+8. **`advise.rs` still holds the shop options, tarot valuation and outlook inline,** and the
    outlook's heuristics note says growth isn't projected, which is out of date (`grow_antes`
    projects it).
