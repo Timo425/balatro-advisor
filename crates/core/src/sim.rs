@@ -144,23 +144,6 @@ pub fn all_discards(hand: &[Card], discards: i64) -> Vec<Move> {
     (1u32..(1 << n)).filter(|m| m.count_ones() <= 5).map(|m| Move::Discard((0..n).filter(|i| m & (1 << i) != 0).collect())).collect()
 }
 
-/// Chance to win the round after making `first`, then playing on with the usual policy,
-/// and the mean round total. Same seeds for every move, so moves compare on the same draws.
-/// Also the mean number of hands left over when it's won (each pays at cash out).
-pub fn odds_after(b: &Board, start: &RoundStart, first: &Move, sims: usize, seed: u64) -> (f64, f64, f64, f64) {
-    let (p, mean, spare, cash, _) = odds_after_uses(b, start, first, sims, seed, &[]);
-    (p, mean, spare, cash)
-}
-
-/// `odds_after` with consumables held: the rest of the round may use them (see `Use`). Also
-/// the mean number of planets Blue Seal cards held at the end make (0 in a lost round).
-pub fn odds_after_uses(b: &Board, start: &RoundStart, first: &Move, sims: usize, seed: u64, uses: &[Use]) -> (f64, f64, f64, f64, f64) {
-    let outs = outcomes_after(b, start, first, 0..sims, seed, uses);
-    let n = sims.max(1) as f64;
-    let sum = |f: fn(&Outcome) -> f64| outs.iter().map(f).sum::<f64>() / n;
-    (sum(|o| o.won), sum(|o| o.total), sum(|o| o.spare), sum(|o| o.cash), sum(|o| o.planets))
-}
-
 /// One simulated round after a first move. `won` is 0 or 1; hands left over and planets count
 /// only in a won round.
 #[derive(Debug, Clone, Copy, Default)]

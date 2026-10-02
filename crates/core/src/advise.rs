@@ -727,10 +727,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     // The hand in a fixed order (how you've sorted it doesn't matter, and the search breaks
     // ties by position): every play is worked out on this order and mapped back to yours.
     let mut hand_order: Vec<usize> = (0..run.hand.len()).collect();
-    hand_order.sort_by_key(|&i| {
-        let c = &run.hand[i];
-        (std::cmp::Reverse(c.rank.0), c.suit as u8, format!("{:?}{:?}{:?}", c.enhancement, c.seal, c.edition))
-    });
+    hand_order.sort_by_key(|&i| run.hand[i].order_key());
     // Face-down cards are unknown to you, so to the advisor too: each is swapped for a random
     // card of the draw pile (its real self goes back in the pile; the deck stays the same).
     let (live_hand, live_pile) = {
@@ -767,7 +764,9 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             (rl..=rh).contains(&rank_key(c)) && (sl..=sh).contains(&suit_key(c))
         };
         let mut hand: Vec<Card> = hand_order.iter().map(|&i| run.hand[i]).collect();
+        // in a fixed order before anything random picks from it, not the game's order
         let mut pile = run.draw_pile.clone();
+        pile.sort_by_key(Card::order_key);
         let mut rng = crate::engine::Rng::new(opts.seed ^ 0xfd0);
         for (slot, c) in hand.iter_mut().enumerate() {
             if !c.face_down || pile.is_empty() {
@@ -783,8 +782,6 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             pile[k] = real;
             *c = stand;
         }
-        // the simulation shuffles the pile: start it from a fixed order, not the game's
-        pile.sort_by_key(|c| (std::cmp::Reverse(c.rank.0), c.suit as u8, format!("{:?}{:?}{:?}{}", c.enhancement, c.seal, c.edition, c.perma_bonus)));
         (hand, pile)
     };
     let dctx = desc_ctx(run);
@@ -796,7 +793,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     }
     // In a fixed order before anything shuffles it, so how the game (or you) happen to order
     // your hand and piles never changes the advice
-    fresh_deck.sort_by_key(|c| (std::cmp::Reverse(c.rank.0), c.suit as u8, format!("{:?}{:?}{:?}{}", c.enhancement, c.seal, c.edition, c.perma_bonus)));
+    fresh_deck.sort_by_key(Card::order_key);
 
     // Which rounds to simulate: the one in progress (or the next blind), and the boss.
     let mut specs = Vec::new();
@@ -4033,6 +4030,49 @@ mod tests {
         assert!(o.survive_next > keep.survive_next, "next-ante survival: joker {:?} vs keeping the money {:?}", o.survive_next, keep.survive_next);
         assert!(keep.survive_next.unwrap() < 1.0, "survival with shops ahead must not saturate");
         assert!(pos("joker") < pos("leave"), "joker {:?} next {:?}", (o.p_win, o.survive, o.survive_next, o.long_mult), keep.survive_next);
+    }
+
+    #[test]
+    fn the_advice_doesnt_depend_on_how_cards_are_ordered() {
+        // The same blind with the hand, draw pile and discards in another order, and a
+        // face-down card: everything but the positions in your hand must come out the same.
+        let make = |hand: &str, reversed: bool| {
+            let mut r = shop_run(&[("j_joker", None, None)], &[]);
+            r.screen = crate::save::Screen::SelectingHand;
+            r.shop = None;
+            r.hand = Card::parse_list(hand).unwrap();
+            for c in r.hand.iter_mut().filter(|c| c.label() == "5♥") {
+                c.face_down = true;
+            }
+            let mut pile: Vec<Card> = crate::bench::standard_deck().into_iter().filter(|c| !r.hand.iter().any(|h| h.rank == c.rank && h.suit == c.suit)).collect();
+            let mut discards = pile.split_off(pile.len() - 5);
+            if reversed {
+                pile.reverse();
+                discards.reverse();
+            }
+            r.draw_pile = pile;
+            r.discard_pile = discards;
+            r.blinds[0].state = "Current".into();
+            r.current_blind = Some(crate::save::CurrentBlind {
+                key: "bl_small".into(), name: "Small Blind".into(), target: 1500.0, scored: 0.0, disabled: false, hands_seen: vec![], only_hand: None,
+            });
+            let mut a = serde_json::to_value(analyze(&r, GameData::bundled(), None, &quick())).unwrap();
+            fn strip(v: &mut serde_json::Value) {
+                match v {
+                    serde_json::Value::Object(m) => {
+                        for k in ["indices", "elapsed_ms", "save_age_secs", "live"] {
+                            m.remove(k);
+                        }
+                        m.values_mut().for_each(strip);
+                    }
+                    serde_json::Value::Array(xs) => xs.iter_mut().for_each(strip),
+                    _ => {}
+                }
+            }
+            strip(&mut a);
+            a
+        };
+        assert!(make("AH 9H 5H KS 7S 3D QC 2C", false) == make("2C QC 3D 7S KS 5H 9H AH", true), "the advice changed with the order of the cards");
     }
 
     #[test]

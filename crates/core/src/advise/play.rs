@@ -1,6 +1,6 @@
-//! **Best play**: the move to make now in a blind. Every candidate move (the plays and
-//! discards worth trying, every possible discard, each held consumable used first) is played
-//! out by the simulated player over many rounds on the same draws, and compared on one
+//! **Best play**: the move to make now in a blind. Every move (every play, every discard, for
+//! your hand as it is and after each held consumable) is screened in stages, and the best are
+//! played out by the simulated player over many rounds on the same draws, compared on one
 //! measure (`sim::RoundGoals`) until the best is clear.
 
 use super::*;
@@ -29,8 +29,7 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
             if run.discards_left > 1 { "s" } else { "" }
         )
     });
-    // Look-ahead: each candidate first move (best plays, holding a special card back,
-    // the policy's dig or discard) is simulated through the rest of the round.
+    // Look-ahead: each candidate first move is simulated through the rest of the round.
     let look = ctx.specs.iter().find(|x| x.in_progress).map(|spec| {
         let mut bb = ctx.board_for(&b, spec);
         // The simulated player plays toward the same measure the advice ranks by
@@ -93,24 +92,38 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
                 sim::Move::Play(v) => (0, v),
                 sim::Move::Discard(v) => (1, v),
             };
-            let mut l: Vec<String> = idx.iter().map(|&i| hand[i].label()).collect();
-            l.sort();
-            (kind, l)
+            let mut k: Vec<_> = idx.iter().map(|&i| hand[i].order_key()).collect();
+            k.sort();
+            (kind, k)
         };
-        // Every move, narrowed down in stages on the same draws and the same measure as the
-        // final comparison: every play and every discard on a few quick rounds, the best on
-        // more, the best of those into the comparison. No move needs a rule to be considered.
+        // Every move, narrowed down in stages on the same measure as the final comparison:
+        // every play and every discard on a few quick rounds, the best on more, the best of
+        // those into the comparison. No move needs a rule to be considered. The screen uses
+        // draws of its own (the comparison then judges the survivors on fresh ones), all moves
+        // of a stage on the same draws. A cut drops only moves clearly worse than the stage's
+        // leader (paired, 95%), up to the stage's size; where the value can't separate moves
+        // (a long shot loses nearly every round), points toward the target do.
+        let screen_seed = seed ^ 0x5c4e_e75c;
         let screen = |b: &Board, st: &RoundStart, u: &[sim::Use]| -> Vec<sim::Move> {
             let mut pool: Vec<sim::Move> = sim::all_plays(&st.hand);
             pool.extend(sim::all_discards(&st.hand, st.discards));
+            let progress = |o: &sim::Outcome| o.total / st.target.max(1.0);
             for &(n, keep) in SCREEN_STAGES {
-                let r: Vec<f64> = par_map(&pool, |m| {
-                    let o = sim::outcomes_after(b, st, m, 0..n, seed, u);
-                    o.iter().map(|x| goals.value(x)).sum::<f64>() / n as f64
-                });
+                let outs: Vec<Vec<sim::Outcome>> = par_map(&pool, |m| sim::outcomes_after(b, st, m, 0..n, screen_seed, u));
+                let mean = |v: &[sim::Outcome], f: &dyn Fn(&sim::Outcome) -> f64| v.iter().map(f).sum::<f64>() / v.len().max(1) as f64;
+                let val: Vec<f64> = outs.iter().map(|v| mean(v, &|o| goals.value(o))).collect();
+                let prog: Vec<f64> = outs.iter().map(|v| mean(v, &progress)).collect();
                 let mut order: Vec<usize> = (0..pool.len()).collect();
-                order.sort_by(|&a, &c| r[c].total_cmp(&r[a]).then(canon(&pool[a], &st.hand).cmp(&canon(&pool[c], &st.hand))));
-                pool = order.into_iter().take(keep).map(|i| pool[i].clone()).collect();
+                order.sort_by(|&a, &c| val[c].total_cmp(&val[a]).then(prog[c].total_cmp(&prog[a])).then(canon(&pool[a], &st.hand).cmp(&canon(&pool[c], &st.hand))));
+                let lead = order[0];
+                let clearly_worse = |c: usize| {
+                    let d: Vec<f64> = outs[lead].iter().zip(&outs[c]).map(|(x, y)| goals.value(x) - goals.value(y)).collect();
+                    let k = d.len() as f64;
+                    let m = d.iter().sum::<f64>() / k;
+                    let se = (d.iter().map(|x| (x - m) * (x - m)).sum::<f64>() / (k - 1.0).max(1.0) / k).sqrt();
+                    m - 2.0 * se > 0.0
+                };
+                pool = order.into_iter().filter(|&c| c == lead || !clearly_worse(c)).take(keep).map(|i| pool[i].clone()).collect();
             }
             pool
         };
@@ -172,12 +185,13 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
         // the leader, then its ties, then the rest by their measure
         order.sort_by(|&x, &y| (y == leader).cmp(&(x == leader)).then(tied[y].cmp(&tied[x])).then(score_of(y).total_cmp(&score_of(x))).then(ck(x).cmp(&ck(y))));
         // Moves as good as the leader are equal as far as can be told: among them a play that
-        // wins the round right now goes first (nothing to gain by waiting), then by the cards
-        // themselves (which one leads among equals is noise, e.g. from how the hand is sorted)
+        // wins the round right now goes first (nothing to gain by waiting), then the one that
+        // scores more toward the target, then by the cards themselves
         let need = start.target - start.scored;
         let wins_now = |o: &PlayOption| o.action == "play" && o.use_first.is_none() && o.score >= need;
         let group = order.iter().take_while(|&&c| c == leader || tied[c]).count();
-        order[..group].sort_by(|&x, &y| wins_now(&opts[y]).cmp(&wins_now(&opts[x])).then(ck(x).cmp(&ck(y))));
+        let progress = |c: usize| outs[c].iter().map(|o| o.total).sum::<f64>() / outs[c].len().max(1) as f64;
+        order[..group].sort_by(|&x, &y| wins_now(&opts[y]).cmp(&wins_now(&opts[x])).then(progress(y).total_cmp(&progress(x))).then(ck(x).cmp(&ck(y))));
         let first = order[0];
         for &c in &order {
             opts[c].tie = c != first && (c == leader || tied[c]);

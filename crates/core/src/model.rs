@@ -176,6 +176,17 @@ impl Card {
         Card { rank, suit, enhancement: None, edition: None, seal: None, perma_bonus: 0.0, debuff: false, face_down: false }
     }
 
+    /// A fixed order over every field (rank high first, then suit, then the rest): whatever
+    /// order cards come in, sorting by this gives the same result, so the advice never
+    /// depends on how a hand or pile happened to be ordered.
+    pub fn order_key(&self) -> (std::cmp::Reverse<u8>, u8, String) {
+        (
+            std::cmp::Reverse(self.rank.0),
+            self.suit as u8,
+            format!("{:?}|{:?}|{:?}|{}|{}|{}", self.enhancement, self.seal, self.edition, self.perma_bonus, self.debuff, self.face_down),
+        )
+    }
+
     /// `K♠ [glass] (foil) <Red>`
     pub fn label(&self) -> String {
         // A face-down card (The House, Wheel, Mark, Fish) stays unknown: the save knows it,
