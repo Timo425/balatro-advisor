@@ -1,6 +1,7 @@
 //! Scoring engine: hand detection and the scoring pass, ported from the game source.
 
 pub mod board;
+pub mod consumable;
 pub mod hand;
 pub mod joker;
 pub mod rng;

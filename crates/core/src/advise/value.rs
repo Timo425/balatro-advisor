@@ -476,9 +476,25 @@ impl<'a> LongRun<'a> {
     /// chips, one-off money spent, money per ante held): its round scores, on more rounds
     /// than a board (deck changes are small).
     pub fn deck_stats(&self, d: &[Card], dollars: f64, money_once: f64, income: f64) -> crate::sim::Stats {
+        self.deck_stats_n(d, dollars, money_once, income, TAROT_ROUNDS)
+    }
+
+    /// `deck_stats` on `rounds` rounds (fewer for a quick screen)
+    pub fn deck_stats_n(&self, d: &[Card], dollars: f64, money_once: f64, income: f64, rounds: usize) -> crate::sim::Stats {
+        self.deck_stats_p(d, dollars, money_once, income, rounds, 0.0)
+    }
+
+    /// `deck_stats_n` with `planets` more of your main hand's planets used by then
+    fn deck_stats_p(&self, d: &[Card], dollars: f64, money_once: f64, income: f64, rounds: usize, planets: f64) -> crate::sim::Stats {
         let has_chips = self.ctx.base.jokers.iter().any(|j| CHIP_JOKERS.contains(&j.key.as_str()));
         let find = if has_chips { None } else { Some(self.stand_in(1.0, 0.0, 60.0)) };
         let mut b = self.fill_long(self.project_rent(&|_| true, dollars, -income), find, money_once);
+        if planets != 0.0 {
+            match self.top_hand {
+                Some(top) => Self::add_planets(&mut b, &[(top, planets)], 0.0),
+                None => Self::add_planets(&mut b, &[], planets),
+            }
+        }
         let tally = |e: crate::model::Enhancement| d.iter().filter(|c| c.enhancement == Some(e)).count() as i64;
         b.steel_tally = tally(crate::model::Enhancement::Steel);
         b.stone_tally = tally(crate::model::Enhancement::Stone);
@@ -486,7 +502,31 @@ impl<'a> LongRun<'a> {
         b.playing_cards = d.len() as i64;
         let mut sp = self.long_spec_for(&b);
         sp.start.deck = d.to_vec();
-        self.ctx.odds_one(&b, &sp, TAROT_ROUNDS).1
+        self.ctx.odds_one(&b, &sp, rounds).1
+    }
+
+    /// What a changed deck makes your run worth by Ante 8, as a ratio of your deck as it is:
+    /// its score, plus what its cards make: the money they earn while scoring (Lucky cards,
+    /// Gold Seals, Gold cards) as money you get every round (about 3 rounds an ante), and with
+    /// `with_planets`, the planets of Blue Seal cards it has more (or fewer) of than yours
+    /// (each drawn with `seal_round_chance` a round and held for its planet, 3 rounds an ante).
+    /// `money_once`: one-off money that comes with the change (already through `once`).
+    /// `rounds`: projection rounds.
+    pub fn deck_value(&self, d: &[Card], money_once: f64, rounds: usize) -> f64 {
+        self.deck_value_with(d, money_once, rounds, false)
+    }
+
+    pub fn deck_value_with(&self, d: &[Card], money_once: f64, rounds: usize, with_planets: bool) -> f64 {
+        let dollars = self.run.dollars;
+        let base = if rounds == TAROT_ROUNDS { self.deck_base().clone() } else { self.deck_stats_n(&self.ctx.fresh_deck, dollars, 0.0, 0.0, rounds) };
+        let blue = |deck: &[Card]| deck.iter().filter(|c| c.seal == Some(crate::model::Seal::Blue)).count() as f64;
+        let planets = if with_planets { (blue(d) - blue(&self.ctx.fresh_deck)) * 3.0 * seal_round_chance(self.run, d.len()) * self.antes_left } else { 0.0 };
+        let mut st = self.deck_stats_p(d, dollars, money_once, 0.0, rounds, planets);
+        let extra = (st.money - base.money) * 3.0;
+        if extra.abs() > 0.5 {
+            st = self.deck_stats_p(d, dollars, money_once, extra, rounds, planets);
+        }
+        st.mean.max(1.0) / base.mean.max(1.0)
     }
 
     /// Your deck as it is, projected the same way: the baseline deck changes are compared to
