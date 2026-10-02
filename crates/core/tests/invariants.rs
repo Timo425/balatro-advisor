@@ -93,3 +93,25 @@ fn burning_discards_pays_only_when_the_board_scores_more_without_them() {
     assert!(!burn(&["j_banner"]));
     assert!(!burn(&["j_joker"]));
 }
+
+#[test]
+fn discard_money_follows_the_game() {
+    // card.lua, discard context: Mail-In pays per card of its rank (get_id: not Stone, not
+    // debuffed), Faceless Joker for 3+ faces (is_face: Pareidolia makes any card one); a
+    // Blueprint copy pays too.
+    let cards = |s: &str| Card::parse_list(s).unwrap();
+    let mut b = sample_board(&["j_mail"]);
+    b.mail_rank = Some(4);
+    assert_eq!(engine::discard_money(&b, &cards("4S 4H 9C")), 10.0);
+    let mut c = cards("4S:stone 4H");
+    c[1].debuff = true;
+    assert_eq!(engine::discard_money(&b, &c), 0.0, "Stone and debuffed cards don't pay");
+    let mut bp = sample_board(&["j_blueprint", "j_mail"]);
+    bp.mail_rank = Some(4);
+    assert_eq!(engine::discard_money(&bp, &cards("4S")), 10.0, "a Blueprint copy pays too");
+    let f = sample_board(&["j_faceless"]);
+    assert_eq!(engine::discard_money(&f, &cards("KS QH JD")), 5.0);
+    assert_eq!(engine::discard_money(&f, &cards("KS QH")), 0.0);
+    assert_eq!(engine::discard_money(&f, &cards("KS QH JD:stone")), 0.0, "a Stone card isn't a face");
+    assert_eq!(engine::discard_money(&sample_board(&["j_faceless", "j_pareidolia"]), &cards("2S 3H 4D")), 5.0);
+}

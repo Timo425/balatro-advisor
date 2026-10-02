@@ -243,25 +243,49 @@ struct Pass<'a, R: Rolls + ?Sized> {
     trace: Option<Vec<Step>>,
 }
 
-/// Scores `played` (in play order) with `held` staying in hand.
-/// Money a discard pays (card.lua `calculate_joker`, discard context): Mail-In Rebate $5 per
-/// discarded card of the round's rank (not debuffed); Faceless Joker $5 when 3 or more of the
-/// discarded cards are faces (Pareidolia: every card is; debuffed cards aren't).
-pub fn discard_money(b: &Board, discarded: &[Card]) -> f64 {
-    let count = |key: &str| b.jokers.iter().filter(|j| j.key == key && !j.debuff).count() as f64;
-    let mut money = 0.0;
-    if let Some(rank) = b.mail_rank {
-        let n = discarded.iter().filter(|c| c.rank.0 == rank && c.enhancement != Some(crate::model::Enhancement::Stone) && !c.debuff).count();
-        money += 5.0 * count("j_mail") * n as f64;
+/// The joker whose effect joker `j` has: itself, or what a Blueprint (its right neighbour) or
+/// Brainstorm (the leftmost joker) copies, through chains of copies (as `Pass::calc`); none if
+/// a joker on the way is debuffed or the copies loop.
+pub fn effective_joker(b: &Board, j: usize) -> Option<&Joker> {
+    let n = b.jokers.len();
+    let mut cur = j;
+    for _ in 0..=n {
+        let jk = b.jokers.get(cur)?;
+        if jk.debuff {
+            return None;
+        }
+        let t = match jk.kind {
+            Kind::Blueprint => cur + 1,
+            Kind::Brainstorm => 0,
+            _ => return Some(jk),
+        };
+        if t >= n || t == cur {
+            return None;
+        }
+        cur = t;
     }
-    let pareidolia = b.has(Kind::Pareidolia);
-    let faces = discarded.iter().filter(|c| !c.debuff && (pareidolia || (11..=13).contains(&c.rank.0))).count();
-    if faces >= 3 {
-        money += 5.0 * count("j_faceless");
-    }
-    money
+    None
 }
 
+/// Money a discard pays (card.lua `Card:calculate_joker`, discard context; copies pay too):
+/// Mail-In Rebate $5 per discarded card of the round's rank (`get_id`: not debuffed, not
+/// Stone); Faceless Joker $5 when 3 or more of the discarded cards are faces (`is_face`:
+/// Pareidolia makes every card one, debuffed cards aren't).
+pub fn discard_money(b: &Board, discarded: &[Card]) -> f64 {
+    let pareidolia = b.has(Kind::Pareidolia);
+    let ranked = b.mail_rank.map_or(0, |r| discarded.iter().enumerate().filter(|(i, c)| !c.debuff && card_id(c, *i) == i32::from(r)).count());
+    let faces = discarded.iter().enumerate().filter(|(i, c)| is_face(c, *i, pareidolia, false)).count();
+    (0..b.jokers.len())
+        .filter_map(|j| effective_joker(b, j))
+        .map(|jk| match jk.key.as_str() {
+            "j_mail" => 5.0 * ranked as f64,
+            "j_faceless" if faces >= 3 => 5.0,
+            _ => 0.0,
+        })
+        .sum()
+}
+
+/// Scores `played` (in play order) with `held` staying in hand.
 pub fn score<R: Rolls + ?Sized>(b: &Board, played: &[Card], held: &[Card], rolls: &mut R, trace: bool) -> Outcome {
     let info = hand::detect(played, b.rule_flags());
     score_detected(b, played, held, info, rolls, trace)

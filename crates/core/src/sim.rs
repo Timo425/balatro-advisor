@@ -513,45 +513,36 @@ fn decide_cards(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i
     let Some(best) = best_play(b, hand) else { return Action::Play(vec![], false) };
     let play_best = Action::Play(with_fillers(b, hand, &best.cards), false);
     // Discards that pay money (`discard_money`, the engine's discard effects): while the
-    // round is safe (on pace with this hand), cash the discard that pays most: from the cards
-    // the best play doesn't need, or from any, if the rest still keeps you on pace. With one
-    // discard left, cash it right before the winning hand (or the last one): more paying
-    // cards may come by then.
+    // round is safe (on pace with this hand), cash the discard that pays most among those
+    // whose remaining hand still keeps you on pace (held cards count too: Steel, Baron's
+    // Kings). With one discard left, cash it right before the winning hand (or the last
+    // one): more paying cards may come by then. A threshold, not yet weighed against the
+    // round's value (`RoundGoals`): see design.md, known gaps.
     let all: Vec<usize> = (0..hand.len()).collect();
-    if discards > 0 && best.floor * hands as f64 >= need && discard_money(b, hand, &all) > 0.0 {
-        // the most money from up to 5 of `pool`; fewer cards on a tie (keep the rest), then a
-        // fixed order
-        let best_set = |pool: &[usize]| -> Option<(Vec<usize>, f64)> {
-            let n = pool.len().min(12);
-            (1u32..(1 << n))
-                .filter(|m| m.count_ones() <= 5)
-                .map(|m| (0..n).filter(|i| m & (1 << i) != 0).map(|i| pool[i]).collect::<Vec<usize>>())
-                .map(|v| {
-                    let money = discard_money(b, hand, &v);
-                    (v, money)
-                })
-                .filter(|(_, money)| *money > 0.0)
-                .max_by(|x, y| {
-                    let key = |v: &[usize]| {
-                        let mut k: Vec<_> = v.iter().map(|&i| hand[i].order_key()).collect();
-                        k.sort();
-                        k
-                    };
-                    x.1.total_cmp(&y.1).then(y.0.len().cmp(&x.0.len())).then(key(&y.0).cmp(&key(&x.0)))
-                })
+    let now = discards > 1 || best.floor >= need || hands <= 1;
+    if now && discards > 0 && best.floor * hands as f64 >= need && discard_money(b, hand, &all) > 0.0 {
+        let n = hand.len().min(12);
+        let key = |v: &[usize]| {
+            let mut k: Vec<_> = v.iter().map(|&i| hand[i].order_key()).collect();
+            k.sort();
+            k
         };
-        let outside: Vec<usize> = (0..hand.len()).filter(|i| !best.cards.contains(i)).collect();
-        let mut cash = best_set(&outside);
-        if let Some((v, money)) = best_set(&all) {
-            if money > cash.as_ref().map_or(0.0, |c| c.1) {
-                let rest: Vec<Card> = (0..hand.len()).filter(|i| !v.contains(i)).map(|i| hand[i]).collect();
-                if best_play(b, &rest).is_some_and(|p| p.floor * hands as f64 >= need) {
-                    cash = Some((v, money));
-                }
-            }
-        }
-        let now = discards > 1 || best.floor >= need || hands <= 1;
-        if let (Some((v, _)), true) = (cash, now) {
+        // every discard of up to 5 cards that pays: most money first, fewer cards on a tie
+        // (keep the rest), then a fixed order
+        let mut paying: Vec<(Vec<usize>, f64)> = (1u32..(1 << n))
+            .filter(|m| m.count_ones() <= 5)
+            .filter_map(|m| {
+                let v: Vec<usize> = (0..n).filter(|i| m & (1 << i) != 0).collect();
+                let money = discard_money(b, hand, &v);
+                (money > 0.0).then_some((v, money))
+            })
+            .collect();
+        paying.sort_by(|x, y| y.1.total_cmp(&x.1).then(x.0.len().cmp(&y.0.len())).then_with(|| key(&x.0).cmp(&key(&y.0))));
+        let keeps_pace = |v: &[usize]| {
+            let rest: Vec<Card> = (0..hand.len()).filter(|i| !v.contains(i)).map(|i| hand[i]).collect();
+            best_play(b, &rest).is_some_and(|p| p.floor * hands as f64 >= need)
+        };
+        if let Some((v, _)) = paying.into_iter().take(16).find(|(v, _)| keeps_pace(v)) {
             return Action::Discard(v);
         }
     }
@@ -1035,8 +1026,33 @@ mod tests {
         let faces = decide_on(&["j_faceless"], "AS AH KC QD JS 7H 3D 2C", 2, 2.0).expect("discard three faces");
         assert_eq!(faces.len(), 3);
         assert!(faces.iter().all(|l| l.starts_with('K') || l.starts_with('Q') || l.starts_with('J')), "{faces:?}");
+        // the last discard is cashed when the play wins now
+        assert_eq!(decide_on(&["j_mail"], "AS AH 4C 9D 8S 7H 3D 2C", 1, 1.0), Some(vec!["4♣".to_string()]));
         // a plain joker: no discard pays, play the Pair
         assert_eq!(decide_on(&["j_joker"], "AS AH 4C 9D 8S 7H 3D 2C", 2, 2.0), None);
+    }
+
+    #[test]
+    fn a_paying_card_in_the_play_is_cashed_only_if_the_rest_keeps_pace() {
+        // Mail-In on Aces, Two Pair (Aces and Kings) in hand: discarding the Aces pays $10 and
+        // leaves a Pair of Kings. Cash them only when the Kings alone still keep you on pace.
+        let hand = Card::parse_list("AS AH KS KH 9C 7D 3S 2C").unwrap();
+        let deck = standard_deck();
+        let mut b = sample_board(&["j_mail"]);
+        b.mail_rank = Some(14);
+        b.discards_left = 2;
+        b.hands_left = 3;
+        let two_pair = best_play(&b, &hand).unwrap().floor;
+        let kings = best_play(&b, &hand[2..]).unwrap().floor;
+        let aces = |v: &[usize]| v.iter().any(|&i| hand[i].rank.0 == 14);
+        match decide(&b, &hand, &deck, 3, 2, kings * 3.0, 8) {
+            Action::Discard(v) => assert!(aces(&v), "the Kings keep pace: cash the Aces"),
+            other => panic!("expected a discard, got {other:?}"),
+        }
+        let need = (kings * 3.0 + two_pair * 3.0) / 2.0;
+        if let Action::Discard(v) = decide(&b, &hand, &deck, 3, 2, need, 8) {
+            assert!(!aces(&v), "the Kings alone don't keep pace: keep the Aces");
+        }
     }
 
     #[test]
