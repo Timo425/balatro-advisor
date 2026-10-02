@@ -33,6 +33,9 @@ Check, with file:line references:
    in the output, and the docs still match the code.
 7. **Proof.** A replay fixture for the motivating state exists; tests and replay pass; a pure
    restructuring left the snapshots identical.
+8. **Rule changes.** If the change edits the rules, stages or workflow (`docs/design.md`,
+   `CLAUDE.md`), is there a `docs/decisions.md` entry for it, and is it general (widens or
+   replaces a rule) rather than an exception or a rule only one case needs?
 
 Report under 500 words: findings ranked by how likely they are to cause the next
 "patch on patch", each with what a general fix looks like. Be specific and skeptical, no

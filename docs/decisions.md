@@ -163,3 +163,21 @@ mirror that: `f64` through the whole pass, and `floor` once at the end.
 The spec is in English, a separate agent will read the docs and JSON, and
 `balatro-agent` already set that convention for Balatro work. User-facing CLI
 text is also English. Easy to flip if the owner prefers Estonian comments.
+
+## D5. How the advice is built and changed: four stages, one measure, a required workflow (accepted)
+
+**Decision.** Every piece of advice goes through four stages (moves tried, simulated player,
+valuation, noise) with one measure everywhere (winning, times the long-run value of what a
+choice leaves you), described in `docs/design.md`. Every change to how advice is decided or
+valued follows the workflow in `CLAUDE.md`: replay fixture, diagnosis, a fix to the stage that
+failed, proof (tests, replay, snapshots), review by the `advisor-reviewer` agent (and again
+on its fixes), and a commit named after the stage. The rules themselves change only through
+a decision entry here, and only by widening or replacing a rule, never by an exception.
+
+**Why.** Fixing each wrong suggestion with a rule for that case (a Cryptid tip, a "keep Blue
+Seals" rule, a spade-dig template) made the same kinds of mistakes come back, and earlier
+fixes resurfaced. Fixing the stage that failed improves every similar situation at once, and
+a reviewer that hasn't seen the reasoning finds what the author missed.
+
+**Revisit if** the stages stop fitting how the advice works, or the workflow costs more than
+the mistakes it prevents.

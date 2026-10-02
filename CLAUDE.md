@@ -60,6 +60,18 @@ change to how the advice decides or values things follows these steps, in order:
    `moves tried: …`, `noise: …`; `refactor`/`docs` otherwise). Update `docs/design.md` when a
    stage, rule, register entry or known gap changed. Then commit and push.
 
+**When the rules don't fit the fix.** Sometimes a correct fix can't be made within
+`docs/design.md` (it needs a new kind of value, a new stage, or breaks a rule). Then:
+1. Stop and say which rule doesn't fit and why. No silent exception in code or docs.
+2. Propose a change to the design itself: a new or wider rule, pattern, `Gain` field or
+   stage, explained by how it serves the question every piece of advice answers ("most
+   likely to win, and stronger") and which other situations it covers.
+3. Accept it only if it's general: it widens or replaces a rule. A rule that only one case
+   needs, or an exception to a rule, is a patch in the docs and is rejected.
+4. The owner approves; record it in `docs/decisions.md` (next `D` number: what, why, what
+   would make us revisit). Rule changes without an entry don't count, and the reviewer
+   flags them.
+
 **Example.** The advice played a junk Spade instead of digging with the off-suit cards,
 because the simulated rest of the round spent the 3♠ Blue Seal in a Flush.
 - First fix (wrong scope): "keep Blue Seal cards in hand while on pace". Right stage (the
