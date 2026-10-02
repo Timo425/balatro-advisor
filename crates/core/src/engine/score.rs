@@ -245,7 +245,9 @@ struct Pass<'a, R: Rolls + ?Sized> {
 
 /// The joker whose effect joker `j` has: itself, or what a Blueprint (its right neighbour) or
 /// Brainstorm (the leftmost joker) copies, through chains of copies (as `Pass::calc`); none if
-/// a joker on the way is debuffed or the copies loop.
+/// a joker on the way is debuffed or the copies loop. It doesn't model the game's
+/// `not context.blueprint` gates: an effect that copies don't trigger must check for that
+/// itself (Mail-In Rebate and Faceless Joker have no such gate).
 pub fn effective_joker(b: &Board, j: usize) -> Option<&Joker> {
     let n = b.jokers.len();
     let mut cur = j;

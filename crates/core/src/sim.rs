@@ -517,7 +517,7 @@ fn decide_cards(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i
     // whose remaining hand still keeps you on pace (held cards count too: Steel, Baron's
     // Kings). With one discard left, cash it right before the winning hand (or the last
     // one): more paying cards may come by then. A threshold, not yet weighed against the
-    // round's value (`RoundGoals`): see design.md, known gaps.
+    // round's value (`RoundGoals`): see the register in design.md.
     let all: Vec<usize> = (0..hand.len()).collect();
     let now = discards > 1 || best.floor >= need || hands <= 1;
     if now && discards > 0 && best.floor * hands as f64 >= need && discard_money(b, hand, &all) > 0.0 {
@@ -527,14 +527,19 @@ fn decide_cards(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i
             k.sort();
             k
         };
-        // every discard of up to 5 cards that pays: most money first, fewer cards on a tie
-        // (keep the rest), then a fixed order
+        // every discard of up to 5 cards that pays, and in which every card adds money (a card
+        // that pays nothing only thins your hand): most money first, fewer cards on a tie,
+        // then a fixed order
         let mut paying: Vec<(Vec<usize>, f64)> = (1u32..(1 << n))
             .filter(|m| m.count_ones() <= 5)
             .filter_map(|m| {
                 let v: Vec<usize> = (0..n).filter(|i| m & (1 << i) != 0).collect();
                 let money = discard_money(b, hand, &v);
-                (money > 0.0).then_some((v, money))
+                let all_pay = || (0..v.len()).all(|k| {
+                    let less: Vec<usize> = v.iter().enumerate().filter(|(j, _)| *j != k).map(|(_, &i)| i).collect();
+                    discard_money(b, hand, &less) < money
+                });
+                (money > 0.0 && all_pay()).then_some((v, money))
             })
             .collect();
         paying.sort_by(|x, y| y.1.total_cmp(&x.1).then(x.0.len().cmp(&y.0.len())).then_with(|| key(&x.0).cmp(&key(&y.0))));
@@ -1030,6 +1035,24 @@ mod tests {
         assert_eq!(decide_on(&["j_mail"], "AS AH 4C 9D 8S 7H 3D 2C", 1, 1.0), Some(vec!["4♣".to_string()]));
         // a plain joker: no discard pays, play the Pair
         assert_eq!(decide_on(&["j_joker"], "AS AH 4C 9D 8S 7H 3D 2C", 2, 2.0), None);
+    }
+
+    #[test]
+    fn a_smaller_paying_discard_is_tried_when_the_biggest_breaks_the_pace() {
+        // Mail-In on Kings, three Kings in hand: cashing all three ($15) or two ($10) leaves
+        // no Pair; cashing one ($5) keeps the Pair of Kings, which keeps pace. Discards padded
+        // with cards that pay nothing must not crowd out the smaller one.
+        let hand = Card::parse_list("KS KH KD 9C 7D 3S 2C 5H").unwrap();
+        let deck = standard_deck();
+        let mut b = sample_board(&["j_mail"]);
+        b.mail_rank = Some(13);
+        b.discards_left = 2;
+        b.hands_left = 3;
+        let pair = best_play(&b, &Card::parse_list("KS KH 9C 7D 3S 2C 5H").unwrap()).unwrap().floor;
+        match decide(&b, &hand, &deck, 3, 2, pair * 3.0, 8) {
+            Action::Discard(v) => assert_eq!(v.iter().filter(|&&i| hand[i].rank.0 == 13).count(), 1, "cash exactly one King: {:?}", v.iter().map(|&i| hand[i].label()).collect::<Vec<_>>()),
+            other => panic!("expected a discard, got {other:?}"),
+        }
     }
 
     #[test]
