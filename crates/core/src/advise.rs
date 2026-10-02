@@ -605,9 +605,11 @@ fn apply_mods(start: &RoundStart, added: &[&Joker], removed: &[&Joker], fresh: b
 
 /// Fresh deals per board in the quick screen of the whole pool.
 const SCREEN_DEALS: usize = 100;
-/// Best play's screening of every possible move: (rounds each, how many go on) per stage;
-/// the last stage's survivors go into the comparison (`compare`).
-const SCREEN_STAGES: &[(usize, usize)] = &[(16, 48), (64, 16), (256, 6)];
+/// Best play's search over every move (`compare::race`): rounds in the first batch, and the
+/// budget: (up to this many rounds done, at most this many moves still undecided). A cost
+/// limit, not a finding: see `compare`.
+const SEARCH_FIRST: usize = 16;
+const SEARCH_BUDGET: &[(usize, usize)] = &[(16, 48), (32, 24), (64, 12), (128, 8)];
 fn is_zero_usize(n: &usize) -> bool {
     *n == 0
 }
@@ -4030,6 +4032,26 @@ mod tests {
         assert!(o.survive_next > keep.survive_next, "next-ante survival: joker {:?} vs keeping the money {:?}", o.survive_next, keep.survive_next);
         assert!(keep.survive_next.unwrap() < 1.0, "survival with shops ahead must not saturate");
         assert!(pos("joker") < pos("leave"), "joker {:?} next {:?}", (o.p_win, o.survive, o.survive_next, o.long_mult), keep.survive_next);
+    }
+
+    #[test]
+    fn a_round_you_cant_win_still_gets_your_best_hand() {
+        // Last hand, no discards, a target far out of reach: every move loses, so the value
+        // can't separate them, and the best you can do is score the most (points toward the
+        // target decide). AAA KK is a Full House; nothing in this hand scores more.
+        let mut r = shop_run(&[("j_joker", None, None)], &[]);
+        r.screen = crate::save::Screen::SelectingHand;
+        r.shop = None;
+        r.hand = Card::parse_list("AS AH AD KS KH 2C 3D 4H").unwrap();
+        r.draw_pile = crate::bench::standard_deck().into_iter().filter(|c| !r.hand.iter().any(|h| h.rank == c.rank && h.suit == c.suit)).collect();
+        r.hands_left = 1;
+        r.discards_left = 0;
+        r.blinds[0].state = "Current".into();
+        r.current_blind = Some(crate::save::CurrentBlind {
+            key: "bl_small".into(), name: "Small Blind".into(), target: 1e9, scored: 0.0, disabled: false, hands_seen: vec![], only_hand: None,
+        });
+        let bp = analyze(&r, GameData::bundled(), None, &quick()).best_play.unwrap();
+        assert_eq!((bp.action.as_str(), bp.hand.as_str()), ("play", "Full House"), "{:?}", bp.cards);
     }
 
     #[test]
