@@ -457,6 +457,7 @@ fn flush_odds_uncached(hold: usize, deck_suit: usize, deck_size: usize, hand_siz
 }
 
 /// What the round simulation decided to do with the current hand.
+#[derive(Debug)]
 enum Action {
     /// cards, and whether this is a junk hand played only to dig
     Play(Vec<usize>, bool),
@@ -503,6 +504,7 @@ fn burn_pays(b: &Board, hand: &[Card], play: &[usize]) -> bool {
 }
 
 /// The heuristic play/discard policy (labelled as a heuristic everywhere it shows):
+/// - with discards left and a best play that scores more with none left, discard first;
 /// - play the best hand if it wins, if it's the last hand, or if repeating it keeps pace;
 /// - otherwise, if chasing a flush is worth more than the best hand (exact draw odds ×
 ///   what that flush would score), throw away off-suit cards: with a discard, or by
@@ -536,19 +538,15 @@ fn decide_cards(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i
     }
     let on_pace = best.floor * hands as f64 >= need;
     // When your best play scores more with no discards left (the engine knows which jokers
-    // pay that way), discard before playing: the cards are the policy's own choice when it
-    // digs (a flush chase, or what's outside the best play), else the worst cards.
+    // pay that way), discard before playing. Which cards: what the policy digs with when it's
+    // behind (a flush chase when the odds are there, else what's outside the best play). The
+    // discards are spent anyway, so keeping a draw costs nothing; being on pace only decides
+    // whether to spend a discard, which the burn already has. Nothing to throw: play.
     if burn && discards > 0 && burn_pays(b, hand, &best.cards) {
         if let Action::Discard(v) = decide_cards(b, hand, deck, hands, discards, f64::INFINITY, size, false) {
             return Action::Discard(v);
         }
-        let mut toss: Vec<usize> = (0..hand.len()).filter(|i| !best.cards.contains(i)).collect();
-        toss.sort_by(|&a, &c| hand[a].rank.chips().total_cmp(&hand[c].rank.chips()));
-        toss.truncate(5);
-        if toss.is_empty() {
-            toss.push((0..hand.len()).min_by(|&a, &c| hand[a].rank.chips().total_cmp(&hand[c].rank.chips())).unwrap_or(0));
-        }
-        return Action::Discard(toss);
+        return play_best;
     }
     let f = b.rule_flags();
     let need_f = if f.four_fingers { 4 } else { 5 };
@@ -985,5 +983,21 @@ mod tests {
         };
         assert!(matches!(act(&["j_mystic_summit"]), Action::Discard(_)), "Mystic Summit: burn first");
         assert!(matches!(act(&["j_joker"]), Action::Play(..)), "a plain joker: play the Pair");
+    }
+
+    #[test]
+    fn a_burn_keeps_the_flush_draw() {
+        // Burning discards for Mystic Summit with four Spades in hand: the cards thrown are the
+        // ones a digging player throws (the off-suit ones), not simply the lowest.
+        let hand = Card::parse_list("AS KS 9S 4S 7H 7D 3C 2C").unwrap();
+        let deck: Vec<Card> = standard_deck().into_iter().filter(|c| !hand.iter().any(|h| h.rank == c.rank && h.suit == c.suit)).collect();
+        let mut b = sample_board(&["j_mystic_summit"]);
+        b.discards_left = 2;
+        b.hands_left = 3;
+        let pair = best_play(&b, &hand).unwrap().floor;
+        match decide(&b, &hand, &deck, 3, 2, pair * 2.0, 8) {
+            Action::Discard(v) => assert!(v.iter().all(|&i| hand[i].suit != Suit::Spades), "threw a Spade: {:?}", v.iter().map(|&i| hand[i].label()).collect::<Vec<_>>()),
+            other => panic!("expected a discard, got {other:?}"),
+        }
     }
 }

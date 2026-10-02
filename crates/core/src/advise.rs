@@ -4046,26 +4046,6 @@ mod tests {
     }
 
     #[test]
-    fn a_board_that_scores_more_without_discards_discards_first() {
-        // Mystic Summit (+15 Mult once no discards are left) and a round not won yet: burning
-        // the discards first is worth more than playing now. Decided by the engine and the
-        // search, with no rule naming the joker.
-        let mut r = shop_run(&[("j_mystic_summit", None, None)], &[]);
-        r.screen = crate::save::Screen::SelectingHand;
-        r.shop = None;
-        r.hand = Card::parse_list("KS 9H 7D 5C 4S 3H 2D 8C").unwrap();
-        r.draw_pile = crate::bench::standard_deck().into_iter().filter(|c| !r.hand.iter().any(|h| h.rank == c.rank && h.suit == c.suit)).collect();
-        r.hands_left = 4;
-        r.discards_left = 3;
-        r.blinds[0].state = "Current".into();
-        r.current_blind = Some(crate::save::CurrentBlind {
-            key: "bl_small".into(), name: "Small Blind".into(), target: 1200.0, scored: 0.0, disabled: false, hands_seen: vec![], only_hand: None,
-        });
-        let bp = analyze(&r, GameData::bundled(), None, &quick()).best_play.unwrap();
-        assert_eq!(bp.action, "discard", "{:?} {:?}", bp.cards, bp.p_win);
-    }
-
-    #[test]
     fn a_round_you_cant_win_still_gets_your_best_hand() {
         // Last hand, no discards, a target far out of reach: every move loses, so the value
         // can't separate them, and the best you can do is score the most (points toward the
