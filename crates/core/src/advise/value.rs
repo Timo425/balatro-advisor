@@ -17,6 +17,14 @@ use crate::model::Card;
 use crate::save::{JokerCard, RunState};
 use crate::sim::{RoundRules, RoundStart};
 
+/// Deck changes are small, so they get more rounds than the rest (and the same seeds).
+pub(super) const TAROT_ROUNDS: usize = 300;
+/// A board without a chips joker will likely find one by Ante 8: the typical find in deck
+/// projections is then a +60 Chips joker, so card chips (Bonus, Stone) aren't valued as if
+/// that gap stayed open.
+const CHIP_JOKERS: &[&str] = &["j_stuntman", "j_bull", "j_banner", "j_scary_face", "j_arrowhead", "j_castle", "j_runner", "j_square",
+    "j_wee", "j_ice_cream", "j_blue_joker", "j_sly", "j_wily", "j_clever", "j_devious", "j_crafty", "j_odd_todd", "j_stone", "j_hiker"];
+
 /// Rent ($3 a round) comes out of the money that would buy planets, rerolls and pack skips:
 /// each rental counts as one ante of rent less money held.
 pub(super) const RENT_PER_ANTE: f64 = 9.0;
@@ -44,6 +52,8 @@ pub(super) struct LongRun<'a> {
     pub sell_base: Vec<Option<f64>>,
     /// `planet(h)` per hand type, computed once
     planets: OnceLock<Vec<f64>>,
+    /// Your deck as it is, projected (`deck_stats`), computed once
+    deck_base: OnceLock<crate::sim::Stats>,
 }
 
 /// What an option or event adds to your run, applied to the projected board the same way
@@ -147,6 +157,7 @@ impl<'a> LongRun<'a> {
             full: false,
             sell_base: vec![],
             planets: OnceLock::new(),
+            deck_base: OnceLock::new(),
         };
         {
             let before = lr.long_score(&lr.fill_long(lr.project(&|_| true, run.dollars), None, 0.0));
@@ -459,6 +470,28 @@ impl<'a> LongRun<'a> {
     /// One planet of hand `h` used (its level, and Constellation), by Ante 8
     pub fn planet(&self, h: HandType) -> f64 {
         self.planets.get_or_init(|| par_map(&HandType::ALL, |&h| self.value(&Gain { planets: vec![(h, 1.0)], ..Default::default() })))[h as usize]
+    }
+
+    /// A changed deck projected to Ante 8 (the board with a typical chips find if it lacks
+    /// chips, one-off money spent, money per ante held): its round scores, on more rounds
+    /// than a board (deck changes are small).
+    pub fn deck_stats(&self, d: &[Card], dollars: f64, money_once: f64, income: f64) -> crate::sim::Stats {
+        let has_chips = self.ctx.base.jokers.iter().any(|j| CHIP_JOKERS.contains(&j.key.as_str()));
+        let find = if has_chips { None } else { Some(self.stand_in(1.0, 0.0, 60.0)) };
+        let mut b = self.fill_long(self.project_rent(&|_| true, dollars, -income), find, money_once);
+        let tally = |e: crate::model::Enhancement| d.iter().filter(|c| c.enhancement == Some(e)).count() as i64;
+        b.steel_tally = tally(crate::model::Enhancement::Steel);
+        b.stone_tally = tally(crate::model::Enhancement::Stone);
+        b.driver_tally = d.iter().filter(|c| c.enhancement.is_some()).count() as i64;
+        b.playing_cards = d.len() as i64;
+        let mut sp = self.long_spec_for(&b);
+        sp.start.deck = d.to_vec();
+        self.ctx.odds_one(&b, &sp, TAROT_ROUNDS).1
+    }
+
+    /// Your deck as it is, projected the same way: the baseline deck changes are compared to
+    pub fn deck_base(&self) -> &crate::sim::Stats {
+        self.deck_base.get_or_init(|| self.deck_stats(&self.ctx.fresh_deck, self.run.dollars, 0.0, 0.0))
     }
 
     /// The joker a shop action ("replace NAME[, put it rightmost]") sells

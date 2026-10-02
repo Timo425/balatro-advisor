@@ -101,7 +101,7 @@ vs actual blind results and every shop seen).
 | Consumable used in a simulated round when it lifts the best play by > 1% | `sim.rs` `use_if_better` | when a player uses one | — |
 | Blue Seal: drawn with the hand plus 3 cards an action; Mail-In rank 4 in 13 | `advise.rs` `seal_round_chance`, Mail-In income | how often a card shows up | game source + logged rounds |
 | Glass cards: about 1.5 scores an ante before breaking | `advise.rs` `glass_presence` | Glass breaking | — |
-| Deck changes (tarots): 300 rounds against your deck; `CHIP_JOKERS` list | `advise.rs` `deck_long`, `TAROT_ROUNDS` | a separate baseline from `LongRun` | (should move into `value.rs`) |
+| Deck changes (tarots): 300 rounds against your deck; a board without a chips joker (`CHIP_JOKERS` list) gets a +60 Chips find | `value.rs` `deck_stats`, `TAROT_ROUNDS` | deck changes are small; a chips gap closes by Ante 8 | — |
 | Vouchers: Overstock half a reroll a shop, Reroll Surplus $2 a shop, Clearance 25% of ~$8, Hone one buy an ante, a voucher shows 1 in 16, Planet Merchant 1 in 12 on your main hand | `advise.rs` economy and voucher values | what each voucher saves | logged shops |
 | Tags: Meteor's main-hand planet 5 in 12, best 1 of the pick 2; Investment not discounted for arriving later; Mega pack's second pick $2.50; Emperor average² | `advise.rs` skip-or-play, packs, tarots | — | logged tags and packs |
 | Skip-or-play "close": within 3% | `advise.rs` skip-or-play | noise | (should become `compare.rs`) |
@@ -130,7 +130,8 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
 2. **The simulated round only reports planets, money and hands left.** It should report the
    board, deck and consumables it ends with, valued by `LongRun`. That would retire the
    Cryptid rule, and let the look-ahead weigh more than seal planets.
-3. **Valuation is still split.** `deck_long` (tarot deck changes), the voucher, tag and Emperor
+3. **Valuation is still split.** Deck changes are valued in `value.rs` (`deck_stats`) but not
+   yet through `Gain`; the voucher, tag and Emperor
    formulas, and the shop ranking spend leftover money on rerolls in each of its three
    factors. The general fix: deck, joker and hand-size fields in `Gain`, and each dollar spent
    once in one model.

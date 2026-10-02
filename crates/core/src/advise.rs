@@ -1241,30 +1241,10 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     // Tarots: a changed deck is permanent, so it's projected like everything else; money
     // tarots through money; Judgement as a random joker. Arcana packs take the best card
     // in them, or the skip when Red Card grows from it (+3 Mult).
-    // Deck changes are small, so they get more rounds than the rest (and the same seeds).
-    const TAROT_ROUNDS: usize = 300;
-    // A board without a chips joker will likely find one by Ante 8: the typical find in
-    // these projections is then a +60 Chips joker, so card chips (Bonus, Stone) aren't
-    // valued as if that gap stayed open.
-    const CHIP_JOKERS: &[&str] = &["j_stuntman", "j_bull", "j_banner", "j_scary_face", "j_arrowhead", "j_castle", "j_runner", "j_square",
-        "j_wee", "j_ice_cream", "j_blue_joker", "j_sly", "j_wily", "j_clever", "j_devious", "j_crafty", "j_odd_todd", "j_stone", "j_hiker"];
-    let has_chips = ctx.base.jokers.iter().any(|j| CHIP_JOKERS.contains(&j.key.as_str()));
-    let deck_long = |d: &[Card], dollars: f64, money_once: f64, income: f64| -> Stats {
-        let find = if has_chips { None } else { Some(lr.stand_in(1.0, 0.0, 60.0)) };
-        let mut b = lr.fill_long(lr.project_rent(&|_| true, dollars, -income), find, money_once);
-        let tally = |e: crate::model::Enhancement| d.iter().filter(|c| c.enhancement == Some(e)).count() as i64;
-        b.steel_tally = tally(crate::model::Enhancement::Steel);
-        b.stone_tally = tally(crate::model::Enhancement::Stone);
-        b.driver_tally = d.iter().filter(|c| c.enhancement.is_some()).count() as i64;
-        b.playing_cards = d.len() as i64;
-        let mut sp = lr.long_spec_for(&b);
-        sp.start.deck = d.to_vec();
-        ctx.odds_one(&b, &sp, TAROT_ROUNDS).1
-    };
-    let deck_base = deck_long(&ctx.fresh_deck, run.dollars, 0.0, 0.0);
+    let deck_base = lr.deck_base().clone();
     let tarot_long: Vec<f64> = par_map(&tarots, |t| {
         if !t.decks.is_empty() {
-            return t.decks.iter().map(|(w, d)| w * deck_long(d, run.dollars, 0.0, 0.0).mean.max(1.0) / deck_base.mean.max(1.0)).sum::<f64>();
+            return t.decks.iter().map(|(w, d)| w * lr.deck_stats(d, run.dollars, 0.0, 0.0).mean.max(1.0) / deck_base.mean.max(1.0)).sum::<f64>();
         }
         if t.planets_per_ante > 0.0 {
             // planets of your main hand from the seal: levels and Constellation by Ante 8
@@ -1276,17 +1256,17 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             value::LongRun::add_planets(&mut b, &top_hand.map(|t| vec![(t, n)]).unwrap_or_default(), if top_hand.is_none() { n } else { 0.0 });
             let mut sp = lr.long_spec_for(&b);
             sp.start.deck = deck_now;
-            return ctx.odds_one(&b, &sp, TAROT_ROUNDS).1.mean.max(1.0) / deck_base.mean.max(1.0);
+            return ctx.odds_one(&b, &sp, value::TAROT_ROUNDS).1.mean.max(1.0) / deck_base.mean.max(1.0);
         }
         if let Some(d) = &t.deck {
             // Immolate's $20 comes with its deck change
             let gain = if t.spectral { lr.once(t.money_gain) } else { 0.0 };
-            let mut st = deck_long(d, run.dollars, gain, 0.0);
+            let mut st = lr.deck_stats(d, run.dollars, gain, 0.0);
             // Money the new cards earn while scoring (Lucky cards' $20, gold seals) is money
             // you get every round: about 3 rounds an ante.
             let extra = (st.money - deck_base.money) * 3.0;
             if extra.abs() > 0.5 {
-                st = deck_long(d, run.dollars, gain, extra);
+                st = lr.deck_stats(d, run.dollars, gain, extra);
             }
             let gain = st.mean.max(1.0) / deck_base.mean.max(1.0);
             if t.key == "c_justice" {
@@ -1387,7 +1367,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         let with = |c: Card| {
             let mut d = ctx.fresh_deck.clone();
             d.push(c);
-            let gain = deck_long(&d, run.dollars, 0.0, 0.0).mean.max(1.0) / deck_base.mean.max(1.0);
+            let gain = lr.deck_stats(&d, run.dollars, 0.0, 0.0).mean.max(1.0) / deck_base.mean.max(1.0);
             if c.enhancement == Some(crate::model::Enhancement::Glass) { 1.0 + (gain - 1.0) * glass_presence(antes_left) } else { gain }
         };
         let wild = (lovers && card.enhancement.is_none()).then(|| with(Card { enhancement: Some(crate::model::Enhancement::Wild), ..*card }));
