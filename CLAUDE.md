@@ -1,8 +1,9 @@
 # balatro-advisor: working rules
 
-- **Phased work.** The phases are in `docs/plan.md` §9. Stop for owner review
-  after each phase.
-- **Ask first** before pushing, adding heavy dependencies, or changing scope.
+- **Ask first** before pushing, adding heavy dependencies, or changing scope. One
+  standing exception: the refinement workflow below pushes at its step 6, once step 4
+  passed and the reviewer ran on the fixes. Any other push (refactors or docs outside
+  the workflow, dependency or scope changes) still asks first (D6).
 - **Never commit real game files** (`*.jkr`, snapshots of them, extracted game
   source). Read them in place. Private fixtures go in `tests/fixtures/private/`
   (gitignored).
@@ -59,7 +60,8 @@ change to how the advice decides or values things follows these steps, in order:
    for changes that don't touch how advice is decided or valued (UI text, docs).
 6. **Record.** Commit message starts with the stage (`valuation: …`, `simulated player: …`,
    `moves tried: …`, `noise: …`; `refactor`/`docs` otherwise). Update `docs/design.md` when a
-   stage, rule, register entry or known gap changed. Then commit and push.
+   stage, rule, register entry or known gap changed. Then commit and push (the standing
+   exception to "ask first": only once step 4 passed and the reviewer ran on the fixes).
 
 **When the rules don't fit the fix.** Sometimes a correct fix can't be made within
 `docs/design.md` (it needs a new kind of value, a new stage, or breaks a rule). Then:

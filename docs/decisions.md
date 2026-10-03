@@ -181,3 +181,20 @@ a reviewer that hasn't seen the reasoning finds what the author missed.
 
 **Revisit if** the stages stop fitting how the advice works, or the workflow costs more than
 the mistakes it prevents.
+
+## D6. Pushing within the workflow; the phase rule retired (accepted)
+
+**Decision.** The refinement workflow (`CLAUDE.md`, D5) pushes at its step 6 without asking,
+once step 4 (tests and replay exit 0, snapshots explained) passed and the `advisor-reviewer`
+ran on the fixes. Every other push (refactors or docs outside the workflow, dependency or
+scope changes) still asks first. The "Phased work" rule is dropped and `docs/plan.md` §9 is
+kept as history.
+
+**Why.** The two rules contradicted each other ("ask before pushing" vs. the workflow's "commit
+and push"). Within the workflow the proof and the independent review already gate a change,
+so asking again adds nothing; outside it there's no such gate. The phases (2–4 shipped) no
+longer describe the work, and what their stops were for (owner review before the scope grows)
+is covered by "ask before changing scope".
+
+**Revisit if** a pushed workflow change turns out to need the owner's look before it's public,
+or the work goes back to planned phases.

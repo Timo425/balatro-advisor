@@ -374,9 +374,12 @@ Targets on this machine (12 cores): **< 1 s** for a typical `analyze` + `shop`
 
 ## 9. Phases (stop for review after each)
 
+> **History.** Phases 2–4 shipped; the work is now driven by the refinement workflow in
+> `CLAUDE.md` and `docs/design.md` (D6), and the phase stops no longer apply.
+
 | # | Scope | Done when |
 | --- | --- | --- |
-| **1** | Research, formats, language, this plan | **← we are here.** Docs committed locally |
+| **1** | Research, formats, language, this plan | Docs committed locally |
 | 2 | Toolchain; `.jkr` parser; `RunState`/`Profile` models; path discovery + config; `gold` command (text + JSON) | Parser tests green; `gold` matches the game's tally on the real profile; one real `save.jkr` read field by field and every field in formats.md marked verified |
 | 3 | Hand detection, scoring engine, first ~30 implementation ids, trace, unit tests, golden harness, `bench`, `score` | All joker tests green; owner's first golden hands match; bench under target |
 | 4 | Monte Carlo, contributions, ordering, shop ranking, roles, projections; `analyze`/`shop`/`watch` | Numbers stable across seeds (±CI); timings under target on a real save |
