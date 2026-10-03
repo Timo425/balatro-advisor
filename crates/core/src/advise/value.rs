@@ -9,7 +9,7 @@
 
 use std::sync::{Mutex, OnceLock};
 
-use super::{best_of_subsets, grow_antes, income_per_ante, interest, money_value_with, par_map, round_mods, seal_round_chance, Candidate, Ctx, HandShare, Spec, TarotValue};
+use super::{best_of_subsets, glass_presence, grow_antes, income_per_ante, interest, money_value_with, par_map, round_mods, seal_round_chance, Candidate, Ctx, HandShare, Spec, TarotValue};
 use crate::engine::HandType;
 use crate::data::GameData;
 use crate::engine::{Board, Joker, Kind};
@@ -551,14 +551,45 @@ impl<'a> LongRun<'a> {
     }
 
     fn value_against(&self, d: &[Card], money_once: f64, rounds: usize, first: usize, base: &crate::sim::Stats) -> f64 {
-        let dollars = self.run.dollars;
-        let planets = self.seal_planets(d);
-        let mut st = self.deck_stats_s(d, dollars, money_once, 0.0, rounds, planets, first);
-        let extra = (st.money - base.money) * 3.0;
-        if extra.abs() > 0.5 {
-            st = self.deck_stats_s(d, dollars, money_once, extra, rounds, planets, first);
+        let raw = |d: &[Card]| {
+            let dollars = self.run.dollars;
+            let planets = self.seal_planets(d);
+            let mut st = self.deck_stats_s(d, dollars, money_once, 0.0, rounds, planets, first);
+            let extra = (st.money - base.money) * 3.0;
+            if extra.abs() > 0.5 {
+                st = self.deck_stats_s(d, dollars, money_once, extra, rounds, planets, first);
+            }
+            st.mean.max(1.0) / base.mean.max(1.0)
+        };
+        match self.without_new_glass(d) {
+            Some(plain) => {
+                let p = raw(&plain);
+                p + (raw(d) - p) * glass_presence(self.antes_left)
+            }
+            None => raw(d),
         }
-        st.mean.max(1.0) / base.mean.max(1.0)
+    }
+
+    /// A deck with Glass cards yours doesn't have: the same deck with those cards not Glass
+    /// (what the Glass adds counts for the share of the antes left it's expected to last,
+    /// `glass_presence`; the rest of the change counts in full)
+    fn without_new_glass(&self, d: &[Card]) -> Option<Vec<Card>> {
+        let glass = |c: &Card| c.enhancement == Some(crate::model::Enhancement::Glass);
+        let mut yours: Vec<Card> = self.ctx.fresh_deck.iter().filter(|c| glass(c)).copied().collect();
+        let mut out = d.to_vec();
+        let mut any = false;
+        for c in out.iter_mut().filter(|c| glass(c)) {
+            match yours.iter().position(|y| y.same_kind(c)) {
+                Some(k) => {
+                    yours.remove(k);
+                }
+                None => {
+                    c.enhancement = None;
+                    any = true;
+                }
+            }
+        }
+        any.then_some(out)
     }
 
     /// The planets a deck's extra Blue Seal cards make by Ante 8, against yours (each drawn
@@ -574,6 +605,17 @@ impl<'a> LongRun<'a> {
     /// these rounds, against your deck's money on the same rounds); returned with the values,
     /// to pass on the next batch.
     pub fn deck_rounds(&self, d: &[Card], money_once: f64, range: std::ops::Range<usize>, income: Option<f64>) -> (Vec<f64>, f64) {
+        let (v, used) = self.deck_rounds_raw(d, money_once, range.clone(), income);
+        match self.without_new_glass(d) {
+            Some(plain) => {
+                let (p, _) = self.deck_rounds_raw(&plain, money_once, range, Some(used));
+                (p.iter().zip(&v).map(|(p, v)| p + (v - p) * glass_presence(self.antes_left)).collect(), used)
+            }
+            None => (v, used),
+        }
+    }
+
+    fn deck_rounds_raw(&self, d: &[Card], money_once: f64, range: std::ops::Range<usize>, income: Option<f64>) -> (Vec<f64>, f64) {
         let base = self.deck_base().clone();
         let planets = self.seal_planets(d);
         let rounds = |income: f64| {
