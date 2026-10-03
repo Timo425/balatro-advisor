@@ -35,11 +35,14 @@ pub struct Options {
     /// In a blind, only what a play decision needs: skips the joker pool (dig list),
     /// the style outlook and tarots you don't hold. For bots.
     pub quick: bool,
+    /// Best play also plays every move it considered for `compare::MAX` rounds of its own
+    /// (`PlayAdvice::reference`): what the search's pick is measured against. Slow; for tests.
+    pub reference: bool,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Options { sims: 300, screen_sims: 60, hand_samples: 300, seed: 42, rescue_top: 12, quick: false }
+        Options { sims: 300, screen_sims: 60, hand_samples: 300, seed: 42, rescue_top: 12, quick: false, reference: false }
     }
 }
 
@@ -180,6 +183,10 @@ pub struct PlayAdvice {
     /// on it, how much more by Ante 8, as a share of your run)
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub worth_drawing: Vec<(String, String, f64)>,
+    /// With `Options::reference`: every move considered ("action cards [use first]") and its
+    /// value on `compare::MAX` rounds the search didn't use, best first
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub reference: Vec<(String, f64)>,
     /// Planets from Blue Seals held at the end, on average (counted in the ranking)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub planets: Option<f64>,
@@ -961,12 +968,15 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     ctx.shares = jokers.iter().map(|j| j.score_share).collect();
     let ctx = ctx;
     let order = best_order(&ctx, base_typical.mean);
-    // Which hands carry the points, from the hardest round (usually the boss)
+    // Which hands carry the points, from the hardest round (usually the boss), played from the
+    // start: a round in progress is near its end (hands and discards spent, a target nearly
+    // reached), which says how this round ends, not which hands your run scores with
     let hand_mix: Vec<HandShare> = ctx
         .specs
         .iter()
         .rfind(|s| !s.horizon)
         .map(|spec| {
+            let spec = &fresh_round(spec, run, &ctx.fresh_deck);
             let bb = ctx.board_for(&ctx.base, spec);
             let start = ctx.start_for(spec, &bb);
             sim::round_hand_mix(&bb, &start, opts.sims.min(200), opts.seed)
@@ -2820,15 +2830,7 @@ fn tarot_values(
     let per_shop = 1.0 - (1.0 - per_card).powi(run.shop_rates.slots.max(1) as i32);
 
     // A fresh version of the round to re-simulate with the changed deck
-    let mut fresh = spec.clone();
-    if fresh.in_progress {
-        fresh.in_progress = false;
-        fresh.start.hand.clear();
-        fresh.start.scored = 0.0;
-        fresh.start.hands = run.round_hands;
-        fresh.start.discards = run.round_discards;
-    }
-    fresh.start.deck = ctx.fresh_deck.clone();
+    let fresh = fresh_round(spec, run, &ctx.fresh_deck);
     let deck = &ctx.fresh_deck;
     let count = |s: Suit| deck.iter().filter(|c| c.suit == s && c.enhancement != Some(Enhancement::Stone)).count();
     // Your main suit, only if one suit clearly leads (a tie means there isn't one)
@@ -3297,6 +3299,21 @@ fn tarot_values(
         }
     }
     out
+}
+
+/// `spec` played from the start: a round in progress begins again with your whole deck and a
+/// round's hands and discards (its blind and target kept)
+fn fresh_round(spec: &Spec, run: &RunState, deck: &[Card]) -> Spec {
+    let mut fresh = spec.clone();
+    if fresh.in_progress {
+        fresh.in_progress = false;
+        fresh.start.hand.clear();
+        fresh.start.scored = 0.0;
+        fresh.start.hands = run.round_hands;
+        fresh.start.discards = run.round_discards;
+    }
+    fresh.start.deck = deck.to_vec();
+    fresh
 }
 
 /// `k` hands you'd hold (`hand_size` cards of a deck of `n`, in the order drawn), the same
@@ -3920,7 +3937,7 @@ mod tests {
     }
 
     fn quick() -> Options {
-        Options { sims: 60, screen_sims: 20, hand_samples: 80, seed: 7, rescue_top: 2, quick: false }
+        Options { sims: 60, screen_sims: 20, hand_samples: 80, seed: 7, rescue_top: 2, quick: false, reference: false }
     }
 
     fn shop_action(owned: &[(&str, Option<Edition>, Option<i64>)], buy: &str) -> String {

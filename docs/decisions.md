@@ -199,3 +199,19 @@ scoped exception for the workflow's push; widened the same day.)
 
 **Revisit if** a pushed change turns out to need the owner's look before it's public, or the
 work goes back to planned phases.
+
+## D7. Changes to the search are measured against a reference (accepted)
+
+**Decision.** A change to Best play's search or the noise stage is proven by
+`search_against_reference` (tests/replay.rs): every move it considered, played on
+`compare::MAX` rounds the search didn't use, and how close each fixture's pick is to the best;
+run before and after, and the change judged by that, not by which fixture flips (CLAUDE.md step 4).
+
+**Why.** Several fixtures sit within the 1% tie margin of other moves, so any change to how the
+search cuts or ties options shuffled which one came first, and fixing one fixture broke another
+(2026-10-03: widening the budget and an optimistic cut each fixed one fixture and broke another).
+The reference says which picks are really worse (big_blind's junk play: 1.2% below the best) and
+which are ties, so the search can be fixed where it's wrong instead of tuned to the fixtures.
+
+**Revisit if** the reference itself becomes too slow to run on every search change, or the
+fixtures stop covering the kinds of states the search gets wrong.

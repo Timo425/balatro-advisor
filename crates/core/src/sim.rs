@@ -742,7 +742,7 @@ const LOOKAHEAD_ROLLOUTS: usize = 8;
 /// the cards that don't pay at round end), on a few simulated futures, by `RoundGoals`. Only
 /// when a better finish could be worth something; the futures play on without looking ahead.
 #[allow(clippy::too_many_arguments)]
-fn play_on_instead(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i64, scored: f64, target: f64, size: usize, win: &[usize], uses: &[Use], rng: &mut Rng) -> Option<Action> {
+fn play_on_instead(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i64, scored: f64, target: f64, size: usize, win: &[usize], now: f64, uses: &[Use], rng: &mut Rng) -> Option<Action> {
     let g = b.goals.as_ref()?;
     if hands <= 1 {
         return None;
@@ -751,7 +751,6 @@ fn play_on_instead(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards
     let held: Vec<Card> = (0..hand.len()).filter(|i| !win.contains(i)).map(|i| hand[i]).collect();
     let h = score::score(b, &played, &held, &mut Unlucky, false).hand;
     let planets = seal_planets(b, &held);
-    let now = 1.0 + g.planet[h as usize] * planets + g.dollar * ((hands - 1) as f64 * g.per_hand + held_dollars(&held));
     // the most a different finish could add: the best planet for the seals kept
     let best = g.planet.iter().copied().fold(0.0, f64::max);
     if (best - g.planet[h as usize]) * planets < 0.01 {
@@ -786,6 +785,50 @@ fn play_on_instead(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards
     })
 }
 
+/// What winning now with `win` is worth beyond winning (`RoundGoals`): the planets of the Blue
+/// Seals left in hand (the planet of the hand played), the Gold cards' money and the hands
+/// left over.
+fn finish_value(b: &Board, g: &RoundGoals, hand: &[Card], win: &[usize], hands: i64) -> f64 {
+    let played: Vec<Card> = win.iter().map(|&i| hand[i]).collect();
+    let held: Vec<Card> = (0..hand.len()).filter(|i| !win.contains(i)).map(|i| hand[i]).collect();
+    let h = score::score(b, &played, &held, &mut Unlucky, false).hand;
+    1.0 + g.planet[h as usize] * seal_planets(b, &held) + g.dollar * ((hands - 1) as f64 * g.per_hand + held_dollars(&held))
+}
+
+/// Before a winning play: the held consumables whose use makes the win worth more
+/// (`finish_value`: a Blue Seal or a Gold card more in hand at the end, a slot freed for a
+/// planet), each with the effect it carries, the best first, as long as one adds something.
+/// The board, hand and winning play after them, the consumables used, and the finish's value;
+/// `None` when none adds anything.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+fn finish_with_uses(b: &Board, g: &RoundGoals, hand: &[Card], win: &[usize], uses: &[Use], used: &[bool], need: f64, hands: i64) -> Option<(Board, Vec<Card>, Vec<usize>, Vec<usize>, f64)> {
+    let mut cur = (b.clone(), hand.to_vec(), win.to_vec(), vec![], finish_value(b, g, hand, win, hands));
+    let mut improved = false;
+    loop {
+        let mut best: Option<(Board, Vec<Card>, Vec<usize>, usize, f64)> = None;
+        for (k, u) in uses.iter().enumerate() {
+            if used[k] || cur.3.contains(&k) {
+                continue;
+            }
+            let Some((b2, h2)) = u.apply(&cur.0, &cur.1) else { continue };
+            let Some(w2) = win_keeping_seals(&b2, &h2, need) else { continue };
+            let v = finish_value(&b2, g, &h2, &w2, hands);
+            if v > best.as_ref().map_or(cur.4, |x| x.4) + 1e-9 {
+                best = Some((b2, h2, w2, k, v));
+            }
+        }
+        match best {
+            Some((b2, h2, w2, k, v)) => {
+                cur.3.push(k);
+                cur = (b2, h2, w2, cur.3, v);
+                improved = true;
+            }
+            None => break,
+        }
+    }
+    improved.then_some(cur)
+}
+
 /// Notes, per consumable, the best `RoundGoals::seen` gain among the cards in `hand`.
 fn note_seen(b: &Board, hand: &[Card], acc: &mut Vec<(String, f64)>) {
     let Some(g) = &b.goals else { return };
@@ -799,14 +842,19 @@ fn note_seen(b: &Board, hand: &[Card], acc: &mut Vec<(String, f64)>) {
     }
 }
 
-/// Uses a held consumable once it improves the best play in hand (by more than 1%).
-fn use_if_better(b: &mut Board, hand: &mut Vec<Card>, uses: &[Use], used: &mut [bool]) {
+/// Uses a held consumable for score once it improves the best play in hand (by more than 1%)
+/// and the round needs it: while the best hand keeps you on pace for the `need` left in
+/// `hands`, it's held (for the finish, `finish_with_uses`, or a later round).
+fn use_if_better(b: &mut Board, hand: &mut Vec<Card>, uses: &[Use], used: &mut [bool], need: f64, hands: i64) {
     for (k, u) in uses.iter().enumerate() {
         if used[k] {
             continue;
         }
-        let Some((b2, h2)) = u.apply(b, hand) else { continue };
         let now = best_play(b, hand).map_or(0.0, |p| p.floor);
+        if now * hands.max(1) as f64 >= need {
+            return;
+        }
+        let Some((b2, h2)) = u.apply(b, hand) else { continue };
         if best_play(&b2, &h2).is_some_and(|p| p.floor > now * 1.01) {
             *b = b2;
             *hand = h2;
@@ -837,12 +885,32 @@ pub fn sim_round_uses(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[
         b.hands_left = hands;
         b.discards_left = discards;
         b.deck_remaining = deck.len() as i64;
-        use_if_better(&mut b, &mut hand, uses, &mut used);
+        use_if_better(&mut b, &mut hand, uses, &mut used, start.target - total, hands);
         if let Some(g) = &b.goals {
             seen_by.retain(|(k, _)| g.seen.iter().any(|(k2, _, _)| k2 == k));
         }
         let act = match win_keeping_seals(&b, &hand, start.target - total) {
-            Some(v) => play_on_instead(&b, &hand, &deck, hands, discards, total, start.target, size, &v, uses, rng).unwrap_or(Action::Play(v, false)),
+            Some(v) => {
+                // the finish, with any held consumable that makes it worth more used first
+                let fin = b.goals.as_ref().and_then(|g| finish_with_uses(&b, g, &hand, &v, uses, &used, start.target - total, hands));
+                let now = match (&fin, &b.goals) {
+                    (Some(f), _) => f.4,
+                    (None, Some(g)) => finish_value(&b, g, &hand, &v, hands),
+                    (None, None) => 1.0,
+                };
+                match play_on_instead(&b, &hand, &deck, hands, discards, total, start.target, size, &v, now, uses, rng) {
+                    Some(a) => a,
+                    None => match fin {
+                        Some((b2, h2, v2, ks, _)) => {
+                            b = b2;
+                            hand = h2;
+                            ks.into_iter().for_each(|k| used[k] = true);
+                            Action::Play(v2, false)
+                        }
+                        None => Action::Play(v, false),
+                    },
+                }
+            }
             None => decide(&b, &hand, &deck, hands, discards, start.target - total, size),
         };
         match act {
@@ -1173,6 +1241,24 @@ mod tests {
         let (_, st) = round_odds(&b, &start, 64, 11u64.wrapping_add(16 * 7919));
         let one = round_results(&b, &start, 16..80, 11);
         assert!((one.iter().map(|r| r.total).sum::<f64>() / 64.0 - st.mean).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_held_consumable_is_used_at_the_finish_when_it_pays_more() {
+        // The round is won on the first hand either way. Held: a consumable that adds two
+        // copies of the Blue Seal 3♠ to the hand. Not needed for score (on pace), so it's held,
+        // and used right before the winning hand: three Blue Seals held at the end, three
+        // planets (its own slot freed), not one.
+        let seal = Card::parse_list("3S:blue").unwrap()[0];
+        let hand = Card::parse_list("AS AH AD AC KS 3S:blue 2C 4D").unwrap();
+        let deck: Vec<Card> = standard_deck().into_iter().filter(|c| !hand.iter().any(|h| h.rank == c.rank && h.suit == c.suit)).collect();
+        let mut b = sample_board(&["j_joker"]);
+        b.planet_slots = 2;
+        b.goals = Some(RoundGoals { planet: [0.1; 12], ..Default::default() });
+        let copies = Use { key: "c_test".into(), swap: vec![(seal, seal)], add: vec![seal, seal], ..Default::default() };
+        let start = RoundStart { hand, deck, hand_size: 8, hands: 4, discards: 3, scored: 0.0, target: 100.0 };
+        let r = sim_round_uses(&b, &start, &mut Rng::new(3), &[copies]);
+        assert!(r.won && r.planets >= 3.0, "planets {}", r.planets);
     }
 
     #[test]

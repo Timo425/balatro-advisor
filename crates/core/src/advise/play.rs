@@ -172,6 +172,16 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
             |x, y| ck(y).cmp(&ck(x)),
         );
         let (outs, leader, tied) = (race.samples, race.leader, race.tied);
+        // the yardstick for the search itself (`Options::reference`): every move on rounds of
+        // its own, as many as the race's most
+        let reference: Vec<f64> = if ctx.opts.reference {
+            par_map(&(0..cands.len()).collect::<Vec<_>>(), |&c| {
+                let (m, b, st, u, _) = &cands[c];
+                mean_u(&sim::outcomes_after(b, st, m, compare::MAX..2 * compare::MAX, seed, u))
+            })
+        } else {
+            vec![]
+        };
         let mut opts: Vec<PlayOption> = (0..cands.len())
             .map(|c| {
                 let v = &outs[c];
@@ -198,22 +208,31 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
         order.sort_by(|&x, &y| (y == leader).cmp(&(x == leader)).then(tied[y].cmp(&tied[x])).then(score_of(y).total_cmp(&score_of(x))).then(ck(x).cmp(&ck(y))));
         // Moves as good as the leader are equal as far as can be told: among them a play that
         // wins the round right now goes first (nothing to gain by waiting), then the best
-        // estimate, then how close lost rounds came, then by the cards themselves
+        // estimate, then how close lost rounds came, then by the cards themselves. The estimate
+        // is paired: the leader's value plus each one's difference to it on the rounds both
+        // were sampled on (ties stop early; their own averages are over fewer, other rounds).
         let need = start.target - start.scored;
         let wins_now = |o: &PlayOption| o.action == "play" && o.use_first.is_none() && o.score >= need;
         let group = order.iter().take_while(|&&c| c == leader || tied[c]).count();
         let prog = |c: usize| outs[c].iter().map(progress).sum::<f64>() / outs[c].len().max(1) as f64;
-        order[..group].sort_by(|&x, &y| wins_now(&opts[y]).cmp(&wins_now(&opts[x])).then(score_of(y).total_cmp(&score_of(x))).then(prog(y).total_cmp(&prog(x))).then(ck(x).cmp(&ck(y))));
+        let estimate = |c: usize| {
+            let k = outs[c].len().min(outs[leader].len());
+            score_of(leader) + mean_u(&outs[c][..k]) - mean_u(&outs[leader][..k])
+        };
+        order[..group].sort_by(|&x, &y| wins_now(&opts[y]).cmp(&wins_now(&opts[x])).then(estimate(y).total_cmp(&estimate(x))).then(prog(y).total_cmp(&prog(x))).then(ck(x).cmp(&ck(y))));
         let first = order[0];
         for &c in &order {
             opts[c].tie = c != first && (c == leader || tied[c]);
         }
+        let label = |o: &PlayOption| format!("{} {} [{}]", o.action, o.cards.join(" "), o.use_first.clone().unwrap_or_default());
+        let mut reference: Vec<(String, f64)> = reference.iter().enumerate().map(|(c, v)| (label(&opts[c]), *v)).collect();
+        reference.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         let mut sorted: Vec<PlayOption> = order.into_iter().map(|c| opts[c].clone()).collect();
         sorted.dedup_by(|a, b| a.action == b.action && a.cards == b.cards && a.use_first == b.use_first);
-        let opts = sorted;
-        opts
+        (sorted, reference)
     });
-    match look.filter(|o| !o.is_empty()) {
+    let reference = look.as_ref().map_or(vec![], |l| l.1.clone());
+    match look.map(|l| l.0).filter(|o| !o.is_empty()) {
         Some(mut opts) => {
             let best = opts.remove(0);
             opts.truncate(4);
@@ -230,10 +249,11 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
                 let m = format!("Not used in this look-ahead (no modelled effect on this hand): {}", missing.join(", "));
                 Some(m)
             };
-            Some(PlayAdvice { worth_drawing: worth_drawing.clone(), then: best.then.clone(), ties: opts.iter().filter(|o| o.tie).count(), planets: Some(best.planets), use_first: best.use_first, spare_hands: Some(best.spare_hands), round_money: Some(best.round_money), action: best.action, cards: best.cards, dig: best.dig, indices: best.indices, hand: best.hand, score: best.score, p_win: Some(best.p_win), alternatives: opts, tip })
+            Some(PlayAdvice { reference, worth_drawing: worth_drawing.clone(), then: best.then.clone(), ties: opts.iter().filter(|o| o.tie).count(), planets: Some(best.planets), use_first: best.use_first, spare_hands: Some(best.spare_hands), round_money: Some(best.round_money), action: best.action, cards: best.cards, dig: best.dig, indices: best.indices, hand: best.hand, score: best.score, p_win: Some(best.p_win), alternatives: opts, tip })
         }
         None => sim::best_play(&b, &hand_order.iter().map(|&i| run.hand[i]).collect::<Vec<_>>()).map(|p| PlayAdvice {
             use_first: None,
+            reference: vec![],
             worth_drawing: worth_drawing.clone(),
             planets: None,
             then: None,

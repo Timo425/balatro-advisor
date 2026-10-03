@@ -19,6 +19,10 @@ use super::par_map;
 /// as equally good.
 pub(super) const MAX: usize = 1600;
 pub(super) const EQUAL: f64 = 0.01;
+/// The fewest rounds that show two options within `EQUAL`: a round where they part ways can
+/// be worth about a whole round's value, and when none has turned up in n rounds, they may
+/// still happen up to 3 in n (95%, the rule of three). 3/n ≤ `EQUAL` takes 300 rounds.
+pub(super) const TIE_ROUNDS: usize = (3.0 / EQUAL) as usize;
 
 pub(super) struct Race<T> {
     /// Each option's samples (as many as it got)
@@ -29,13 +33,15 @@ pub(super) struct Race<T> {
 }
 
 /// Whether `a` is clearly better than `b` on the same draws (paired difference, 95%), and
-/// whether they're provably within `EQUAL` (as a share of `scale`) of each other.
+/// whether they're provably within `EQUAL` (as a share of `scale`) of each other. Equal also
+/// needs `TIE_ROUNDS`: rounds where two options part ways (one wins, the other loses) can be
+/// rare, and a few rounds without one prove nothing about them.
 fn paired(a: &[f64], b: &[f64], scale: f64) -> (bool, bool) {
     let d: Vec<f64> = a.iter().zip(b).map(|(x, y)| x - y).collect();
     let k = d.len() as f64;
     let m = d.iter().sum::<f64>() / k;
     let se = (d.iter().map(|x| (x - m) * (x - m)).sum::<f64>() / (k - 1.0).max(1.0) / k).sqrt();
-    (m - 2.0 * se > 0.0, m.abs() + 2.0 * se < EQUAL * scale)
+    (m - 2.0 * se > 0.0, d.len() >= TIE_ROUNDS && m.abs() + 2.0 * se < EQUAL * scale)
 }
 
 /// `sample(i, range)`: option i's samples for rounds `range`; `value`: a sample's value;
@@ -126,20 +132,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn options_that_part_ways_rarely_arent_called_equal_on_a_few_rounds() {
+        // B is A except for a lost round 1 in 40 (2.5% worse): identical on the first rounds,
+        // where a tie would be called on no evidence about the rare round
+        let sample = |o: usize, r: std::ops::Range<usize>| -> Vec<f64> { r.map(|i| if o == 1 && i % 40 == 39 { 0.0 } else { 1.0 }).collect() };
+        let race = race(2, 16, MAX, |_| 2, sample, |x| *x, |x| *x, |x, y| y.cmp(&x));
+        assert_eq!(race.leader, 0);
+        assert!(!race.tied[1]);
+    }
+
+    #[test]
     fn a_tie_with_an_early_leader_that_falls_behind_doesnt_stand() {
-        // E leads the first batch by luck and C ties with it there; F (noisy, so still in)
-        // takes the lead later and E turns out clearly worse. C was only as good as E.
-        let f = |i: usize| 1.0 + 0.5 * (i as f64 * 1.7).sin();
+        // E leads for its first 400 rounds by luck and C ties with it there (equal on every
+        // round, past `TIE_ROUNDS`); F (noisy, so still in) takes the lead later and E turns
+        // out clearly worse. C was only as good as E.
+        let f = |i: usize| 1.0 + 2.0 * (i as f64 * 1.7).sin();
         let sample = |o: usize, r: std::ops::Range<usize>| -> Vec<f64> {
             r.map(|i| match o {
-                0 => if i < 16 { 1.10 } else { 0.70 },  // E
-                1 => if i < 16 { 1.10 } else { 0.70 },  // C
-                _ => f(i),                              // F
+                0 | 1 => if i < 400 { 1.10 } else { 0.70 },  // E, C
+                _ => f(i),                                   // F
             })
             .collect()
         };
-        let race = race(3, 16, 400, |_| 3, sample, |x| *x, |x| *x, |x, y| y.cmp(&x));
-        assert_eq!(race.leader, 2);
+        let race = race(3, 16, MAX, |_| 3, sample, |x| *x, |x| *x, |x, y| y.cmp(&x));
+        assert_eq!(race.leader, 2, "{:?}", race.samples.iter().map(|v| v.len()).collect::<Vec<_>>());
         assert!(!race.tied[0] && !race.tied[1], "{:?}", race.tied);
     }
 }

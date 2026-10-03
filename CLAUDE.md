@@ -38,7 +38,7 @@ change to how the advice decides or values things follows these steps, in order:
 1. **Capture.** When the owner says a suggestion is wrong, save that state as a replay
    fixture before touching code: `tests/fixtures/private/<name>.json` = `{"note", "state":
    <balatro-advisor state --json>, "expect": {...}}` (keys: `best_action`, `best_hand`,
-   `best_use_first`, `best_not_cards`: [..], `top_option`, `above`: ["A", "B"]). The folder is
+   `best_use_first`, `best_not_cards`: [..], `top_option`, `above`: ["A", "B"], `top_hand`). The folder is
    git-ignored (real runs aren't committed).
 2. **Diagnose before fixing.** Find out why, by reading the code and simulating the state
    (scratch programs or `whatif`), not by guessing. Name the stage that failed. Run
@@ -52,7 +52,10 @@ change to how the advice decides or values things follows these steps, in order:
    output), the replay fixtures included. A pure restructuring must leave the full analysis
    of every fixture unchanged: `BAV_SNAPSHOT_DIR=/tmp/before cargo test --release --test
    replay -- --ignored snapshot` before and `/tmp/after` after, then `diff -r`. A behaviour
-   change: diff the snapshots and explain every difference.
+   change: diff the snapshots and explain every difference. A change to Best play's search
+   or the noise stage: run `cargo test --release --test replay -- --ignored
+   search_against_reference --nocapture` (every move against a reference; slow) before and
+   after, and judge it by how close each pick is to the best, not by which fixture flips.
 5. **Review.** Spawn the `advisor-reviewer` agent (`.claude/agents/`) on the change. It hasn't
    seen your reasoning, which is why it finds what you missed. Apply what holds up (check its
    claims in the code first; it can be wrong), then run it once more on the fixes. Skip only
