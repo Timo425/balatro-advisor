@@ -182,8 +182,8 @@ fn events_bought_for(run: &RunState, ev: RunEvent, budget: f64) -> (f64, f64) {
     }
 }
 
-/// The most of `ev` a run can do in an ante (`PACKS_PER_ANTE` packs; the rerolls bought plus the
-/// one done anyway)
+/// The most of `ev` money buys in an ante: the `PACKS_PER_ANTE` packs the shops hold, or
+/// `REROLLS_BOUGHT_PER_ANTE_MAX` rerolls (on top of the one done anyway)
 fn event_cap(ev: RunEvent) -> f64 {
     match ev {
         RunEvent::SkipPack => PACKS_PER_ANTE,
@@ -206,6 +206,7 @@ pub(super) fn add_levels(l: crate::engine::Level, n: f64) -> crate::engine::Leve
 
 /// A projected board (`LongRun::project_rent`) and the money held it was projected with,
 /// which buys its shop events once its jokers are all in (`LongRun::fill_long`).
+#[derive(Clone)]
 pub(super) struct Projected {
     board: Board,
     dollars: f64,
@@ -355,10 +356,21 @@ impl<'a> LongRun<'a> {
     /// Above the interest line it's in the spare money; the part below the line counts too,
     /// at about $18 an ante for a planet level, so rent costs and income pays even when poor.
     pub fn levels_for(&self, dollars: f64, flow: f64) -> (f64, f64) {
+        let per_ante = self.levels_per_ante(dollars, flow, (dollars - self.line).max(0.0));
+        (per_ante, per_ante * self.antes_left)
+    }
+
+    /// `levels_for` with `to_levels` of the spare money (above the interest line) going to
+    /// levels, the rest elsewhere (`fill_long`); money held at `dollars`, `flow` as there
+    pub fn levels_per_ante(&self, dollars: f64, flow: f64, to_levels: f64) -> f64 {
         let line = self.line;
         let below = if flow < 0.0 { -(-flow).min((line - dollars).max(0.0)) } else { flow.min((line - (dollars - flow)).max(0.0)) };
-        let per_ante = (0.5 + (dollars - line).max(0.0) / 20.0 + below / 18.0).clamp(0.0, 2.0);
-        (per_ante, per_ante * self.antes_left)
+        (0.5 + to_levels.max(0.0) / 20.0 + below / 18.0).clamp(0.0, 2.0)
+    }
+
+    /// The spare money levels can use before they top out (`levels_per_ante`'s cap of 2)
+    fn levels_cap(&self, dollars: f64, flow: f64) -> f64 {
+        ((2.0 - self.levels_per_ante(dollars, flow, 0.0)) * 20.0).max(0.0)
     }
 
     /// Money jokers you keep pay every ante, like rent in reverse; one the projection replaces
@@ -400,7 +412,7 @@ impl<'a> LongRun<'a> {
         b.blind = Default::default();
         let top_base = self.top_hand.map(|top| b.levels[top as usize]);
         if let (Some(top), Some(l)) = (self.top_hand, top_base) {
-            b.levels[top as usize] = self.top_level(l, dollars, flow);
+            b.levels[top as usize] = self.top_level(l, dollars, flow, (dollars - self.line).max(0.0));
         }
         b.jokers = ctx
             .base
@@ -420,9 +432,10 @@ impl<'a> LongRun<'a> {
         Projected { board: b, dollars, flow, top_base }
     }
 
-    /// Your main hand's level by Ante 8 with money held at `dollars` (`levels_for`)
-    fn top_level(&self, l: crate::engine::Level, dollars: f64, flow: f64) -> crate::engine::Level {
-        add_levels(l, self.levels_for(dollars, flow).1)
+    /// Your main hand's level by Ante 8 with money held at `dollars`, `to_levels` of the spare
+    /// money going to levels (`levels_per_ante`)
+    fn top_level(&self, l: crate::engine::Level, dollars: f64, flow: f64, to_levels: f64) -> crate::engine::Level {
+        add_levels(l, self.levels_per_ante(dollars, flow, to_levels) * self.antes_left)
     }
 
     pub fn project(&self, keep: &dyn Fn(usize) -> bool, dollars: f64) -> Projected {
@@ -449,10 +462,18 @@ impl<'a> LongRun<'a> {
     /// grows from one; a pack skipped only when bought (it gives up what the pack holds). The
     /// spare money (held above the interest line, every ante) is one budget for main-hand
     /// levels and the event `bought_event` picks (`events_per_ante`, up to what the shops hold):
-    /// levels first (up to the most `levels_for` buys) and the rest on events, or events first
-    /// and the rest on levels, whichever the projection scores higher (`spare_to_events`); each
-    /// dollar is spent once. One-off money goes the same way (a price takes back what it bought).
+    /// levels first (up to what `levels_per_ante` can use) and the rest on events, or events
+    /// first and the rest on levels, whichever the projection scores higher (`spare_to_events`);
+    /// each dollar is spent once. One-off money takes one route on every board: a price takes
+    /// back events, then levels; money once goes to events on the events-first split (up to what
+    /// the shops hold), else to levels; Constellation follows the planets it buys or loses.
     pub fn fill_long(&self, p: Projected, option: Option<Joker>, once: f64) -> Board {
+        self.fill_split(p, option, once, None)
+    }
+
+    /// `fill_long` with the split forced (`Some(true)`: events first) or chosen (`None`)
+    fn fill_split(&self, p: Projected, option: Option<Joker>, once: f64, events_first: Option<bool>) -> Board {
+        let grower_option = option.as_ref().filter(|j| RunEvent::ALL.iter().any(|&ev| j.mult_from(ev) != 0.0 || j.xmult_from(ev) != 0.0)).cloned();
         let Projected { board: mut b, dollars, flow, top_base } = p;
         b.jokers.push(option.unwrap_or_else(|| self.stand_in(1.25, 0.0, 0.0)));
         if event_price(self.run, RunEvent::Reroll).is_some() && b.changes_with(RunEvent::Reroll) {
@@ -462,42 +483,37 @@ impl<'a> LongRun<'a> {
             None => self.spend_once(&mut b, once, once),
             Some((ev, price)) => {
                 let spare = (dollars - self.line).max(0.0);
-                let below = dollars.min(self.line);
-                // the spare money levels can use before they top out (`levels_for`'s cap)
-                let for_levels = (0..=200).map(|k| k as f64).find(|&s| self.levels_for(below + s + 1.0, flow).0 <= self.levels_for(below + s, flow).0 + 1e-9).unwrap_or(spare);
-                let split = |to_levels: f64, to_events: f64, once: f64, events_first: bool| {
+                let split = |to_levels: f64, to_events: f64, first: bool| {
                     let mut e = b.clone();
                     if let (Some(top), Some(l)) = (self.top_hand, top_base) {
-                        e.levels[top as usize] = self.top_level(l, below + to_levels, flow);
+                        e.levels[top as usize] = self.top_level(l, dollars, flow, to_levels);
                     }
                     let held = events_per_ante(self.run, ev, to_events) * self.antes_left;
-                    // a price takes back the events the budget bought, then levels; money once
-                    // goes where this split puts it first
-                    if events_first || once < 0.0 {
-                        let n = (held + once / price).min(event_cap(ev) * self.antes_left);
-                        e.after(ev, n.max(0.0));
-                        if n < 0.0 {
-                            self.spend_once(&mut e, 0.0, n * price);
-                        }
-                    } else {
-                        e.after(ev, held);
-                        self.spend_once(&mut e, once, once);
-                    }
+                    let room = (event_cap(ev) * self.antes_left - held).max(0.0) * price;
+                    let to_events_once = if once < 0.0 { once.max(-held * price) } else if first { once.min(room) } else { 0.0 };
+                    e.after(ev, held + to_events_once / price);
+                    let to_levels_once = once - to_events_once;
+                    self.spend_once(&mut e, to_levels_once, to_levels_once);
                     e
                 };
-                // levels first: what they can use, the rest on events
-                let levels_first = |once: f64| {
-                    let l = spare.min(for_levels);
-                    split(l, spare - l, once, false)
-                };
-                // events first: what the shops hold, the rest on levels
-                let events_first = |once: f64| {
+                let to_levels = spare.min(self.levels_cap(dollars, flow));
+                let levels_first = || split(to_levels, spare - to_levels, false);
+                let events_first_board = || {
                     let spent = events_bought_for(self.run, ev, spare).1;
-                    split(spare - spent, spent, once, true)
+                    split(spare - spent, spent, true)
                 };
-                b = if self.spare_to_events(&levels_first(0.0), &events_first(0.0)) { events_first(once) } else { levels_first(once) };
+                let first = match events_first {
+                    Some(c) => c,
+                    None => self.spare_to_events(&b, grower_option, &mut || (self.fill_slots(levels_first()), self.fill_slots(events_first_board()))),
+                };
+                b = if first { events_first_board() } else { levels_first() };
             }
         }
+        self.fill_slots(b)
+    }
+
+    /// Empty slots filled with stand-ins (the jokers you'd find over the run)
+    fn fill_slots(&self, mut b: Board) -> Board {
         let mut k = 0;
         while (b.jokers.len() as i64) < b.joker_slots {
             b.jokers.push(match self.fill_types.get(k).copied().unwrap_or(0) {
@@ -510,12 +526,18 @@ impl<'a> LongRun<'a> {
         b
     }
 
-    /// Whether the spare money buys shop events (`events`: the board with them) rather than
-    /// main-hand levels (`levels`), whichever the projection scores higher. Decided once for
-    /// each set of jokers that grow from events (it's what they're worth against your main
-    /// hand's planets), on the first board with them.
-    fn spare_to_events(&self, levels: &Board, events: &Board) -> bool {
-        let mut growers: Vec<String> = levels
+    /// Whether the spare money goes events first rather than levels first, whichever the
+    /// projection scores higher (events only when clearly higher: within `compare::EQUAL` it's
+    /// levels, as on a board nothing grows on). Decided once for each set of jokers that grow
+    /// from events, on one board: your projected board with the option that grows (if it's one)
+    /// in the typical find's slot, slots filled; until the projection knows which of your
+    /// jokers it replaces, on `board`'s own two splits (`these`), not kept.
+    fn spare_to_events(&self, board: &Board, option: Option<Joker>, these: &mut dyn FnMut() -> (Board, Board)) -> bool {
+        let pick = |(levels, events): (Board, Board)| self.long_score(&events) > self.long_score(&levels) * (1.0 + super::compare::EQUAL);
+        if self.replaced.get().is_none() {
+            return pick(these());
+        }
+        let mut growers: Vec<String> = board
             .jokers
             .iter()
             .filter(|j| RunEvent::ALL.iter().any(|&ev| j.mult_from(ev) != 0.0 || j.xmult_from(ev) != 0.0))
@@ -523,11 +545,13 @@ impl<'a> LongRun<'a> {
             .collect();
         growers.sort();
         let key = growers.join(",");
-        if let Some(&c) = self.spare_choice.lock().unwrap().get(&key) {
+        let mut cache = self.spare_choice.lock().unwrap();
+        if let Some(&c) = cache.get(&key) {
             return c;
         }
-        let c = self.long_score(events) > self.long_score(levels);
-        self.spare_choice.lock().unwrap().insert(key, c);
+        let p = self.project(&|_| true, self.run.dollars);
+        let c = pick((self.fill_split(p.clone(), option.clone(), 0.0, Some(false)), self.fill_split(p, option, 0.0, Some(true))));
+        cache.insert(key, c);
         c
     }
 

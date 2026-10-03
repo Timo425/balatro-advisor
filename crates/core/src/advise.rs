@@ -1043,7 +1043,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         .filter_map(|(i, c)| {
             let j = Joker::from_key(&c.key, data)?;
             // Money left after buying it is what could pay for its growth
-            let (grown, label, fades) = grow_one_ante(&j, &hand_mix, run, &ctx.base, run.dollars - c.cost as f64, run.interest_cap as f64)?;
+            let (grown, label, fades) = grow_one_ante(&j, &hand_mix, run, &ctx.base)?;
             Some((i, grown, label, fades))
         })
         .collect();
@@ -3837,7 +3837,7 @@ fn describe(key: &str, ability: &serde_json::Value, ctx: &crate::describe::DescC
 /// from shop events as in the projection (`value::LongRun::fill_long`): one of each kind you'd
 /// do anyway, plus what money held buys when `board` with this joker on it spends it on that
 /// event (`value::bought_event`).
-fn grow_one_ante(j: &Joker, hand_mix: &[HandShare], run: &RunState, board: &Board, dollars: f64, interest_line: f64) -> Option<(Joker, String, bool)> {
+fn grow_one_ante(j: &Joker, hand_mix: &[HandShare], run: &RunState, board: &Board) -> Option<(Joker, String, bool)> {
     let mut with = board.clone();
     with.jokers.push(j.clone());
     let bought = value::bought_event(&with, run);
@@ -3848,21 +3848,17 @@ fn grow_one_ante(j: &Joker, hand_mix: &[HandShare], run: &RunState, board: &Boar
         if per <= 0.0 || value::event_price(run, ev).is_none() {
             continue;
         }
-        // the spare money's events (`value::events_per_ante`, as the projection counts them)
-        let spare = bought.filter(|b| b.0 == ev).map(|_| value::events_per_ante(run, ev, dollars - interest_line));
+        // the one done anyway (a reroll; a pack skipped gives up what it holds, so only when
+        // bought); what spare money buys is the By Ante 8 projection's (`value::LongRun::fill_long`
+        // weighs it against planets), not counted here
         let anyway = if ev == RunEvent::Reroll { 1.0 } else { 0.0 };
-        let n = anyway + spare.unwrap_or(0.0);
-        g.grow_from(ev, n);
-        let s = if n == 1.0 { "" } else { "s" };
-        let what = match ev {
-            RunEvent::SkipPack => format!("skip {n:.0} booster pack{s} instead of opening"),
-            _ => format!("reroll {n:.0} time{s} (1 anyway"),
+        g.grow_from(ev, anyway);
+        let per_event = match ev {
+            RunEvent::SkipPack => format!("+{per} Mult for each booster pack skipped instead of opened"),
+            _ => format!("+{} Mult after 1 ante for the reroll you'd do anyway, +{per} for each more", per * anyway),
         };
-        let more = match spare {
-            Some(_) => format!("{}with the money above the ${interest_line:.0} interest line, if it goes there rather than to planets (By Ante 8 weighs both)", if anyway > 0.0 { ", more " } else { " (" }),
-            None => format!("{}your spare money going to another joker's", if anyway > 0.0 { ", " } else { " (" }),
-        };
-        labels.push(format!("+{} Mult after 1 ante if you {what}{more})", per * n));
+        let money = if bought.is_some_and(|b| b.0 == ev) { "spare money buys more when By Ante 8 finds it worth more than planets" } else { "your spare money going to another joker's" };
+        labels.push(format!("{per_event} ({money})"));
     }
     if !labels.is_empty() {
         return Some((g, labels.join("; "), false));
@@ -3969,17 +3965,17 @@ mod tests {
 
     #[test]
     fn growing_jokers_only_go_up_and_pay_to_grow_follows_spare_money() {
+        // after one ante: no pack skipped for free (it gives up what the pack holds); what
+        // spare money buys is the By Ante 8 projection's, which grows it with the money ($30
+        // held, $5 above the line, no main hand: it can only go to events)
         let base = j("j_red_card");
         let r = shop_run(&[], &[]);
         let b = Board::from_run(&r, GameData::bundled());
-        let poor = grow_one_ante(&base, &[], &r, &b, 10.0, 25.0).unwrap().0.mult;
-        let rich = grow_one_ante(&base, &[], &r, &b, 60.0, 25.0).unwrap().0.mult;
-        // no spare money, no pack skipped (a skipped pack gives up what it holds: it costs one)
-        assert!(poor == base.mult && rich > poor, "{poor} {rich}");
-        // the projection buys the same events with your money, over every ante left
+        let (g, label, _) = grow_one_ante(&base, &[], &r, &b).unwrap();
+        assert!(g.mult == base.mult && label.contains("+3 Mult for each booster pack skipped"), "{label}");
         let owned = shop_run(&[("j_red_card", None, None), ("j_joker", None, None)], &[]);
         let longer = with_long_run(&owned, |lr| mults(&lr.board_with(&Gain::default()), "j_red_card")[0]);
-        assert!(longer > poor, "{longer} by Ante 8 vs {poor} after one ante");
+        assert!(longer > base.mult, "{longer} by Ante 8");
     }
 
     /// A synthetic run in the shop: a standard deck, the given jokers (key, edition,
@@ -4222,6 +4218,41 @@ mod tests {
     }
 
     #[test]
+    fn the_spare_money_choice_is_made_on_the_board_you_will_have() {
+        // Red Card at +20, Golden Joker (replaced by Ante 8: weaker than a typical find), $45,
+        // a Pair main hand. On the projected board the skips clearly beat the levels, so Red Card
+        // grows; deciding on a board from before replacements (Golden still there, its income
+        // spent twice) picked levels and kept it at +20.
+        let mut r = shop_run(&[("j_red_card", None, None), ("j_golden", None, None), ("j_joker", None, None)], &[]);
+        r.jokers[0].ability["mult"] = 20.into();
+        r.dollars = 45.0;
+        let mix = [HandShare { hand: "Pair".into(), share: 1.0, played: 1.0, mean: 1.0 }];
+        let red = with_long_run_mix(&r, &mix, |lr| mults(&lr.board_with(&Gain::default()), "j_red_card")[0]);
+        assert!(red > 20.0, "{red}");
+    }
+
+    #[test]
+    fn a_kept_money_jokers_income_is_spent_once() {
+        // An eternal Golden Joker (kept: $12 an ante) next to Red Card, a High Card main hand
+        // (weak levels: the spare money goes to pack skips). $37 held plus Golden's income is
+        // $49, as much spare money as $49 held without it: the same skips, and the same levels
+        // (the income is in the spare money that bought the skips; it doesn't level again).
+        let high = |b: &Board| b.levels[crate::engine::HandType::HighCard as usize].mult;
+        let mix = [HandShare { hand: "High Card".into(), share: 1.0, played: 1.0, mean: 1.0 }];
+        let board = |golden: bool, dollars: f64| {
+            let other = if golden { "j_golden" } else { "j_joker" };
+            let mut r = shop_run(&[("j_red_card", None, None), (other, None, None), ("j_joker", None, None)], &[]);
+            r.jokers[0].ability["mult"] = 30.into();
+            r.jokers[1].eternal = true;
+            r.dollars = dollars;
+            with_long_run_mix(&r, &mix, |lr| lr.board_with(&Gain::default()))
+        };
+        let (paid, held) = (board(true, 37.0), board(false, 49.0));
+        assert!(mults(&paid, "j_red_card")[0] > 30.0, "the spare money buys pack skips: {:?}", mults(&paid, "j_red_card"));
+        assert_eq!((mults(&paid, "j_red_card"), high(&paid)), (mults(&held, "j_red_card"), high(&held)));
+    }
+
+    #[test]
     fn spare_money_buys_levels_or_events_never_both() {
         // $45 held, $20 above the interest line (less than levels can use), a Red Card and a
         // Pair main hand: the spare money buys pack skips or Pair levels, whichever the
@@ -4242,16 +4273,18 @@ mod tests {
     }
 
     #[test]
-    fn a_growers_label_spends_the_money_as_the_projection_does() {
-        // A Flash Card for sale next to your Red Card: the spare money buys Red Card's skips, so
-        // Flash grows by the reroll you'd do anyway only, and its label says so
+    fn a_growers_label_counts_only_what_it_does_anyway() {
+        // A Flash Card for sale: after one ante it grows by the reroll you'd do anyway (that's
+        // what its next-ante reach counts); what spare money buys is left to By Ante 8. Next to
+        // your Red Card the spare money would go to Red Card's skips, and the label says so.
         let r = shop_run(&[("j_red_card", None, None)], &[]);
         let b = Board::from_run(&r, GameData::bundled());
-        let (g, label, _) = grow_one_ante(&j("j_flash"), &[], &r, &b, 60.0, 25.0).unwrap();
+        let (g, label, _) = grow_one_ante(&j("j_flash"), &[], &r, &b).unwrap();
         assert_eq!(g.mult, 2.0, "{label}");
         assert!(label.contains("another joker's"), "{label}");
         let alone = Board::from_run(&shop_run(&[("j_joker", None, None)], &[]), GameData::bundled());
-        assert!(grow_one_ante(&j("j_flash"), &[], &r, &alone, 60.0, 25.0).unwrap().0.mult > 2.0);
+        let (g, label, _) = grow_one_ante(&j("j_flash"), &[], &r, &alone).unwrap();
+        assert!(g.mult == 2.0 && label.contains("worth more than planets"), "{label}");
     }
 
     #[test]
