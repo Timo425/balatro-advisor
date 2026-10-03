@@ -3196,7 +3196,7 @@ fn tarot_values(
             }
         };
         // the leader, and what's as good as it (listed, best first; which of them wins this
-        // round isn't weighed: known gap 1)
+        // round isn't weighed: the known gap "one target per consumable")
         let (sets, best) = (&ranked, 0);
         let as_good: Vec<usize> = (1..ranked.len()).collect();
         if sets[best].is_empty() {
@@ -3209,7 +3209,7 @@ fn tarot_values(
         let what = effect.label();
         let note = if real {
             let others: Vec<String> = as_good.iter().take(3).map(|&i| if sets[i].is_empty() { "not using it".to_string() } else { label(&sets[i]) }).collect();
-            let ties = if others.is_empty() { String::new() } else { format!("; as good: {}", others.join(", ")) };
+            let ties = if others.is_empty() { String::new() } else { format!("; can't be told apart from: {}", others.join(", ")) };
             format!("{what} on {} (the cards worth most to your run{ties})", label(&sets[best]))
         } else {
             format!("{what}, on the cards worth most in hands you'd hold")
@@ -3401,20 +3401,30 @@ fn target_race(
         |x| *x,
         |x, y| key(&sets[y]).cmp(&key(&sets[x])),
     );
-    let mean = |i: usize| race.samples[i].iter().sum::<f64>() / race.samples[i].len().max(1) as f64;
-    let by_mean = |a: &usize, b: &usize| mean(*b).total_cmp(&mean(*a)).then_with(|| key(&sets[*a]).cmp(&key(&sets[*b])));
-    let mut as_good: Vec<usize> = (0..sets.len()).filter(|&i| race.tied[i]).collect();
-    as_good.sort_by(by_mean);
-    let mut rest: Vec<usize> = (0..sets.len()).filter(|&i| i != race.leader && !race.tied[i]).collect();
-    rest.sort_by(by_mean);
+    // each set's estimate: the leader's mean plus its paired difference to the leader on the
+    // rounds both were sampled on (sets cut early have fewer, other rounds than the leader)
+    let mean = |v: &[f64]| v.iter().sum::<f64>() / v.len().max(1) as f64;
+    let lead = &race.samples[race.leader];
+    let estimate = |i: usize| {
+        let k = race.samples[i].len().min(lead.len());
+        mean(lead) + mean(&race.samples[i][..k]) - mean(&lead[..k])
+    };
+    let by_estimate = |a: &usize, b: &usize| estimate(*b).total_cmp(&estimate(*a)).then_with(|| key(&sets[*a]).cmp(&key(&sets[*b])));
+    // as good: shown equal, or still undecided at the cap (as far as these rounds can tell)
+    let even = |i: usize| race.tied[i] || race.undecided[i];
+    let mut as_good: Vec<usize> = (0..sets.len()).filter(|&i| i != race.leader && even(i)).collect();
+    as_good.sort_by(by_estimate);
+    let mut rest: Vec<usize> = (0..sets.len()).filter(|&i| i != race.leader && !even(i)).collect();
+    rest.sort_by(by_estimate);
     let k = 1 + as_good.len();
     let order: Vec<usize> = std::iter::once(race.leader).chain(as_good).chain(rest).collect();
     Some(TargetRanking { sets: order.iter().map(|&i| sets[i].clone()).collect(), as_good: k, samples: order.iter().map(|&i| race.samples[i].clone()).collect() })
 }
 
-/// `target_race`'s result: every set, the best first, then those shown as good as it (within
-/// `compare::EQUAL`: `as_good` counts the best too), then the rest by their mean so far; and
-/// each one's samples (per round, on the same rounds as the others').
+/// `target_race`'s result: every set, the best first, then those as good as it as far as the
+/// race can tell (shown within `compare::EQUAL`, or still undecided at its cap: `as_good`
+/// counts the best too), then the rest by their paired estimate against the best; and each
+/// one's samples (per round, on the same rounds as the others').
 struct TargetRanking {
     sets: Vec<Vec<usize>>,
     as_good: usize,

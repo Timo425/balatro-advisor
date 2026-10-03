@@ -68,7 +68,7 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
     let look = ctx.specs.iter().find(|x| x.in_progress).map(|spec| {
         let mut bb = ctx.board_for(&b, spec);
         // The simulated player plays toward the same measure the advice ranks by
-        let goals = sim::RoundGoals { planet: std::array::from_fn(|i| planet_gain_by[i]), dollar: dollar_gain, per_hand: run.money_per_hand, seen: seen.clone(), no_lookahead: false };
+        let goals = sim::RoundGoals { planet: std::array::from_fn(|i| planet_gain_by[i]), dollar: dollar_gain, per_hand: run.money_per_hand, seen: seen.clone(), ..Default::default() };
         bb.goals = Some(goals.clone());
         let start = ctx.start_for(spec, &bb);
         let seed = ctx.opts.seed;

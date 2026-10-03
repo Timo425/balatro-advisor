@@ -25,12 +25,9 @@ pub(super) struct Race<T> {
     pub leader: usize,
     /// Shown to be as good as the leader (within `EQUAL`)
     pub tied: Vec<bool>,
-    /// Still in at the round cap: neither worse nor shown equal (as good as far as these
-    /// rounds can tell, which at a low cap isn't far)
+    /// Still in at the round cap: neither worse nor shown equal. Every caller reports these
+    /// as ties (as good as far as these rounds can tell), never ranks them by noise
     pub undecided: Vec<bool>,
-    /// Dropped as clearly worse than the leader of its batch (the rest that left were cut
-    /// by the budget)
-    pub worse: Vec<bool>,
 }
 
 /// Whether `a` is clearly better than `b` on the rounds both were sampled on (paired, 95%)
@@ -74,7 +71,6 @@ pub(super) fn race<T: Send + Sync>(
     let mut samples: Vec<Vec<T>> = (0..n).map(|_| Vec::new()).collect();
     let mut alive: Vec<usize> = (0..n).collect();
     let mut tied = vec![false; n];
-    let mut dropped_worse = vec![false; n];
     // whom each tied option was found as good as
     let mut anchor: Vec<Option<usize>> = vec![None; n];
     let mean = |v: &[T], f: &dyn Fn(&T) -> f64| v.iter().map(f).sum::<f64>() / v.len().max(1) as f64;
@@ -102,7 +98,6 @@ pub(super) fn race<T: Send + Sync>(
             let vals: Vec<f64> = samples[c].iter().map(&value).collect();
             let (worse, equal) = paired(&lead, &vals, scale);
             if worse {
-                dropped_worse[c] = true;
                 return false;
             }
             if equal {
@@ -137,7 +132,7 @@ pub(super) fn race<T: Send + Sync>(
         false
     };
     let tied: Vec<bool> = (0..n).map(|c| c != leader && tied[c] && stands(c, &anchor)).collect();
-    Race { samples, leader, tied, undecided, worse: dropped_worse }
+    Race { samples, leader, tied, undecided }
 }
 
 #[cfg(test)]

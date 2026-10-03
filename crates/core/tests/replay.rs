@@ -78,8 +78,9 @@ fn snapshot() {
 /// considered played on `compare::MAX` rounds of its own, the best chosen there, and the pick
 /// compared with it on another `compare::MAX` rounds (paired, with its standard error). For
 /// each fixture in a blind and each seed in `BAV_SEEDS` (default 42,43,44): how far the pick
-/// is below the best, its rank, and how many moves are within the 1% tie margin. Prints;
-/// asserts nothing. Slow (`BAV_ONLY=name` for one fixture).
+/// is below the best, its rank, and how many moves are within the 1% tie margin. A pick
+/// passes when it could be within the tie margin: gap − 2·se ≤ 1%. Prints; asserts nothing.
+/// Slow (`BAV_ONLY=name` for one fixture).
 /// Run: `cargo test --release --test replay -- --ignored search_against_reference --nocapture`
 #[test]
 #[ignore]
@@ -105,7 +106,8 @@ fn search_against_reference() {
             let pick = format!("{} {} [{}]", bp.action, bp.cards.join(" "), bp.use_first.clone().unwrap_or_default());
             let rank = bp.reference.iter().position(|(l, _)| l == &pick);
             let within = bp.reference.iter().take_while(|(_, x)| *x >= best * 0.99).count();
-            println!("{name} seed {seed}: pick {pick}: {:.2}% ± {:.2}% below the best, rank {:?} of {}, {within} within 1%", 100.0 * gap, 100.0 * se, rank.map(|r| r + 1), bp.reference.len());
+            let verdict = if gap - 2.0 * se <= 0.01 { "ok" } else { "MISS" };
+            println!("{verdict} {name} seed {seed}: pick {pick}: {:.2}% ± {:.2}% below the best, rank {:?} of {}, {within} within 1%", 100.0 * gap, 100.0 * se, rank.map(|r| r + 1), bp.reference.len());
             for (l, x) in bp.reference.iter().take(3) {
                 println!("    {x:.4} {l}");
             }
