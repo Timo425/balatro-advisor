@@ -321,28 +321,36 @@ impl Joker {
         }
     }
 
-    /// The joker after `n` of `ev` (a fraction is a share of one; negative undoes them, never
-    /// below 0 Mult).
-    pub fn grow_from(&mut self, ev: RunEvent, n: f64) {
-        let per = self.mult_from(ev);
-        if per != 0.0 {
-            self.mult = (self.mult + per * n).max(0.0);
+    /// The ×Mult one `ev` adds to this joker: Throwback scores ×`extra` for every blind skipped
+    /// (card.lua: `1 + G.GAME.skips * extra`), through the board's count (`Board::after`).
+    pub fn xmult_from(&self, ev: RunEvent) -> f64 {
+        match (self.kind, ev) {
+            (Kind::Throwback, RunEvent::SkipBlind) if !self.debuff => self.extra.n,
+            _ => 0.0,
         }
+    }
+
+    /// The joker after `n` of `ev` (a fraction is a share of one)
+    pub fn grow_from(&mut self, ev: RunEvent, n: f64) {
+        self.mult += self.mult_from(ev) * n;
     }
 }
 
-/// Things that happen in the shop, outside any round, that some jokers grow from
-/// (`Joker::mult_from`).
+/// Things that happen between rounds that the board grows from: jokers that grow on them
+/// (`Joker::mult_from`) and the game's counters that jokers score from
+/// (`Board::after`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum RunEvent {
     /// A booster pack skipped (`G.FUNCS.skip_booster`, any kind of pack)
     SkipPack,
     /// The shop rerolled (`G.FUNCS.reroll_shop`)
     Reroll,
+    /// A blind skipped (`G.FUNCS.skip_blind`: `G.GAME.skips` +1, which Throwback scores from)
+    SkipBlind,
 }
 
 impl RunEvent {
-    pub const ALL: [RunEvent; 2] = [RunEvent::SkipPack, RunEvent::Reroll];
+    pub const ALL: [RunEvent; 3] = [RunEvent::SkipPack, RunEvent::Reroll, RunEvent::SkipBlind];
 }
 
 /// The `ability` table `Card:set_ability` builds from a center's config (card.lua).

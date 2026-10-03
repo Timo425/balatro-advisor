@@ -265,6 +265,25 @@ pub fn effective_joker(b: &Board, j: usize) -> Option<&Joker> {
     None
 }
 
+/// What `n` of `ev` change on the board: the jokers that grow from it (`Joker::mult_from`) and
+/// the counters the game keeps (`G.GAME.skips` for a skipped blind, which Throwback scores
+/// from, ×`extra` each: card.lua `calculate_joker`).
+impl Board {
+    pub fn after(&mut self, ev: crate::engine::RunEvent, n: f64) {
+        for j in self.jokers.iter_mut() {
+            j.grow_from(ev, n);
+        }
+        if ev == crate::engine::RunEvent::SkipBlind {
+            self.skips += n.round() as i64;
+        }
+    }
+
+    /// Whether `ev` changes how the board scores
+    pub fn changes_with(&self, ev: crate::engine::RunEvent) -> bool {
+        self.jokers.iter().any(|j| j.mult_from(ev) != 0.0 || j.xmult_from(ev) != 0.0)
+    }
+}
+
 /// Money a discard pays (card.lua `Card:calculate_joker`, discard context; copies pay too):
 /// Mail-In Rebate $5 per discarded card of the round's rank (`get_id`: not debuffed, not
 /// Stone); Faceless Joker $5 when 3 or more of the discarded cards are faces (`is_face`:

@@ -29,8 +29,9 @@ const CHIP_JOKERS: &[&str] = &["j_stuntman", "j_bull", "j_banner", "j_scary_face
 /// each rental counts as one ante of rent less money held.
 pub(super) const RENT_PER_ANTE: f64 = 9.0;
 
-/// What money pays for one shop event a joker grows from (a pack to skip, a reroll): about $5.
-pub(super) const EVENT_PRICE: f64 = 5.0;
+/// The cheapest booster pack ($4: game.lua P_CENTERS, a normal pack): what money pays to open,
+/// or skip, one.
+pub(super) const PACK_PRICE: f64 = 4.0;
 /// Events bought with money held: at most this many an ante.
 const EVENTS_PER_ANTE_MAX: f64 = 6.0;
 
@@ -80,10 +81,11 @@ pub(super) struct Gain {
     pub other_planets: f64,
     /// Levels on every hand, without planets (Black Hole)
     pub all_levels: i64,
-    /// Booster packs skipped (`RunEvent::SkipPack`): the jokers that grow from it grow
+    /// Booster packs skipped (`RunEvent::SkipPack`), shop rerolls (`RunEvent::Reroll`), blinds
+    /// skipped (`RunEvent::SkipBlind`): what the board grows from them (`Board::after`)
     pub pack_skips: f64,
-    /// Shop rerolls (`RunEvent::Reroll`): likewise
     pub rerolls: f64,
+    pub blind_skips: f64,
 }
 
 impl Gain {
@@ -91,52 +93,74 @@ impl Gain {
         Gain { money: m, ..Default::default() }
     }
 
-    /// `n` of `ev`
-    pub fn event(ev: RunEvent, n: f64) -> Gain {
-        let mut g = Gain::default();
-        *g.event_mut(ev) = n;
-        g
-    }
-
-    fn event_mut(&mut self, ev: RunEvent) -> &mut f64 {
+    /// `n` of `ev`, on top of `self`
+    pub fn with_event(mut self, ev: RunEvent, n: f64) -> Gain {
         match ev {
-            RunEvent::SkipPack => &mut self.pack_skips,
-            RunEvent::Reroll => &mut self.rerolls,
+            RunEvent::SkipPack => self.pack_skips += n,
+            RunEvent::Reroll => self.rerolls += n,
+            RunEvent::SkipBlind => self.blind_skips += n,
         }
+        self
     }
 
-    fn events(&self) -> [(RunEvent, f64); 2] {
-        RunEvent::ALL.map(|ev| (ev, match ev {
-            RunEvent::SkipPack => self.pack_skips,
-            RunEvent::Reroll => self.rerolls,
-        }))
+    fn events(&self) -> [(RunEvent, f64); 3] {
+        [(RunEvent::SkipPack, self.pack_skips), (RunEvent::Reroll, self.rerolls), (RunEvent::SkipBlind, self.blind_skips)]
     }
 }
 
-/// The one place a shop event grows jokers: every joker on `b` that grows from `ev`
-/// (`Joker::mult_from`, the game's numbers), `n` times.
-pub(super) fn grow_from(b: &mut Board, ev: RunEvent, n: f64) {
-    for j in b.jokers.iter_mut() {
-        j.grow_from(ev, n);
+/// What money pays for one `ev`: a pack to skip what the cheapest pack costs (`PACK_PRICE`, as
+/// in `Spending`), a reroll the shop's base reroll cost; a blind skip isn't bought.
+pub(super) fn event_price(run: &RunState, ev: RunEvent) -> Option<f64> {
+    match ev {
+        RunEvent::SkipPack => Some(PACK_PRICE),
+        RunEvent::Reroll => Some(run.base_reroll_cost.max(1) as f64),
+        RunEvent::SkipBlind => None,
     }
 }
 
-/// The event money buys on `b`: the one its jokers grow most from (the first in
-/// `RunEvent::ALL` on a tie, never the order the jokers sit in); `None` when none grows.
-pub(super) fn bought_event(b: &Board) -> Option<RunEvent> {
-    let per = |ev: RunEvent| b.jokers.iter().map(|j| j.mult_from(ev)).sum::<f64>();
-    RunEvent::ALL.into_iter().filter(|&ev| per(ev) > 0.0).fold(None, |best: Option<RunEvent>, ev| match best {
-        Some(b) if per(b) >= per(ev) => Some(b),
-        _ => Some(ev),
-    })
+/// The event money buys on `b`, with its price: the one its jokers grow most from per dollar
+/// (the first in `RunEvent::ALL` on a tie, never the order the jokers sit in); `None` when
+/// none grows. Both money paths use it: one-off money (`spend_once`) and money held
+/// (`fill_long`). Mult per dollar compares +Mult growers only, the only ones money buys
+/// growth for now (Red Card, Flash Card); a ×Mult one would need its value measured.
+pub(super) fn bought_event(b: &Board, run: &RunState) -> Option<(RunEvent, f64)> {
+    let per_dollar = |ev: RunEvent, price: f64| b.jokers.iter().map(|j| j.mult_from(ev)).sum::<f64>() / price;
+    RunEvent::ALL
+        .into_iter()
+        .filter_map(|ev| event_price(run, ev).map(|p| (ev, p)))
+        .filter(|&(ev, p)| per_dollar(ev, p) > 0.0)
+        .fold(None, |best: Option<(RunEvent, f64)>, (ev, p)| match best {
+            Some((b, bp)) if per_dollar(b, bp) >= per_dollar(ev, p) => best,
+            _ => Some((ev, p)),
+        })
 }
 
-/// Shop events bought each ante with money held at `dollars`: one you'd do anyway (a pack
-/// you'd open skipped instead, a reroll), plus one per `EVENT_PRICE` above the interest line
+/// Events bought each ante with money held at `dollars`, at `price` each: one you'd do anyway
+/// (a pack you'd open skipped instead, a reroll), plus one per `price` above the interest line
 /// `line` (cash that isn't earning anything), at most `EVENTS_PER_ANTE_MAX`.
-pub(super) fn events_held(dollars: f64, line: f64) -> f64 {
+pub(super) fn events_held(dollars: f64, line: f64, price: f64) -> f64 {
     let spare = (dollars - line).max(0.0);
-    (1.0 + (spare / EVENT_PRICE).floor()).min(EVENTS_PER_ANTE_MAX)
+    (1.0 + (spare / price).floor()).min(EVENTS_PER_ANTE_MAX)
+}
+
+/// A projected board (`LongRun::project_rent`) and the money held it was projected with,
+/// which buys its shop events once its jokers are all in (`LongRun::fill_long`).
+pub(super) struct Projected {
+    board: Board,
+    dollars: f64,
+}
+
+impl std::ops::Deref for Projected {
+    type Target = Board;
+    fn deref(&self) -> &Board {
+        &self.board
+    }
+}
+
+impl std::ops::DerefMut for Projected {
+    fn deref_mut(&mut self) -> &mut Board {
+        &mut self.board
+    }
 }
 
 impl<'a> LongRun<'a> {
@@ -296,9 +320,10 @@ impl<'a> LongRun<'a> {
         j
     }
 
-    /// The projected board: the jokers kept (by index), grown with the money you'd hold.
-    /// `extra_rent`: more rent per ante (negative: more income), on top of your jokers'.
-    pub fn project_rent(&self, keep: &dyn Fn(usize) -> bool, dollars: f64, extra_rent: f64) -> Board {
+    /// The projected board: the jokers kept (by index), grown in rounds (`grow_antes`); what
+    /// the money you'd hold buys comes with it (`Projected`). `extra_rent`: more rent per ante
+    /// (negative: more income), on top of your jokers'.
+    pub fn project_rent(&self, keep: &dyn Fn(usize) -> bool, dollars: f64, extra_rent: f64) -> Projected {
         let (ctx, run) = (self.ctx, self.run);
         let rent = self.owned_rent(keep) + extra_rent;
         let flow = self.owned_income(keep) - rent;
@@ -324,19 +349,19 @@ impl<'a> LongRun<'a> {
                 if self.replaced.get().is_some_and(|r| r[i]) {
                     self.stand_in(1.25, 0.0, 0.0)
                 } else {
-                    grow_antes(j, self.hand_mix, dollars, self.line, self.antes_left).map_or_else(|| j.clone(), |g| g.0)
+                    grow_antes(j, self.hand_mix, self.antes_left).map_or_else(|| j.clone(), |g| g.0)
                 }
             })
             .collect();
-        b
+        Projected { board: b, dollars }
     }
 
-    pub fn project(&self, keep: &dyn Fn(usize) -> bool, dollars: f64) -> Board {
+    pub fn project(&self, keep: &dyn Fn(usize) -> bool, dollars: f64) -> Projected {
         self.project_rent(keep, dollars, 0.0)
     }
 
-    /// One-off money: spent once on the shop events jokers grow from (`bought_event`, about
-    /// `EVENT_PRICE` each), else on planets for your main hand.
+    /// One-off money: spent once on the shop events jokers grow from (`bought_event`, at its
+    /// price), else on planets for your main hand.
     pub fn spend_once(&self, b: &mut Board, once: f64) {
         // A level of your main hand about $12 (its planet is only in some shops and packs: a
         // Celestial pack holds it ~1 time in 4); any planet about $4, and each one used grows
@@ -345,8 +370,8 @@ impl<'a> LongRun<'a> {
             j.x_mult = (j.x_mult + 0.1 * once / 4.0).max(1.0);
         }
         let buys_main = once / 12.0;
-        if let Some(ev) = bought_event(b) {
-            grow_from(b, ev, once / EVENT_PRICE);
+        if let Some((ev, price)) = bought_event(b, self.run) {
+            b.after(ev, once / price);
         } else if let Some(top) = self.top_hand {
             let buys = buys_main;
             // Fractional levels (as their chips and mult): rounding made any small purchase
@@ -363,11 +388,20 @@ impl<'a> LongRun<'a> {
         }
     }
 
-    /// The board with the option (or a typical find) in its slot, one-off money spent, and
-    /// empty slots filled with stand-ins.
-    pub fn fill_long(&self, mut b: Board, option: Option<Joker>, once: f64) -> Board {
+    /// The board with the option (or a typical find) in its slot, the shop events the money
+    /// held buys (`events_held` an ante, of `bought_event`), one-off money spent, and empty
+    /// slots filled with stand-ins. Money spent never takes away Mult a joker already has.
+    pub fn fill_long(&self, p: Projected, option: Option<Joker>, once: f64) -> Board {
+        let Projected { board: mut b, dollars } = p;
         b.jokers.push(option.unwrap_or_else(|| self.stand_in(1.25, 0.0, 0.0)));
+        let earned: Vec<f64> = b.jokers.iter().map(|j| j.mult).collect();
+        if let Some((ev, price)) = bought_event(&b, self.run) {
+            b.after(ev, events_held(dollars, self.line, price) * self.antes_left);
+        }
         self.spend_once(&mut b, once);
+        for (j, e) in b.jokers.iter_mut().zip(earned) {
+            j.mult = j.mult.max(e);
+        }
         let mut k = 0;
         while (b.jokers.len() as i64) < b.joker_slots {
             b.jokers.push(match self.fill_types.get(k).copied().unwrap_or(0) {
@@ -489,7 +523,7 @@ impl<'a> LongRun<'a> {
         let rent = if rental { RENT_PER_ANTE } else { 0.0 };
         let income = income_per_ante(&j.key, &ability, run, self.antes_left);
         let horizon = if j.key == "j_madness" { 1.0 } else { self.antes_left };
-        let g = grow_antes(j, self.hand_mix, run.dollars + income - rent, self.line, horizon).map_or_else(|| j.clone(), |g| g.0);
+        let g = grow_antes(j, self.hand_mix, horizon).map_or_else(|| j.clone(), |g| g.0);
         let b = self.fill_long(self.project_rent(&|k| Some(k) != sell, run.dollars, rent - income), Some(g), self.once(back - cost as f64));
         if j.key == "j_dna" { self.dna_long(b) } else { self.long_score(&b) }
     }
@@ -520,7 +554,9 @@ impl<'a> LongRun<'a> {
         }
         Self::add_planets(&mut b, &g.planets, g.other_planets);
         for (ev, n) in g.events() {
-            grow_from(&mut b, ev, n);
+            if n != 0.0 {
+                b.after(ev, n);
+            }
         }
         b
     }
@@ -530,17 +566,28 @@ impl<'a> LongRun<'a> {
         self.long_score(&self.board_with(g)) / self.l0
     }
 
-    /// One `ev` by Ante 8 (`value`); exactly ×1.00 when no joker of yours grows from it
+    /// One `ev` by Ante 8 (`value`); exactly ×1.00 when it changes nothing on your board
     pub fn event(&self, ev: RunEvent) -> f64 {
-        if self.ctx.base.jokers.iter().all(|j| j.mult_from(ev) == 0.0) {
+        if !self.ctx.base.changes_with(ev) {
             return 1.0;
         }
-        self.value(&Gain::event(ev, 1.0))
+        self.value(&Gain::default().with_event(ev, 1.0))
     }
 
     /// What `ev` grows on your board, for a note ("Red Card +3 Mult"); empty when nothing does
     pub fn event_note(&self, ev: RunEvent) -> String {
-        self.ctx.base.jokers.iter().filter(|j| j.mult_from(ev) > 0.0).map(|j| format!("{} +{} Mult", self.data.name(&j.key), j.mult_from(ev))).collect::<Vec<_>>().join(", ")
+        let name = |j: &Joker| self.data.name(&j.key).to_string();
+        self.ctx
+            .base
+            .jokers
+            .iter()
+            .filter_map(|j| match (j.mult_from(ev), j.xmult_from(ev)) {
+                (m, _) if m != 0.0 => Some(format!("{} +{m} Mult", name(j))),
+                (_, x) if x != 0.0 => Some(format!("{} +×{x}", name(j))),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 
     /// One planet of hand `h` used (its level, and Constellation), by Ante 8
@@ -753,11 +800,11 @@ impl<'a> Spending<'a> {
         let mut best = self.rerolls(excess);
         let mut packs = 0.0;
         for p in 1..=(2 * self.shops) {
-            if 4.0 * p as f64 > excess {
+            if PACK_PRICE * p as f64 > excess {
                 break;
             }
             packs += self.pack_gain * 0.8f64.powi(p as i32 - 1);
-            best = best.max((1.0 + packs) * self.rerolls(excess - 4.0 * p as f64));
+            best = best.max((1.0 + packs) * self.rerolls(excess - PACK_PRICE * p as f64));
         }
         best
     }

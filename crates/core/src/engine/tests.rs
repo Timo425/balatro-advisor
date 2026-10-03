@@ -221,12 +221,23 @@ fn jokers_grow_from_shop_events_by_their_game_data() {
         assert_eq!(x.mult_from(other), 0.0, "{key} on {other:?}");
         x.grow_from(ev, 2.0);
         assert_eq!(x.mult, 2.0 * per);
-        x.grow_from(ev, -5.0);
-        assert_eq!(x.mult, 0.0, "undoing never goes below 0");
         x.debuff = true;
         assert_eq!(x.mult_from(ev), 0.0, "a debuffed {key} doesn't grow");
     }
-    for key in ["j_joker", "j_blueprint", "j_constellation", "j_green_joker"] {
+    for key in ["j_joker", "j_blueprint", "j_constellation", "j_green_joker", "j_throwback"] {
         assert!(RunEvent::ALL.iter().all(|&e| j(key).mult_from(e) == 0.0), "{key}");
     }
+}
+
+#[test]
+fn a_skipped_blind_is_counted_where_throwback_scores_from_it() {
+    // G.GAME.skips +1 per skipped blind; Throwback ×(1 + 0.25 per skip)
+    let mut b = board(&["j_throwback"]);
+    assert!(b.changes_with(RunEvent::SkipBlind) && !board(&["j_joker"]).changes_with(RunEvent::SkipBlind));
+    assert_eq!(sc(&b, "KS KH", ""), 60.0);
+    b.after(RunEvent::SkipBlind, 2.0);
+    assert_eq!(sc(&b, "KS KH", ""), 60.0 * 1.5);
+    let mut r = board(&["j_red_card", "j_red_card"]);
+    r.after(RunEvent::SkipPack, 1.0);
+    assert!(r.jokers.iter().all(|x| x.mult == 3.0) && r.changes_with(RunEvent::SkipPack));
 }
