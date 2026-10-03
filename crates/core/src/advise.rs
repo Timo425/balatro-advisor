@@ -1043,7 +1043,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         .filter_map(|(i, c)| {
             let j = Joker::from_key(&c.key, data)?;
             // Money left after buying it is what could pay for its growth
-            let (grown, label, fades) = grow_one_ante(&j, &hand_mix, run, run.dollars - c.cost as f64, run.interest_cap as f64)?;
+            let (grown, label, fades) = grow_one_ante(&j, &hand_mix, run, &ctx.base, run.dollars - c.cost as f64, run.interest_cap as f64)?;
             Some((i, grown, label, fades))
         })
         .collect();
@@ -1578,7 +1578,8 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         let (_, k) = shops_ahead(run, false);
         let survive_with = |money: f64, shops: usize, p0: f64| money_value_with(&ctx, &pool_entries, &value, p0, money, false, shops, true).max(p0).min(1.0);
         // money spent once, and held (rerolls and packs), as for every option
-        let money_long = |delta: f64| lr.value(&Gain::money(delta)) * spending.factor(run.dollars + delta) / spending.factor(run.dollars).max(1e-9);
+        let gain_long = |g: &Gain| lr.value(g) * spending.factor(run.dollars + g.money) / spending.factor(run.dollars).max(1e-9);
+        let money_long = |delta: f64| gain_long(&Gain::money(delta));
         // Money cards you hold (Immolate, Hermit…) get used either way: in the blind when you
         // play it, or inside the pack / before the boss when you skip.
         let held: f64 = run.consumables.iter().filter_map(|c| tarots.iter().find(|t| t.key == c.key)).map(|t| t.money_gain.max(0.0)).sum();
@@ -1623,9 +1624,9 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             }
             "tag_buffoon" => {
                 boss_p = expected_best(&pool_entries, key_round, p_boss, 4, 1.0, f64::INFINITY, per_rarity, &mut rng).max(p_boss);
-                // the second pick isn't counted (only skipping instead of it)
-                long = long_draw(&pool_entries, 4, 1.0, 1.0, &mut rng) * skip.max(1.0);
-                format!("a Mega Buffoon pack (4 jokers, pick 2; counted as your best 1){skip_note}")
+                // the second pick: its sell value (about $2.50), or skipping instead, as in the shop
+                long = long_draw(&pool_entries, 4, 1.0, 1.0, &mut rng) * lr.value(&Gain::money(2.5)).max(skip);
+                format!("a Mega Buffoon pack (4 jokers, pick 2: your best 1, plus the other's sell value){skip_note}")
             }
             "tag_rare" | "tag_uncommon" => {
                 let (p, l) = rarity_avg(if key == "tag_rare" { 3 } else { 2 });
@@ -1700,9 +1701,9 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         };
         // The skip itself is an event the board can grow from (`G.GAME.skips`: Throwback)
         let skipped = lr.event(RunEvent::SkipBlind);
-        let what = if skipped > 1.0 { format!("{what} · skipping grows {} (×{skipped:.2} by Ante 8; this ante's boss: not modelled)", lr.event_note(RunEvent::SkipBlind)) } else { what };
+        let what = if skipped > 1.0 { format!("{what} · skipping grows {} (×{skipped:.2} by Ante 8; for this ante's boss and the next ante's: not modelled)", lr.event_note(RunEvent::SkipBlind)) } else { what };
         let skip_survive = survive_with(run.dollars + held + money, k.saturating_sub(1), boss_p);
-        let skip_long = long * money_long(held + money) * skipped;
+        let skip_long = long * gain_long(&Gain::money(held + money).with_event(RunEvent::SkipBlind, 1.0));
         // The next ante's boss: the board's chance there plus the shops before it (one fewer
         // when you skip), so being stronger sooner counts.
         let (play_next, skip_next) = match ctx.specs.iter().position(|x| x.horizon) {
@@ -1728,7 +1729,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     let (levels_per_ante, planet_levels) = lr.levels_for(run.dollars + flow_now, flow_now);
     let planet_levels = planet_levels.round() as i64;
     let long_note = format!(
-        "Your board projected {antes_left:.1} antes ahead: growing jokers grown, fading ones faded, perishables that run out dropped, {} +{planet_levels} levels (about {levels_per_ante:.1} per ante with your money), empty slots filled with stand-in jokers (×1.5, +60 Chips or +15 Mult, in proportion to how often your shop pool offers each type). Each option is compared with a typical find (×1.25) in its slot, on whole simulated rounds, with the money it leaves you: its price, what selling a joker gives back or a money card gives (spent once: ~$4 a pack skip or a reroll at its cost when a joker grows from them (Red Card, Flash Card), else ~$12 a level of your main hand, and ~$4 a planet for Constellation; money counts for less the more you have (the next dollar is worth about half at $20); interest lost or gained over the next ante included), and $9 less money held every ante per rental; money jokers (Golden, Rocket, Cloud 9, To the Moon, Egg, Mail-In Rebate) add their payout per ante. Your sellable jokers weaker than a typical find are assumed replaced by then, and a sellable option counts at least as a typical find less its price net of what selling it gives back; eternal ones stay, however weak. ×1.00 = as good as a typical find.",
+        "Your board projected {antes_left:.1} antes ahead: growing jokers grown (those that grow from shop events, Red Card and Flash Card, by one pack skip and one reroll an ante, plus 1 per pack's or reroll's price above the interest line, at most 5 an ante, all on the one that grows most per dollar), fading ones faded, perishables that run out dropped, {} +{planet_levels} levels (about {levels_per_ante:.1} per ante with your money), empty slots filled with stand-in jokers (×1.5, +60 Chips or +15 Mult, in proportion to how often your shop pool offers each type). Each option is compared with a typical find (×1.25) in its slot, on whole simulated rounds, with the money it leaves you: its price, what selling a joker gives back or a money card gives (spent once: ~$4 a pack skip or a reroll at its cost when a joker grows from them (Red Card, Flash Card), else ~$12 a level of your main hand, and ~$4 a planet for Constellation; money counts for less the more you have (the next dollar is worth about half at $20); interest lost or gained over the next ante included), and $9 less money held every ante per rental; money jokers (Golden, Rocket, Cloud 9, To the Moon, Egg, Mail-In Rebate) add their payout per ante. Your sellable jokers weaker than a typical find are assumed replaced by then, and a sellable option counts at least as a typical find less its price net of what selling it gives back; eternal ones stay, however weak. ×1.00 = as good as a typical find.",
         top_hand.map_or("your main hand", |h| h.name())
     );
     let shares: Vec<f64> = jokers.iter().map(|j| j.score_share).collect();
@@ -2792,7 +2793,6 @@ fn rank_options(out: &mut [ShopOption], base_reach: f64) {
     });
 }
 
-/// Average over every `k`-subset of `vals` of its maximum, and the index most often best.
 /// A booster pack from what each card in it is worth (`vals`; `k` cards shown, each a draw
 /// from them): one pick, the best card or skipping the pack (`skip`); a Mega pack's two
 /// (`second`: what its further pick adds, 1.0 when not counted), the best card, then the
@@ -2806,6 +2806,7 @@ fn pack_value(vals: &[f64], k: usize, second: Option<f64>, skip: f64) -> f64 {
     }
 }
 
+/// Average over every `k`-subset of `vals` of its maximum, and the index most often best.
 fn best_of_subsets(vals: &[f64], k: usize) -> (f64, usize) {
     let n = vals.len();
     let k = k.min(n);
@@ -3582,10 +3583,10 @@ fn money_value_with(ctx: &Ctx, pool: &[Candidate], value: &dyn Fn(&Candidate) ->
     let mut costs: Vec<i64> = Vec::new();
     if in_shop {
         let c0 = run.shop.as_ref().map_or(run.base_reroll_cost, |s| s.reroll_cost);
-        costs.extend((0..8).map(|i| c0 + i));
+        costs.extend((0..8).map(|i| value::reroll_cost(c0, i)));
     }
     for _ in 0..future {
-        costs.extend((0..8).map(|i| run.base_reroll_cost + i));
+        costs.extend((0..8).map(|i| value::reroll_cost(run.base_reroll_cost, i)));
     }
     costs.sort_unstable();
     let avg_reward = run.blinds.iter().map(|b| b.reward).sum::<i64>() as f64 / run.blinds.len().max(1) as f64;
@@ -3836,23 +3837,33 @@ fn describe(key: &str, ability: &serde_json::Value, ctx: &crate::describe::DescC
 
 /// A joker's size one ante (3 rounds, ~12 hands) from now, under a simple stated
 /// assumption; `None` for jokers that don't grow or fade. Labelled everywhere it shows. Growth
-/// from shop events is bought with the money held, as in the projection (`value::events_held`).
-fn grow_one_ante(j: &Joker, hand_mix: &[HandShare], run: &RunState, dollars: f64, interest_line: f64) -> Option<(Joker, String, bool)> {
+/// from shop events as in the projection (`value::LongRun::fill_long`): one of each kind you'd
+/// do anyway, plus what money held buys when `board` with this joker on it spends it on that
+/// event (`value::bought_event`).
+fn grow_one_ante(j: &Joker, hand_mix: &[HandShare], run: &RunState, board: &Board, dollars: f64, interest_line: f64) -> Option<(Joker, String, bool)> {
+    let mut with = board.clone();
+    with.jokers.push(j.clone());
+    let bought = value::bought_event(&with, run);
     let mut g = j.clone();
     let mut labels = vec![];
     for ev in RunEvent::ALL {
-        let (per, Some(price)) = (j.mult_from(ev), value::event_price(run, ev)) else { continue };
-        if per <= 0.0 {
+        let per = j.mult_from(ev);
+        if per <= 0.0 || value::event_price(run, ev).is_none() {
             continue;
         }
-        let n = value::events_held(dollars, interest_line, price);
+        let money = bought.filter(|b| b.0 == ev).map(|(_, price)| (value::events_bought(dollars, interest_line, price), price));
+        let n = 1.0 + money.map_or(0.0, |m| m.0);
         g.grow_from(ev, n);
         let s = if n > 1.0 { "s" } else { "" };
         let what = match ev {
             RunEvent::SkipPack => format!("skip {n:.0} booster pack{s} (1 you'd open anyway"),
             _ => format!("reroll {n:.0} time{s} (1 anyway"),
         };
-        labels.push(format!("+{} Mult after 1 ante if you {what}, plus 1 per ${price:.0} above the ${interest_line:.0} interest line)", per * n));
+        let more = match money {
+            Some((_, price)) => format!(", plus 1 per ${price:.0} above the ${interest_line:.0} interest line"),
+            None => ", your spare money going to another joker's".to_string(),
+        };
+        labels.push(format!("+{} Mult after 1 ante if you {what}{more})", per * n));
     }
     if !labels.is_empty() {
         return Some((g, labels.join("; "), false));
@@ -3961,8 +3972,9 @@ mod tests {
     fn growing_jokers_only_go_up_and_pay_to_grow_follows_spare_money() {
         let base = j("j_red_card");
         let r = shop_run(&[], &[]);
-        let poor = grow_one_ante(&base, &[], &r, 10.0, 25.0).unwrap().0.mult;
-        let rich = grow_one_ante(&base, &[], &r, 60.0, 25.0).unwrap().0.mult;
+        let b = Board::from_run(&r, GameData::bundled());
+        let poor = grow_one_ante(&base, &[], &r, &b, 10.0, 25.0).unwrap().0.mult;
+        let rich = grow_one_ante(&base, &[], &r, &b, 60.0, 25.0).unwrap().0.mult;
         assert!(poor > base.mult && rich > poor);
         // the projection buys the same events with your money, over every ante left
         let owned = shop_run(&[("j_red_card", None, None), ("j_joker", None, None)], &[]);
@@ -4110,11 +4122,16 @@ mod tests {
 
     /// The valuation alone, on a run (no hand mix, no shop pool): enough for `LongRun`.
     fn with_long_run<T>(run: &RunState, f: impl FnOnce(&value::LongRun) -> T) -> T {
+        with_long_run_mix(run, &[], f)
+    }
+
+    /// `with_long_run` with a hand mix (its first hand is your main hand)
+    fn with_long_run_mix<T>(run: &RunState, mix: &[HandShare], f: impl FnOnce(&value::LongRun) -> T) -> T {
         let data = GameData::bundled();
         let mut fresh_deck = run.full_deck();
         fresh_deck.sort_by_key(Card::order_key);
         let ctx = Ctx { run, shares: vec![], data, base: Board::from_run(run, data), specs: vec![], fresh_deck, opts: quick() };
-        let lr = value::LongRun::new(&ctx, &[], &[], [0; 4]);
+        let lr = value::LongRun::new(&ctx, mix, &[], [0; 4]);
         f(&lr)
     }
 
@@ -4154,26 +4171,45 @@ mod tests {
         };
         for owned in [[("j_flash", None, None), ("j_red_card", None, None)], [("j_red_card", None, None), ("j_flash", None, None)]] {
             let (before, after) = grown(&owned, 5);
-            assert!(mults(&before, "j_red_card")[0] > 20.0, "{owned:?}: money held grows Red Card");
+            // one of each a 6.5-ante run does anyway; the spare money ($5 above the line) buys skips
+            let anyway = |per: f64| 20.0 + per * 6.5;
+            assert_eq!(mults(&before, "j_red_card"), vec![anyway(3.0) + 3.0 * 6.5], "{owned:?}: money held buys pack skips");
             assert!(mults(&after, "j_red_card")[0] > mults(&before, "j_red_card")[0], "{owned:?}: so does money once");
-            assert_eq!(mults(&before, "j_flash"), vec![20.0], "{owned:?}: money held doesn't also reroll");
-            assert_eq!(mults(&after, "j_flash"), vec![20.0], "{owned:?}: nor does money once");
+            assert_eq!(mults(&before, "j_flash"), vec![anyway(2.0)], "{owned:?}: Flash rerolls once an ante, the money doesn't also reroll");
+            assert_eq!(mults(&after, "j_flash"), vec![anyway(2.0)], "{owned:?}: nor does money once");
         }
         // with rerolls at $1 (vouchers lower the base cost) Flash's +2 a dollar wins
         let (b, _) = grown(&[("j_red_card", None, None), ("j_flash", None, None)], 1);
-        assert!(mults(&b, "j_flash")[0] > 20.0 && mults(&b, "j_red_card") == vec![20.0], "{:?} {:?}", mults(&b, "j_flash"), mults(&b, "j_red_card"));
+        assert!(mults(&b, "j_flash")[0] > 20.0 + 2.0 * 6.5 && mults(&b, "j_red_card") == vec![20.0 + 3.0 * 6.5], "{:?} {:?}", mults(&b, "j_flash"), mults(&b, "j_red_card"));
     }
 
     #[test]
-    fn money_spent_never_takes_away_mult_a_joker_already_has() {
-        // A Red Card at +30 already, in the last ante: a big price lowers the skips money
-        // buys, not the +30
+    fn a_price_takes_back_what_money_buys_then_levels_never_mult_already_earned() {
+        // A Red Card at +30 already, in the last ante (half an ante left): a big price takes
+        // back the pack skips money would buy, then main-hand levels; never the +30, nor the
+        // skip done anyway, and never for free
         let mut r = shop_run(&[("j_red_card", None, None), ("j_joker", None, None)], &[]);
         r.jokers[0].ability["mult"] = 30.into();
         r.ante = 8;
         r.dollars = 100.0;
-        let b = with_long_run(&r, |lr| lr.board_with(&Gain::money(-100.0)));
-        assert_eq!(mults(&b, "j_red_card"), vec![30.0]);
+        let mix = [HandShare { hand: "Pair".into(), share: 1.0, played: 1.0, mean: 1.0 }];
+        let (rich, poor) = with_long_run_mix(&r, &mix, |lr| (lr.board_with(&Gain::default()), lr.board_with(&Gain::money(-100.0))));
+        assert_eq!(mults(&poor, "j_red_card"), vec![30.0 + 3.0 * 0.5]);
+        let pair = |b: &Board| b.levels[crate::engine::HandType::Pair as usize];
+        assert!(mults(&rich, "j_red_card")[0] > 31.5 && pair(&poor).mult < pair(&rich).mult, "{:?} {:?}", pair(&poor), pair(&rich));
+    }
+
+    #[test]
+    fn a_growers_label_spends_the_money_as_the_projection_does() {
+        // A Flash Card for sale next to your Red Card: the spare money buys Red Card's skips, so
+        // Flash grows by the reroll you'd do anyway only, and its label says so
+        let r = shop_run(&[("j_red_card", None, None)], &[]);
+        let b = Board::from_run(&r, GameData::bundled());
+        let (g, label, _) = grow_one_ante(&j("j_flash"), &[], &r, &b, 60.0, 25.0).unwrap();
+        assert_eq!(g.mult, 2.0, "{label}");
+        assert!(label.contains("another joker's"), "{label}");
+        let alone = Board::from_run(&shop_run(&[("j_joker", None, None)], &[]), GameData::bundled());
+        assert!(grow_one_ante(&j("j_flash"), &[], &r, &alone, 60.0, 25.0).unwrap().0.mult > 2.0);
     }
 
     #[test]

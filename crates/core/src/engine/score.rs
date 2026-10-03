@@ -267,7 +267,7 @@ pub fn effective_joker(b: &Board, j: usize) -> Option<&Joker> {
 
 /// What `n` of `ev` change on the board: the jokers that grow from it (`Joker::mult_from`) and
 /// the counters the game keeps (`G.GAME.skips` for a skipped blind, which Throwback scores
-/// from, ×`extra` each: card.lua `calculate_joker`).
+/// from, ×`extra` each: card.lua `calculate_joker`; a whole count, so `n` is rounded there).
 impl Board {
     pub fn after(&mut self, ev: crate::engine::RunEvent, n: f64) {
         for j in self.jokers.iter_mut() {

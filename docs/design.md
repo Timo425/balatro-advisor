@@ -85,10 +85,10 @@ vs actual blind results and every shop seen).
 | Typical find ×1.25; empty slots ×1.5 / +60 Chips / +15 Mult by shop weights | `value.rs` `stand_in`, `fill_long` | the jokers you'll find by Ante 8 | final boards of won runs (calibration log) |
 | Money worth 30·(1 − e^(−m/30)) | `value.rs` `spendable` | money buys less the more you have | what money turned into in logged shops |
 | Planet levels from money held: 0.5 an ante + (money − interest line)/20, at most 2 an ante; $18 an ante below the line | `value.rs` `levels_for` | planets bought with spare money | logged planet buys per ante |
-| One-off money: a pack skip at $4 (the cheapest pack, `PACK_PRICE`, as in Spending) or a reroll at the shop's base reroll cost, whichever the board's jokers grow most from per dollar (`bought_event`), and then only those (never main-hand levels while a joker grows from one); else $12 a main-hand level; $4 any planet (the same planets both level and grow Constellation) | `value.rs` `spend_once`, `event_price` | what a one-off sum buys | logged shops |
+| One-off money: a pack skip at $4 (the cheapest pack, `PACK_PRICE`, as in Spending) or a reroll at a shop's first reroll cost (`reroll_cost`), whichever the board's jokers grow most from per dollar (`bought_event`); a price takes back those purchases (with money held's), then main-hand levels; else $12 a main-hand level; $4 any planet (the same planets both level and grow Constellation) | `value.rs` `fill_long`, `spend_once`, `event_price` | what a one-off sum buys | logged shops |
 | Rent $9 an ante | `value.rs` `RENT_PER_ANTE` | $3 a round × 3 | exact |
 | 48 rounds per projected board | `value.rs` `long_score` | projection noise | compare against more rounds |
-| Growth by Ante 8: events bought with money held, 1 an ante plus 1 per event price above the interest line, at most 6 an ante (`events_held`, of the event `bought_event` picks; every joker that grows from it grows; money spent never takes away Mult already earned); 12 hands an ante, per-joker rates for in-round growth | `value.rs` `fill_long`, `events_held`; `advise.rs` `grow_antes` | how growing jokers grow | logged runs |
+| Growth by Ante 8: one pack skip and one reroll an ante done anyway, plus what money held buys: 1 per event price above the interest line, at most 5 an ante, of the event `bought_event` picks (every joker that grows from an event grows); 12 hands an ante, per-joker rates for in-round growth | `value.rs` `fill_long`, `events_bought`; `advise.rs` `grow_antes`, `grow_one_ante` | how growing jokers grow | logged runs |
 | Madness horizon 1 ante | `value.rs` `long_of` | it eats your jokers | — |
 | Spending: level cap reached at the interest line + $30; packs $4 (`PACK_PRICE`), 2 a shop, each further one ×0.8; typical pack by shop weights (game.lua 4/4/1.2/0.6/4), Standard counted as 0 | `value.rs` `Spending` | money past the cap buys rerolls and packs | logged packs opened and picks |
 | Rerolls: up to 8 a shop; each further joker bought counts ×0.6 | `advise.rs` `money_value_with`, `expected_buys` | joker gains don't simply add up | logged rerolls |
@@ -109,7 +109,7 @@ vs actual blind results and every shop seen).
 | A Standard pack card with a consumable you hold on it: for every held one that goes on cards (`engine::consumable`), one race (`target_race`) over a hand you'd hold with the card in it (the first hand its own value is sampled on, one card swapped for it); credited only when the best targets include the card, nothing the race can't tell apart from them leaves it out, and the best set with the card is clearly better (paired, 95%) than the best set without it (by paired estimate), as the card × (with it used on the card) / (with it used on the best set without it), paired on the same rounds; labelled "assuming you draw it while you still hold" it | `advise.rs` standard pack cards, `target_race` | you'll draw it and keep the consumable for it | the chance to draw it before you'd use the consumable elsewhere (`seal_round_chance`) |
 | Deck changes (tarots, pack cards): 300 rounds against your deck (split between outcomes for random effects); a board without a chips joker (`CHIP_JOKERS` list) gets a +60 Chips find | `value.rs` `deck_stats`, `TAROT_ROUNDS` | deck changes are small; a chips gap closes by Ante 8 | — |
 | Vouchers: Overstock half a reroll a shop, Reroll Surplus $2 a shop, Clearance 25% of ~$8, Hone one buy an ante, a voucher shows 1 in 16, Planet Merchant 1 in 12 on your main hand | `advise.rs` economy and voucher values | what each voucher saves | logged shops |
-| Tags: Meteor's main-hand planet 5 in 12, best 1 of the pick 2; Investment not discounted for arriving later; Mega pack's second pick $2.50; Emperor average². Any pack can be skipped once while a pick is left: a one-pick pack is worth at least the skip, a Mega pack's second pick at least the skip (`pack_value`); a skipped blind's Throwback growth counted by Ante 8, not for this ante's boss | `advise.rs` skip-or-play, packs, tarots, `pack_value` | — | logged tags and packs |
+| Tags: Meteor's main-hand planet 5 in 12, best 1 of the pick 2; Investment not discounted for arriving later; a Mega Buffoon pack's second pick $2.50 (shop and tag); Emperor average². Any pack can be skipped once while a pick is left: a one-pick pack is worth at least the skip, a Mega pack's second pick at least the skip (`pack_value`); a skipped blind's Throwback growth counted by Ante 8, not for this ante's boss | `advise.rs` skip-or-play, packs, tarots, `pack_value` | — | logged tags and packs |
 | Skip-or-play "close": within 3% | `advise.rs` skip-or-play | noise | (should become `compare.rs`) |
 | Shop ranking: ties within 3%; under 20% this round, score reach decides; next-ante survival dropped when under 1% for every option; a sell choice may cost at most 5 points this ante | `advise.rs` `rank_options`, `NOW_SLACK` | noise and hopeless rounds | (should become `compare.rs`) |
 | Perishable gone by Ante 8 if its rounds < 3 × antes left; Gros Michel breaks 1 in 6 a round | `value.rs` `lasts`, `advise.rs` | — | game source (exact) |
@@ -150,8 +150,10 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    can't see); the voucher, tag and Emperor
    formulas, and the shop ranking spend leftover money on rerolls in each of its three
    factors; money held above the interest line buys both events (`events_held`: pack skips or
-   rerolls) and planet levels (`levels_for`); the projection keeps a joker debuffed by the
-   current boss debuffed (so it doesn't grow either). The general fix: deck, joker and hand-size fields in `Gain`, and each dollar
+   rerolls) and planet levels (`levels_for`); a price lowers Constellation and main-hand
+   levels below what you already have (only event Mult is protected); the rerolls `Spending`
+   and `money_value_with` assume don't grow Flash Card; the projection keeps a joker debuffed by
+   the current boss debuffed (so it doesn't grow either). The general fix: deck, joker and hand-size fields in `Gain`, and each dollar
    spent once in one model.
 5. **The simulated player's policy (`decide_cards`) is a rulebook,** partly keyed to jokers, and
    only ever chases flushes. The general fix: compare policy moves with a cheap search using
@@ -166,7 +168,17 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    Mystic Summit and Green Joker, burning discards looks free. The general fix belongs in the
    engine's discard step (the game's own discard effects), not in the policy.
 8. **The long-run projection spends money on your main hand's planets.** A board that wants
-   several hands levelled is valued as if it wanted one.
-9. **`advise.rs` still holds the shop options, tarot valuation and outlook inline,** and the
+   several hands levelled is valued as if it wanted one. Its fractional main-hand level
+   (`project_rent`) is dropped wherever a level is set again (`Level::with_level` in
+   `spend_once` and `add_planets`), so every board is valued on whole levels; adding levels to
+   the chips and Mult already there would keep it.
+9. **Packs are valued in two places, sized by their label.** A shop pack and the same pack
+   from a skip tag have their own branches (Meteor's Mega Celestial by explicit planets, the
+   shop's by an average), and "Mega" / "Jumbo" are read from the name, not the center's
+   `extra` / `choose`. In an open Mega pack, picking one card and then skipping the rest (for
+   Red Card) isn't an option: the picks left aren't read from the save. The general fix: one
+   pack valuation from the center config (`pack_value`'s rule), used by shop packs, tags and
+   the open pack.
+10. **`advise.rs` still holds the shop options, tarot valuation and outlook inline,** and the
    outlook's heuristics note says growth isn't projected, which is out of date (`grow_antes`
    projects it).

@@ -32,8 +32,15 @@ pub(super) const RENT_PER_ANTE: f64 = 9.0;
 /// The cheapest booster pack ($4: game.lua P_CENTERS, a normal pack): what money pays to open,
 /// or skip, one.
 pub(super) const PACK_PRICE: f64 = 4.0;
-/// Events bought with money held: at most this many an ante.
-const EVENTS_PER_ANTE_MAX: f64 = 6.0;
+/// Events money held buys: at most this many an ante (on top of the one of each kind you'd do
+/// anyway).
+const EVENTS_BOUGHT_PER_ANTE_MAX: f64 = 5.0;
+
+/// What the `i`-th reroll in a shop costs: the base cost, +$1 for each one before it in the
+/// same shop (`G.GAME.current_round.reroll_cost_increase`, reset every shop).
+pub(super) fn reroll_cost(base: i64, i: usize) -> i64 {
+    base + i as i64
+}
 
 pub(super) struct LongRun<'a> {
     pub ctx: &'a Ctx<'a>,
@@ -82,7 +89,8 @@ pub(super) struct Gain {
     /// Levels on every hand, without planets (Black Hole)
     pub all_levels: i64,
     /// Booster packs skipped (`RunEvent::SkipPack`), shop rerolls (`RunEvent::Reroll`), blinds
-    /// skipped (`RunEvent::SkipBlind`): what the board grows from them (`Board::after`)
+    /// skipped (`RunEvent::SkipBlind`, whole ones: the game counts them): what the board grows
+    /// from them (`Board::after`)
     pub pack_skips: f64,
     pub rerolls: f64,
     pub blind_skips: f64,
@@ -109,19 +117,18 @@ impl Gain {
 }
 
 /// What money pays for one `ev`: a pack to skip what the cheapest pack costs (`PACK_PRICE`, as
-/// in `Spending`), a reroll the shop's base reroll cost; a blind skip isn't bought.
+/// in `Spending`), a reroll a shop's first one (`reroll_cost`); a blind skip isn't bought.
 pub(super) fn event_price(run: &RunState, ev: RunEvent) -> Option<f64> {
     match ev {
         RunEvent::SkipPack => Some(PACK_PRICE),
-        RunEvent::Reroll => Some(run.base_reroll_cost.max(1) as f64),
+        RunEvent::Reroll => Some(reroll_cost(run.base_reroll_cost, 0).max(1) as f64),
         RunEvent::SkipBlind => None,
     }
 }
 
 /// The event money buys on `b`, with its price: the one its jokers grow most from per dollar
 /// (the first in `RunEvent::ALL` on a tie, never the order the jokers sit in); `None` when
-/// none grows. Both money paths use it: one-off money (`spend_once`) and money held
-/// (`fill_long`). Mult per dollar compares +Mult growers only, the only ones money buys
+/// none grows. Both money paths use it (`fill_long`): money held and one-off money. Mult per dollar compares +Mult growers only, the only ones money buys
 /// growth for now (Red Card, Flash Card); a ×Mult one would need its value measured.
 pub(super) fn bought_event(b: &Board, run: &RunState) -> Option<(RunEvent, f64)> {
     let per_dollar = |ev: RunEvent, price: f64| b.jokers.iter().map(|j| j.mult_from(ev)).sum::<f64>() / price;
@@ -135,12 +142,12 @@ pub(super) fn bought_event(b: &Board, run: &RunState) -> Option<(RunEvent, f64)>
         })
 }
 
-/// Events bought each ante with money held at `dollars`, at `price` each: one you'd do anyway
-/// (a pack you'd open skipped instead, a reroll), plus one per `price` above the interest line
-/// `line` (cash that isn't earning anything), at most `EVENTS_PER_ANTE_MAX`.
-pub(super) fn events_held(dollars: f64, line: f64, price: f64) -> f64 {
-    let spare = (dollars - line).max(0.0);
-    (1.0 + (spare / price).floor()).min(EVENTS_PER_ANTE_MAX)
+/// Events money held at `dollars` buys each ante, at `price` each: one per `price` above the
+/// interest line `line` (cash that isn't earning anything), at most
+/// `EVENTS_BOUGHT_PER_ANTE_MAX`. On top of these, one of each kind is done anyway (a pack you'd
+/// open skipped instead, a reroll): `fill_long`.
+pub(super) fn events_bought(dollars: f64, line: f64, price: f64) -> f64 {
+    ((dollars - line).max(0.0) / price).floor().min(EVENTS_BOUGHT_PER_ANTE_MAX)
 }
 
 /// A projected board (`LongRun::project_rent`) and the money held it was projected with,
@@ -360,20 +367,17 @@ impl<'a> LongRun<'a> {
         self.project_rent(keep, dollars, 0.0)
     }
 
-    /// One-off money: spent once on the shop events jokers grow from (`bought_event`, at its
-    /// price), else on planets for your main hand.
-    pub fn spend_once(&self, b: &mut Board, once: f64) {
+    /// One-off money spent once: `once` grows Constellation through the planets it buys, and
+    /// `levels` (what the events didn't take, `fill_long`) buys planets for your main hand.
+    fn spend_once(&self, b: &mut Board, once: f64, levels: f64) {
         // A level of your main hand about $12 (its planet is only in some shops and packs: a
         // Celestial pack holds it ~1 time in 4); any planet about $4, and each one used grows
         // Constellation by ×0.1.
         for j in b.jokers.iter_mut().filter(|j| j.key == "j_constellation") {
             j.x_mult = (j.x_mult + 0.1 * once / 4.0).max(1.0);
         }
-        let buys_main = once / 12.0;
-        if let Some((ev, price)) = bought_event(b, self.run) {
-            b.after(ev, once / price);
-        } else if let Some(top) = self.top_hand {
-            let buys = buys_main;
+        if let Some(top) = self.top_hand {
+            let buys = levels / 12.0;
             // Fractional levels (as their chips and mult): rounding made any small purchase
             // cost a whole level
             let l = b.levels[top as usize];
@@ -388,20 +392,27 @@ impl<'a> LongRun<'a> {
         }
     }
 
-    /// The board with the option (or a typical find) in its slot, the shop events the money
-    /// held buys (`events_held` an ante, of `bought_event`), one-off money spent, and empty
-    /// slots filled with stand-ins. Money spent never takes away Mult a joker already has.
+    /// The board with the option (or a typical find) in its slot, what money buys, and empty
+    /// slots filled with stand-ins. Shop events: one an ante of each kind the board grows from
+    /// (done anyway), and the event `bought_event` picks, bought with money held
+    /// (`events_bought`) and one-off money at its price. A price takes back those purchases
+    /// first, then main-hand levels (`spend_once`), so it never takes Mult a joker already has
+    /// and never comes free.
     pub fn fill_long(&self, p: Projected, option: Option<Joker>, once: f64) -> Board {
         let Projected { board: mut b, dollars } = p;
         b.jokers.push(option.unwrap_or_else(|| self.stand_in(1.25, 0.0, 0.0)));
-        let earned: Vec<f64> = b.jokers.iter().map(|j| j.mult).collect();
+        for ev in RunEvent::ALL {
+            if event_price(self.run, ev).is_some() && b.changes_with(ev) {
+                b.after(ev, self.antes_left);
+            }
+        }
+        let mut levels = once;
         if let Some((ev, price)) = bought_event(&b, self.run) {
-            b.after(ev, events_held(dollars, self.line, price) * self.antes_left);
+            let n = events_bought(dollars, self.line, price) * self.antes_left + once / price;
+            b.after(ev, n.max(0.0));
+            levels = n.min(0.0) * price;
         }
-        self.spend_once(&mut b, once);
-        for (j, e) in b.jokers.iter_mut().zip(earned) {
-            j.mult = j.mult.max(e);
-        }
+        self.spend_once(&mut b, once, levels);
         let mut k = 0;
         while (b.jokers.len() as i64) < b.joker_slots {
             b.jokers.push(match self.fill_types.get(k).copied().unwrap_or(0) {
