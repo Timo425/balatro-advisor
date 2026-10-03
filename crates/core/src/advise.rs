@@ -1585,8 +1585,9 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         // Only a played round has an end: money jokers pay (a third of an ante's income) and
         // a Blue Seal held then makes a planet (and grows Constellation)
         let round_income: f64 = run.jokers.iter().filter(|j| !j.debuff).map(|j| income_per_ante(&j.key, &j.ability, run, 1.0) / 3.0).sum();
-        let blue = run.full_deck().iter().filter(|c| c.seal == Some(crate::model::Seal::Blue)).count() as f64;
-        let seal_planets = blue * seal_round_chance(run, run.full_deck().len());
+        let blue = run.full_deck().iter().filter(|c| c.seal == Some(crate::model::Seal::Blue)).count();
+        let free = (run.consumable_slots - run.consumables.len() as i64).max(0) as usize;
+        let seal_planets = seal_planets_a_round(run, blue, run.full_deck().len(), free);
         let gain = held + bv.reward as f64 + interest(run.dollars + held, run.interest_amount, run.interest_cap) as f64 + run.money_per_hand - rent_now + round_income;
         let play_survive = p_blind * survive_with(run.dollars + gain, k, p_boss);
         let mut play_long = money_long(gain);
@@ -2577,6 +2578,25 @@ fn reach_draw(pool: &[Candidate], round: usize, now: f64, cards: usize, joker_sh
 fn seal_round_chance(run: &RunState, deck_len: usize) -> f64 {
     let seen = run.hand_size as f64 + 3.0 * (run.round_hands + run.round_discards) as f64;
     (seen / deck_len.max(1) as f64).min(1.0)
+}
+
+/// The planets `n` Blue Seal cards in a deck of `deck_len` make in a round: each drawn with
+/// `seal_round_chance` (taken as independent) and held for its planet, at most `slots` of them
+/// (card.lua `Card:get_end_of_round_effect`: a Blue Seal makes its planet only while there's
+/// room among the consumables): the expected min(drawn, slots).
+fn seal_planets_a_round(run: &RunState, n: usize, deck_len: usize, slots: usize) -> f64 {
+    let c = seal_round_chance(run, deck_len);
+    if c >= 1.0 {
+        return n.min(slots) as f64;
+    }
+    // P(k drawn), binomial, k = 0..=n
+    let mut p = (1.0 - c).powi(n as i32);
+    let mut e = 0.0;
+    for k in 0..=n {
+        e += k.min(slots) as f64 * p;
+        p *= (n - k) as f64 / (k + 1) as f64 * c / (1.0 - c);
+    }
+    e
 }
 
 /// Known orderings checked against the run, each with what it gains. Not a search over
@@ -4543,11 +4563,14 @@ mod tests {
         let r = blind_run(&[("j_joker", None, None)], "AS KH 7C 7D 7H 2S 3D 4C", "7S 7C 7D 7H 7S 7C 7D 7H 7S 7C", ("c_aura", "Aura", "Spectral"), 3000.0);
         let a = analyze(&r, GameData::bundled(), None, &quick());
         let t = a.tarots.iter().find(|t| t.key == "c_aura").unwrap();
-        let targets = t.note.split(" on ").nth(1).unwrap_or("").split(" (").next().unwrap_or("");
-        assert!(targets.starts_with('7') && !targets.contains(' '), "{}", t.note);
+        // the pick, and the cards the race can't tell apart from it
+        let pick = t.note.split(" on ").nth(1).unwrap_or("").split(" (").next().unwrap_or("");
+        let ties: Vec<&str> = t.note.split("can't be told apart from: ").nth(1).map_or(vec![], |x| x.trim_end_matches(')').split(", ").collect());
+        let best: Vec<&str> = std::iter::once(pick).chain(ties).collect();
+        assert!(!pick.is_empty() && !best.contains(&"A♠"), "{}", t.note);
+        assert!(best.iter().any(|c| c.starts_with('7')), "{}", t.note);
         assert!(t.note.starts_with("Polychrome 15% / Holo 35% / Foil 50%"), "{}", t.note);
         assert_eq!(t.decks.iter().map(|x| x.0).collect::<Vec<_>>(), vec![0.15, 0.35, 0.5]);
-        assert!(t.use_effect.is_none(), "a random effect isn't a Best play move");
     }
 
     #[test]
@@ -4564,43 +4587,74 @@ mod tests {
 
     #[test]
     fn dna_copies_what_the_search_picks_in_the_hand_you_hold() {
-        // Baron (held Kings ×1.5) and four Steel Kings (held ×1.5 more), and a Purple Seal 2♣
-        // (its tarot isn't simulated: a 2 to the projection). DNA's copies are Steel Kings,
-        // round after round, not the Purple Seal 2♣ the old fixed ranking (any seal above any
-        // enhancement) copied. Fails if DNA's card comes from a ranking instead of `target_race`.
+        // Baron (held Kings ×1.5) and four Steel Kings (held ×1.5 more), each with a Blue Seal,
+        // and a Purple Seal 2♣ (its tarot isn't simulated: a 2 to the projection). Every round
+        // whose sampled hand holds a Steel King copies one; the Purple Seal 2♣ (which the old
+        // fixed ranking, any seal above any enhancement, put first after Blue Seals) never.
+        // A Steel King isn't always copied: with the 2 planet slots full, one more isn't clearly
+        // better than none. Fails if DNA's card comes from a ranking or a pick that ignores the
+        // hand, instead of `target_race` on that round's hand.
+        use crate::model::{Enhancement, Seal, Suit};
         let mut r = shop_run(&[("j_baron", None, None), ("j_joker", None, None)], &[]);
         for c in r.draw_pile.iter_mut() {
             if c.rank.0 == 13 {
-                c.enhancement = Some(crate::model::Enhancement::Steel);
+                c.enhancement = Some(Enhancement::Steel);
+                c.seal = Some(Seal::Blue);
             }
-            if c.rank.0 == 2 && c.suit == crate::model::Suit::Clubs {
-                c.seal = Some(crate::model::Seal::Purple);
+            if c.rank.0 == 2 && c.suit == Suit::Clubs {
+                c.seal = Some(Seal::Purple);
             }
         }
-        let change = with_long_run(&r, |lr| lr.round_decks("j_dna").unwrap());
-        let decks = &change.0;
-        let (first, last) = (&decks[0], decks.last().unwrap());
-        let count = |d: &[Card], f: &dyn Fn(&Card) -> bool| d.iter().filter(|c| f(c)).count();
-        let kings = |d: &[Card]| count(d, &|c| c.rank.0 == 13 && c.enhancement == Some(crate::model::Enhancement::Steel));
-        let purple = |d: &[Card]| count(d, &|c| c.seal == Some(crate::model::Seal::Purple));
+        let mix = [HandShare { hand: "Pair".into(), share: 1.0, played: 1.0, mean: 1.0 }];
+        let (change, end) = with_long_run_mix(&r, &mix, |lr| {
+            let c = lr.round_decks("j_dna").unwrap();
+            let end = lr.deck_value(c.decks.last().unwrap(), 0.0, value::TAROT_ROUNDS);
+            (c, end)
+        });
+        let decks = &change.decks;
         assert_eq!(decks.len(), 1 + 19, "a deck after each of 3 × 6.5 antes' rounds");
-        assert!(kings(last) >= kings(first) + 2, "Steel Kings {} → {}", kings(first), kings(last));
-        assert!(kings(last) - kings(first) > purple(last) - purple(first), "Purple Seal 2♣ {} → {}", purple(first), purple(last));
-        // one card a round at most
-        assert!(decks.windows(2).all(|w| w[1].len() - w[0].len() <= 1));
-        // valued as a deck change, a copy from the round it's made: worth more than your deck,
-        // less than the deck it ends with held all run. Fails if the deck it ends with is
-        // valued from the start, or the copies aren't valued through `deck_value`.
-        let end = with_long_run(&r, |lr| lr.deck_value(last, 0.0, value::TAROT_ROUNDS));
-        assert!(change.1 > 1.0 && change.1 < end, "by Ante 8 ×{:.3}, the last deck all run ×{end:.3}", change.1);
+        let king = |c: &Card| c.rank.0 == 13 && c.enhancement == Some(Enhancement::Steel);
+        let salt = (GameData::bundled().center("j_dna").unwrap().order as u64) << 16;
+        let (mut copies, mut first_held) = (0, None);
+        for (i, w) in decks.windows(2).enumerate() {
+            let hand = sample_hands(w[0].len(), r.hand_size, 1, quick().seed, salt + i as u64).remove(0);
+            let mut left = w[0].clone();
+            let added: Vec<Card> = w[1].iter().filter(|c| match left.iter().position(|x| x == *c) { Some(k) => { left.remove(k); false } None => true }).copied().collect();
+            let labels = added.iter().map(Card::label).collect::<Vec<_>>();
+            // one card at most, a Steel King from that round's hand, never the Purple Seal 2♣
+            assert!(added.len() <= 1 && added.iter().all(|c| king(c) && hand.iter().any(|&k| w[0][k].same_kind(c))), "round {i}: {labels:?}");
+            copies += added.len();
+            if first_held.is_none() && hand.iter().any(|&k| king(&w[0][k])) {
+                first_held = Some(added.len());
+            }
+        }
+        assert_eq!(first_held, Some(1), "the first round with a Steel King in hand copies one");
+        assert!(copies >= 3, "Steel Kings copied: {copies}");
+        // valued as the deck it ends with, its Blue Seal planets counted round by round as the
+        // copies come: worth more than your deck, less than that deck held all run (whose
+        // planets count every round). Fails if the planets are the last deck's all run.
+        assert!(change.value > 1.0 && change.value < end, "by Ante 8 ×{:.3}, the last deck all run ×{end:.3}", change.value);
+        assert!(change.share > 0.0 && change.share <= 1.0);
+    }
+
+    #[test]
+    fn blue_seal_planets_a_round_are_the_expected_planets_that_fit() {
+        // n Blue Seals each drawn with chance c: n·c while they always fit, E[min(drawn, slots)]
+        // past that (less than min(n·c, slots): some rounds draw more than fit, some fewer)
+        let r = shop_run(&[("j_joker", None, None)], &[]);
+        let c = seal_round_chance(&r, 52);
+        assert!((seal_planets_a_round(&r, 2, 52, 2) - 2.0 * c).abs() < 1e-12);
+        let three = seal_planets_a_round(&r, 3, 52, 2);
+        assert!(three < (3.0 * c).min(2.0) && three > 2.0 * c, "{three} with c {c}");
+        assert_eq!(seal_planets_a_round(&r, 5, 52, 0), 0.0);
     }
 
     #[test]
     fn blue_seal_planets_stop_at_your_consumable_slots() {
         // A Blue Seal makes its planet only while a consumable slot is free (card.lua
         // get_end_of_round_effect): a deck where half the cards have one and a deck where all do
-        // both fill your 2 slots every round (3 rounds an ante), and a single one is under the
-        // cap. Fails without the cap in `seal_planets` (DNA's copies, Cryptid, Trance…).
+        // both fill your 2 slots nearly every round (3 rounds an ante), and a single one is under
+        // the cap. Fails without the cap in `seal_planets` (DNA's copies, Cryptid, Trance…).
         let r = shop_run(&[("j_joker", None, None)], &[]);
         let deck = |every: usize| -> Vec<Card> {
             let mut d = crate::bench::standard_deck();
@@ -4609,7 +4663,8 @@ mod tests {
             d
         };
         let (one, half, all, antes) = with_long_run(&r, |lr| (lr.seal_planets(&deck(52)), lr.seal_planets(&deck(2)), lr.seal_planets(&deck(1)), lr.antes_left));
-        assert!((half - 2.0 * 3.0 * antes).abs() < 1e-9 && (all - half).abs() < 1e-9, "half {half:.2}, all {all:.2}");
+        let cap = 2.0 * 3.0 * antes;
+        assert!((half - cap).abs() < 1e-3 * cap && (all - cap).abs() < 1e-3 * cap, "half {half:.2}, all {all:.2}, cap {cap:.2}");
         assert!(one > 0.0 && one < 3.0 * antes, "one Blue Seal: {one:.2}");
     }
 

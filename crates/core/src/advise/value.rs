@@ -9,7 +9,7 @@
 
 use std::sync::{Mutex, OnceLock};
 
-use super::{best_of_subsets, decks_value, glass_presence, grow_antes, income_per_ante, interest, money_value_with, par_map, round_mods, sample_hands, seal_round_chance, target_race, Candidate, Ctx, HandShare, Spec, TarotValue};
+use super::{best_of_subsets, glass_presence, grow_antes, income_per_ante, interest, money_value_with, par_map, round_mods, sample_hands, seal_planets_a_round, target_race, Candidate, Ctx, HandShare, Spec, TarotValue};
 use crate::engine::HandType;
 use crate::data::GameData;
 use crate::engine::{Board, Joker, Kind, RunEvent};
@@ -44,9 +44,16 @@ pub(super) fn reroll_cost(base: i64, i: usize) -> i64 {
     base + i as i64
 }
 
-/// What a joker that changes a card each round does by Ante 8 (`LongRun::round_decks`): the
-/// decks round by round (yours first), and what they make your run worth
-pub(super) type RoundChange = std::sync::Arc<(Vec<Vec<Card>>, f64)>;
+/// What a joker that changes a card each round does by Ante 8 (`LongRun::round_decks`)
+pub(super) struct RoundChange {
+    /// The decks round by round (yours first, then after each round; read by the tests)
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub decks: Vec<Vec<Card>>,
+    /// What they make your run worth, as a deck change
+    pub value: f64,
+    /// The share of rounds it changes a card in (and takes your first hand)
+    pub share: f64,
+}
 
 pub(super) struct LongRun<'a> {
     pub ctx: &'a Ctx<'a>,
@@ -81,7 +88,7 @@ pub(super) struct LongRun<'a> {
     /// Your deck's money while scoring, per round, on given rounds (`deck_rounds`)
     deck_money: Mutex<std::collections::HashMap<(usize, usize), f64>>,
     /// A joker's decks round by round, by its key (`round_decks`)
-    round_decks: Mutex<std::collections::HashMap<String, RoundChange>>,
+    round_decks: Mutex<std::collections::HashMap<String, std::sync::Arc<RoundChange>>>,
 }
 
 /// What an option or event adds to your run, applied to the projected board the same way
@@ -611,16 +618,17 @@ impl<'a> LongRun<'a> {
     }
 
     /// What a joker that changes a card you pick each round (`consumable::round_card_effect`;
-    /// DNA: a copy of the first hand's single card) does to your deck by Ante 8: the decks it
-    /// leaves round by round (your deck first, then after each round), and what they make your
-    /// run worth as a deck change. Each round, the cards its target search picks (`target_race`,
-    /// the search a consumable's targets go through) in an opening hand drawn from the deck as
-    /// it is by then (the copies so far in it, so a copied card is drawn more often), or none
-    /// when nothing is worth more than the deck as it is; one sampled hand a round. The value:
-    /// every round's deck through `decks_value` (each a share of the rounds, so a copy counts
-    /// from the round it's made; Glass breaking, money and Blue Seal planets as for any deck
-    /// change). Computed once per joker. `None`: not such a joker.
-    pub fn round_decks(&self, key: &str) -> Option<RoundChange> {
+    /// DNA: a copy of the first hand's single card, which spends that hand) does to your deck
+    /// by Ante 8. Each round, the cards its target search picks (`target_race`, the search a
+    /// consumable's targets go through) in an opening hand drawn from the deck as it is by then
+    /// (the copies so far in it, so a copied card is drawn more often), one sampled hand a
+    /// round; the change is made only when the best set is clearly better than no target
+    /// (paired, 95%: `compare::clearly_better`), since it costs a hand, not on a lead the race
+    /// can't tell from noise. Valued as every projection is (`value.rs` header): the deck it
+    /// ends with by Ante 8, as a grower's state by then (`deck_value`), with the planets its
+    /// Blue Seal cards make summed round by round as they come (a flow, `seal_planets_round`).
+    /// Computed once per joker. `None`: not such a joker.
+    pub fn round_decks(&self, key: &str) -> Option<std::sync::Arc<RoundChange>> {
         use crate::engine::consumable;
         let (effect, min, max) = consumable::round_card_effect(key)?;
         let mut cache = self.round_decks.lock().unwrap();
@@ -630,35 +638,51 @@ impl<'a> LongRun<'a> {
         let (ctx, run) = (self.ctx, self.run);
         let salt = self.data.center(key).map_or(0, |c| c.order as u64) << 16;
         let mut decks = vec![ctx.fresh_deck.clone()];
+        let mut changed = 0usize;
         for r in 0..(3.0 * self.antes_left).floor() as usize {
             let d = decks.last().expect("your deck first");
             let hand = sample_hands(d.len(), run.hand_size, 1, ctx.opts.seed, salt + r as u64).remove(0);
-            let mut next = match target_race(self, &[(1.0, effect)], min, max, d, &hand, None) {
-                Some(t) => consumable::apply(effect, d, &t.sets[0]),
+            let pick = target_race(self, &[(1.0, effect)], min, max, d, &hand, None).and_then(|t| {
+                let none = t.sets.iter().position(|v| v.is_empty());
+                let clear = none.is_none_or(|j| j >= t.as_good && super::compare::clearly_better(&t.samples[0], &t.samples[j]));
+                (!t.sets[0].is_empty() && clear).then(|| t.sets[0].clone())
+            });
+            let mut next = match pick {
+                Some(set) => {
+                    changed += 1;
+                    consumable::apply(effect, d, &set)
+                }
                 None => d.clone(),
             };
             next.sort_by_key(Card::order_key);
             decks.push(next);
         }
-        let rounds = (decks.len() - 1).max(1) as f64;
-        let value = if decks.iter().all(|d| *d == decks[0]) { 1.0 } else { decks_value(self, &decks[1..].iter().map(|d| (1.0 / rounds, d.clone())).collect::<Vec<_>>(), 0.0) };
-        let out = std::sync::Arc::new((decks, value));
+        let rounds = decks.len() - 1;
+        let value = if changed == 0 {
+            1.0
+        } else {
+            let planets = decks[1..].iter().map(|d| self.seal_planets_round(d)).sum::<f64>();
+            self.deck_value_with_planets(decks.last().expect("your deck first"), 0.0, planets)
+        };
+        let out = std::sync::Arc::new(RoundChange { decks, value, share: changed as f64 / rounds.max(1) as f64 });
         cache.insert(key.to_string(), out.clone());
         Some(out)
     }
 
     /// A joker that changes a card each round (`round_decks`) on its projected board `b`: the
-    /// board with your first hand a round spent on it (DNA: a single card) once it changes
-    /// anything, times what its decks make your run worth. Any other joker: `long_score`.
+    /// board with your first hand spent on it (DNA: a single card) in the share of rounds it
+    /// changes a card in, times what its deck makes your run worth. Any other joker:
+    /// `long_score`.
     pub fn round_effect_long(&self, b: Board, key: &str) -> f64 {
-        let Some(change) = self.round_decks(key) else { return self.long_score(&b) };
-        let (decks, deck) = (&change.0, change.1);
-        if decks.iter().all(|d| *d == decks[0]) {
-            return self.long_score(&b);
+        let full = self.long_score(&b);
+        let Some(change) = self.round_decks(key) else { return full };
+        if change.share == 0.0 {
+            return full;
         }
         let mut sp = self.long_spec_for(&b);
         sp.start.hands = (sp.start.hands - 1).max(1); // the first hand goes on the single card
-        self.ctx.odds_one(&b, &sp, 48).1.mean.max(1.0) * deck
+        let fewer = self.ctx.odds_one(&b, &sp, 48).1.mean.max(1.0);
+        (change.share * fewer + (1.0 - change.share) * full) * change.value
     }
 
     /// A joker's projected score: bought for `cost` (selling `sell`, if any), rent paid if
@@ -800,7 +824,7 @@ impl<'a> LongRun<'a> {
                 st
             })
         };
-        self.value_against(d, money_once, rounds, 0, &base)
+        self.value_against(d, money_once, rounds, 0, &base, None)
     }
 
     /// One of several random outcomes of a change (outcome `part`): valued on its own slice of
@@ -808,14 +832,22 @@ impl<'a> LongRun<'a> {
     /// together cover as many independent rounds as one full projection.
     pub fn deck_value_part(&self, d: &[Card], money_once: f64, rounds: usize, part: usize) -> f64 {
         let base = self.deck_base().clone();
-        self.value_against(d, money_once, rounds, part * rounds, &base)
+        self.value_against(d, money_once, rounds, part * rounds, &base, None)
     }
 
-    fn value_against(&self, d: &[Card], money_once: f64, rounds: usize, first: usize, base: &crate::sim::Stats) -> f64 {
+    /// `deck_value` with the planets its Blue Seal cards make by Ante 8 given (a deck that
+    /// changes over the run counts them round by round, not as its last deck's all run)
+    pub fn deck_value_with_planets(&self, d: &[Card], money_once: f64, planets: f64) -> f64 {
+        let base = *self.deck_base();
+        self.value_against(d, money_once, TAROT_ROUNDS, 0, &base, Some(planets))
+    }
+
+    /// `planets`: what its Blue Seal cards make (`None`: `seal_planets`)
+    fn value_against(&self, d: &[Card], money_once: f64, rounds: usize, first: usize, base: &crate::sim::Stats, planets: Option<f64>) -> f64 {
         // `income`: the money its cards earn as income (`None`: worked out from these rounds)
         let raw = |d: &[Card], income: Option<f64>| {
             let dollars = self.run.dollars;
-            let planets = self.seal_planets(d);
+            let planets = planets.unwrap_or_else(|| self.seal_planets(d));
             let mut st = self.deck_stats_s(d, dollars, money_once, income.unwrap_or(0.0), rounds, planets, first);
             let mut used = income.unwrap_or(0.0);
             if income.is_none() {
@@ -837,15 +869,19 @@ impl<'a> LongRun<'a> {
         }
     }
 
-    /// The planets a deck's extra Blue Seal cards make by Ante 8, against yours (each drawn
-    /// with `seal_round_chance` a round and held for its planet, 3 rounds an ante), at most
-    /// your consumable slots a round (card.lua `Card:get_end_of_round_effect`: a Blue Seal
-    /// makes its planet only while there's room among the consumables)
+    /// The planets a deck's extra Blue Seal cards make by Ante 8, against yours: a round's
+    /// (`seal_planets_round`) every round, 3 rounds an ante
     pub(super) fn seal_planets(&self, d: &[Card]) -> f64 {
-        let blue = |deck: &[Card]| deck.iter().filter(|c| c.seal == Some(crate::model::Seal::Blue)).count() as f64;
-        let (chance, slots) = (seal_round_chance(self.run, d.len()), self.run.consumable_slots.max(0) as f64);
-        let per_round = |n: f64| (n * chance).min(slots);
-        (per_round(blue(d)) - per_round(blue(&self.ctx.fresh_deck))) * 3.0 * self.antes_left
+        self.seal_planets_round(d) * 3.0 * self.antes_left
+    }
+
+    /// The planets a deck's Blue Seal cards make in a round, against yours (`seal_planets_a_round`
+    /// in a deck of its size, with all your consumable slots free: you'd keep room for them)
+    pub(super) fn seal_planets_round(&self, d: &[Card]) -> f64 {
+        let blue = |deck: &[Card]| deck.iter().filter(|c| c.seal == Some(crate::model::Seal::Blue)).count();
+        let slots = self.run.consumable_slots.max(0) as usize;
+        let round = |n: usize| seal_planets_a_round(self.run, n, d.len(), slots);
+        round(blue(d)) - round(blue(&self.ctx.fresh_deck))
     }
 
     /// `deck_value` round by round, on rounds `range` (round i draws the same cards for every
