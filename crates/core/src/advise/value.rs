@@ -9,7 +9,7 @@
 
 use std::sync::{Mutex, OnceLock};
 
-use super::{best_of_subsets, glass_presence, grow_antes, income_per_ante, interest, money_value_with, par_map, round_mods, seal_round_chance, Candidate, Ctx, HandShare, Spec, TarotValue};
+use super::{best_of_subsets, decks_value, glass_presence, grow_antes, income_per_ante, interest, money_value_with, par_map, round_mods, sample_hands, seal_round_chance, target_race, Candidate, Ctx, HandShare, Spec, TarotValue};
 use crate::engine::HandType;
 use crate::data::GameData;
 use crate::engine::{Board, Joker, Kind, RunEvent};
@@ -44,6 +44,10 @@ pub(super) fn reroll_cost(base: i64, i: usize) -> i64 {
     base + i as i64
 }
 
+/// What a joker that changes a card each round does by Ante 8 (`LongRun::round_decks`): the
+/// decks round by round (yours first), and what they make your run worth
+pub(super) type RoundChange = std::sync::Arc<(Vec<Vec<Card>>, f64)>;
+
 pub(super) struct LongRun<'a> {
     pub ctx: &'a Ctx<'a>,
     pub run: &'a RunState,
@@ -76,6 +80,8 @@ pub(super) struct LongRun<'a> {
     spare_choice: Mutex<std::collections::HashMap<String, bool>>,
     /// Your deck's money while scoring, per round, on given rounds (`deck_rounds`)
     deck_money: Mutex<std::collections::HashMap<(usize, usize), f64>>,
+    /// A joker's decks round by round, by its key (`round_decks`)
+    round_decks: Mutex<std::collections::HashMap<String, RoundChange>>,
 }
 
 /// What an option or event adds to your run, applied to the projected board the same way
@@ -310,6 +316,7 @@ impl<'a> LongRun<'a> {
             deck_base: OnceLock::new(),
             deck_base_n: Mutex::new(Default::default()),
             deck_money: Mutex::new(Default::default()),
+            round_decks: Mutex::new(Default::default()),
             spare_choice: Mutex::new(Default::default()),
         };
         {
@@ -603,56 +610,55 @@ impl<'a> LongRun<'a> {
         self.long_score(&self.fill_long(self.project(&|_| true, run.dollars), None, self.once(earns - ((cost - sell) as f64) - rent))) / self.l0
     }
 
-    /// DNA (card.lua: first hand of the round a single card → a permanent copy of it): a copy
-    /// of your best card every round until Ante 8, your first hand spent on it, and the
-    /// copies' Blue Seal planets (at most 2 a round: consumable slots).
-    pub fn dna_long(&self, b: Board) -> f64 {
-        use crate::model::{Enhancement, Seal};
-        let (ctx, run) = (self.ctx, self.run);
-        let deck = &ctx.fresh_deck;
-        let rank = |c: &Card| match (c.seal, c.enhancement) {
-            (Some(Seal::Blue), _) => 5,
-            (Some(Seal::Red), Some(Enhancement::Glass)) => 4,
-            (_, Some(Enhancement::Glass)) => 3,
-            (Some(_), _) => 2,
-            (_, Some(_)) => 1,
-            _ => 0,
-        };
-        let Some(best) = deck.iter().copied().max_by_key(|c| (rank(c), c.rank.0)) else { return 1.0 };
-        let rounds = (3.0 * self.antes_left).floor() as usize;
-        // The card has to be in your opening hand to be the single first play: each round,
-        // the chance that one of its copies is among the first `hand size` cards.
-        let open = |s: f64, deck: f64| 1.0 - (1.0 - s / deck.max(1.0)).powf(run.hand_size as f64);
-        let s0 = deck.iter().filter(|c| **c == best).count() as f64;
-        let (mut copies, mut planets) = (s0, 0.0);
-        for r in 0..rounds {
-            let dsize = deck.len() as f64 + copies - s0;
-            copies += open(copies, dsize);
-            if best.seal == Some(Seal::Blue) {
-                let _ = r;
-                planets += (2.0f64).min(copies * seal_round_chance(run, dsize as usize)) - (2.0f64).min(s0 * seal_round_chance(run, deck.len()));
-            }
+    /// What a joker that changes a card you pick each round (`consumable::round_card_effect`;
+    /// DNA: a copy of the first hand's single card) does to your deck by Ante 8: the decks it
+    /// leaves round by round (your deck first, then after each round), and what they make your
+    /// run worth as a deck change. Each round, the cards its target search picks (`target_race`,
+    /// the search a consumable's targets go through) in an opening hand drawn from the deck as
+    /// it is by then (the copies so far in it, so a copied card is drawn more often), or none
+    /// when nothing is worth more than the deck as it is; one sampled hand a round. The value:
+    /// every round's deck through `decks_value` (each a share of the rounds, so a copy counts
+    /// from the round it's made; Glass breaking, money and Blue Seal planets as for any deck
+    /// change). Computed once per joker. `None`: not such a joker.
+    pub fn round_decks(&self, key: &str) -> Option<RoundChange> {
+        use crate::engine::consumable;
+        let (effect, min, max) = consumable::round_card_effect(key)?;
+        let mut cache = self.round_decks.lock().unwrap();
+        if let Some(d) = cache.get(key) {
+            return Some(d.clone());
         }
-        let added = (copies - s0).round() as usize;
-        let mut d = deck.clone();
-        d.extend(std::iter::repeat_n(best, added));
-        let mut b = b;
-        let tally = |e: Enhancement| d.iter().filter(|c| c.enhancement == Some(e)).count() as i64;
-        b.steel_tally = tally(Enhancement::Steel);
-        b.stone_tally = tally(Enhancement::Stone);
-        b.driver_tally = d.iter().filter(|c| c.enhancement.is_some()).count() as i64;
-        b.playing_cards = d.len() as i64;
-        if best.seal == Some(Seal::Blue) {
-            let extra = planets.max(0.0);
-            match self.top_hand {
-                Some(top) => Self::add_planets(&mut b, &[(top, extra)], 0.0),
-                None => Self::add_planets(&mut b, &[], extra),
-            }
+        let (ctx, run) = (self.ctx, self.run);
+        let salt = self.data.center(key).map_or(0, |c| c.order as u64) << 16;
+        let mut decks = vec![ctx.fresh_deck.clone()];
+        for r in 0..(3.0 * self.antes_left).floor() as usize {
+            let d = decks.last().expect("your deck first");
+            let hand = sample_hands(d.len(), run.hand_size, 1, ctx.opts.seed, salt + r as u64).remove(0);
+            let mut next = match target_race(self, &[(1.0, effect)], min, max, d, &hand, None) {
+                Some(t) => consumable::apply(effect, d, &t.sets[0]),
+                None => d.clone(),
+            };
+            next.sort_by_key(Card::order_key);
+            decks.push(next);
+        }
+        let rounds = (decks.len() - 1).max(1) as f64;
+        let value = if decks.iter().all(|d| *d == decks[0]) { 1.0 } else { decks_value(self, &decks[1..].iter().map(|d| (1.0 / rounds, d.clone())).collect::<Vec<_>>(), 0.0) };
+        let out = std::sync::Arc::new((decks, value));
+        cache.insert(key.to_string(), out.clone());
+        Some(out)
+    }
+
+    /// A joker that changes a card each round (`round_decks`) on its projected board `b`: the
+    /// board with your first hand a round spent on it (DNA: a single card) once it changes
+    /// anything, times what its decks make your run worth. Any other joker: `long_score`.
+    pub fn round_effect_long(&self, b: Board, key: &str) -> f64 {
+        let Some(change) = self.round_decks(key) else { return self.long_score(&b) };
+        let (decks, deck) = (&change.0, change.1);
+        if decks.iter().all(|d| *d == decks[0]) {
+            return self.long_score(&b);
         }
         let mut sp = self.long_spec_for(&b);
-        sp.start.deck = d;
         sp.start.hands = (sp.start.hands - 1).max(1); // the first hand goes on the single card
-        ctx.odds_one(&b, &sp, 48).1.mean.max(1.0)
+        self.ctx.odds_one(&b, &sp, 48).1.mean.max(1.0) * deck
     }
 
     /// A joker's projected score: bought for `cost` (selling `sell`, if any), rent paid if
@@ -666,7 +672,7 @@ impl<'a> LongRun<'a> {
         let horizon = if j.key == "j_madness" { 1.0 } else { self.antes_left };
         let g = grow_antes(j, self.hand_mix, horizon).map_or_else(|| j.clone(), |g| g.0);
         let b = self.fill_long(self.project_rent(&|k| Some(k) != sell, run.dollars, rent - income), Some(g), self.once(back - cost as f64));
-        if j.key == "j_dna" { self.dna_long(b) } else { self.long_score(&b) }
+        self.round_effect_long(b, &j.key)
     }
 
     /// Planets used on a board: whole levels and the rest as a share of a level's chips and
@@ -779,7 +785,8 @@ impl<'a> LongRun<'a> {
     /// its score, plus what its cards make: the money they earn while scoring (Lucky cards,
     /// Gold Seals, Gold cards) as money you get every round (about 3 rounds an ante), and the
     /// planets of Blue Seal cards it has more (or fewer) of than yours
-    /// (each drawn with `seal_round_chance` a round and held for its planet, 3 rounds an ante).
+    /// (each drawn with `seal_round_chance` a round and held for its planet, 3 rounds an ante,
+    /// at most your consumable slots a round: `seal_planets`).
     /// `money_once`: one-off money that comes with the change (already through `once`).
     /// `rounds`: projection rounds.
     pub fn deck_value(&self, d: &[Card], money_once: f64, rounds: usize) -> f64 {
@@ -831,10 +838,14 @@ impl<'a> LongRun<'a> {
     }
 
     /// The planets a deck's extra Blue Seal cards make by Ante 8, against yours (each drawn
-    /// with `seal_round_chance` a round and held for its planet, 3 rounds an ante)
-    fn seal_planets(&self, d: &[Card]) -> f64 {
+    /// with `seal_round_chance` a round and held for its planet, 3 rounds an ante), at most
+    /// your consumable slots a round (card.lua `Card:get_end_of_round_effect`: a Blue Seal
+    /// makes its planet only while there's room among the consumables)
+    pub(super) fn seal_planets(&self, d: &[Card]) -> f64 {
         let blue = |deck: &[Card]| deck.iter().filter(|c| c.seal == Some(crate::model::Seal::Blue)).count() as f64;
-        (blue(d) - blue(&self.ctx.fresh_deck)) * 3.0 * seal_round_chance(self.run, d.len()) * self.antes_left
+        let (chance, slots) = (seal_round_chance(self.run, d.len()), self.run.consumable_slots.max(0) as f64);
+        let per_round = |n: f64| (n * chance).min(slots);
+        (per_round(blue(d)) - per_round(blue(&self.ctx.fresh_deck))) * 3.0 * self.antes_left
     }
 
     /// `deck_value` round by round, on rounds `range` (round i draws the same cards for every
