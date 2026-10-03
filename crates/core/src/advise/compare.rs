@@ -12,7 +12,7 @@
 
 use super::par_map;
 
-/// The most rounds an option gets, and how close (as a share of the leader's value) counts
+/// The most rounds an option gets by default, and how close (as a share of the leader's value) counts
 /// as equally good.
 pub(super) const MAX: usize = 1600;
 pub(super) const EQUAL: f64 = 0.01;
@@ -37,13 +37,14 @@ fn paired(a: &[f64], b: &[f64], scale: f64) -> (bool, bool) {
 
 /// `sample(i, range)`: option i's samples for rounds `range`; `value`: a sample's value;
 /// `secondary`: what orders options the value can't separate; `first`: rounds in the first
-/// batch; `budget(rounds done)`: the most options still sampled after that many rounds;
+/// batch; `max`: the most rounds an option gets (`MAX` unless the samples are costlier); `budget(rounds done)`: the most options still sampled after that many rounds;
 /// `tie_order(x, y)`: how options with exactly equal means are ordered (`Greater` = x first),
 /// so the result never depends on the order options are listed in.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn race<T: Send + Sync>(
     n: usize,
     first: usize,
+    max: usize,
     budget: impl Fn(usize) -> usize,
     sample: impl Fn(usize, std::ops::Range<usize>) -> Vec<T> + Sync,
     value: impl Fn(&T) -> f64,
@@ -56,8 +57,8 @@ pub(super) fn race<T: Send + Sync>(
     let mean = |v: &[T], f: &dyn Fn(&T) -> f64| v.iter().map(f).sum::<f64>() / v.len().max(1) as f64;
     let (mut done, mut batch) = (0usize, first.max(1));
     let mut leader = 0usize;
-    while done < MAX && !alive.is_empty() {
-        let to = (done + batch).min(MAX);
+    while done < max && !alive.is_empty() {
+        let to = (done + batch).min(max);
         let new = par_map(&alive, |&c| sample(c, done..to));
         for (&c, v) in alive.iter().zip(new) {
             samples[c].extend(v);

@@ -608,9 +608,15 @@ fn apply_mods(start: &RoundStart, added: &[&Joker], removed: &[&Joker], fresh: b
 const SCREEN_DEALS: usize = 100;
 /// Random outcomes a random effect (Immolate's, Familiar's…) is valued over
 const RANDOM_OUTCOMES: usize = 6;
-/// Rounds in the quick projection that screens a consumable's possible targets (the best few
-/// then get the full `value::TAROT_ROUNDS`).
+/// Rounds in a quick deck projection (a card worth drawing is screened on it; a random
+/// outcome gets at least this many)
 const TARGET_SCREEN_ROUNDS: usize = 48;
+/// The search over a consumable's targets (`compare::race` on the deck projection): rounds in
+/// the first batch, the most rounds (targets still undecided then are too close for the pick
+/// to matter: the pick is then valued on the full projection), and the budget as in Best play's.
+const TARGET_FIRST: usize = 16;
+const TARGET_MAX: usize = 128;
+const TARGET_BUDGET: &[(usize, usize)] = &[(16, 12), (32, 6), (64, 3)];
 /// Best play's search over every move (`compare::race`): rounds in the first batch, and the
 /// budget: (up to this many rounds done, at most this many moves still undecided). A cost
 /// limit, not a finding: see `compare`.
@@ -2816,9 +2822,6 @@ fn tarot_values(
     by_count.sort_by(|a, b| b.0.cmp(&a.0));
     let main: Option<Suit> = (by_count[0].0 > by_count[1].0).then_some(by_count[0].1);
     let is_main = |c: &Card| main.is_none_or(|m| c.suit == m);
-    let even = if main.is_none() { " (your suits are even)" } else { "" };
-    let main_name = main.map_or("card".to_string(), |m| m.name().trim_end_matches('s').to_string());
-    let weakest_suit = Suit::ALL.into_iter().filter(|&s| Some(s) != main).min_by_key(|&s| count(s)).unwrap_or(Suit::Clubs);
     // Card-targeting tarots only reach the cards in hand. When a hand is on screen (a blind or
     // an opened pack), targets are limited to those cards; otherwise any card is assumed.
     let mut in_hand = vec![run.hand.is_empty(); deck.len()];
@@ -2842,17 +2845,6 @@ fn tarot_values(
             v.reverse();
         }
         v
-    };
-    // For ×Mult enhancements (Glass): Red Seal cards first, even over a weaker enhancement
-    // (the seal retriggers the card, so its ×2 applies twice)
-    let red_first = |ih: &[bool], pred: &dyn Fn(&Card) -> bool| -> Vec<usize> {
-        let mut sealed: Vec<usize> = (0..deck.len())
-            .filter(|&i| ih[i] && deck[i].seal == Some(crate::model::Seal::Red) && !matches!(deck[i].enhancement, Some(Enhancement::Glass | Enhancement::Steel)) && pred(&deck[i]))
-            .collect();
-        sealed.sort_by_key(|&i| std::cmp::Reverse(deck[i].rank.0));
-        let rest: Vec<usize> = plain(ih, pred, true).into_iter().filter(|i| !sealed.contains(i)).collect();
-        sealed.extend(rest);
-        sealed
     };
 
     let horizon = ctx.specs.iter().find(|x| x.horizon).cloned();
@@ -2908,7 +2900,6 @@ fn tarot_values(
     };
     // Spectral cards (card.lua Card:use_consumeable), each simulated by what it changes.
     let spectral_value = |t: &crate::data::Center| -> TarotValue {
-        use crate::model::Seal;
         let tv = |p: f64, reach: f64, note: String, simulated: bool, deck: Option<Vec<Card>>, gain: f64| TarotValue {
             use_effect: None, long_mult: None, decks: vec![], spectral: true, deck, key: t.key.clone(), name: t.name.clone(), p_win: p, note, simulated,
             per_shop: spectral_per_shop, reach, reach_now, money_gain: gain,
@@ -2928,13 +2919,6 @@ fn tarot_values(
         };
         let ih_v: Vec<bool> = (0..deck.len()).map(|i| hand_cards.contains(&i)).collect();
         let ih = &ih_v[..];
-        // The card worth putting something on: Red Seal / Glass first, else your main suit's highest
-        // A Blue Seal card first (more of it, more planets), then Red Seal / Glass, then your
-        // main suit's highest
-        let best_card = hand_cards.iter().copied().find(|&i| deck[i].seal == Some(Seal::Blue))
-            .or_else(|| red_first(ih, &is_main).first().copied())
-            .or_else(|| hand_cards.iter().copied().filter(|&i| is_main(&deck[i])).max_by_key(|&i| deck[i].rank.0))
-            .or_else(|| hand_cards.iter().copied().max_by_key(|&i| deck[i].rank.0));
         let free_slot = (run.jokers.len() as i64) < run.joker_slots;
         let random_card = |rng: &mut crate::engine::Rng, ranks: &[u8]| {
             let enh = [Enhancement::Bonus, Enhancement::Mult, Enhancement::Wild, Enhancement::Glass, Enhancement::Steel, Enhancement::Stone, Enhancement::Gold, Enhancement::Lucky];
@@ -2975,36 +2959,6 @@ fn tarot_values(
                 let (p, r) = sim_board(&b);
                 let use_effect = spec.in_progress.then(|| sim::Use { levels: [1; 12], ..Default::default() });
                 TarotValue { use_effect, ..tv(p, r, "+1 level to every poker hand".into(), true, None, 0.0) }
-            }
-            "c_talisman" | "c_deja_vu" => {
-                // a seal replaces the card's seal: valued on your main suit's highest card
-                // without one (with your hand on screen, every target is searched instead)
-                let unsealed = |pred: &dyn Fn(&Card) -> bool| hand_cards.iter().copied().filter(|&i| deck[i].seal.is_none() && pred(&deck[i])).max_by_key(|&i| deck[i].rank.0);
-                let Some(i) = unsealed(&is_main).or_else(|| unsealed(&|_| true)) else { return tv(now, reach_now, "needs a card without a seal in hand".into(), false, None, 0.0) };
-                let mut d = deck.clone();
-                let (seal, what) = if t.key == "c_talisman" { (Seal::Gold, "Gold Seal ($3 when it scores)") } else { (Seal::Red, "Red Seal (retriggers)") };
-                d[i].seal = Some(seal);
-                let (p, r) = simulate(d.clone());
-                tv(p, r, format!("{what}{}", on(i)), true, Some(d), 0.0)
-            }
-            "c_cryptid" => {
-                let Some(i) = best_card else { return tv(now, reach_now, "needs a card in hand".into(), false, None, 0.0) };
-                let mut d = deck.clone();
-                let c = d[i];
-                d.extend([c, c]);
-                // the copies come into your hand (card.lua Cryptid): in a blind, the round goes
-                // on with them in hand
-                let (p, r) = if spec.in_progress && from_hand {
-                    let mut live = spec.clone();
-                    live.start.hand.extend([c, c]);
-                    let mut b = board_for_deck(&d);
-                    b.playing_cards = d.len() as i64;
-                    (ctx.odds_one(&b, &live, sims).0, reach_of(&d))
-                } else {
-                    simulate(d.clone())
-                };
-                // (copies of a Blue Seal card make planets: counted by the deck valuation)
-                tv(p, r,format!("2 copies of {}", c.label()), true, Some(d), 0.0)
             }
             "c_aura" => {
                 // poll_edition(guaranteed, no negative): Polychrome 15%, Holo 35%, Foil 50%
@@ -3123,81 +3077,12 @@ fn tarot_values(
             }
             "c_ectoplasm" => tv(now, reach_now, "Negative on a random joker, −1 hand size (not valued)".into(), false, None, 0.0),
             "c_ouija" => tv(now, reach_now, "every card in hand becomes one random rank, −1 hand size (not valued)".into(), false, None, 0.0),
-            "c_trance" => {
-                // Blue Seal: a planet for the last hand played when the card is held at the end
-                // of a round (and a consumable slot is free): you keep it once it's drawn.
-                let Some(i) = plain(ih, &|c: &Card| c.seal.is_none(), false).first().copied().or(best_card) else {
-                    return tv(now, reach_now, "needs a card in hand".into(), false, None, 0.0);
-                };
-                let per_round = seal_round_chance(run, deck.len());
-                let mut d = deck.clone();
-                d[i].seal = Some(Seal::Blue);
-                tv(now, reach_now, format!("Blue Seal{}: a planet for your last hand when it's held at round end (about {:.1} an ante)", on(i), 3.0 * per_round), true, Some(d), 0.0)
-            }
-            "c_medium" => tv(now, reach_now, "Purple Seal: a tarot when discarded (not valued)".into(), false, None, 0.0),
             _ => tv(now, reach_now, "not valued".into(), false, None, 0.0),
         }
     };
-    let tarot_value = |t: &crate::data::Center, ih: &[bool]| -> TarotValue {
-        let cfg = &t.config;
-        let n = cfg.get("max_highlighted").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-        let mut d = deck.clone();
-        let (sim, note): (bool, String) = if let Some(suit) = cfg.get("suit_conv").and_then(|v| v.as_str()).and_then(Suit::from_name) {
-            // 3 cards of your least-used suit (lowest first) become this suit
-            // Take from your least-used suit (or the next one, if that's the target suit)
-            // (with a hand shown, only suits you hold can be converted)
-            let held = |x: Suit| !plain(ih, &|c: &Card| c.suit == x, false).is_empty();
-            let source = Suit::ALL.into_iter().filter(|&x| x != suit && Some(x) != main && held(x)).min_by_key(|&x| count(x))
-                .or_else(|| Suit::ALL.into_iter().filter(|&x| x != suit && held(x)).min_by_key(|&x| count(x)))
-                .unwrap_or(weakest_suit);
-            for &i in plain(ih, &|c: &Card| c.suit == source, false).iter().take(n) {
-                d[i].suit = suit;
-            }
-            (true, format!("{n} {} → {}{even}", source.name(), suit.name()))
-        } else if let Some(m) = cfg.get("mod_conv").and_then(|v| v.as_str()) {
-            match m {
-                "up_rank" => {
-                    for &i in plain(ih, &is_main, false).iter().take(n) {
-                        d[i].rank = Rank(if d[i].rank.0 >= 14 { 2 } else { d[i].rank.0 + 1 });
-                    }
-                    (true, format!("+1 rank on your {n} lowest {main_name}s{even}"))
-                }
-                "card" => {
-                    // Death: the worst card becomes a copy of the best one
-                    let best = plain(ih, &is_main, true).first().copied();
-                    let worst = plain(ih, &|c: &Card| c.suit == weakest_suit, false).first().copied();
-                    if let (Some(b), Some(w)) = (best, worst) {
-                        d[w] = d[b];
-                    }
-                    (true, format!("a low {} becomes a copy of your best {main_name}{even}", weakest_suit.name().trim_end_matches('s')))
-                }
-                "m_gold" => (false, "Gold card: $3 per round while held (economy)".into()),
-                _ => {
-                    let e = Enhancement::from_key(m);
-                    // Steel and Stone go on cards you'd hold or throw in; the rest on your main suit's high cards
-                    let targets = match e {
-                        Some(Enhancement::Steel) => plain(ih, &|c: &Card| main.is_none_or(|m| c.suit != m), true),
-                        Some(Enhancement::Glass) => red_first(ih, &is_main),
-                        Some(Enhancement::Stone) => plain(ih, &|c: &Card| c.suit == weakest_suit, false),
-                        _ => plain(ih, &is_main, true),
-                    };
-                    let names: Vec<String> = targets.iter().take(n).map(|&i| d[i].label()).collect();
-                    for &i in targets.iter().take(n) {
-                        d[i].enhancement = e;
-                    }
-                    let on = if from_hand && !names.is_empty() { names.join(" ") } else { format!("{n} card{}", if n > 1 { "s" } else { "" }) };
-                    (true, format!("{} on {on}", m.trim_start_matches("m_")))
-                }
-            }
-        } else if cfg.get("remove_card").and_then(|v| v.as_bool()).unwrap_or(false) {
-            // Remove from the highest position down, so earlier removals don't shift later ones
-            let mut gone: Vec<usize> = plain(ih, &|c: &Card| c.suit == weakest_suit, false).into_iter().take(n).collect();
-            gone.sort_unstable_by(|a, b| b.cmp(a));
-            for i in gone {
-                d.remove(i);
-            }
-            (true, format!("destroys {n} low {}", weakest_suit.name()))
-        } else {
+    // Tarots that don't go on cards (those that do are searched below)
+    let tarot_value = |t: &crate::data::Center| -> TarotValue {
+        {
             let note = match t.key.as_str() {
                 "c_hermit" => format!("doubles money: +${:.0}", run.dollars.clamp(0.0, 20.0)),
                 "c_temperance" => {
@@ -3249,13 +3134,8 @@ fn tarot_values(
                 "c_high_priestess" if !planet_p.is_empty() => best_of_subsets(planet_p, 2).0.max(now),
                 _ => now,
             };
-            return TarotValue { use_effect: None, long_mult: None, decks: vec![], spectral: false, deck: None, key: t.key.clone(), name: t.name.clone(), p_win: p, note, simulated: p != now, per_shop, reach: reach_now, reach_now, money_gain: 0.0 };
-        };
-        let changed = sim.then(|| d.clone());
-        let (p, reach) = if sim { simulate(d) } else { (now, reach_now) };
-        // Card-targeting tarots only work on cards in hand (in a blind or an opened pack)
-        let note = if n > 0 && !from_hand { format!("{note}, if you hold suitable cards") } else if n > 0 { format!("{note} (from your hand)") } else { note };
-        TarotValue { use_effect: None, long_mult: None, decks: vec![], spectral: false, deck: changed, key: t.key.clone(), name: t.name.clone(), p_win: p, note, simulated: sim, per_shop, reach, reach_now, money_gain: 0.0 }
+            TarotValue { use_effect: None, long_mult: None, decks: vec![], spectral: false, deck: None, key: t.key.clone(), name: t.name.clone(), p_win: p, note, simulated: p != now, per_shop, reach: reach_now, reach_now, money_gain: 0.0 }
+        }
     };
     // With no hand on screen, a card-targeting tarot is valued on hands you'd hold (random
     // hands from your deck: you can only use it on cards in hand), not on any card in the
@@ -3273,16 +3153,92 @@ fn tarot_values(
             })
             .collect()
     };
-    let mut out = par_map(&tarots, |t| {
-        if t.set == "Spectral" {
-            return spectral_value(t);
+    // A consumable that goes on cards you pick (its game data says how many: `engine::
+    // consumable`) is valued on the cards that make your run worth most: every set of targets in
+    // the hand it's used from, on a quick projection, the best few on the full one (Blue Seal
+    // planets counted). The hand is yours when one is on screen, else sampled ones.
+    let search = |t: &crate::data::Center, ih: &[bool]| -> Option<TarotValue> {
+        use crate::engine::consumable::{self, CardEffect};
+        let (effect, min, max) = consumable::card_effect(&t.key, &t.config)?;
+        let spectral = t.set == "Spectral";
+        let base = TarotValue {
+            use_effect: None, long_mult: None, decks: vec![], spectral, deck: None, key: t.key.clone(), name: t.name.clone(), p_win: now,
+            note: format!("needs {min} card{} in hand", if min > 1 { "s" } else { "" }), simulated: false,
+            per_shop: if spectral { spectral_per_shop } else { per_shop }, reach: reach_now, reach_now, money_gain: 0.0,
+        };
+        if !consumable::modelled(effect) {
+            return Some(TarotValue { note: format!("{} (not modelled)", effect.label()), ..base });
         }
-        let targets_cards = t.config.get("max_highlighted").and_then(|v| v.as_u64()).unwrap_or(0) > 0;
-        if from_hand || !targets_cards {
-            return tarot_value(t, &in_hand);
+        let hand_cards: Vec<usize> = (0..deck.len()).filter(|&i| ih[i]).collect();
+        let n = hand_cards.len().min(12);
+        let mut sets: Vec<Vec<usize>> = vec![];
+        for m in 1u32..(1 << n) {
+            let k = m.count_ones() as usize;
+            if k < min || k > max {
+                continue;
+            }
+            let v: Vec<usize> = (0..n).filter(|i| m & (1 << i) != 0).map(|i| hand_cards[i]).collect();
+            if effect == CardEffect::CopyLeftToRight && v.len() == 2 {
+                sets.push(vec![v[1], v[0]]);
+            }
+            sets.push(v);
+        }
+        let key = |v: &[usize]| v.iter().map(|&i| deck[i].order_key()).collect::<Vec<_>>();
+        // sets that leave the same deck (a card that already has the effect, two of a kind in
+        // hand) are one option: the fewest cards kept
+        sets.sort_by(|a, b| a.len().cmp(&b.len()).then_with(|| key(a).cmp(&key(b))));
+        let mut decks_seen = std::collections::HashSet::new();
+        sets.retain(|v| {
+            let mut d: Vec<_> = consumable::apply(effect, deck, v).iter().map(Card::order_key).collect();
+            d.sort();
+            decks_seen.insert(d)
+        });
+        if sets.is_empty() {
+            return Some(base);
+        }
+        // chosen on rounds of their own (after the ones the value is then measured on), so the
+        // pick's luck doesn't inflate its value
+        let budget = |done: usize| TARGET_BUDGET.iter().find(|b| done <= b.0).map_or(TARGET_BUDGET[TARGET_BUDGET.len() - 1].1, |b| b.1);
+        let after = value::TAROT_ROUNDS;
+        let race = compare::race(
+            sets.len(),
+            TARGET_FIRST,
+            TARGET_MAX,
+            budget,
+            |i, r| lr.deck_rounds(&consumable::apply(effect, deck, &sets[i]), 0.0, after + r.start..after + r.end),
+            |x| *x,
+            |x| *x,
+            |x, y| key(&sets[y]).cmp(&key(&sets[x])),
+        );
+        let best = sets[race.leader].clone();
+        let d = consumable::apply(effect, deck, &best);
+        // this round's odds with the cards changed (copies come into your hand)
+        let (p, r) = if let (CardEffect::Copies(k), true) = (effect, spec.in_progress && from_hand) {
+            let mut live = spec.clone();
+            live.start.hand.extend(std::iter::repeat_n(deck[best[0]], k));
+            (ctx.odds_one(&board_for_deck(&d), &live, sims).0, reach_of(&d))
+        } else {
+            simulate(d.clone())
+        };
+        let names: Vec<String> = best.iter().map(|&i| deck[i].label()).collect();
+        let what = effect.label();
+        let note = if from_hand {
+            format!("{what} on {} (the cards worth most to your run)", names.join(" "))
+        } else {
+            format!("{what}, on the cards worth most in hands you'd hold")
+        };
+        Some(TarotValue { p_win: p, reach: r, simulated: true, deck: Some(d), note, ..base })
+    };
+    let mut out = par_map(&tarots, |t| {
+        let targets_cards = crate::engine::consumable::card_effect(&t.key, &t.config).is_some();
+        if !targets_cards {
+            return if t.set == "Spectral" { spectral_value(t) } else { tarot_value(t) };
+        }
+        if from_hand {
+            return search(t, &in_hand).expect("a card effect");
         }
         let shown = run.shop.iter().flat_map(|s| &s.other_cards).chain(&run.open_pack).chain(&run.consumables).any(|c| c.key == t.key);
-        let vals: Vec<TarotValue> = hands_of(if shown { 4 } else { 1 }, t.order as u64).iter().map(|h| tarot_value(t, h)).collect();
+        let vals: Vec<TarotValue> = hands_of(if shown { 4 } else { 1 }, t.order as u64).iter().filter_map(|h| search(t, h)).collect();
         let k = vals.len() as f64;
         let mut v = vals[0].clone();
         v.p_win = vals.iter().map(|x| x.p_win).sum::<f64>() / k;
@@ -3319,72 +3275,7 @@ fn tarot_values(
     // In a blind: what each one does to your hand, read off the deck it leaves (cards in hand
     // changed, or copies of one added to it). Random or destroying effects aren't turned into
     // moves (not modelled in the Best play look-ahead).
-    // With your hand to work on (a blind, or a pack opened over it), a consumable you hold or
-    // can pick goes on the cards that make your run worth most: every set of targets in hand
-    // it takes (its game data says how many), on a quick projection, the best few on the full
-    // one, the planets of Blue Seal cards counted. Random effects keep their own handling.
-    if from_hand {
-        use crate::engine::consumable::{self, CardEffect};
-        let hand_cards: Vec<usize> = (0..deck.len()).filter(|&i| in_hand[i]).collect();
-        for t in out.iter_mut() {
-            if !run.consumables.iter().chain(&run.open_pack).any(|c| c.key == t.key) {
-                continue;
-            }
-            let Some((effect, min, max)) = data.center(&t.key).and_then(|c| consumable::card_effect(&t.key, &c.config)) else { continue };
-            let n = hand_cards.len().min(12);
-            let mut sets: Vec<Vec<usize>> = vec![];
-            for m in 1u32..(1 << n) {
-                let k = m.count_ones() as usize;
-                if k < min || k > max {
-                    continue;
-                }
-                let v: Vec<usize> = (0..n).filter(|i| m & (1 << i) != 0).map(|i| hand_cards[i]).collect();
-                if effect == CardEffect::CopyLeftToRight && v.len() == 2 {
-                    sets.push(vec![v[1], v[0]]);
-                }
-                sets.push(v);
-            }
-            if sets.is_empty() {
-                continue;
-            }
-            let key = |v: &[usize]| v.iter().map(|&i| deck[i].order_key()).collect::<Vec<_>>();
-            let quick: Vec<f64> = par_map(&sets, |v| lr.deck_value(&consumable::apply(effect, deck, v), 0.0, TARGET_SCREEN_ROUNDS));
-            let mut order: Vec<usize> = (0..sets.len()).collect();
-            order.sort_by(|&a, &b| quick[b].total_cmp(&quick[a]).then_with(|| key(&sets[a]).cmp(&key(&sets[b]))));
-            order.truncate(4);
-            let full: Vec<f64> = par_map(&order, |&i| lr.deck_value(&consumable::apply(effect, deck, &sets[i]), 0.0, value::TAROT_ROUNDS));
-            let Some(best) = (0..order.len()).max_by(|&a, &b| full[a].total_cmp(&full[b]).then_with(|| key(&sets[order[b]]).cmp(&key(&sets[order[a]])))).map(|k| sets[order[k]].clone()) else { continue };
-            let d = consumable::apply(effect, deck, &best);
-            // this round's odds with the cards changed (copies come into your hand)
-            let (p, r) = if let (CardEffect::Copies(k), true) = (effect, spec.in_progress) {
-                let mut live = spec.clone();
-                live.start.hand.extend(std::iter::repeat_n(deck[best[0]], k));
-                (ctx.odds_one(&board_for_deck(&d), &live, sims).0, reach_of(&d))
-            } else {
-                simulate(d.clone())
-            };
-            let names: Vec<String> = best.iter().map(|&i| deck[i].label()).collect();
-            t.p_win = p;
-            t.reach = r;
-            t.simulated = true;
-            t.decks.clear();
-            if let CardEffect::Copies(k) = effect {
-                t.note = format!("{k} copies of {}", names[0]);
-            } else {
-                let what = match effect {
-                    CardEffect::Enhance(e) => format!("{e:?}"),
-                    CardEffect::Seal(x) => format!("{x:?} Seal"),
-                    CardEffect::Suit(x) => format!("→ {}", x.name()),
-                    CardEffect::UpRank => "+1 rank".into(),
-                    CardEffect::CopyLeftToRight => "the first becomes a copy of the second".into(),
-                    CardEffect::Destroy => "destroys".into(),
-                    CardEffect::Copies(_) => String::new(),
-                };
-                t.note = format!("{what} on {} (the cards worth most to your run)", names.join(" "));
-            }
-            t.deck = Some(d);
-        }
-    }
+
     if spec.in_progress && from_hand {
         for t in out.iter_mut() {
             t.use_effect = t.use_effect.take().or_else(|| {
@@ -4119,6 +4010,27 @@ mod tests {
         let cards: Vec<&str> = targets.split(' ').filter(|x| !x.is_empty()).collect();
         assert_eq!(cards.len(), 3, "{}", t.note);
         assert!(cards.iter().all(|c| !c.contains('♠')), "{}", t.note);
+    }
+
+    #[test]
+    fn a_consumable_isnt_put_on_the_cards_it_would_hurt() {
+        // Spade jokers and The Star (cards become Diamonds) in a blind: of all its target sets,
+        // the one chosen leaves the Spades alone (the race must not cut the good sets on a
+        // few lucky rounds).
+        let mut r = shop_run(&[("j_wrathful_joker", None, None), ("j_arrowhead", None, None)], &[]);
+        r.screen = crate::save::Screen::SelectingHand;
+        r.shop = None;
+        r.hand = Card::parse_list("AS KS QS JS 9S 7D 5H 3C").unwrap();
+        r.draw_pile = crate::bench::standard_deck().into_iter().filter(|c| !r.hand.iter().any(|h| h.rank == c.rank && h.suit == c.suit)).collect();
+        r.consumables = vec![crate::save::ItemCard { key: "c_star".into(), name: "The Star".into(), set: "Tarot".into(), cost: 3, edition: None, card: None }];
+        r.blinds[0].state = "Current".into();
+        r.current_blind = Some(crate::save::CurrentBlind {
+            key: "bl_small".into(), name: "Small Blind".into(), target: 3000.0, scored: 0.0, disabled: false, hands_seen: vec![], only_hand: None,
+        });
+        let a = analyze(&r, GameData::bundled(), None, &quick());
+        let t = a.tarots.iter().find(|t| t.key == "c_star").unwrap();
+        let targets = t.note.split(" on ").nth(1).unwrap_or("").split(" (").next().unwrap_or("");
+        assert!(!targets.is_empty() && !targets.contains('♠'), "{}", t.note);
     }
 
     #[test]

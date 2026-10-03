@@ -46,6 +46,26 @@ pub fn card_effect(key: &str, config: &serde_json::Value) -> Option<(CardEffect,
     Some((effect, min.max(1), max.max(1)))
 }
 
+impl CardEffect {
+    pub fn label(self) -> String {
+        match self {
+            CardEffect::Enhance(e) => format!("{e:?}"),
+            CardEffect::Seal(x) => format!("{x:?} Seal"),
+            CardEffect::Suit(x) => format!("→ {}", x.name()),
+            CardEffect::UpRank => "+1 rank".into(),
+            CardEffect::CopyLeftToRight => "the first becomes a copy of the second".into(),
+            CardEffect::Destroy => "destroys".into(),
+            CardEffect::Copies(k) => format!("{k} copies"),
+        }
+    }
+}
+
+/// Whether the simulation plays out what the effect changes. A Purple Seal's tarot when
+/// discarded isn't simulated, so it can't be valued.
+pub fn modelled(effect: CardEffect) -> bool {
+    effect != CardEffect::Seal(Seal::Purple)
+}
+
 /// `deck` with the effect used on the cards at `targets` (in the order you'd pick them; for
 /// Death the left one first). Copies are added at the end; destroyed cards are removed.
 pub fn apply(effect: CardEffect, deck: &[Card], targets: &[usize]) -> Vec<Card> {

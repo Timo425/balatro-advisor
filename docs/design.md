@@ -18,7 +18,7 @@ failed: fix that stage for every case, not the case.
 
 | Stage | Question | Where |
 |---|---|---|
-| **Moves tried** | Which choices are compared? All of them, narrowed down by simulation, never a hand-picked few. | Best play (`advise/play.rs`): `sim::all_plays` (every 1–5 card play) and `sim::all_discards` (every discard), for your hand as it is and after each held consumable, all in one `compare::race`. Shop: `advise.rs` `shop_options` (every shop item, pack pick and "leave"). Skip-or-play. |
+| **Moves tried** | Which choices are compared? All of them, narrowed down by simulation, never a hand-picked few. | Best play (`advise/play.rs`): `sim::all_plays` (every 1–5 card play) and `sim::all_discards` (every discard), for your hand as it is and after each held consumable, all in one `compare::race`. Shop: `advise.rs` `shop_options` (every shop item, pack pick and "leave"). Skip-or-play. A consumable's targets: every set of cards its game data allows (`engine::consumable`), in the hand it's used from, in one `compare::race` on the deck projection. |
 | **Simulated player** | How is the rest of the round played out? Toward the same measure the advice uses. | `sim::decide` (play/discard policy, a labelled heuristic), `sim::RoundGoals` + `play_on_instead` (weighs "win now" against playing on, with a few simulated futures), `sim::pays_at_end` (cards that pay at round end stay in hand while on pace), `sim::use_if_better` (held consumables) |
 | **Valuation** | What is an outcome worth? One measure, measured by simulating your board. | `advise/value.rs`: `LongRun` (your board projected to Ante 8; `value(&Gain)` for anything a run gains: one-off money, money held, planets with Constellation, levels; `planet(hand)`; `long_of` for jokers), `Spending` (money held past the planet-level cap, worth the rerolls and packs it buys). `RoundGoals` for the simulated player is built from these. Shop ranking: `rank_options` (survive × next-ante survival × long-run). |
 | **Noise** | Which differences are real? | `advise/compare.rs` `race`: the same draws for every option, in batches on fresh rounds until the best is clear; options clearly worse drop, options within 1% of the leader's value are ties, reported as ties; past that, an explicit budget (by value, then a secondary value such as how close lost rounds came to the target) limits how many stay in, and is named as a budget, not a finding. Same seeds (common random numbers) everywhere; cards are put in one fixed order (`Card::order_key`) before anything random touches them, so card order never changes the advice (tested). |
@@ -97,7 +97,7 @@ vs actual blind results and every shop seen).
 | Best play's search budget: first batch 16 rounds (batches double); at most 48 undecided moves after 16 rounds, 24 after 32, 12 after 64, 8 after that, kept by value then how close lost rounds came to the target | `advise.rs` `SEARCH_FIRST`, `SEARCH_BUDGET` | cost vs. coverage | check if better moves are ever cut by the budget |
 | Simulated player's policy: flush chase when odds > 10%, 1.5× better than the best hand when on pace; discards that pay money (`engine::discard_money`) cashed while on pace (a threshold, not yet weighed against `RoundGoals` money), the best-paying one whose remaining hand keeps pace, at most 16 tried, the last one right before the round ends; discards burned first when the chosen play scores > 0.1% more with none left (`burn_pays`; which cards, the policy's own dig choice) | `sim.rs` `decide_cards` | how a player digs | replay fixtures; calibration of win chances |
 | Cards worth drawing this round: for each held consumable that goes on one card, its value on each kind of card in the draw pile minus its value on the best card in hand (48-round screen, kept when over 1% on the full projection; Blue Seal planets counted); tied to its consumable and gone once that's used; a simulated round counts the best one it draws | `play.rs` `seen`, `sim::RoundGoals::seen` | a better target may come | — |
-| A held consumable's targets: every target set in hand on a 48-round projection, the best 4 on the full one; a deck's extra Blue Seal cards counted as planets (drawn with `seal_round_chance`, 3 rounds an ante) | `advise.rs` `TARGET_SCREEN_ROUNDS`, `value.rs` `deck_value` | cost vs. accuracy | — |
+| A consumable's targets (every one that goes on cards you pick): every target set in the hand it's used from (yours when one is on screen, else 4 sampled hands for one you can buy, pick or hold, 1 for the rest of the pool), sets leaving the same deck counted once, chosen by `compare::race` on the deck projection (first batch 16 rounds; at most 12 sets undecided after 16, 6 after 32, 3 after that; at most 128 rounds), on rounds of their own (after the 300 the pick is then valued on); a deck's extra Blue Seal cards counted as planets (drawn with `seal_round_chance`, 3 rounds an ante) | `advise.rs` `TARGET_FIRST`, `TARGET_MAX`, `TARGET_BUDGET`, `value.rs` `deck_rounds`, `deck_value` | cost vs. accuracy (a first batch of 8 dropped the best targets) | check if better targets are ever cut by the budget |
 | Random effects (Immolate, Familiar, Grim, Incantation, Aura, Sigil) and the shop's sampled hands: valued over several outcomes (6 for the destroyers), the projection's 300 rounds split between them, each outcome on rounds of its own (`deck_value_part`); this round's odds for the destroyers come from one outcome | `advise.rs` `RANDOM_OUTCOMES` | the average outcome | — |
 | Typical hands with jokers that pay by discards left: scored with your discards and with none, the better counts (only when a reference Pair scores differently) | `advise.rs` `Ctx::typical_n` | you'd keep or burn them | — |
 | Look-ahead: 8 futures, only when a better finish could add ≥ 1% in seal planets | `sim.rs` `play_on_instead`, `LOOKAHEAD_ROLLOUTS` | cost vs. depth | replay fixtures |
@@ -119,7 +119,7 @@ add to this list's kind; remove from it.
 | Rule | Where | General replacement |
 |---|---|---|
 | The Lovers makes a pack card Wild | `advise.rs` standard pack cards | consumables used on pack cards, searched |
-| Tarot targets by a fixed priority (Blue Seal, then Red/Glass, then main suit) where no hand is on screen (shop valuation on sampled hands); two other "best card" orderings (DNA, Cryptid tip). With a hand on screen, targets are searched (`engine::consumable`) | `advise.rs` `tarot_values`, `value.rs` `dna_long` | search every target on the sampled hands too |
+| Three "best card" orderings: DNA's copies, the Cryptid tip, Aura's target (a random edition, so not in `engine::consumable`) | `value.rs` `dna_long`, `advise.rs` tips, `tarot_values` | the target search (`engine::consumable` + `compare::race`), with random effects over their outcomes |
 | Suit-joker map, `kickers_matter` list, `income_per_ante` per joker | `sim.rs` `keep_suit`, `advise.rs` | game facts: move to `data/` or the engine; or work out what to keep by scoring with and without a card |
 | Red Card grows in three places | `grow_antes`, `spend_once`, skip-or-play | one place, through `Gain` |
 | A short perishable's price dropped from its value | `advise.rs` (`long_mult = 1 + unlock`) | `LongRun::value` with its price |
@@ -128,30 +128,28 @@ add to this list's kind; remove from it.
 
 Ranked by how likely each is to cause the next round of patch-on-patch.
 
-1. **Tarot targets aren't searched where no hand is on screen** (shop valuation on sampled hands;
-   see the retire list). With a hand on screen they are.
-2. **The simulated round only reports planets, money, hands left and the best card it drew
+1. **The simulated round only reports planets, money, hands left and the best card it drew
    for a held consumable (`seen`).** It should report the board, deck and consumables it ends
    with, valued by `LongRun`, and let the look-ahead weigh more than seal planets.
-3. **Valuation is still split.** Deck changes are valued in `value.rs` (`deck_stats`) but not
+2. **Valuation is still split.** Deck changes are valued in `value.rs` (`deck_stats`) but not
    yet through `Gain`; the voucher, tag and Emperor
    formulas, and the shop ranking spend leftover money on rerolls in each of its three
    factors. The general fix: deck, joker and hand-size fields in `Gain`, and each dollar spent
    once in one model.
-4. **The simulated player's policy (`decide_cards`) is a rulebook,** partly keyed to jokers, and
+3. **The simulated player's policy (`decide_cards`) is a rulebook,** partly keyed to jokers, and
    only ever chases flushes. The general fix: compare policy moves with a cheap search using
    the engine, as the look-ahead does at "win now".
-5. **Shop ranking and skip-or-play aren't confidence-based.** They tie within 3% instead of
+4. **Shop ranking and skip-or-play aren't confidence-based.** They tie within 3% instead of
    using `compare.rs`, because their options are valued by separate simulations, not round by
    round on the same draws.
-6. **Simulated discards change nothing but the hand.** Jokers that change with discards used
+5. **Simulated discards change nothing but the hand.** Jokers that change with discards used
    (Green Joker, Ramen, Castle, Yorick, Hit the Road, Burnt Joker, Trading Card) and money paid
    for discards left (Delayed Gratification) aren't modelled there (discard money from Mail-In
    Rebate and Faceless Joker is: `engine::discard_money`): e.g. with
    Mystic Summit and Green Joker, burning discards looks free. The general fix belongs in the
    engine's discard step (the game's own discard effects), not in the policy.
-7. **The long-run projection spends money on your main hand's planets.** A board that wants
+6. **The long-run projection spends money on your main hand's planets.** A board that wants
    several hands levelled is valued as if it wanted one.
-8. **`advise.rs` still holds the shop options, tarot valuation and outlook inline,** and the
+7. **`advise.rs` still holds the shop options, tarot valuation and outlook inline,** and the
    outlook's heuristics note says growth isn't projected, which is out of date (`grow_antes`
    projects it).

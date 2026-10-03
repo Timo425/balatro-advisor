@@ -947,6 +947,11 @@ pub fn typical_hands_detail(b: &Board, deck: &[Card], hand_size: usize, samples:
         .collect()
 }
 
+/// Rounds `range` one by one, each drawing the same cards as round i of `round_odds`.
+pub fn round_results(b: &Board, start: &RoundStart, range: std::ops::Range<usize>, seed: u64) -> Vec<RoundResult> {
+    range.map(|i| sim_round(b, start, &mut Rng::new(seed.wrapping_add(i as u64 * 7919)))).collect()
+}
+
 /// Chance of beating a round, from `sims` simulations (same seed → same deals across boards).
 /// Simulations run in parallel; each has its own seed, so the result doesn't depend on
 /// how they're split across threads.
@@ -1157,6 +1162,17 @@ mod tests {
         let spent = outcomes_after(&b, &start, &Move::Discard(vec![4, 5, 6, 7]), 0..200, 7, &[used]);
         assert!(held.iter().any(|o| o.seen > 0.0), "held: the card counts when drawn");
         assert!(spent.iter().all(|o| o.seen == 0.0), "used at the first decision: it never counts");
+    }
+
+    #[test]
+    fn rounds_one_by_one_match_the_odds() {
+        // Round i draws the same cards either way, so a slice of rounds compared one by one
+        // (the target search's race) is the same measure as the projection's mean.
+        let b = sample_board(&["j_joker", "j_greedy_joker"]);
+        let start = RoundStart { hand: vec![], deck: standard_deck(), hand_size: 8, hands: 4, discards: 3, scored: 0.0, target: 900.0 };
+        let (_, st) = round_odds(&b, &start, 64, 11u64.wrapping_add(16 * 7919));
+        let one = round_results(&b, &start, 16..80, 11);
+        assert!((one.iter().map(|r| r.total).sum::<f64>() / 64.0 - st.mean).abs() < 1e-6);
     }
 
     #[test]

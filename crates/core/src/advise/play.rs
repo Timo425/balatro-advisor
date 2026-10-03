@@ -157,6 +157,7 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
         let race = compare::race(
             cands.len(),
             SEARCH_FIRST,
+            compare::MAX,
             budget,
             |c, rounds| {
                 let (m, b, st, u, _) = &cands[c];
