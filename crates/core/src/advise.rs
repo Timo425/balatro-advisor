@@ -1251,10 +1251,10 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         // Every deck change through one valuation: its score, what its cards earn, and the
         // planets of any Blue Seal cards it adds (`LongRun::deck_value`)
         if !t.decks.is_empty() {
-            // the projection's rounds shared across the outcomes (same seeds for each)
+            // the projection's rounds shared across the outcomes, each on rounds of its own
             let money = if t.spectral { lr.once(t.money_gain) } else { 0.0 };
             let rounds = (value::TAROT_ROUNDS / t.decks.len()).max(TARGET_SCREEN_ROUNDS);
-            return t.decks.iter().map(|(w, d)| w * lr.deck_value(d, money, rounds)).sum::<f64>();
+            return t.decks.iter().enumerate().map(|(k, (w, d))| w * lr.deck_value_part(d, money, rounds, k)).sum::<f64>();
         }
         if let Some(d) = &t.deck {
             // Immolate's $20 comes with its deck change

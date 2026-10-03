@@ -484,11 +484,13 @@ impl<'a> LongRun<'a> {
 
     /// `deck_stats` on `rounds` rounds (fewer for a quick screen)
     pub fn deck_stats_n(&self, d: &[Card], dollars: f64, money_once: f64, income: f64, rounds: usize) -> crate::sim::Stats {
-        self.deck_stats_p(d, dollars, money_once, income, rounds, 0.0)
+        self.deck_stats_s(d, dollars, money_once, income, rounds, 0.0, 0)
     }
 
-    /// `deck_stats_n` with `planets` more of your main hand's planets used by then
-    fn deck_stats_p(&self, d: &[Card], dollars: f64, money_once: f64, income: f64, rounds: usize, planets: f64) -> crate::sim::Stats {
+    /// `deck_stats_n` with `planets` more of your main hand's planets used by then, on rounds
+    /// `first`.. (round i always draws the same cards)
+    #[allow(clippy::too_many_arguments)]
+    fn deck_stats_s(&self, d: &[Card], dollars: f64, money_once: f64, income: f64, rounds: usize, planets: f64, first: usize) -> crate::sim::Stats {
         let has_chips = self.ctx.base.jokers.iter().any(|j| CHIP_JOKERS.contains(&j.key.as_str()));
         let find = if has_chips { None } else { Some(self.stand_in(1.0, 0.0, 60.0)) };
         let mut b = self.fill_long(self.project_rent(&|_| true, dollars, -income), find, money_once);
@@ -505,7 +507,8 @@ impl<'a> LongRun<'a> {
         b.playing_cards = d.len() as i64;
         let mut sp = self.long_spec_for(&b);
         sp.start.deck = d.to_vec();
-        self.ctx.odds_one(&b, &sp, rounds).1
+        let bb = self.ctx.board_for(&b, &sp);
+        crate::sim::round_odds(&bb, &self.ctx.start_for(&sp, &bb), rounds, self.ctx.opts.seed.wrapping_add(first as u64 * 7919)).1
     }
 
     /// What a changed deck makes your run worth by Ante 8, as a ratio of your deck as it is:
@@ -516,23 +519,35 @@ impl<'a> LongRun<'a> {
     /// `money_once`: one-off money that comes with the change (already through `once`).
     /// `rounds`: projection rounds.
     pub fn deck_value(&self, d: &[Card], money_once: f64, rounds: usize) -> f64 {
-        let dollars = self.run.dollars;
         let base = if rounds == TAROT_ROUNDS {
             self.deck_base().clone()
         } else {
             let cached = self.deck_base_n.lock().unwrap().get(&rounds).copied();
             cached.unwrap_or_else(|| {
-                let st = self.deck_stats_n(&self.ctx.fresh_deck, dollars, 0.0, 0.0, rounds);
+                let st = self.deck_stats_n(&self.ctx.fresh_deck, self.run.dollars, 0.0, 0.0, rounds);
                 self.deck_base_n.lock().unwrap().insert(rounds, st);
                 st
             })
         };
+        self.value_against(d, money_once, rounds, 0, &base)
+    }
+
+    /// One of several random outcomes of a change (outcome `part`): valued on its own slice of
+    /// rounds (`part`·`rounds` onwards), against your deck's full projection, so the outcomes
+    /// together cover as many independent rounds as one full projection.
+    pub fn deck_value_part(&self, d: &[Card], money_once: f64, rounds: usize, part: usize) -> f64 {
+        let base = self.deck_base().clone();
+        self.value_against(d, money_once, rounds, part * rounds, &base)
+    }
+
+    fn value_against(&self, d: &[Card], money_once: f64, rounds: usize, first: usize, base: &crate::sim::Stats) -> f64 {
+        let dollars = self.run.dollars;
         let blue = |deck: &[Card]| deck.iter().filter(|c| c.seal == Some(crate::model::Seal::Blue)).count() as f64;
         let planets = (blue(d) - blue(&self.ctx.fresh_deck)) * 3.0 * seal_round_chance(self.run, d.len()) * self.antes_left;
-        let mut st = self.deck_stats_p(d, dollars, money_once, 0.0, rounds, planets);
+        let mut st = self.deck_stats_s(d, dollars, money_once, 0.0, rounds, planets, first);
         let extra = (st.money - base.money) * 3.0;
         if extra.abs() > 0.5 {
-            st = self.deck_stats_p(d, dollars, money_once, extra, rounds, planets);
+            st = self.deck_stats_s(d, dollars, money_once, extra, rounds, planets, first);
         }
         st.mean.max(1.0) / base.mean.max(1.0)
     }

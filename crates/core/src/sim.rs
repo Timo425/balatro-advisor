@@ -786,6 +786,19 @@ fn play_on_instead(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards
     })
 }
 
+/// Notes, per consumable, the best `RoundGoals::seen` gain among the cards in `hand`.
+fn note_seen(b: &Board, hand: &[Card], acc: &mut Vec<(String, f64)>) {
+    let Some(g) = &b.goals else { return };
+    for (k, card, gain) in &g.seen {
+        if hand.iter().any(|c| c.same_kind(card)) {
+            match acc.iter_mut().find(|e| &e.0 == k) {
+                Some(e) => e.1 = e.1.max(*gain),
+                None => acc.push((k.clone(), *gain)),
+            }
+        }
+    }
+}
+
 /// Uses a held consumable once it improves the best play in hand (by more than 1%).
 fn use_if_better(b: &mut Board, hand: &mut Vec<Card>, uses: &[Use], used: &mut [bool]) {
     for (k, u) in uses.iter().enumerate() {
@@ -816,14 +829,18 @@ pub fn sim_round_uses(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[
     let mut best_hand: f64 = 0.0;
     let mut plays = Vec::new();
     let mut money = 0.0;
-    let goals = b.goals.clone();
-    let seen_of = |h: &[Card]| goals.as_ref().map_or(0.0, |g| g.seen_gain(h));
-    let mut seen = seen_of(&hand);
+    // Cards worth drawing (`RoundGoals::seen`), per consumable: the best gain drawn so far. A
+    // consumable used during the round (on its own fixed targets) takes its gain with it.
+    let mut seen_by: Vec<(String, f64)> = vec![];
+    note_seen(&b, &hand, &mut seen_by);
     while hands > 0 && !hand.is_empty() {
         b.hands_left = hands;
         b.discards_left = discards;
         b.deck_remaining = deck.len() as i64;
         use_if_better(&mut b, &mut hand, uses, &mut used);
+        if let Some(g) = &b.goals {
+            seen_by.retain(|(k, _)| g.seen.iter().any(|(k2, _, _)| k2 == k));
+        }
         let act = match win_keeping_seals(&b, &hand, start.target - total) {
             Some(v) => play_on_instead(&b, &hand, &deck, hands, discards, total, start.target, size, &v, uses, rng).unwrap_or(Action::Play(v, false)),
             None => decide(&b, &hand, &deck, hands, discards, start.target - total, size),
@@ -855,24 +872,25 @@ pub fn sim_round_uses(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[
                 hands -= 1;
                 if total >= start.target {
                     money += held_dollars(&hand);
+                    let seen = seen_by.iter().map(|e| e.1).fold(0.0, f64::max);
                     return RoundResult { total, won: true, saved: false, best_hand, plays, money, hands_left: hands, planets: seal_planets(&b, &hand), seen };
                 }
                 draw(&mut hand, &mut deck, size);
-                seen = seen.max(seen_of(&hand));
+                note_seen(&b, &hand, &mut seen_by);
             }
             Action::Discard(idx) => {
                 money += discard_money(&b, &hand, &idx);
                 hand = (0..hand.len()).filter(|i| !idx.contains(i)).map(|i| hand[i]).collect();
                 draw(&mut hand, &mut deck, size);
                 discards -= 1;
-                seen = seen.max(seen_of(&hand));
+                note_seen(&b, &hand, &mut seen_by);
             }
         }
     }
     // Mr. Bones: a lost round is saved if you reached 25% of the blind (card.lua, game_over)
     let bones = b.jokers.iter().any(|j| j.key == "j_mr_bones" && !j.debuff);
     let won = total >= start.target;
-    RoundResult { total, won, saved: !won && bones && total >= 0.25 * start.target, best_hand, plays, money, hands_left: 0, planets: 0.0, seen }
+    RoundResult { total, won, saved: !won && bones && total >= 0.25 * start.target, best_hand, plays, money, hands_left: 0, planets: 0.0, seen: seen_by.iter().map(|e| e.1).fold(0.0, f64::max) }
 }
 
 /// Mean and quantiles of a sample.
@@ -1121,6 +1139,24 @@ mod tests {
         let g = after.goals.unwrap();
         assert_eq!(g.seen.len(), 1);
         assert_eq!(g.seen_gain(&[seal]), 0.2, "only the Talisman entry is left");
+    }
+
+    #[test]
+    fn a_consumable_used_mid_round_stops_counting_its_cards() {
+        // The simulated player uses the consumable at its first decision (it lifts every hand a
+        // level): drawing its "worth drawing" card later in the round then counts for nothing.
+        let seal = Card::parse_list("3S:blue").unwrap()[0];
+        let hand = Card::parse_list("AS AH KD 9C 7S 5H 4D 2C").unwrap();
+        let mut deck: Vec<Card> = standard_deck().into_iter().filter(|c| !hand.iter().any(|h| h.rank == c.rank && h.suit == c.suit) && !(c.rank == seal.rank && c.suit == seal.suit)).collect();
+        deck.push(seal);
+        let mut b = sample_board(&["j_joker"]);
+        b.goals = Some(RoundGoals { seen: vec![("c_test".into(), seal, 0.5)], ..Default::default() });
+        let used = Use { key: "c_test".into(), levels: [1; 12], ..Default::default() };
+        let start = RoundStart { hand, deck, hand_size: 8, hands: 4, discards: 3, scored: 0.0, target: 1e9 };
+        let held = outcomes_after(&b, &start, &Move::Discard(vec![4, 5, 6, 7]), 0..200, 7, &[]);
+        let spent = outcomes_after(&b, &start, &Move::Discard(vec![4, 5, 6, 7]), 0..200, 7, &[used]);
+        assert!(held.iter().any(|o| o.seen > 0.0), "held: the card counts when drawn");
+        assert!(spent.iter().all(|o| o.seen == 0.0), "used at the first decision: it never counts");
     }
 
     #[test]
