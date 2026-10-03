@@ -551,45 +551,29 @@ impl<'a> LongRun<'a> {
     }
 
     fn value_against(&self, d: &[Card], money_once: f64, rounds: usize, first: usize, base: &crate::sim::Stats) -> f64 {
-        let raw = |d: &[Card]| {
+        // `income`: the money its cards earn as income (`None`: worked out from these rounds)
+        let raw = |d: &[Card], income: Option<f64>| {
             let dollars = self.run.dollars;
             let planets = self.seal_planets(d);
-            let mut st = self.deck_stats_s(d, dollars, money_once, 0.0, rounds, planets, first);
-            let extra = (st.money - base.money) * 3.0;
-            if extra.abs() > 0.5 {
-                st = self.deck_stats_s(d, dollars, money_once, extra, rounds, planets, first);
+            let mut st = self.deck_stats_s(d, dollars, money_once, income.unwrap_or(0.0), rounds, planets, first);
+            let mut used = income.unwrap_or(0.0);
+            if income.is_none() {
+                let extra = (st.money - base.money) * 3.0;
+                if extra.abs() > 0.5 {
+                    st = self.deck_stats_s(d, dollars, money_once, extra, rounds, planets, first);
+                    used = extra;
+                }
             }
-            st.mean.max(1.0) / base.mean.max(1.0)
+            (st.mean.max(1.0) / base.mean.max(1.0), used)
         };
-        match self.without_new_glass(d) {
-            Some(plain) => {
-                let p = raw(&plain);
-                p + (raw(d) - p) * glass_presence(self.antes_left)
+        let (v, used) = raw(d, None);
+        match without_new_glass(&self.ctx.fresh_deck, d) {
+            Some(gone) => {
+                let (p, _) = raw(&gone, Some(used));
+                p + (v - p) * glass_presence(self.antes_left)
             }
-            None => raw(d),
+            None => v,
         }
-    }
-
-    /// A deck with Glass cards yours doesn't have: the same deck with those cards not Glass
-    /// (what the Glass adds counts for the share of the antes left it's expected to last,
-    /// `glass_presence`; the rest of the change counts in full)
-    fn without_new_glass(&self, d: &[Card]) -> Option<Vec<Card>> {
-        let glass = |c: &Card| c.enhancement == Some(crate::model::Enhancement::Glass);
-        let mut yours: Vec<Card> = self.ctx.fresh_deck.iter().filter(|c| glass(c)).copied().collect();
-        let mut out = d.to_vec();
-        let mut any = false;
-        for c in out.iter_mut().filter(|c| glass(c)) {
-            match yours.iter().position(|y| y.same_kind(c)) {
-                Some(k) => {
-                    yours.remove(k);
-                }
-                None => {
-                    c.enhancement = None;
-                    any = true;
-                }
-            }
-        }
-        any.then_some(out)
     }
 
     /// The planets a deck's extra Blue Seal cards make by Ante 8, against yours (each drawn
@@ -606,9 +590,9 @@ impl<'a> LongRun<'a> {
     /// to pass on the next batch.
     pub fn deck_rounds(&self, d: &[Card], money_once: f64, range: std::ops::Range<usize>, income: Option<f64>) -> (Vec<f64>, f64) {
         let (v, used) = self.deck_rounds_raw(d, money_once, range.clone(), income);
-        match self.without_new_glass(d) {
-            Some(plain) => {
-                let (p, _) = self.deck_rounds_raw(&plain, money_once, range, Some(used));
+        match without_new_glass(&self.ctx.fresh_deck, d) {
+            Some(gone) => {
+                let (p, _) = self.deck_rounds_raw(&gone, money_once, range, Some(used));
                 (p.iter().zip(&v).map(|(p, v)| p + (v - p) * glass_presence(self.antes_left)).collect(), used)
             }
             None => (v, used),
@@ -706,5 +690,55 @@ impl<'a> Spending<'a> {
             best = best.max((1.0 + packs) * self.rerolls(excess - 4.0 * p as f64));
         }
         best
+    }
+}
+
+/// A deck with more Glass cards than yours, after the extra ones break: Glass destroys the card
+/// when it breaks (card.lua `shatter`), so they're gone (the ones that don't match a Glass card
+/// of yours first). What they add counts for the share of the antes left they last
+/// (`glass_presence`); the rest of the change in full. `None`: no more Glass than yours.
+pub(super) fn without_new_glass(yours: &[Card], d: &[Card]) -> Option<Vec<Card>> {
+    let glass = |c: &Card| c.enhancement == Some(crate::model::Enhancement::Glass);
+    let new = d.iter().filter(|c| glass(c)).count().saturating_sub(yours.iter().filter(|c| glass(c)).count());
+    if new == 0 {
+        return None;
+    }
+    let mut pool: Vec<Card> = yours.iter().filter(|c| glass(c)).copied().collect();
+    let mut unmatched: Vec<usize> = vec![];
+    let mut matched: Vec<usize> = vec![];
+    for (i, c) in d.iter().enumerate().filter(|(_, c)| glass(c)) {
+        match pool.iter().position(|y| y.same_kind(c)) {
+            Some(k) => {
+                pool.remove(k);
+                matched.push(i);
+            }
+            None => unmatched.push(i),
+        }
+    }
+    let mut gone: Vec<usize> = unmatched.into_iter().chain(matched).take(new).collect();
+    gone.sort_unstable_by(|a, b| b.cmp(a));
+    let mut out = d.to_vec();
+    for i in gone {
+        out.remove(i);
+    }
+    Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_glass_is_gone_once_it_breaks() {
+        let yours = Card::parse_list("AS:glass KH 7D").unwrap();
+        // a Glass card added: once broken it's destroyed, not plain
+        let added = Card::parse_list("AS:glass KH 7D 2C:glass").unwrap();
+        assert_eq!(without_new_glass(&yours, &added).unwrap().iter().map(Card::label).collect::<Vec<_>>(), vec!["A♠ [glass]", "K♥", "7♦"]);
+        // Justice turns a card Glass: that card goes
+        let turned = Card::parse_list("AS:glass KH:glass 7D").unwrap();
+        assert_eq!(without_new_glass(&yours, &turned).unwrap().len(), 2);
+        // a Glass card of yours changed (Strength, a seal): no new Glass
+        let changed = Card::parse_list("2S:glass KH 7D").unwrap();
+        assert!(without_new_glass(&yours, &changed).is_none());
     }
 }

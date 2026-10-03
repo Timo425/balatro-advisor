@@ -1352,9 +1352,9 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     }
     // Standard pack cards: your deck with the card added, projected to Ante 8. A consumable
     // you hold that goes on cards (`engine::consumable`) can go on it once it's drawn: for each,
-    // a hand you'd hold with the card in it (a sampled one), the best targets that include it
-    // against the best use without it, on the same rounds (`target_race`). Counted when using
-    // it on the card is worth more than using it elsewhere, by more than the noise margin.
+    // one race over a hand you'd hold with the card in it (`target_race`, the hand its own value
+    // is sampled on, one card swapped for this one). The card is credited only when the best
+    // targets include it and nothing as good leaves it out.
     let pack_cards: Vec<Card> = run.open_pack.iter().filter_map(|c| c.card).collect();
     let fresh = &ctx.fresh_deck;
     let mut held_effects: Vec<(&str, &str, u64, crate::engine::consumable::CardEffect, usize, usize)> = vec![];
@@ -1366,31 +1366,24 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             held_effects.push((&c.key, &c.name, center.order as u64, e, min, max));
         }
     }
-    // for each: the hand (one card short, the pack card comes on top), and its best use there
-    let elsewhere: Vec<(Vec<usize>, Vec<usize>)> = if pack_cards.is_empty() {
-        vec![]
-    } else {
-        par_map(&held_effects, |&(_, _, order, e, min, max)| {
-            let mut rng = crate::engine::Rng::new(ctx.opts.seed ^ 0x9a5c ^ order.wrapping_mul(0x9e37_79b9));
-            let mut all: Vec<usize> = (0..fresh.len()).collect();
-            let mut hand: Vec<usize> = (0..(run.hand_size.max(2) as usize - 1).min(all.len())).map(|_| all.remove(rng.below(all.len()))).collect();
-            hand.sort_unstable();
-            let best = target_race(&lr, e, min, max, fresh, &hand, None).map_or(vec![], |r| r[0].clone());
-            (hand, best)
-        })
-    };
     let jobs: Vec<(usize, usize)> = (0..pack_cards.len()).flat_map(|p| (0..held_effects.len()).map(move |k| (p, k))).collect();
+    // (the deck with it used on the card, with it used on the best set without the card)
     let with_card: Vec<Option<(f64, f64)>> = par_map(&jobs, |&(p, k)| {
-        let (_, _, _, e, min, max) = held_effects[k];
+        let (_, _, order, e, min, max) = held_effects[k];
         let n = fresh.len();
         let mut d = fresh.clone();
         d.push(pack_cards[p]);
-        let (hand, best_else) = &elsewhere[k];
-        let mut h = hand.clone();
-        h.push(n);
-        let on_it = target_race(&lr, e, min, max, &d, &h, Some(n))?;
+        let mut hand = sample_hands(n, run.hand_size, 1, ctx.opts.seed, order).remove(0);
+        hand.pop();
+        hand.push(n);
+        let (ranked, as_good) = target_race(&lr, e, min, max, &d, &hand, Some(n))?;
+        let uses = |v: &[usize]| v.contains(&n);
+        if !uses(&ranked[0]) || ranked[1..as_good].iter().any(|v| !uses(v)) {
+            return None;
+        }
+        let elsewhere = ranked[as_good..].iter().find(|v| !uses(v))?;
         let v = |set: &[usize]| lr.deck_value(&crate::engine::consumable::apply(e, &d, set), 0.0, value::TAROT_ROUNDS);
-        Some((v(&on_it[0]), v(best_else)))
+        Some((v(&ranked[0]), v(elsewhere)))
     });
     let plain_long: Vec<f64> = par_map(&pack_cards, |card| {
         let mut d = fresh.clone();
@@ -1404,7 +1397,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             // the card with it used on it, over the card with it used elsewhere (paired)
             let used = (0..held_effects.len()).filter_map(|k| {
                 let (on_it, elsewhere) = with_card[p * held_effects.len() + k]?;
-                (on_it > elsewhere * (1.0 + compare::EQUAL)).then(|| (plain * on_it / elsewhere, k))
+                Some((plain * on_it / elsewhere, k))
             });
             if let Some((w, k)) = used.max_by(|a, b| a.0.total_cmp(&b.0).then_with(|| held_effects[b.1].0.cmp(held_effects[a.1].0))) {
                 let (_, name, _, e, _, _) = held_effects[k];
@@ -3162,14 +3155,11 @@ fn tarot_values(
     // hands from your deck: you can only use it on cards in hand), not on any card in the
     // deck. 4 hands for one you can buy, pick or hold now, 1 for the rest of the pool.
     let hands_of = |k: usize, salt: u64| -> Vec<Vec<bool>> {
-        let mut r = crate::engine::Rng::new(ctx.opts.seed ^ 0x4a4d ^ salt.wrapping_mul(0x9e37_79b9));
-        (0..k)
-            .map(|_| {
-                let mut all: Vec<usize> = (0..deck.len()).collect();
+        sample_hands(deck.len(), run.hand_size, k, ctx.opts.seed, salt)
+            .into_iter()
+            .map(|h| {
                 let mut ih = vec![false; deck.len()];
-                for _ in 0..(run.hand_size.max(1) as usize).min(all.len()) {
-                    ih[all.remove(r.below(all.len()))] = true;
-                }
+                h.into_iter().for_each(|i| ih[i] = true);
                 ih
             })
             .collect()
@@ -3195,7 +3185,8 @@ fn tarot_values(
         if hand_cards.len() < min {
             return Some(base);
         }
-        let ranked = target_race(lr, effect, min, max, deck, &hand_cards, None)?;
+        let (mut ranked, k) = target_race(lr, effect, min, max, deck, &hand_cards, None)?;
+        ranked.truncate(k);
         // this round's odds with the cards changed (copies come into your hand)
         let odds = |v: &[usize]| -> (f64, f64) {
             let d = consumable::apply(effect, deck, v);
@@ -3308,12 +3299,26 @@ fn tarot_values(
     out
 }
 
+/// `k` hands you'd hold (`hand_size` cards of a deck of `n`, in the order drawn), the same
+/// for the same `salt` (a consumable's game order): what a consumable is valued on when no
+/// hand is on screen.
+fn sample_hands(n: usize, hand_size: i64, k: usize, seed: u64, salt: u64) -> Vec<Vec<usize>> {
+    let mut r = crate::engine::Rng::new(seed ^ 0x4a4d ^ salt.wrapping_mul(0x9e37_79b9));
+    (0..k)
+        .map(|_| {
+            let mut all: Vec<usize> = (0..n).collect();
+            (0..(hand_size.max(1) as usize).min(n)).map(|_| all.remove(r.below(all.len()))).collect()
+        })
+        .collect()
+}
+
 /// The cards to use a consumable's `effect` on, among those at `hand` in `deck`: every set its
-/// game data allows (`min..=max` cards; Death's pairs both ways) and no target, or with `must`
-/// only the sets that include that card; sets that leave the same deck count once. Chosen by
-/// `compare::race` on the deck projection, on rounds of their own (after the
+/// game data allows (`min..=max` cards; Death's pairs both ways) and no target; sets that leave
+/// the same deck count once (the fewest cards kept, and one without `avoid` if any). Chosen
+/// by `compare::race` on the deck projection, on rounds of their own (after the
 /// `value::TAROT_ROUNDS` a pick is then valued on, so its luck doesn't inflate its value).
-/// The best set first, then those as good as it, best first; `None` if there's no set.
+/// Every set, the best first, then those as good as it, then the rest (by their mean so far);
+/// and how many are as good as the best (it included). `None` if there's no set.
 fn target_race(
     lr: &value::LongRun,
     effect: crate::engine::consumable::CardEffect,
@@ -3321,21 +3326,19 @@ fn target_race(
     max: usize,
     deck: &[Card],
     hand: &[usize],
-    must: Option<usize>,
-) -> Option<Vec<Vec<usize>>> {
+    avoid: Option<usize>,
+) -> Option<(Vec<Vec<usize>>, usize)> {
     use crate::engine::consumable::{self, CardEffect};
-    let mut sets: Vec<Vec<usize>> = if must.is_none() { vec![vec![]] } else { vec![] };
+    let mut sets: Vec<Vec<usize>> = vec![vec![]];
     for v in subsets(hand, min, max) {
         if effect == CardEffect::CopyLeftToRight && v.len() == 2 {
             sets.push(vec![v[1], v[0]]);
         }
         sets.push(v);
     }
-    if let Some(m) = must {
-        sets.retain(|v| v.contains(&m));
-    }
     let key = |v: &[usize]| v.iter().map(|&i| deck[i].order_key()).collect::<Vec<_>>();
-    sets.sort_by(|a, b| a.len().cmp(&b.len()).then_with(|| key(a).cmp(&key(b))));
+    let has = |v: &[usize]| avoid.is_some_and(|a| v.contains(&a));
+    sets.sort_by(|a, b| has(a).cmp(&has(b)).then(a.len().cmp(&b.len())).then_with(|| key(a).cmp(&key(b))));
     let mut decks_seen = std::collections::HashSet::new();
     sets.retain(|v| {
         let mut d: Vec<_> = consumable::apply(effect, deck, v).iter().map(Card::order_key).collect();
@@ -3343,7 +3346,7 @@ fn target_race(
         decks_seen.insert(d)
     });
     if sets.len() <= 1 {
-        return (!sets.is_empty()).then_some(sets);
+        return (!sets.is_empty()).then_some((sets, 1));
     }
     let budget = |done: usize| TARGET_BUDGET.iter().find(|b| done <= b.0).map_or(TARGET_BUDGET[TARGET_BUDGET.len() - 1].1, |b| b.1);
     let after = value::TAROT_ROUNDS;
@@ -3366,9 +3369,13 @@ fn target_race(
         |x, y| key(&sets[y]).cmp(&key(&sets[x])),
     );
     let mean = |i: usize| race.samples[i].iter().sum::<f64>() / race.samples[i].len().max(1) as f64;
+    let by_mean = |a: &usize, b: &usize| mean(*b).total_cmp(&mean(*a)).then_with(|| key(&sets[*a]).cmp(&key(&sets[*b])));
     let mut as_good: Vec<usize> = (0..sets.len()).filter(|&i| race.tied[i]).collect();
-    as_good.sort_by(|&a, &b| mean(b).total_cmp(&mean(a)).then_with(|| key(&sets[a]).cmp(&key(&sets[b]))));
-    Some(std::iter::once(race.leader).chain(as_good).map(|i| sets[i].clone()).collect())
+    as_good.sort_by(by_mean);
+    let mut rest: Vec<usize> = (0..sets.len()).filter(|&i| i != race.leader && !race.tied[i]).collect();
+    rest.sort_by(by_mean);
+    let k = 1 + as_good.len();
+    Some((std::iter::once(race.leader).chain(as_good).chain(rest).map(|i| sets[i].clone()).collect(), k))
 }
 
 /// Every set of `min..=max` of `items` (in their order)
@@ -4038,6 +4045,14 @@ mod tests {
         // card you'd hold anyway: picking the 7♦ isn't credited with it
         let pick = pack_pick("7D", ("c_talisman", "Talisman", "Spectral"));
         assert!(!pick.note.contains("Talisman"), "{}", pick.note);
+    }
+
+    #[test]
+    fn a_consumable_that_changes_nothing_on_a_pack_card_isnt_credited() {
+        // The Empress (Mult) and a pack card that's already Mult: using it "on" the card is
+        // using it on the others, so the card gets no credit for it
+        let pick = pack_pick("7D:mult", ("c_empress", "The Empress", "Tarot"));
+        assert!(!pick.note.contains("Empress"), "{}", pick.note);
     }
 
     #[test]
