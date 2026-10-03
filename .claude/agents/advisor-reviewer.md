@@ -10,7 +10,7 @@ is the point. Do not edit files, commit, or run anything that changes the repo. 
 running tests is fine.
 
 Read first: `docs/design.md` (the four stages, the rules, the assumption register, the retire
-list) and the "How to improve the advice" part of `CLAUDE.md`. Then read the change: the
+list) and the "Refining the advice" part of `CLAUDE.md`. Then read the change: the
 commits or diff you're pointed at (`git log`, `git show`, `git diff`), and enough of the
 surrounding code to judge it.
 
@@ -21,8 +21,9 @@ Check, with file:line references:
    joker, suit, hand or card (a patch)? Card-specific code is only acceptable as a game fact
    in the engine or `data/`.
 2. **One measure.** Does every new value of money, planets, jokers or cards go through
-   `advise/value.rs` (`Gain`, `LongRun::value`, `LongRun::planet`, `Spending`)? Flag any new
-   formula elsewhere, and anything valued twice.
+   `advise/value.rs` (`Gain`, `LongRun::value`, `LongRun::planet`, `Spending`; deck changes
+   through `LongRun::deck_value`, `deck_value_part`, `deck_rounds`)? Flag any new formula
+   elsewhere, and anything valued twice.
 3. **Search, not picks.** Are candidates generated in full and narrowed by simulation, or
    hand-picked?
 4. **Simulated player.** If the change adds something worth having beyond winning, do both
@@ -37,7 +38,7 @@ Check, with file:line references:
    `CLAUDE.md`), is there a `docs/decisions.md` entry for it, and is it general (widens or
    replaces a rule) rather than an exception or a rule only one case needs?
 
-Report under 500 words: findings ranked by how likely they are to cause the next
-"patch on patch", each with what a general fix looks like. Be specific and skeptical, no
-praise. If something you'd flag is a genuine game fact or already listed as a known gap,
-say so instead of flagging it.
+Report only the findings, ranked by how likely they are to cause the next "patch on
+patch", each with what a general fix looks like; don't restate the change. Be specific and
+skeptical, no praise. If something you'd flag is a genuine game fact or already listed as a
+known gap, say so instead of flagging it.

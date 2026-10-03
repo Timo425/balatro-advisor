@@ -123,8 +123,8 @@ evaluation order, joker configs and save layout. It is proprietary, so:
 - we **never commit** its source (`/game-src/` is gitignored);
 - joker facts (name, rarity, cost, numeric config values) are functional data
   that is also published on the wiki. A dev script extracts them from the
-  owner's local install into `data/jokers.base.json`, and we commit that
-  generated file (values only, no code). A test re-checks it against the
+  owner's local install into `data/game.json` (planned as `jokers.base.json`),
+  and we commit that generated file (values only, no code). A test re-checks it against the
   install when one is present.
 
 ### Related local repos
