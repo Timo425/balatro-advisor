@@ -209,3 +209,24 @@ fn trace_ends_at_the_score() {
     assert_eq!(last.chips * last.mult, o.score);
     assert!(o.trace.iter().any(|s| s.source == "Cavendish"));
 }
+
+#[test]
+fn jokers_grow_from_shop_events_by_their_game_data() {
+    // card.lua: Red Card +extra (3) Mult per booster pack skipped, Flash Card +extra (2) per
+    // reroll; the amounts come from data/game.json, nothing else grows from them
+    for (key, ev, per) in [("j_red_card", RunEvent::SkipPack, 3.0), ("j_flash", RunEvent::Reroll, 2.0)] {
+        let mut x = j(key);
+        assert_eq!(x.mult_from(ev), per, "{key}");
+        let other = RunEvent::ALL.into_iter().find(|&e| e != ev).unwrap();
+        assert_eq!(x.mult_from(other), 0.0, "{key} on {other:?}");
+        x.grow_from(ev, 2.0);
+        assert_eq!(x.mult, 2.0 * per);
+        x.grow_from(ev, -5.0);
+        assert_eq!(x.mult, 0.0, "undoing never goes below 0");
+        x.debuff = true;
+        assert_eq!(x.mult_from(ev), 0.0, "a debuffed {key} doesn't grow");
+    }
+    for key in ["j_joker", "j_blueprint", "j_constellation", "j_green_joker"] {
+        assert!(RunEvent::ALL.iter().all(|&e| j(key).mult_from(e) == 0.0), "{key}");
+    }
+}

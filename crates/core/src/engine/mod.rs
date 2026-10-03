@@ -8,7 +8,7 @@ pub mod rng;
 pub mod score;
 
 pub use hand::{HandInfo, HandType, RuleFlags};
-pub use joker::{Joker, Kind};
+pub use joker::{Joker, Kind, RunEvent};
 pub use rng::{Lucky, Rng, Rolls, Unlucky};
 pub use score::{discard_money, BlindRules, Board, Level, Outcome, Step, score};
 #[cfg(test)]

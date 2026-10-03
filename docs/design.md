@@ -20,7 +20,7 @@ failed: fix that stage for every case, not the case.
 |---|---|---|
 | **Moves tried** | Which choices are compared? All of them, narrowed down by simulation, never a hand-picked few. | Best play (`advise/play.rs`): `sim::all_plays` (every 1–5 card play) and `sim::all_discards` (every discard), for your hand as it is and after each held consumable, all in one `compare::race`. Shop: `advise.rs` `shop_options` (every shop item, pack pick and "leave"). Skip-or-play. A consumable's targets: every set of cards its game data allows (`engine::consumable`), in the hand it's used from, in one `compare::race` on the deck projection. |
 | **Simulated player** | How is the rest of the round played out? Toward the same measure the advice uses. | `sim::decide` (play/discard policy, a labelled heuristic), `sim::RoundGoals` + `play_on_instead` (weighs "win now" against playing on, with a few simulated futures), `sim::pays_at_end` (cards that pay at round end stay in hand while on pace), held consumables: used for score as soon as they lift the best play, the biggest lift first (`sim::use_if_better`), except one that would put a card that pays at round end in hand, which is held while on pace; right before the winning hand, each that makes the win worth more by `RoundGoals::value` is used (`sim::finish_with_uses`: a Blue Seal or Gold card more in hand at the end, a slot freed for a planet). The "play on" futures play to the same goals, the finish included, without looking ahead again |
-| **Valuation** | What is an outcome worth? One measure, measured by simulating your board. | `advise/value.rs`: `LongRun` (your board projected to Ante 8; `value(&Gain)` for anything a run gains: one-off money, money held, planets with Constellation, levels; `planet(hand)`; `long_of` for jokers), `Spending` (money held past the planet-level cap, worth the rerolls and packs it buys). `RoundGoals` for the simulated player is built from these. Shop ranking: `rank_options` (survive × next-ante survival × long-run). |
+| **Valuation** | What is an outcome worth? One measure, measured by simulating your board. | `advise/value.rs`: `LongRun` (your board projected to Ante 8; `value(&Gain)` for anything a run gains: one-off money, money held, planets with Constellation, levels, the shop events jokers grow from (pack skips, rerolls: `grow_from`, the amounts from `engine` `Joker::mult_from`; money buys them through `bought_event` / `events_held`); `planet(hand)`; `long_of` for jokers), `Spending` (money held past the planet-level cap, worth the rerolls and packs it buys). `RoundGoals` for the simulated player is built from these. Shop ranking: `rank_options` (survive × next-ante survival × long-run). |
 | **Noise** | Which differences are real? | `advise/compare.rs` `race`: the same draws for every option, in batches on fresh rounds until the best is clear; options clearly worse drop, options shown within 1% of the leader's value are ties, reported as ties (showing it takes enough shared rounds for a rare round where they part ways to have turned up: 3 × the largest round value / n ≤ 1% of the leader's value; a tie stands only through ties to the final leader; tied moves are ordered by their paired difference to the leader); options still in at the round cap are "undecided" and every caller reports them as ties too (as good as far as those rounds can tell; at a low cap, such as the target search's 128 rounds, that's all a tie can be, since showing one needs about 300); past that, an explicit budget (by value, then a secondary value such as how close lost rounds came to the target) limits how many stay in, and is named as a budget, not a finding. The search is measured against a reference (every move on `compare::MAX` rounds of its own: `search_against_reference` in tests/replay.rs). Same seeds (common random numbers) everywhere; cards are put in one fixed order (`Card::order_key`) before anything random touches them, so card order never changes the advice (tested). |
 
 Layers underneath: `save` (reads the game's files), `engine` (the scoring pass, checked
@@ -85,10 +85,10 @@ vs actual blind results and every shop seen).
 | Typical find ×1.25; empty slots ×1.5 / +60 Chips / +15 Mult by shop weights | `value.rs` `stand_in`, `fill_long` | the jokers you'll find by Ante 8 | final boards of won runs (calibration log) |
 | Money worth 30·(1 − e^(−m/30)) | `value.rs` `spendable` | money buys less the more you have | what money turned into in logged shops |
 | Planet levels from money held: 0.5 an ante + (money − interest line)/20, at most 2 an ante; $18 an ante below the line | `value.rs` `levels_for` | planets bought with spare money | logged planet buys per ante |
-| One-off money: $5 a reroll or pack skip, $12 a main-hand level, $4 any planet (the same planets both level and grow Constellation) | `value.rs` `spend_once` | what a one-off sum buys | logged shops |
+| One-off money: $5 a reroll or pack skip (the event the board's jokers grow most from, `bought_event`), $12 a main-hand level, $4 any planet (the same planets both level and grow Constellation) | `value.rs` `spend_once`, `EVENT_PRICE` | what a one-off sum buys | logged shops |
 | Rent $9 an ante | `value.rs` `RENT_PER_ANTE` | $3 a round × 3 | exact |
 | 48 rounds per projected board | `value.rs` `long_score` | projection noise | compare against more rounds |
-| Growth by Ante 8: at most 6 growth steps bought with money, 12 hands an ante, per-joker rates | `advise.rs` `grow_antes` | how growing jokers grow | logged runs |
+| Growth by Ante 8: shop events bought with money held, 1 an ante plus 1 per $5 above the interest line, at most 6 an ante (`events_held`; every joker that grows from one grows); 12 hands an ante, per-joker rates for the rest | `advise.rs` `grow_antes`, `value.rs` `events_held` | how growing jokers grow | logged runs |
 | Madness horizon 1 ante | `value.rs` `long_of` | it eats your jokers | — |
 | Spending: level cap reached at the interest line + $30; packs $4, 2 a shop, each further one ×0.8; typical pack by shop weights (game.lua 4/4/1.2/0.6/4), Standard counted as 0 | `value.rs` `Spending` | money past the cap buys rerolls and packs | logged packs opened and picks |
 | Rerolls: up to 8 a shop; each further joker bought counts ×0.6 | `advise.rs` `money_value_with`, `expected_buys` | joker gains don't simply add up | logged rerolls |
@@ -123,7 +123,7 @@ add to this list's kind; remove from it.
 |---|---|---|
 | Two "best card" orderings: DNA's copies, Aura's target (a random edition, so not in `engine::consumable`) | `value.rs` `dna_long`, `advise.rs` `tarot_values` | the target search (`engine::consumable` + `compare::race`), with random effects over their outcomes |
 | Suit-joker map, `kickers_matter` list, `income_per_ante` per joker | `sim.rs` `keep_suit`, `advise.rs` | game facts: move to `data/` or the engine; or work out what to keep by scoring with and without a card |
-| Red Card grows in three places | `grow_antes`, `spend_once`, skip-or-play | one place, through `Gain` |
+| Constellation grows from planets in several places | `value.rs` `add_planets`, `spend_once`; `advise.rs` Meteor tag, `grow_constellation` | a planet used as an event in `engine::RunEvent` (`Joker::mult_from` grows ×Mult too), counted through `Gain::planets` |
 | A short perishable's price dropped from its value | `advise.rs` (`long_mult = 1 + unlock`) | `LongRun::value` with its price |
 
 ## Known gaps
@@ -149,8 +149,10 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    decided once (in the target race, from its first batch: a fixed offset its paired test
    can't see); the voucher, tag and Emperor
    formulas, and the shop ranking spend leftover money on rerolls in each of its three
-   factors. The general fix: deck, joker and hand-size fields in `Gain`, and each dollar spent
-   once in one model.
+   factors; money held above the interest line buys both shop events (`events_held`: pack
+   skips, rerolls) and planet levels (`levels_for`), and Red Card and Flash Card each get the
+   full count. The general fix: deck, joker and hand-size fields in `Gain`, and each dollar
+   spent once in one model.
 5. **The simulated player's policy (`decide_cards`) is a rulebook,** partly keyed to jokers, and
    only ever chases flushes. The general fix: compare policy moves with a cheap search using
    the engine, as the look-ahead does at "win now".

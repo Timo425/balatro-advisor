@@ -307,6 +307,42 @@ impl Joker {
         j.sell_value = ((c.cost as f64) / 2.0).floor().max(1.0);
         Some(j)
     }
+
+    /// The Mult one `ev` adds to this joker (card.lua `Card:calculate_joker`: Red Card in the
+    /// `skipping_booster` context, Flash Card in `reroll_shop`, each by its `ability.extra`;
+    /// both `not context.blueprint`, so copies don't grow, and a debuffed joker doesn't run).
+    pub fn mult_from(&self, ev: RunEvent) -> f64 {
+        if self.debuff {
+            return 0.0;
+        }
+        match (self.kind, ev) {
+            (Kind::RedCard, RunEvent::SkipPack) | (Kind::Flash, RunEvent::Reroll) => self.extra.n,
+            _ => 0.0,
+        }
+    }
+
+    /// The joker after `n` of `ev` (a fraction is a share of one; negative undoes them, never
+    /// below 0 Mult).
+    pub fn grow_from(&mut self, ev: RunEvent, n: f64) {
+        let per = self.mult_from(ev);
+        if per != 0.0 {
+            self.mult = (self.mult + per * n).max(0.0);
+        }
+    }
+}
+
+/// Things that happen in the shop, outside any round, that some jokers grow from
+/// (`Joker::mult_from`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum RunEvent {
+    /// A booster pack skipped (`G.FUNCS.skip_booster`, any kind of pack)
+    SkipPack,
+    /// The shop rerolled (`G.FUNCS.reroll_shop`)
+    Reroll,
+}
+
+impl RunEvent {
+    pub const ALL: [RunEvent; 2] = [RunEvent::SkipPack, RunEvent::Reroll];
 }
 
 /// The `ability` table `Card:set_ability` builds from a center's config (card.lua).

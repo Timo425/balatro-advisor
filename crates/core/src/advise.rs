@@ -9,7 +9,7 @@ use std::time::Instant;
 use serde::Serialize;
 
 use crate::data::{GameData, RARITY_NAMES};
-use crate::engine::{Board, Joker, Kind};
+use crate::engine::{Board, Joker, Kind, RunEvent};
 use crate::model::Card;
 use crate::gold::GoldReport;
 use crate::model::Edition;
@@ -1223,9 +1223,15 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         options[i].long_mult = m;
     }
     let base_reach_now = base_odds.get(key_round).zip(ctx.specs.get(key_round)).map_or(0.0, |(o, sp)| o.1.mean / sp.start.target.max(1.0));
+    // Any booster pack can be skipped instead of picking from it (card.lua: every kind
+    // calls `skipping_booster`), so each pick is worth at least skipping it: ×1.00, or more
+    // with a joker that grows from it (`LongRun::event`)
+    let skip = lr.event(RunEvent::SkipPack);
+    let skip_note = if skip > 1.0 { format!(" · or skip it for {} (×{skip:.2} by Ante 8)", lr.event_note(RunEvent::SkipPack)) } else { String::new() };
     // Random jokers (Judgement, rerolls, Buffoon packs): the best one seen, and one you
-    // don't want is sold, so a draw is worth at least a typical find (×1.00). Its price
-    // comes off as one-off money.
+    // don't want is sold (or the pack skipped), so a draw is worth at least a typical find
+    // (×1.00). Its price comes off as one-off money; a reroll is also the event Flash Card
+    // grows from (`Gain::rerolls`).
     let mut rng = crate::engine::Rng::new(opts.seed ^ 0x10ae);
     for o in options.iter_mut() {
         let (cards, share) = match (o.kind.as_str(), o.key.as_deref()) {
@@ -1234,7 +1240,8 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             ("pack", _) if o.label.contains("Buffoon") => (if o.label.contains("Jumbo") || o.label.contains("Mega") { 4 } else { 2 }, 1.0),
             _ => continue,
         };
-        let draw = long_draw(&pool_entries, cards, share, &mut rng);
+        let is_pack = o.kind == "pack";
+        let draw = long_draw(&pool_entries, cards, share, if is_pack { skip } else { 1.0 }, &mut rng);
         // a reroll's jokers still have to be paid for; a pack's are free
         let budget = if o.kind == "reroll" { (run.dollars - o.cost as f64).max(0.0) } else { f64::INFINITY };
         o.reach = Some(reach_draw(&pool_entries, key_round, base_reach_now, cards, share, budget, &mut rng));
@@ -1247,12 +1254,18 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         // A Mega pack's second pick is worth at least its sell value (take it and sell it):
         // about $2.50 for an average joker
         let second = if o.kind == "pack" && o.label.contains("Mega") { 2.5 } else { 0.0 };
-        let price = lr.value(&Gain::money(second - o.cost as f64));
+        let rerolls = if o.kind == "reroll" { 1.0 } else { 0.0 };
+        let price = lr.value(&Gain { money: second - o.cost as f64, rerolls, ..Default::default() });
         o.long_mult = Some(draw * price);
+        if is_pack {
+            o.note.push_str(&skip_note);
+        } else if rerolls > 0.0 && lr.event(RunEvent::Reroll) > 1.0 {
+            o.note = format!("{} · {}", o.note, lr.event_note(RunEvent::Reroll));
+        }
     }
     // Tarots: a changed deck is permanent, so it's projected like everything else; money
     // tarots through money; Judgement as a random joker. Arcana packs take the best card
-    // in them, or the skip when Red Card grows from it (+3 Mult).
+    // in them, or the skip.
     let tarot_long: Vec<f64> = par_map(&tarots, |t| {
         // Every deck change through one valuation: its score, what its cards earn, and the
         // planets of any Blue Seal cards it adds (`LongRun::deck_value`)
@@ -1268,7 +1281,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         } else if t.money_gain > 0.0 {
             lr.value(&Gain::money(t.money_gain))
         } else if t.key == "c_judgement" {
-            long_draw(&pool_entries, 1, 1.0, &mut crate::engine::Rng::new(opts.seed ^ 0x1d6e))
+            long_draw(&pool_entries, 1, 1.0, 1.0, &mut crate::engine::Rng::new(opts.seed ^ 0x1d6e))
         } else if t.key == "c_black_hole" {
             lr.value(&Gain { all_levels: 1, ..Default::default() })
         } else if t.key == "c_wraith" && t.simulated {
@@ -1301,16 +1314,6 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     for (t, l) in tarots.iter_mut().zip(&tarot_long) {
         t.long_mult = Some(*l);
     }
-    let skip_long = {
-        let mut b = lr.fill_long(lr.project(&|_| true, run.dollars), None, 0.0);
-        match b.jokers.iter_mut().find(|j| j.key == "j_red_card") {
-            Some(j) => {
-                j.mult += 3.0;
-                lr.long_score(&b) / l0
-            }
-            None => 1.0,
-        }
-    };
     // Every planet the game can offer, projected: its hand +1 level, Constellation +×0.1
     let planet_hands: Vec<crate::engine::HandType> = data
         .centers
@@ -1329,25 +1332,25 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             // planets: a level for their hand, and ×0.1 for Constellation each; a Mega pack's
             // second pick used too (about an average planet)
             let k = if o.label.contains("Jumbo") || o.label.contains("Mega") { 5 } else { 3 };
-            let vals: Vec<f64> = planet_long.iter().map(|v| v.max(1.0)).collect();
+            let vals: Vec<f64> = planet_long.iter().map(|v| v.max(skip)).collect();
             if !vals.is_empty() {
                 let mut v = best_of_subsets(&vals, k).0;
                 if o.label.contains("Mega") {
                     v *= vals.iter().sum::<f64>() / vals.len() as f64;
                 }
                 o.long_mult = Some(v * price(o.cost));
+                o.note.push_str(&skip_note);
             }
         } else if o.kind == "pack" && o.label.contains("Spectral") {
             let k = if o.label.contains("Jumbo") || o.label.contains("Mega") { 4 } else { 2 };
-            let vals: Vec<f64> = tarot_long.iter().zip(&tarots).filter(|(_, t)| t.spectral).map(|(v, _)| v.max(skip_long)).collect();
+            let vals: Vec<f64> = tarot_long.iter().zip(&tarots).filter(|(_, t)| t.spectral).map(|(v, _)| v.max(skip)).collect();
             o.long_mult = Some(best_of_subsets(&vals, k).0 * price(o.cost));
+            o.note.push_str(&skip_note);
         } else if o.kind == "pack" && o.label.contains("Arcana") {
             let k = if o.label.contains("Jumbo") || o.label.contains("Mega") { 5 } else { 3 };
-            let vals: Vec<f64> = tarot_long.iter().zip(&tarots).filter(|(_, t)| !t.spectral).map(|(v, _)| v.max(skip_long)).collect();
+            let vals: Vec<f64> = tarot_long.iter().zip(&tarots).filter(|(_, t)| !t.spectral).map(|(v, _)| v.max(skip)).collect();
             o.long_mult = Some(best_of_subsets(&vals, k).0 * price(o.cost));
-            if skip_long > 1.0 {
-                o.note = format!("{} · or skip it for Red Card +3 Mult (×{skip_long:.2} by Ante 8)", o.note);
-            }
+            o.note.push_str(&skip_note);
         }
     }
     // Standard pack cards: your deck with the card added, projected to Ante 8. A consumable
@@ -1513,10 +1516,10 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     if run.screen == crate::save::Screen::Shop && run.open_pack.is_empty() {
         options.push(keep_money("next round", "leave", format!("keep your ${:.0}", run.dollars), 1.0));
     }
-    // Skipping an open pack likewise (with Red Card it also grows)
+    // Skipping an open pack likewise (and the jokers that grow from it grow)
     if !run.open_pack.is_empty() {
-        let note = if skip_long > 1.0 { "Red Card +3 Mult".to_string() } else { "take nothing".to_string() };
-        options.push(keep_money("skip the pack", "skip", note, skip_long.max(1.0)));
+        let note = if skip > 1.0 { lr.event_note(RunEvent::SkipPack) } else { "take nothing".to_string() };
+        options.push(keep_money("skip the pack", "skip", note, skip.max(1.0)));
     }
     // Survival with the shops before this ante's hardest round: what the money each option
     // leaves you buys there (rerolls, the best jokers they show), on top of the option.
@@ -1610,16 +1613,16 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         let what = match key.as_str() {
             "tag_charm" | "tag_ethereal" => {
                 let spectral = key == "tag_ethereal";
-                let picks: Vec<(f64, f64)> = tarots.iter().zip(&tarot_long).filter(|(t, _)| t.spectral == spectral).map(|(t, l)| (t.p_win.max(p_boss), l.max(1.0))).collect();
+                let picks: Vec<(f64, f64)> = tarots.iter().zip(&tarot_long).filter(|(t, _)| t.spectral == spectral).map(|(t, l)| (t.p_win.max(p_boss), l.max(skip))).collect();
                 let k_cards = if spectral { 2 } else { 5 };
                 boss_p = best_of_subsets(&picks.iter().map(|x| x.0).collect::<Vec<_>>(), k_cards).0;
                 long = best_of_subsets(&picks.iter().map(|x| x.1).collect::<Vec<_>>(), k_cards).0;
-                if spectral { "a Spectral pack (2 cards, pick 1)".to_string() } else { "a Mega Arcana pack (5 tarots, pick 2; counted as your best 1)".to_string() }
+                format!("{}{skip_note}", if spectral { "a Spectral pack (2 cards, pick 1)" } else { "a Mega Arcana pack (5 tarots, pick 2; counted as your best 1)" })
             }
             "tag_buffoon" => {
                 boss_p = expected_best(&pool_entries, key_round, p_boss, 4, 1.0, f64::INFINITY, per_rarity, &mut rng).max(p_boss);
-                long = long_draw(&pool_entries, 4, 1.0, &mut rng);
-                "a Mega Buffoon pack (4 jokers, pick 2; counted as your best 1)".to_string()
+                long = long_draw(&pool_entries, 4, 1.0, skip, &mut rng);
+                format!("a Mega Buffoon pack (4 jokers, pick 2; counted as your best 1){skip_note}")
             }
             "tag_rare" | "tag_uncommon" => {
                 let (p, l) = rarity_avg(if key == "tag_rare" { 3 } else { 2 });
@@ -1664,9 +1667,9 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                 next_boards = vec![(hit, with_now), (1.0 - hit, without_now)];
                 // two planets: your main hand's and another, or two others
                 let with = Gain { planets: top_hand.map(|t| vec![(t, 1.0)]).unwrap_or_default(), other_planets: if top_hand.is_some() { 1.0 } else { 2.0 }, ..Default::default() };
-                long = hit * lr.value(&with) + (1.0 - hit) * lr.value(&Gain { other_planets: 2.0, ..Default::default() });
+                long = hit * lr.value(&with).max(skip) + (1.0 - hit) * lr.value(&Gain { other_planets: 2.0, ..Default::default() }).max(skip);
                 let cons = run.jokers.iter().any(|j| j.key == "j_constellation");
-                format!("a Mega Celestial pack (5 planets, pick 2){}", if cons { "; Constellation +×0.2 from the two planets" } else { "" })
+                format!("a Mega Celestial pack (5 planets, pick 2){}{skip_note}", if cons { "; Constellation +×0.2 from the two planets" } else { "" })
             }
             "tag_juggle" if bv.slot == "Big" => {
                 if let Some(sp) = ctx.specs.get(key_round) {
@@ -1708,7 +1711,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     let (levels_per_ante, planet_levels) = lr.levels_for(run.dollars + flow_now, flow_now);
     let planet_levels = planet_levels.round() as i64;
     let long_note = format!(
-        "Your board projected {antes_left:.1} antes ahead: growing jokers grown, fading ones faded, perishables that run out dropped, {} +{planet_levels} levels (about {levels_per_ante:.1} per ante with your money), empty slots filled with stand-in jokers (×1.5, +60 Chips or +15 Mult, in proportion to how often your shop pool offers each type). Each option is compared with a typical find (×1.25) in its slot, on whole simulated rounds, with the money it leaves you: its price, what selling a joker gives back or a money card gives (spent once: pack skips for Red Card/Flash ~$5 each, else ~$12 a level of your main hand, and ~$4 a planet for Constellation; money counts for less the more you have (the next dollar is worth about half at $20); interest lost or gained over the next ante included), and $9 less money held every ante per rental; money jokers (Golden, Rocket, Cloud 9, To the Moon, Egg, Mail-In Rebate) add their payout per ante. Your sellable jokers weaker than a typical find are assumed replaced by then, and a sellable option counts at least as a typical find less its price net of what selling it gives back; eternal ones stay, however weak. ×1.00 = as good as a typical find.",
+        "Your board projected {antes_left:.1} antes ahead: growing jokers grown, fading ones faded, perishables that run out dropped, {} +{planet_levels} levels (about {levels_per_ante:.1} per ante with your money), empty slots filled with stand-in jokers (×1.5, +60 Chips or +15 Mult, in proportion to how often your shop pool offers each type). Each option is compared with a typical find (×1.25) in its slot, on whole simulated rounds, with the money it leaves you: its price, what selling a joker gives back or a money card gives (spent once: ~$5 a pack skip or reroll when a joker grows from them (Red Card, Flash Card), else ~$12 a level of your main hand, and ~$4 a planet for Constellation; money counts for less the more you have (the next dollar is worth about half at $20); interest lost or gained over the next ante included), and $9 less money held every ante per rental; money jokers (Golden, Rocket, Cloud 9, To the Moon, Egg, Mail-In Rebate) add their payout per ante. Your sellable jokers weaker than a typical find are assumed replaced by then, and a sellable option counts at least as a typical find less its price net of what selling it gives back; eternal ones stay, however weak. ×1.00 = as good as a typical find.",
         top_hand.map_or("your main hand", |h| h.name())
     );
     let shares: Vec<f64> = jokers.iter().map(|j| j.score_share).collect();
@@ -2639,14 +2642,15 @@ fn grow_constellation(b: &mut Board) {
 }
 
 /// Average over random draws of the best By Ante 8 value among `cards` shop cards (each a
-/// joker with chance `joker_share`, rarity 70/25/5), never below ×1.00 (a bad one is sold).
-fn long_draw(pool: &[Candidate], cards: usize, joker_share: f64, rng: &mut crate::engine::Rng) -> f64 {
+/// joker with chance `joker_share`, rarity 70/25/5), never below `floor`: ×1.00 (a bad one
+/// is sold), or skipping the pack when that's worth more.
+fn long_draw(pool: &[Candidate], cards: usize, joker_share: f64, floor: f64, rng: &mut crate::engine::Rng) -> f64 {
     use crate::engine::Rolls;
     let by_rarity: [Vec<f64>; 4] = [0u8, 1, 2, 3].map(|r| pool.iter().filter(|c| c.rarity_n == r).map(|c| c.long_mult.unwrap_or(1.0)).collect());
     let trials = 2000;
     let mut total = 0.0;
     for _ in 0..trials {
-        let mut best: f64 = 1.0;
+        let mut best: f64 = floor;
         for _ in 0..cards {
             if !rng.chance(joker_share) {
                 continue;
@@ -3808,18 +3812,23 @@ fn grow_one_ante(j: &Joker, hand_mix: &[HandShare], dollars: f64, interest_line:
 
 /// `grow_one_ante` over `antes` antes (growth and fading scale with it; labels describe one ante).
 fn grow_antes(j: &Joker, hand_mix: &[HandShare], dollars: f64, interest_line: f64, antes: f64) -> Option<(Joker, String, bool)> {
-    // Growth you pay for (skipping packs, rerolling): one per ante you'd do anyway, plus
-    // one per $5 of money above the interest line (cash that isn't earning anything).
-    let spare = (dollars - interest_line).max(0.0);
-    let buys = (1.0 + (spare / 5.0).floor()).min(6.0);
+    // Growth from shop events (skipping packs, rerolling), bought with the money you hold
+    // (`value::events_held`) and grown the game's way (`Joker::grow_from`)
+    if let Some(ev) = RunEvent::ALL.into_iter().find(|&ev| j.mult_from(ev) > 0.0) {
+        let buys = value::events_held(dollars, interest_line);
+        let mut g = j.clone();
+        g.grow_from(ev, buys * antes);
+        let s = if buys > 1.0 { "s" } else { "" };
+        let what = match ev {
+            RunEvent::SkipPack => format!("skip {buys:.0} booster pack{s} (1 you'd open anyway"),
+            RunEvent::Reroll => format!("reroll {buys:.0} time{s} (1 anyway"),
+        };
+        return Some((g, format!("+{} Mult after 1 ante if you {what}, plus 1 per $5 above the ${interest_line:.0} interest line)", j.mult_from(ev) * buys), false));
+    }
     let share = |hands: &[&str]| hand_mix.iter().filter(|h| hands.contains(&h.hand.as_str())).map(|h| h.played).sum::<f64>();
     let hands_per_ante = 12.0;
     let mut g = j.clone();
     let (label, fades) = match j.key.as_str() {
-        "j_red_card" => {
-            g.mult += 3.0 * buys * antes;
-            (format!("+{} Mult after 1 ante if you skip {buys:.0} booster pack{} (1 you'd open anyway, plus 1 per $5 above the ${interest_line:.0} interest line)", 3.0 * buys, if buys > 1.0 { "s" } else { "" }), false)
-        }
         "j_green_joker" => {
             g.mult += 4.0 * antes;
             ("+4 Mult after 1 ante (+1 per hand, −1 per discard)".to_string(), false)
@@ -3841,10 +3850,6 @@ fn grow_antes(j: &Joker, hand_mix: &[HandShare], dollars: f64, interest_line: f6
         "j_square" => {
             g.extra.chips += 4.0 * 3.0 * antes;
             ("+12 Chips after 1 ante (3 hands of exactly 4 cards)".to_string(), false)
-        }
-        "j_flash" => {
-            g.mult += 2.0 * buys * antes;
-            (format!("+{} Mult after 1 ante if you reroll {buys:.0} time{} (1 anyway, plus 1 per $5 above the ${interest_line:.0} interest line)", 2.0 * buys, if buys > 1.0 { "s" } else { "" }), false)
         }
         "j_castle" => {
             g.extra.chips += 3.0 * 7.0 * antes;
@@ -4026,12 +4031,14 @@ mod tests {
             rarity_n: r, precise: false, per_shop: None, roles: vec![], note: None, desc: None, growth: None, long_mult: Some(m), sell_note: None,
         };
         let mut rng = crate::engine::Rng::new(1);
-        let weak = long_draw(&[c(1, 0.5), c(2, 0.7), c(3, 0.9)], 2, 1.0, &mut rng);
+        let weak = long_draw(&[c(1, 0.5), c(2, 0.7), c(3, 0.9)], 2, 1.0, 1.0, &mut rng);
         assert!((weak - 1.0).abs() < 1e-9, "bad draws are sold, not kept: {weak}");
-        let one = long_draw(&[c(1, 1.5), c(2, 1.5), c(3, 1.5)], 1, 1.0, &mut rng);
+        let one = long_draw(&[c(1, 1.5), c(2, 1.5), c(3, 1.5)], 1, 1.0, 1.0, &mut rng);
         assert!((one - 1.5).abs() < 1e-9);
-        let rarely = long_draw(&[c(1, 2.0), c(2, 2.0), c(3, 2.0)], 1, 0.2, &mut rng);
+        let rarely = long_draw(&[c(1, 2.0), c(2, 2.0), c(3, 2.0)], 1, 0.2, 1.0, &mut rng);
         assert!(rarely > 1.0 && rarely < 1.4, "a card that's seldom a joker: {rarely}");
+        let skipped = long_draw(&[c(1, 0.5), c(2, 0.7), c(3, 1.1)], 2, 1.0, 1.2, &mut rng);
+        assert!((skipped - 1.2).abs() < 1e-9, "a pack is worth at least skipping it: {skipped}");
     }
 
     #[test]
@@ -4057,6 +4064,90 @@ mod tests {
         assert!(pick.label.starts_with("pick 2♣") && pick.long_mult.is_some(), "{}", pick.label);
         let skip = a.options.iter().find(|o| o.kind == "skip").expect("Red Card makes skipping an option");
         assert!(skip.long_mult.unwrap() > 1.0);
+    }
+
+    /// The valuation alone, on a run (no hand mix, no shop pool): enough for `LongRun`.
+    fn with_long_run<T>(run: &RunState, f: impl FnOnce(&value::LongRun) -> T) -> T {
+        let data = GameData::bundled();
+        let mut fresh_deck = run.full_deck();
+        fresh_deck.sort_by_key(Card::order_key);
+        let ctx = Ctx { run, shares: vec![], data, base: Board::from_run(run, data), specs: vec![], fresh_deck, opts: quick() };
+        let lr = value::LongRun::new(&ctx, &[], &[], [0; 4]);
+        f(&lr)
+    }
+
+    fn mults(b: &Board, key: &str) -> Vec<f64> {
+        b.jokers.iter().filter(|j| j.key == key).map(|j| j.mult).collect()
+    }
+
+    #[test]
+    fn a_shop_event_grows_every_joker_that_grows_from_it_through_gain() {
+        // card.lua: every Red Card grows on a skipped pack, every Flash Card on a reroll; a
+        // board where nothing grows from it gains exactly nothing
+        for (key, ev, per) in [("j_red_card", RunEvent::SkipPack, 3.0), ("j_flash", RunEvent::Reroll, 2.0)] {
+            let r = shop_run(&[(key, None, None), (key, None, None), ("j_joker", None, None)], &[]);
+            let (before, after) = with_long_run(&r, |lr| (lr.board_with(&Gain::default()), lr.board_with(&Gain::event(ev, 1.0))));
+            let grown: Vec<f64> = mults(&after, key).iter().zip(mults(&before, key)).map(|(a, b)| a - b).collect();
+            assert_eq!(grown, vec![per, per], "{key}: both copies grow by their game data");
+            let plain = shop_run(&[("j_joker", None, None), ("j_joker", None, None)], &[]);
+            assert_eq!(with_long_run(&plain, |lr| (lr.event(ev), lr.value(&Gain::event(ev, 1.0)))), (1.0, 1.0));
+        }
+        let r = shop_run(&[("j_red_card", None, None), ("j_joker", None, None)], &[]);
+        assert!(with_long_run(&r, |lr| lr.event(RunEvent::SkipPack)) > 1.0);
+    }
+
+    #[test]
+    fn one_off_money_buys_the_event_the_board_grows_most_from_whatever_the_joker_order() {
+        // $20 once with Red Card (+3 a skip) and Flash Card (+2 a reroll): it buys pack skips,
+        // in either order; the jokers' order never decides it
+        for owned in [[("j_flash", None, None), ("j_red_card", None, None)], [("j_red_card", None, None), ("j_flash", None, None)]] {
+            let r = shop_run(&owned, &[]);
+            let (before, after) = with_long_run(&r, |lr| (lr.board_with(&Gain::default()), lr.board_with(&Gain::money(20.0))));
+            assert!(mults(&after, "j_red_card")[0] > mults(&before, "j_red_card")[0], "{owned:?}: Red Card grows");
+            assert_eq!(mults(&after, "j_flash"), mults(&before, "j_flash"), "{owned:?}: the same money doesn't also reroll");
+        }
+    }
+
+    #[test]
+    fn every_pack_and_reroll_counts_the_jokers_that_grow_from_it() {
+        // Any booster pack can be skipped (card.lua skipping_booster), so every kind is worth at
+        // least skipping it (free here, so no price comes off); a reroll counts Flash Card's growth
+        let pack = |key: &str, name: &str| crate::save::ItemCard { key: key.into(), name: name.into(), set: "Booster".into(), cost: 0, edition: None, card: None };
+        for (owned, note) in [("j_red_card", "or skip it for Red Card +3 Mult"), ("j_flash", "Flash Card +2 Mult")] {
+            let mut r = shop_run(&[(owned, None, None), ("j_joker", None, None)], &[]);
+            r.shop.as_mut().unwrap().boosters = vec![
+                pack("p_celestial_normal_1", "Celestial Pack"),
+                pack("p_arcana_normal_1", "Arcana Pack"),
+                pack("p_buffoon_normal_1", "Buffoon Pack"),
+                pack("p_spectral_normal_1", "Spectral Pack"),
+            ];
+            let a = analyze(&r, GameData::bundled(), None, &quick());
+            let kinds: Vec<&ShopOption> = a.options.iter().filter(|o| o.kind == "pack" || o.kind == "reroll").collect();
+            assert_eq!(kinds.len(), 5, "{:?}", a.options.iter().map(|o| &o.label).collect::<Vec<_>>());
+            for o in kinds {
+                let counted = o.note.contains(note);
+                let expect = (owned == "j_red_card") == (o.kind == "pack");
+                assert_eq!(counted, expect, "{owned}, {}: {}", o.label, o.note);
+                if counted && o.kind == "pack" {
+                    let skip: f64 = o.note.split("(×").nth(1).and_then(|x| x.split(' ').next()).and_then(|x| x.parse().ok()).expect("the skip's value");
+                    let v = o.long_mult.expect("a pack's value");
+                    assert!(v >= skip - 0.005, "{}: ×{v:.3} below skipping it (×{skip})", o.label);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_skip_tags_pack_can_be_skipped_too() {
+        // Skipping the blind for a Charm tag gives a Mega Arcana pack, which Red Card can skip
+        let mut r = shop_run(&[("j_red_card", None, None), ("j_joker", None, None)], &[]);
+        r.screen = crate::save::Screen::BlindSelect;
+        r.shop = None;
+        r.blinds[0].state = "Select".into();
+        r.blinds[0].skip_tag = Some("tag_charm".into());
+        let a = analyze(&r, GameData::bundled(), None, &quick());
+        let skip = a.blinds.iter().find_map(|b| b.skip.as_ref()).expect("skip or play");
+        assert!(skip.tag.contains("or skip it for Red Card +3 Mult"), "{}", skip.tag);
     }
 
     #[test]

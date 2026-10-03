@@ -12,7 +12,7 @@ use std::sync::{Mutex, OnceLock};
 use super::{best_of_subsets, glass_presence, grow_antes, income_per_ante, interest, money_value_with, par_map, round_mods, seal_round_chance, Candidate, Ctx, HandShare, Spec, TarotValue};
 use crate::engine::HandType;
 use crate::data::GameData;
-use crate::engine::{Board, Joker, Kind};
+use crate::engine::{Board, Joker, Kind, RunEvent};
 use crate::model::Card;
 use crate::save::{JokerCard, RunState};
 use crate::sim::{RoundRules, RoundStart};
@@ -28,6 +28,11 @@ const CHIP_JOKERS: &[&str] = &["j_stuntman", "j_bull", "j_banner", "j_scary_face
 /// Rent ($3 a round) comes out of the money that would buy planets, rerolls and pack skips:
 /// each rental counts as one ante of rent less money held.
 pub(super) const RENT_PER_ANTE: f64 = 9.0;
+
+/// What money pays for one shop event a joker grows from (a pack to skip, a reroll): about $5.
+pub(super) const EVENT_PRICE: f64 = 5.0;
+/// Events bought with money held: at most this many an ante.
+const EVENTS_PER_ANTE_MAX: f64 = 6.0;
 
 pub(super) struct LongRun<'a> {
     pub ctx: &'a Ctx<'a>,
@@ -75,12 +80,63 @@ pub(super) struct Gain {
     pub other_planets: f64,
     /// Levels on every hand, without planets (Black Hole)
     pub all_levels: i64,
+    /// Booster packs skipped (`RunEvent::SkipPack`): the jokers that grow from it grow
+    pub pack_skips: f64,
+    /// Shop rerolls (`RunEvent::Reroll`): likewise
+    pub rerolls: f64,
 }
 
 impl Gain {
     pub fn money(m: f64) -> Gain {
         Gain { money: m, ..Default::default() }
     }
+
+    /// `n` of `ev`
+    pub fn event(ev: RunEvent, n: f64) -> Gain {
+        let mut g = Gain::default();
+        *g.event_mut(ev) = n;
+        g
+    }
+
+    fn event_mut(&mut self, ev: RunEvent) -> &mut f64 {
+        match ev {
+            RunEvent::SkipPack => &mut self.pack_skips,
+            RunEvent::Reroll => &mut self.rerolls,
+        }
+    }
+
+    fn events(&self) -> [(RunEvent, f64); 2] {
+        RunEvent::ALL.map(|ev| (ev, match ev {
+            RunEvent::SkipPack => self.pack_skips,
+            RunEvent::Reroll => self.rerolls,
+        }))
+    }
+}
+
+/// The one place a shop event grows jokers: every joker on `b` that grows from `ev`
+/// (`Joker::mult_from`, the game's numbers), `n` times.
+pub(super) fn grow_from(b: &mut Board, ev: RunEvent, n: f64) {
+    for j in b.jokers.iter_mut() {
+        j.grow_from(ev, n);
+    }
+}
+
+/// The event money buys on `b`: the one its jokers grow most from (the first in
+/// `RunEvent::ALL` on a tie, never the order the jokers sit in); `None` when none grows.
+pub(super) fn bought_event(b: &Board) -> Option<RunEvent> {
+    let per = |ev: RunEvent| b.jokers.iter().map(|j| j.mult_from(ev)).sum::<f64>();
+    RunEvent::ALL.into_iter().filter(|&ev| per(ev) > 0.0).fold(None, |best: Option<RunEvent>, ev| match best {
+        Some(b) if per(b) >= per(ev) => Some(b),
+        _ => Some(ev),
+    })
+}
+
+/// Shop events bought each ante with money held at `dollars`: one you'd do anyway (a pack
+/// you'd open skipped instead, a reroll), plus one per `EVENT_PRICE` above the interest line
+/// `line` (cash that isn't earning anything), at most `EVENTS_PER_ANTE_MAX`.
+pub(super) fn events_held(dollars: f64, line: f64) -> f64 {
+    let spare = (dollars - line).max(0.0);
+    (1.0 + (spare / EVENT_PRICE).floor()).min(EVENTS_PER_ANTE_MAX)
 }
 
 impl<'a> LongRun<'a> {
@@ -279,20 +335,18 @@ impl<'a> LongRun<'a> {
         self.project_rent(keep, dollars, 0.0)
     }
 
-    /// One-off money: spent once on pack skips / rerolls for a joker that grows from them
-    /// (about $5 each), else on planets for your main hand.
+    /// One-off money: spent once on the shop events jokers grow from (`bought_event`, about
+    /// `EVENT_PRICE` each), else on planets for your main hand.
     pub fn spend_once(&self, b: &mut Board, once: f64) {
-        // Pack skips / rerolls cost about $5 each; a level of your main hand about $12 (its
-        // planet is only in some shops and packs: a Celestial pack holds it ~1 time in 4);
-        // any planet about $4, and each one used grows Constellation by ×0.1.
-        let buys = once / 5.0;
+        // A level of your main hand about $12 (its planet is only in some shops and packs: a
+        // Celestial pack holds it ~1 time in 4); any planet about $4, and each one used grows
+        // Constellation by ×0.1.
         for j in b.jokers.iter_mut().filter(|j| j.key == "j_constellation") {
             j.x_mult = (j.x_mult + 0.1 * once / 4.0).max(1.0);
         }
         let buys_main = once / 12.0;
-        if let Some(j) = b.jokers.iter_mut().find(|j| j.key == "j_red_card" || j.key == "j_flash") {
-            let per = if j.key == "j_red_card" { 3.0 } else { 2.0 };
-            j.mult = (j.mult + per * buys).max(0.0);
+        if let Some(ev) = bought_event(b) {
+            grow_from(b, ev, once / EVENT_PRICE);
         } else if let Some(top) = self.top_hand {
             let buys = buys_main;
             // Fractional levels (as their chips and mult): rounding made any small purchase
@@ -465,12 +519,28 @@ impl<'a> LongRun<'a> {
             }
         }
         Self::add_planets(&mut b, &g.planets, g.other_planets);
+        for (ev, n) in g.events() {
+            grow_from(&mut b, ev, n);
+        }
         b
     }
 
     /// What `g` makes your run worth by Ante 8, as a ratio of your board as it is
     pub fn value(&self, g: &Gain) -> f64 {
         self.long_score(&self.board_with(g)) / self.l0
+    }
+
+    /// One `ev` by Ante 8 (`value`); exactly ×1.00 when no joker of yours grows from it
+    pub fn event(&self, ev: RunEvent) -> f64 {
+        if self.ctx.base.jokers.iter().all(|j| j.mult_from(ev) == 0.0) {
+            return 1.0;
+        }
+        self.value(&Gain::event(ev, 1.0))
+    }
+
+    /// What `ev` grows on your board, for a note ("Red Card +3 Mult"); empty when nothing does
+    pub fn event_note(&self, ev: RunEvent) -> String {
+        self.ctx.base.jokers.iter().filter(|j| j.mult_from(ev) > 0.0).map(|j| format!("{} +{} Mult", self.data.name(&j.key), j.mult_from(ev))).collect::<Vec<_>>().join(", ")
     }
 
     /// One planet of hand `h` used (its level, and Constellation), by Ante 8
