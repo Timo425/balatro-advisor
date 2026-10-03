@@ -9,7 +9,7 @@
 
 use std::sync::{Mutex, OnceLock};
 
-use super::{best_of_subsets, glass_presence, grow_antes, income_per_ante, interest, money_value_with, par_map, round_mods, sample_hands, seal_planets_a_round, target_race, Candidate, Ctx, HandShare, Spec, TarotValue};
+use super::{best_of_subsets, glass_presence, grow_antes, income_per_ante, interest, money_value_with, par_map, round_mods, sample_hands, seal_planets_a_round, target_race_priced, TARGET_MAX, Candidate, Ctx, HandShare, Spec, TarotValue};
 use crate::engine::HandType;
 use crate::data::GameData;
 use crate::engine::{Board, Joker, Kind, RunEvent};
@@ -622,12 +622,13 @@ impl<'a> LongRun<'a> {
     /// by Ante 8. Each round, the cards its target search picks (`target_race`, the search a
     /// consumable's targets go through) in an opening hand drawn from the deck as it is by then
     /// (the copies so far in it, so a copied card is drawn more often), one sampled hand a
-    /// round; the change is made only when the best set is clearly better than no target
-    /// (paired, 95%: `compare::clearly_better`), since it costs a hand, not on a lead the race
-    /// can't tell from noise. Valued as every projection is (`value.rs` header): the deck it
-    /// ends with by Ante 8, as a grower's state by then (`deck_value`), with the planets its
-    /// Blue Seal cards make summed round by round as they come (a flow, `seal_planets_round`).
-    /// Computed once per joker. `None`: not such a joker.
+    /// round, each round's race on rounds of its own; the hand a change spends is priced in the
+    /// race (`hand_cost`: that round's share of a hand fewer every round), and the change is
+    /// made when its best set leads and no target isn't as good as it (a tie keeps the deck).
+    /// Valued as every projection is (`value.rs` header): the deck it ends with by Ante 8, as a
+    /// grower's state by then (`deck_value`), with what comes round by round summed as a flow:
+    /// its Blue Seal cards' planets (`seal_planets_round`) and the hands it spends (`share`,
+    /// in `round_effect_long`). Computed once per joker. `None`: not such a joker.
     pub fn round_decks(&self, key: &str) -> Option<std::sync::Arc<RoundChange>> {
         use crate::engine::consumable;
         let (effect, min, max) = consumable::round_card_effect(key)?;
@@ -637,16 +638,17 @@ impl<'a> LongRun<'a> {
         }
         let (ctx, run) = (self.ctx, self.run);
         let salt = self.data.center(key).map_or(0, |c| c.order as u64) << 16;
+        let rounds = (3.0 * self.antes_left).floor() as usize;
+        // a round's change costs that round's hand: 1/rounds of a hand fewer every round
+        let use_factor = 1.0 - (1.0 - self.hand_cost(&self.fill_long(self.project(&|_| true, run.dollars), None, 0.0))) / (3.0 * self.antes_left);
         let mut decks = vec![ctx.fresh_deck.clone()];
         let mut changed = 0usize;
-        for r in 0..(3.0 * self.antes_left).floor() as usize {
+        for r in 0..rounds {
             let d = decks.last().expect("your deck first");
             let hand = sample_hands(d.len(), run.hand_size, 1, ctx.opts.seed, salt + r as u64).remove(0);
-            let pick = target_race(self, &[(1.0, effect)], min, max, d, &hand, None).and_then(|t| {
-                let none = t.sets.iter().position(|v| v.is_empty());
-                let clear = none.is_none_or(|j| j >= t.as_good && super::compare::clearly_better(&t.samples[0], &t.samples[j]));
-                (!t.sets[0].is_empty() && clear).then(|| t.sets[0].clone())
-            });
+            let from = TAROT_ROUNDS + r * TARGET_MAX;
+            let pick = target_race_priced(self, &[(1.0, effect)], min, max, d, &hand, None, use_factor, from)
+                .and_then(|t| (!t.sets[..t.as_good].iter().any(|v| v.is_empty())).then(|| t.sets[0].clone()));
             let mut next = match pick {
                 Some(set) => {
                     changed += 1;
@@ -657,11 +659,12 @@ impl<'a> LongRun<'a> {
             next.sort_by_key(Card::order_key);
             decks.push(next);
         }
-        let rounds = decks.len() - 1;
+        // the rounds sampled stand for the 3 an ante left (a share of the last one included)
+        let scale = 3.0 * self.antes_left / rounds.max(1) as f64;
         let value = if changed == 0 {
             1.0
         } else {
-            let planets = decks[1..].iter().map(|d| self.seal_planets_round(d)).sum::<f64>();
+            let planets = decks[1..].iter().map(|d| self.seal_planets_round(d)).sum::<f64>() * scale;
             self.deck_value_with_planets(decks.last().expect("your deck first"), 0.0, planets)
         };
         let out = std::sync::Arc::new(RoundChange { decks, value, share: changed as f64 / rounds.max(1) as f64 });
@@ -669,20 +672,22 @@ impl<'a> LongRun<'a> {
         Some(out)
     }
 
+    /// What one hand fewer a round leaves of board `b`'s projected score (a share): what a
+    /// joker that spends your first hand costs (DNA)
+    fn hand_cost(&self, b: &Board) -> f64 {
+        let mut sp = self.long_spec_for(b);
+        sp.start.hands = (sp.start.hands - 1).max(1);
+        self.ctx.odds_one(b, &sp, 48).1.mean.max(1.0) / self.long_score(b)
+    }
+
     /// A joker that changes a card each round (`round_decks`) on its projected board `b`: the
     /// board with your first hand spent on it (DNA: a single card) in the share of rounds it
-    /// changes a card in, times what its deck makes your run worth. Any other joker:
-    /// `long_score`.
+    /// changes a card in (a flow, as the race priced it), times what its deck makes your run
+    /// worth. Any other joker: `long_score`.
     pub fn round_effect_long(&self, b: Board, key: &str) -> f64 {
         let full = self.long_score(&b);
         let Some(change) = self.round_decks(key) else { return full };
-        if change.share == 0.0 {
-            return full;
-        }
-        let mut sp = self.long_spec_for(&b);
-        sp.start.hands = (sp.start.hands - 1).max(1); // the first hand goes on the single card
-        let fewer = self.ctx.odds_one(&b, &sp, 48).1.mean.max(1.0);
-        (change.share * fewer + (1.0 - change.share) * full) * change.value
+        full * (1.0 - change.share * (1.0 - self.hand_cost(&b))) * change.value
     }
 
     /// A joker's projected score: bought for `cost` (selling `sell`, if any), rent paid if

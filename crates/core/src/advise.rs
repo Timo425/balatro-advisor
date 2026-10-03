@@ -3386,6 +3386,24 @@ fn target_race(
     hand: &[usize],
     avoid: Option<usize>,
 ) -> Option<TargetRanking> {
+    target_race_priced(lr, outcomes, min, max, deck, hand, avoid, 1.0, value::TAROT_ROUNDS)
+}
+
+/// `target_race` where a use costs something the deck doesn't show: every set but no target
+/// is worth `use_factor` of its deck's value (DNA: the hand a copy spends); raced on rounds
+/// `from`.. (after the rounds the pick is valued on)
+#[allow(clippy::too_many_arguments)]
+fn target_race_priced(
+    lr: &value::LongRun,
+    outcomes: &[(f64, crate::engine::consumable::CardEffect)],
+    min: usize,
+    max: usize,
+    deck: &[Card],
+    hand: &[usize],
+    avoid: Option<usize>,
+    use_factor: f64,
+    from: usize,
+) -> Option<TargetRanking> {
     use crate::engine::consumable::{self, CardEffect};
     let hand: Vec<usize> = hand.iter().copied().filter(|&i| outcomes.iter().all(|&(_, e)| consumable::can_target(e, &deck[i]))).collect();
     let mut sets: Vec<Vec<usize>> = vec![vec![]];
@@ -3414,12 +3432,12 @@ fn target_race(
         return (!sets.is_empty()).then(|| TargetRanking { samples: vec![vec![]; sets.len()], sets, as_good: 1 });
     }
     let budget = |done: usize| TARGET_BUDGET.iter().find(|b| done <= b.0).map_or(TARGET_BUDGET[TARGET_BUDGET.len() - 1].1, |b| b.1);
-    let after = value::TAROT_ROUNDS;
+    let after = from;
     // the money a set's cards earn becomes income once, from its first batch (not again on
     // each batch's own noise)
     // (per outcome)
     let incomes: Vec<Vec<std::sync::Mutex<Option<f64>>>> = sets.iter().map(|_| outcomes.iter().map(|_| std::sync::Mutex::new(None)).collect()).collect();
-    let race = compare::race(
+    let race = compare::race_keeping(
         sets.len(),
         TARGET_FIRST,
         TARGET_MAX,
@@ -3432,11 +3450,16 @@ fn target_race(
                 *inc = Some(used);
                 total.iter_mut().zip(v).for_each(|(t, x)| *t += w * x);
             }
+            if !sets[i].is_empty() {
+                total.iter_mut().for_each(|t| *t *= use_factor);
+            }
             total
         },
         |x| *x,
         |x| *x,
         |x, y| key(&sets[y]).cmp(&key(&sets[x])),
+        // no target (your deck as it is) leaves only on a finding, never on the budget
+        sets.iter().position(|v| v.is_empty()),
     );
     // each set's estimate: the leader's mean plus its paired difference to the leader on the
     // rounds both were sampled on (sets cut early have fewer, other rounds than the leader)
@@ -4591,9 +4614,9 @@ mod tests {
         // and a Purple Seal 2♣ (its tarot isn't simulated: a 2 to the projection). Every round
         // whose sampled hand holds a Steel King copies one; the Purple Seal 2♣ (which the old
         // fixed ranking, any seal above any enhancement, put first after Blue Seals) never.
-        // A Steel King isn't always copied: with the 2 planet slots full, one more isn't clearly
-        // better than none. Fails if DNA's card comes from a ranking or a pick that ignores the
-        // hand, instead of `target_race` on that round's hand.
+        // Fails if DNA's card comes from a ranking or a pick that ignores the hand, instead of
+        // `target_race` on that round's hand, or if a copy's hand isn't priced (plain cards then
+        // lead some rounds on noise).
         use crate::model::{Enhancement, Seal, Suit};
         let mut r = shop_run(&[("j_baron", None, None), ("j_joker", None, None)], &[]);
         for c in r.draw_pile.iter_mut() {

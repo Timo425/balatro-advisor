@@ -68,6 +68,24 @@ pub(super) fn race<T: Send + Sync>(
     secondary: impl Fn(&T) -> f64,
     tie_order: impl Fn(usize, usize) -> std::cmp::Ordering,
 ) -> Race<T> {
+    race_keeping(n, first, max, budget, sample, value, secondary, tie_order, None)
+}
+
+/// `race`, where option `keep` (the status quo: changing nothing) is never cut by the budget:
+/// it leaves only on a finding (clearly worse, or shown equal), so "still in" or "as good"
+/// says what the rounds showed about it, not what the budget dropped
+#[allow(clippy::too_many_arguments)]
+pub(super) fn race_keeping<T: Send + Sync>(
+    n: usize,
+    first: usize,
+    max: usize,
+    budget: impl Fn(usize) -> usize,
+    sample: impl Fn(usize, std::ops::Range<usize>) -> Vec<T> + Sync,
+    value: impl Fn(&T) -> f64,
+    secondary: impl Fn(&T) -> f64,
+    tie_order: impl Fn(usize, usize) -> std::cmp::Ordering,
+    keep: Option<usize>,
+) -> Race<T> {
     let mut samples: Vec<Vec<T>> = (0..n).map(|_| Vec::new()).collect();
     let mut alive: Vec<usize> = (0..n).collect();
     let mut tied = vec![false; n];
@@ -107,7 +125,12 @@ pub(super) fn race<T: Send + Sync>(
             }
             true
         });
-        alive.truncate(budget(done).max(1));
+        let room = budget(done).max(1);
+        let mut k = 0;
+        alive.retain(|&c| {
+            k += 1;
+            k <= room || Some(c) == keep
+        });
         if alive.len() == 1 {
             break;
         }
@@ -147,6 +170,19 @@ mod tests {
         let race = race(2, 16, MAX, |_| 2, sample, |x| *x, |x| *x, |x, y| y.cmp(&x));
         assert_eq!(race.leader, 0);
         assert!(!race.tied[1] && !race.undecided[1]);
+    }
+
+    #[test]
+    fn the_status_quo_isnt_cut_by_the_budget() {
+        // Five noisy options around the same value (changing nothing a little lower, not
+        // clearly) and a budget of 2: the budget cuts on noise,
+        // but option 0 (changing nothing) stays until a finding, so it ends in, not dropped.
+        // Fails if `keep` is cut like the rest.
+        let noise = |o: usize, i: usize| ((i.wrapping_mul(2_654_435_761) ^ o.wrapping_mul(40_503)).wrapping_mul(2_246_822_519) % 1000) as f64 / 1000.0 - 0.5;
+        let sample = |o: usize, r: std::ops::Range<usize>| -> Vec<f64> { r.map(|i| 1.0 + 0.6 * noise(o, i) - if o == 0 { 0.02 } else { 0.0 }).collect() };
+        let race = race_keeping(5, 16, 128, |_| 2, sample, |x| *x, |x| *x, |x, y| y.cmp(&x), Some(0));
+        assert_eq!(race.samples[0].len(), 128, "{:?}", race.samples.iter().map(|v| v.len()).collect::<Vec<_>>());
+        assert!(race.leader == 0 || race.tied[0] || race.undecided[0]);
     }
 
     #[test]
