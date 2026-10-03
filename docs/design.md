@@ -104,6 +104,7 @@ vs actual blind results and every shop seen).
 | Consumable used in a simulated round when it lifts the best play by > 1% | `sim.rs` `use_if_better` | when a player uses one | — |
 | Blue Seal: drawn with the hand plus 3 cards an action; Mail-In rank 4 in 13 | `advise.rs` `seal_round_chance`, Mail-In income | how often a card shows up | game source + logged rounds |
 | Glass cards: about 1.5 scores an ante before breaking | `advise.rs` `glass_presence` | Glass breaking | — |
+| A Standard pack card with a consumable you hold on it: every held one that can go on one card (`engine::consumable`), assumed used on it once it's drawn, over that consumable's own value elsewhere; counted when over the card as it is by more than the 1% noise margin | `advise.rs` standard pack cards | you'll draw it and keep the consumable for it | — |
 | Deck changes (tarots, pack cards): 300 rounds against your deck (split between outcomes for random effects); a board without a chips joker (`CHIP_JOKERS` list) gets a +60 Chips find | `value.rs` `deck_stats`, `TAROT_ROUNDS` | deck changes are small; a chips gap closes by Ante 8 | — |
 | Vouchers: Overstock half a reroll a shop, Reroll Surplus $2 a shop, Clearance 25% of ~$8, Hone one buy an ante, a voucher shows 1 in 16, Planet Merchant 1 in 12 on your main hand | `advise.rs` economy and voucher values | what each voucher saves | logged shops |
 | Tags: Meteor's main-hand planet 5 in 12, best 1 of the pick 2; Investment not discounted for arriving later; Mega pack's second pick $2.50; Emperor average² | `advise.rs` skip-or-play, packs, tarots | — | logged tags and packs |
@@ -118,7 +119,6 @@ add to this list's kind; remove from it.
 
 | Rule | Where | General replacement |
 |---|---|---|
-| The Lovers makes a pack card Wild | `advise.rs` standard pack cards | consumables used on pack cards, searched |
 | Two "best card" orderings: DNA's copies, Aura's target (a random edition, so not in `engine::consumable`) | `value.rs` `dna_long`, `advise.rs` `tarot_values` | the target search (`engine::consumable` + `compare::race`), with random effects over their outcomes |
 | Suit-joker map, `kickers_matter` list, `income_per_ante` per joker | `sim.rs` `keep_suit`, `advise.rs` | game facts: move to `data/` or the engine; or work out what to keep by scoring with and without a card |
 | Red Card grows in three places | `grow_antes`, `spend_once`, skip-or-play | one place, through `Gain` |

@@ -1355,29 +1355,41 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             }
         }
     }
-    // Standard pack cards: your deck with the card added, projected to Ante 8
+    // Standard pack cards: your deck with the card added, projected to Ante 8. A consumable
+    // you hold that can go on one card (`engine::consumable`) can go on it once it's drawn:
+    // each is valued too, counting the consumable used up (what it would do elsewhere).
     let pack_cards: Vec<Card> = run.open_pack.iter().filter_map(|c| c.card).collect();
-    // Holding The Lovers: a plain card can also be made Wild (fits every flush), valued too.
-    let lovers = run.consumables.iter().any(|c| c.key == "c_lovers");
-    let card_long: Vec<(f64, Option<f64>)> = par_map(&pack_cards, |card| {
-        let with = |c: Card| {
-            let mut d = ctx.fresh_deck.clone();
-            d.push(c);
-            let gain = lr.deck_value(&d, 0.0, value::TAROT_ROUNDS);
-            if c.enhancement == Some(crate::model::Enhancement::Glass) { 1.0 + (gain - 1.0) * glass_presence(antes_left) } else { gain }
+    let mut held_effects: Vec<(String, String, crate::engine::consumable::CardEffect)> = vec![];
+    for c in &run.consumables {
+        use crate::engine::consumable;
+        let Some((e, min, _)) = data.center(&c.key).and_then(|x| consumable::card_effect(&c.key, &x.config)) else { continue };
+        if min <= 1 && consumable::modelled(e) && !held_effects.iter().any(|(k, _, _)| k == &c.key) {
+            held_effects.push((c.key.clone(), c.name.clone(), e));
+        }
+    }
+    let card_long: Vec<Vec<f64>> = par_map(&pack_cards, |card| {
+        let n = ctx.fresh_deck.len();
+        let mut d = ctx.fresh_deck.clone();
+        d.push(*card);
+        let value = |d: &[Card]| {
+            let gain = lr.deck_value(d, 0.0, value::TAROT_ROUNDS);
+            if d.get(n).is_some_and(|c| c.enhancement == Some(crate::model::Enhancement::Glass)) { 1.0 + (gain - 1.0) * glass_presence(antes_left) } else { gain }
         };
-        let wild = (lovers && card.enhancement.is_none()).then(|| with(Card { enhancement: Some(crate::model::Enhancement::Wild), ..*card }));
-        (with(*card), wild)
+        std::iter::once(value(&d)).chain(held_effects.iter().map(|(_, _, e)| value(&crate::engine::consumable::apply(*e, &d, &[n])))).collect()
     });
     for o in options.iter_mut().filter(|o| o.kind == "card") {
         if let Some(i) = pack_cards.iter().position(|c| o.label == format!("pick {}", c.label())) {
-            let (plain, wild) = card_long[i];
+            let plain = card_long[i][0];
             o.long_mult = Some(plain);
-            // Using The Lovers on it gives up what The Lovers would do on another card
-            let lovers_own = tarots.iter().position(|t| t.key == "c_lovers").map_or(1.0, |k| tarot_long[k].max(1.0));
-            if let Some(w) = wild.map(|w| w / lovers_own).filter(|w| *w > plain) {
+            // with a consumable on it, over what that consumable would do on another card;
+            // only when it beats the card as it is by more than noise
+            let used = held_effects.iter().enumerate().map(|(k, (key, name, e))| {
+                let own = tarots.iter().position(|t| &t.key == key).map_or(1.0, |t| tarot_long[t].max(1.0));
+                (card_long[i][k + 1] / own, name, e)
+            });
+            if let Some((w, name, e)) = used.filter(|(w, _, _)| *w > plain * (1.0 + compare::EQUAL)).max_by(|a, b| a.0.total_cmp(&b.0).then_with(|| b.1.cmp(a.1))) {
                 o.long_mult = Some(w);
-                o.note = format!("added to your deck; made Wild with your Lovers (counts The Lovers used up; ×{plain:.2} as it is)");
+                o.note = format!("added to your deck; {} with your {name} once it's drawn (counts the {name} used up; ×{plain:.2} as it is)", e.label());
             }
         }
     }
@@ -3940,6 +3952,21 @@ mod tests {
         assert!(pick.label.starts_with("pick 2♣") && pick.long_mult.is_some(), "{}", pick.label);
         let skip = a.options.iter().find(|o| o.kind == "skip").expect("Red Card makes skipping an option");
         assert!(skip.long_mult.unwrap() > 1.0);
+    }
+
+    #[test]
+    fn a_pack_card_is_valued_with_a_consumable_you_hold_on_it() {
+        // A Blue Seal card in a Standard pack and Cryptid held: picked, then copied twice once
+        // it's drawn (more Blue Seals, more planets) is worth more than the card alone, even
+        // counting the Cryptid used up. Any held consumable that goes on one card counts.
+        let mut r = shop_run(&[("j_joker", None, None)], &[]);
+        r.screen = crate::save::Screen::StandardPack;
+        let card = Card::parse_list("3S:blue").unwrap()[0];
+        r.open_pack = vec![crate::save::ItemCard { key: "c_base".into(), name: "3 of Spades".into(), set: "Default".into(), cost: 0, edition: None, card: Some(card) }];
+        r.consumables = vec![crate::save::ItemCard { key: "c_cryptid".into(), name: "Cryptid".into(), set: "Spectral".into(), cost: 4, edition: None, card: None }];
+        let a = analyze(&r, GameData::bundled(), None, &quick());
+        let pick = a.options.iter().find(|o| o.kind == "card").expect("the pack card is an option");
+        assert!(pick.note.contains("with your Cryptid"), "{}", pick.note);
     }
 
     #[test]
