@@ -68,13 +68,13 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
     let look = ctx.specs.iter().find(|x| x.in_progress).map(|spec| {
         let mut bb = ctx.board_for(&b, spec);
         // The simulated player plays toward the same measure the advice ranks by
-        let goals = sim::RoundGoals { planet: std::array::from_fn(|i| planet_gain_by[i]), dollar: dollar_gain, per_hand: run.money_per_hand, seen: seen.clone() };
+        let goals = sim::RoundGoals { planet: std::array::from_fn(|i| planet_gain_by[i]), dollar: dollar_gain, per_hand: run.money_per_hand, seen: seen.clone(), no_lookahead: false };
         bb.goals = Some(goals.clone());
         let start = ctx.start_for(spec, &bb);
         let seed = ctx.opts.seed;
         // Consumables you hold, as the round can use them: tarots and spectral cards by
         // what they do to your hand, planets by the level they add. Every move is simulated
-        // with them still held (used once they improve the best play in hand), and each
+        // with them still held (used as the simulated player decides: `sim::use_if_better`, `sim::finish_with_uses`), and each
         // gets a row of its own: use it now, then the best move after it.
         let uses: Vec<sim::Use> = run
             .consumables
@@ -171,7 +171,10 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
             progress,
             |x, y| ck(y).cmp(&ck(x)),
         );
-        let (outs, leader, tied) = (race.samples, race.leader, race.tied);
+        // as good as the leader: shown equal, or still undecided at the round cap (1600 rounds
+        // couldn't tell them apart)
+        let tied: Vec<bool> = race.tied.iter().zip(&race.undecided).map(|(t, u)| *t || *u).collect();
+        let (outs, leader) = (race.samples, race.leader);
         // the yardstick for the search itself (`Options::reference`): every move on rounds of
         // its own, as many as the race's most
         let reference: Vec<f64> = if ctx.opts.reference {
@@ -224,14 +227,30 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
         for &c in &order {
             opts[c].tie = c != first && (c == leader || tied[c]);
         }
+        // the pick against the reference's best, on a block of rounds neither was chosen on
+        let gap = (!reference.is_empty()).then(|| {
+            let best = (0..reference.len()).max_by(|&x, &y| reference[x].total_cmp(&reference[y]).then(ck(y).cmp(&ck(x)))).unwrap_or(0);
+            let block = |c: usize| -> Vec<f64> {
+                let (m, b, st, u, _) = &cands[c];
+                sim::outcomes_after(b, st, m, 2 * compare::MAX..3 * compare::MAX, seed, u).iter().map(utility).collect()
+            };
+            let (p, q) = (block(first), block(best));
+            let d: Vec<f64> = q.iter().zip(&p).map(|(x, y)| x - y).collect();
+            let k = d.len() as f64;
+            let m = d.iter().sum::<f64>() / k;
+            let se = (d.iter().map(|x| (x - m) * (x - m)).sum::<f64>() / (k - 1.0).max(1.0) / k).sqrt();
+            let scale = q.iter().sum::<f64>() / k;
+            (m / scale.max(1e-9), se / scale.max(1e-9))
+        });
         let label = |o: &PlayOption| format!("{} {} [{}]", o.action, o.cards.join(" "), o.use_first.clone().unwrap_or_default());
         let mut reference: Vec<(String, f64)> = reference.iter().enumerate().map(|(c, v)| (label(&opts[c]), *v)).collect();
         reference.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         let mut sorted: Vec<PlayOption> = order.into_iter().map(|c| opts[c].clone()).collect();
         sorted.dedup_by(|a, b| a.action == b.action && a.cards == b.cards && a.use_first == b.use_first);
-        (sorted, reference)
+        (sorted, reference, gap)
     });
     let reference = look.as_ref().map_or(vec![], |l| l.1.clone());
+    let reference_gap = look.as_ref().and_then(|l| l.2);
     match look.map(|l| l.0).filter(|o| !o.is_empty()) {
         Some(mut opts) => {
             let best = opts.remove(0);
@@ -249,11 +268,12 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
                 let m = format!("Not used in this look-ahead (no modelled effect on this hand): {}", missing.join(", "));
                 Some(m)
             };
-            Some(PlayAdvice { reference, worth_drawing: worth_drawing.clone(), then: best.then.clone(), ties: opts.iter().filter(|o| o.tie).count(), planets: Some(best.planets), use_first: best.use_first, spare_hands: Some(best.spare_hands), round_money: Some(best.round_money), action: best.action, cards: best.cards, dig: best.dig, indices: best.indices, hand: best.hand, score: best.score, p_win: Some(best.p_win), alternatives: opts, tip })
+            Some(PlayAdvice { reference, reference_gap, worth_drawing: worth_drawing.clone(), then: best.then.clone(), ties: opts.iter().filter(|o| o.tie).count(), planets: Some(best.planets), use_first: best.use_first, spare_hands: Some(best.spare_hands), round_money: Some(best.round_money), action: best.action, cards: best.cards, dig: best.dig, indices: best.indices, hand: best.hand, score: best.score, p_win: Some(best.p_win), alternatives: opts, tip })
         }
         None => sim::best_play(&b, &hand_order.iter().map(|&i| run.hand[i]).collect::<Vec<_>>()).map(|p| PlayAdvice {
             use_first: None,
             reference: vec![],
+            reference_gap: None,
             worth_drawing: worth_drawing.clone(),
             planets: None,
             then: None,

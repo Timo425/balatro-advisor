@@ -718,6 +718,9 @@ pub struct RoundGoals {
     /// how much more it's worth used on that card than on the best card in your hand). Gone
     /// once the consumable is used.
     pub seen: Vec<(String, Card, f64)>,
+    /// A future already being looked ahead into: it plays to the same goals, but doesn't
+    /// look ahead again (`play_on_instead`)
+    pub no_lookahead: bool,
 }
 
 impl RoundGoals {
@@ -742,9 +745,11 @@ const LOOKAHEAD_ROLLOUTS: usize = 8;
 /// the cards that don't pay at round end), on a few simulated futures, by `RoundGoals`. Only
 /// when a better finish could be worth something; the futures play on without looking ahead.
 #[allow(clippy::too_many_arguments)]
-fn play_on_instead(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i64, scored: f64, target: f64, size: usize, win: &[usize], now: f64, uses: &[Use], rng: &mut Rng) -> Option<Action> {
+/// `now`: what winning now is worth when a finish use changes it (else worked out here, with
+/// `seen`, the best card drawn for a consumable still held).
+fn play_on_instead(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i64, scored: f64, target: f64, size: usize, win: &[usize], now: Option<f64>, seen: f64, uses: &[Use], rng: &mut Rng) -> Option<Action> {
     let g = b.goals.as_ref()?;
-    if hands <= 1 {
+    if hands <= 1 || g.no_lookahead {
         return None;
     }
     let played: Vec<Card> = win.iter().map(|&i| hand[i]).collect();
@@ -756,6 +761,7 @@ fn play_on_instead(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards
     if (best - g.planet[h as usize]) * planets < 0.01 {
         return None;
     }
+    let now = now.unwrap_or_else(|| finish_value(b, g, hand, win, hands, seen));
     // what the policy does when not finishing now, with the cards that pay at round end kept
     let keep = pays_at_end(b, hand);
     let free: Vec<usize> = (0..hand.len()).filter(|i| !keep.contains(i)).collect();
@@ -773,8 +779,11 @@ fn play_on_instead(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards
             return None;
         }
     }
+    // the futures play to the same goals (the finish included), without looking ahead again
     let mut plain = b.clone();
-    plain.goals = None;
+    if let Some(pg) = plain.goals.as_mut() {
+        pg.no_lookahead = true;
+    }
     let start = RoundStart { hand: hand.to_vec(), deck: deck.to_vec(), hand_size: size as i64, hands, discards, scored, target };
     let seed = rng.next_u64();
     let outs = outcomes_after(&plain, &start, &alt, 0..LOOKAHEAD_ROLLOUTS, seed, uses);
@@ -785,14 +794,23 @@ fn play_on_instead(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards
     })
 }
 
-/// What winning now with `win` is worth beyond winning (`RoundGoals`): the planets of the Blue
-/// Seals left in hand (the planet of the hand played), the Gold cards' money and the hands
-/// left over.
-fn finish_value(b: &Board, g: &RoundGoals, hand: &[Card], win: &[usize], hands: i64) -> f64 {
+/// What winning now with `win` is worth (`RoundGoals::value`, the measure every move is ranked
+/// by): the planets of the Blue Seals left in hand (the planet of the hand played), the money
+/// it pays and the Gold cards' held, the hands left over, and the best card drawn for a
+/// consumable still held (`seen`).
+fn finish_value(b: &Board, g: &RoundGoals, hand: &[Card], win: &[usize], hands: i64, seen: f64) -> f64 {
     let played: Vec<Card> = win.iter().map(|&i| hand[i]).collect();
     let held: Vec<Card> = (0..hand.len()).filter(|i| !win.contains(i)).map(|i| hand[i]).collect();
-    let h = score::score(b, &played, &held, &mut Unlucky, false).hand;
-    1.0 + g.planet[h as usize] * seal_planets(b, &held) + g.dollar * ((hands - 1) as f64 * g.per_hand + held_dollars(&held))
+    let s = score::score(b, &played, &held, &mut Unlucky, false);
+    let o = Outcome { won: 1.0, spare: (hands - 1) as f64, cash: s.dollars + held_dollars(&held), planets: seal_planets(b, &held), last: Some(s.hand), seen, ..Default::default() };
+    g.value(&o)
+}
+
+/// Drops the `seen` credit of consumables already used (theirs went with them)
+fn drop_used_seen(b: &Board, seen_by: &mut Vec<(String, f64)>) {
+    if let Some(g) = &b.goals {
+        seen_by.retain(|(k, _)| g.seen.iter().any(|(k2, _, _)| k2 == k));
+    }
 }
 
 /// Before a winning play: the held consumables whose use makes the win worth more
@@ -801,8 +819,14 @@ fn finish_value(b: &Board, g: &RoundGoals, hand: &[Card], win: &[usize], hands: 
 /// The board, hand and winning play after them, the consumables used, and the finish's value;
 /// `None` when none adds anything.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
-fn finish_with_uses(b: &Board, g: &RoundGoals, hand: &[Card], win: &[usize], uses: &[Use], used: &[bool], need: f64, hands: i64) -> Option<(Board, Vec<Card>, Vec<usize>, Vec<usize>, f64)> {
-    let mut cur = (b.clone(), hand.to_vec(), win.to_vec(), vec![], finish_value(b, g, hand, win, hands));
+fn finish_with_uses(b: &Board, g: &RoundGoals, hand: &[Card], win: &[usize], uses: &[Use], used: &[bool], need: f64, hands: i64, seen_by: &[(String, f64)]) -> Option<(Board, Vec<Card>, Vec<usize>, Vec<usize>, f64)> {
+    // the best card drawn for a consumable still held, after these are used (theirs is gone)
+    let seen = |b: &Board| {
+        let mut s = seen_by.to_vec();
+        drop_used_seen(b, &mut s);
+        s.iter().map(|e| e.1).fold(0.0, f64::max)
+    };
+    let mut cur = (b.clone(), hand.to_vec(), win.to_vec(), vec![], finish_value(b, g, hand, win, hands, seen(b)));
     let mut improved = false;
     loop {
         let mut best: Option<(Board, Vec<Card>, Vec<usize>, usize, f64)> = None;
@@ -812,7 +836,7 @@ fn finish_with_uses(b: &Board, g: &RoundGoals, hand: &[Card], win: &[usize], use
             }
             let Some((b2, h2)) = u.apply(&cur.0, &cur.1) else { continue };
             let Some(w2) = win_keeping_seals(&b2, &h2, need) else { continue };
-            let v = finish_value(&b2, g, &h2, &w2, hands);
+            let v = finish_value(&b2, g, &h2, &w2, hands, seen(&b2));
             if v > best.as_ref().map_or(cur.4, |x| x.4) + 1e-9 {
                 best = Some((b2, h2, w2, k, v));
             }
@@ -842,24 +866,38 @@ fn note_seen(b: &Board, hand: &[Card], acc: &mut Vec<(String, f64)>) {
     }
 }
 
-/// Uses a held consumable for score once it improves the best play in hand (by more than 1%)
-/// and the round needs it: while the best hand keeps you on pace for the `need` left in
-/// `hands`, it's held (for the finish, `finish_with_uses`, or a later round).
+/// Uses held consumables for score: each that lifts the best play in hand by more than 1%,
+/// the biggest lift first (ties by key, not slot order). One that would put a card that pays
+/// at round end into your hand (`pays_at_end`: a Blue Seal, a Gold card) is held while the
+/// best hand keeps you on pace for the `need` left in `hands`: used at the finish
+/// (`finish_with_uses`) it's worth more. Others gain nothing by waiting.
 fn use_if_better(b: &mut Board, hand: &mut Vec<Card>, uses: &[Use], used: &mut [bool], need: f64, hands: i64) {
-    for (k, u) in uses.iter().enumerate() {
-        if used[k] {
-            continue;
-        }
+    while used.iter().any(|u| !u) {
         let now = best_play(b, hand).map_or(0.0, |p| p.floor);
-        if now * hands.max(1) as f64 >= need {
-            return;
+        let on_pace = now * hands.max(1) as f64 >= need;
+        let pays = |b: &Board, h: &[Card]| pays_at_end(b, h).len();
+        let mut best: Option<(f64, usize, Board, Vec<Card>)> = None;
+        for (k, u) in uses.iter().enumerate() {
+            if used[k] {
+                continue;
+            }
+            let Some((b2, h2)) = u.apply(b, hand) else { continue };
+            if on_pace && pays(&b2, &h2) > pays(b, hand) {
+                continue;
+            }
+            let lift = best_play(&b2, &h2).map_or(0.0, |p| p.floor);
+            if lift <= now * 1.01 {
+                continue;
+            }
+            let better = best.as_ref().is_none_or(|(l, kb, _, _)| lift > *l || (lift == *l && u.key < uses[*kb].key));
+            if better {
+                best = Some((lift, k, b2, h2));
+            }
         }
-        let Some((b2, h2)) = u.apply(b, hand) else { continue };
-        if best_play(&b2, &h2).is_some_and(|p| p.floor > now * 1.01) {
-            *b = b2;
-            *hand = h2;
-            used[k] = true;
-        }
+        let Some((_, k, b2, h2)) = best else { return };
+        *b = b2;
+        *hand = h2;
+        used[k] = true;
     }
 }
 
@@ -886,25 +924,21 @@ pub fn sim_round_uses(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[
         b.discards_left = discards;
         b.deck_remaining = deck.len() as i64;
         use_if_better(&mut b, &mut hand, uses, &mut used, start.target - total, hands);
-        if let Some(g) = &b.goals {
-            seen_by.retain(|(k, _)| g.seen.iter().any(|(k2, _, _)| k2 == k));
-        }
+        drop_used_seen(&b, &mut seen_by);
         let act = match win_keeping_seals(&b, &hand, start.target - total) {
             Some(v) => {
                 // the finish, with any held consumable that makes it worth more used first
-                let fin = b.goals.as_ref().and_then(|g| finish_with_uses(&b, g, &hand, &v, uses, &used, start.target - total, hands));
-                let now = match (&fin, &b.goals) {
-                    (Some(f), _) => f.4,
-                    (None, Some(g)) => finish_value(&b, g, &hand, &v, hands),
-                    (None, None) => 1.0,
-                };
-                match play_on_instead(&b, &hand, &deck, hands, discards, total, start.target, size, &v, now, uses, rng) {
+                let seen = seen_by.iter().map(|e| e.1).fold(0.0, f64::max);
+                let fin = b.goals.as_ref().filter(|_| used.iter().any(|u| !u)).and_then(|g| finish_with_uses(&b, g, &hand, &v, uses, &used, start.target - total, hands, &seen_by));
+                let unused: Vec<Use> = uses.iter().zip(&used).filter(|(_, u)| !**u).map(|(x, _)| x.clone()).collect();
+                match play_on_instead(&b, &hand, &deck, hands, discards, total, start.target, size, &v, fin.as_ref().map(|f| f.4), seen, &unused, rng) {
                     Some(a) => a,
                     None => match fin {
                         Some((b2, h2, v2, ks, _)) => {
                             b = b2;
                             hand = h2;
                             ks.into_iter().for_each(|k| used[k] = true);
+                            drop_used_seen(&b, &mut seen_by);
                             Action::Play(v2, false)
                         }
                         None => Action::Play(v, false),
@@ -1259,6 +1293,23 @@ mod tests {
         let start = RoundStart { hand, deck, hand_size: 8, hands: 4, discards: 3, scored: 0.0, target: 100.0 };
         let r = sim_round_uses(&b, &start, &mut Rng::new(3), &[copies]);
         assert!(r.won && r.planets >= 3.0, "planets {}", r.planets);
+    }
+
+    #[test]
+    fn a_consumable_that_gains_nothing_by_waiting_is_used_while_on_pace() {
+        // On pace with a Pair over several hands, holding a Pair planet: it puts nothing in
+        // hand that pays at round end, so it's used at once (every hand scores more), not held
+        let hand = Card::parse_list("AS AH KD 9C 7S 5H 4D 2C").unwrap();
+        let deck: Vec<Card> = standard_deck().into_iter().filter(|c| !hand.iter().any(|h| h.rank == c.rank && h.suit == c.suit)).collect();
+        let b = sample_board(&["j_joker"]);
+        let pair = best_play(&b, &hand).unwrap().floor;
+        let mut levels = [0; 12];
+        levels[HandType::Pair as usize] = 3;
+        let planet = Use { key: "c_test".into(), levels, planet: true, ..Default::default() };
+        let start = RoundStart { hand, deck, hand_size: 8, hands: 4, discards: 0, scored: 0.0, target: pair * 2.5 };
+        let with = sim_round_uses(&b, &start, &mut Rng::new(5), &[planet]);
+        let without = sim_round_uses(&b, &start, &mut Rng::new(5), &[]);
+        assert!(with.best_hand > without.best_hand, "{} vs {}", with.best_hand, without.best_hand);
     }
 
     #[test]

@@ -75,9 +75,11 @@ fn snapshot() {
 }
 
 /// Measures the search (`compare::race` in Best play) against a reference: every move it
-/// considered played on `compare::MAX` rounds of its own. For each fixture in a blind: the
-/// pick's value as a share of the best reference value, its rank, and the moves within the
-/// 1% tie margin of the best. Prints; asserts nothing. Slow.
+/// considered played on `compare::MAX` rounds of its own, the best chosen there, and the pick
+/// compared with it on another `compare::MAX` rounds (paired, with its standard error). For
+/// each fixture in a blind and each seed in `BAV_SEEDS` (default 42,43,44): how far the pick
+/// is below the best, its rank, and how many moves are within the 1% tie margin. Prints;
+/// asserts nothing. Slow (`BAV_ONLY=name` for one fixture).
 /// Run: `cargo test --release --test replay -- --ignored search_against_reference --nocapture`
 #[test]
 #[ignore]
@@ -87,6 +89,7 @@ fn search_against_reference() {
     let mut files: Vec<_> = entries.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")).collect();
     files.sort();
     let only = std::env::var("BAV_ONLY").ok();
+    let seeds: Vec<u64> = std::env::var("BAV_SEEDS").unwrap_or_else(|_| "42,43,44".into()).split(',').filter_map(|s| s.trim().parse().ok()).collect();
     for f in &files {
         let name = f.file_stem().unwrap().to_string_lossy().to_string();
         if only.as_ref().is_some_and(|o| !name.contains(o.as_str())) {
@@ -94,19 +97,18 @@ fn search_against_reference() {
         }
         let v: Value = serde_json::from_str(&std::fs::read_to_string(f).unwrap()).unwrap();
         let run: RunState = serde_json::from_value(v["state"].clone()).unwrap();
-        let a = advise::analyze(&run, GameData::bundled(), None, &advise::Options { sims: 300, seed: 42, reference: true, ..Default::default() });
-        let Some(bp) = a.best_play else { continue };
-        if bp.reference.is_empty() {
-            continue;
-        }
-        let best = bp.reference[0].1;
-        let pick = format!("{} {} [{}]", bp.action, bp.cards.join(" "), bp.use_first.clone().unwrap_or_default());
-        let rank = bp.reference.iter().position(|(l, _)| l == &pick);
-        let val = rank.map(|r| bp.reference[r].1).unwrap_or(f64::NAN);
-        let within = bp.reference.iter().take_while(|(_, x)| *x >= best * 0.99).count();
-        println!("{name}: pick {pick} = {:.4} of best {:.4} ({:.2}%), rank {:?} of {}, {within} within 1% of the best", val, best, 100.0 * (1.0 - val / best), rank.map(|r| r + 1), bp.reference.len());
-        for (l, x) in bp.reference.iter().take(5) {
-            println!("    {x:.4} {l}");
+        for &seed in &seeds {
+            let a = advise::analyze(&run, GameData::bundled(), None, &advise::Options { sims: 300, seed, reference: true, ..Default::default() });
+            let Some(bp) = a.best_play else { continue };
+            let Some((gap, se)) = bp.reference_gap else { continue };
+            let best = bp.reference[0].1;
+            let pick = format!("{} {} [{}]", bp.action, bp.cards.join(" "), bp.use_first.clone().unwrap_or_default());
+            let rank = bp.reference.iter().position(|(l, _)| l == &pick);
+            let within = bp.reference.iter().take_while(|(_, x)| *x >= best * 0.99).count();
+            println!("{name} seed {seed}: pick {pick}: {:.2}% ± {:.2}% below the best, rank {:?} of {}, {within} within 1%", 100.0 * gap, 100.0 * se, rank.map(|r| r + 1), bp.reference.len());
+            for (l, x) in bp.reference.iter().take(3) {
+                println!("    {x:.4} {l}");
+            }
         }
     }
 }

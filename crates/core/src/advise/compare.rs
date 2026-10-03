@@ -19,29 +19,40 @@ use super::par_map;
 /// as equally good.
 pub(super) const MAX: usize = 1600;
 pub(super) const EQUAL: f64 = 0.01;
-/// The fewest rounds that show two options within `EQUAL`: a round where they part ways can
-/// be worth about a whole round's value, and when none has turned up in n rounds, they may
-/// still happen up to 3 in n (95%, the rule of three). 3/n ≤ `EQUAL` takes 300 rounds.
-pub(super) const TIE_ROUNDS: usize = (3.0 / EQUAL) as usize;
-
 pub(super) struct Race<T> {
     /// Each option's samples (as many as it got)
     pub samples: Vec<Vec<T>>,
     pub leader: usize,
-    /// As good as the leader, as far as can be told
+    /// Shown to be as good as the leader (within `EQUAL`)
     pub tied: Vec<bool>,
+    /// Still in at the round cap: neither worse nor shown equal (as good as far as these
+    /// rounds can tell, which at a low cap isn't far)
+    pub undecided: Vec<bool>,
+    /// Dropped as clearly worse than the leader of its batch (the rest that left were cut
+    /// by the budget)
+    pub worse: Vec<bool>,
+}
+
+/// Whether `a` is clearly better than `b` on the rounds both were sampled on (paired, 95%)
+pub(super) fn clearly_better(a: &[f64], b: &[f64]) -> bool {
+    let k = a.len().min(b.len());
+    k > 1 && paired(&a[..k], &b[..k], 1.0).0
 }
 
 /// Whether `a` is clearly better than `b` on the same draws (paired difference, 95%), and
 /// whether they're provably within `EQUAL` (as a share of `scale`) of each other. Equal also
-/// needs `TIE_ROUNDS`: rounds where two options part ways (one wins, the other loses) can be
-/// rare, and a few rounds without one prove nothing about them.
+/// needs enough rounds: a round where the two part ways (one wins, the other loses) can be
+/// rare and worth up to the largest value seen in a round, and when none has turned up in
+/// n rounds it may still happen up to 3 in n (95%, the rule of three). So equal needs
+/// 3 · largest / n ≤ `EQUAL` · scale: about 300 rounds when a round is worth about the
+/// leader's value, many more for a round you usually lose (a small leader's value).
 fn paired(a: &[f64], b: &[f64], scale: f64) -> (bool, bool) {
     let d: Vec<f64> = a.iter().zip(b).map(|(x, y)| x - y).collect();
     let k = d.len() as f64;
     let m = d.iter().sum::<f64>() / k;
     let se = (d.iter().map(|x| (x - m) * (x - m)).sum::<f64>() / (k - 1.0).max(1.0) / k).sqrt();
-    (m - 2.0 * se > 0.0, d.len() >= TIE_ROUNDS && m.abs() + 2.0 * se < EQUAL * scale)
+    let largest = a.iter().chain(b).fold(0.0f64, |x, y| x.max(y.abs()));
+    (m - 2.0 * se > 0.0, 3.0 * largest <= k * EQUAL * scale && m.abs() + 2.0 * se < EQUAL * scale)
 }
 
 /// `sample(i, range)`: option i's samples for rounds `range`; `value`: a sample's value;
@@ -63,6 +74,7 @@ pub(super) fn race<T: Send + Sync>(
     let mut samples: Vec<Vec<T>> = (0..n).map(|_| Vec::new()).collect();
     let mut alive: Vec<usize> = (0..n).collect();
     let mut tied = vec![false; n];
+    let mut dropped_worse = vec![false; n];
     // whom each tied option was found as good as
     let mut anchor: Vec<Option<usize>> = vec![None; n];
     let mean = |v: &[T], f: &dyn Fn(&T) -> f64| v.iter().map(f).sum::<f64>() / v.len().max(1) as f64;
@@ -90,6 +102,7 @@ pub(super) fn race<T: Send + Sync>(
             let vals: Vec<f64> = samples[c].iter().map(&value).collect();
             let (worse, equal) = paired(&lead, &vals, scale);
             if worse {
+                dropped_worse[c] = true;
                 return false;
             }
             if equal {
@@ -104,11 +117,11 @@ pub(super) fn race<T: Send + Sync>(
             break;
         }
     }
-    // still undecided at the cap: as good as the leader as far as can be told
+    // still in at the cap: undecided (not worse, not shown equal)
+    let mut undecided = vec![false; n];
     for &c in &alive {
         if c != leader {
-            tied[c] = true;
-            anchor[c] = Some(leader);
+            undecided[c] = true;
         }
     }
     // a tie with an option that didn't end as (or as good as) the leader doesn't stand
@@ -124,7 +137,7 @@ pub(super) fn race<T: Send + Sync>(
         false
     };
     let tied: Vec<bool> = (0..n).map(|c| c != leader && tied[c] && stands(c, &anchor)).collect();
-    Race { samples, leader, tied }
+    Race { samples, leader, tied, undecided, worse: dropped_worse }
 }
 
 #[cfg(test)]
@@ -138,24 +151,24 @@ mod tests {
         let sample = |o: usize, r: std::ops::Range<usize>| -> Vec<f64> { r.map(|i| if o == 1 && i % 40 == 39 { 0.0 } else { 1.0 }).collect() };
         let race = race(2, 16, MAX, |_| 2, sample, |x| *x, |x| *x, |x, y| y.cmp(&x));
         assert_eq!(race.leader, 0);
-        assert!(!race.tied[1]);
+        assert!(!race.tied[1] && !race.undecided[1]);
     }
 
     #[test]
     fn a_tie_with_an_early_leader_that_falls_behind_doesnt_stand() {
-        // E leads for its first 400 rounds by luck and C ties with it there (equal on every
-        // round, past `TIE_ROUNDS`); F (noisy, so still in) takes the lead later and E turns
-        // out clearly worse. C was only as good as E.
-        let f = |i: usize| 1.0 + 2.0 * (i as f64 * 1.7).sin();
+        // E leads for its first 600 rounds by luck and C ties with it there (equal on every
+        // round, enough of them); F (noisy, so still in) takes the lead later and E turns out
+        // clearly worse. C was only as good as E.
+        let f = |i: usize| 1.0 + 0.6 * (i as f64 * 1.7).sin();
         let sample = |o: usize, r: std::ops::Range<usize>| -> Vec<f64> {
             r.map(|i| match o {
-                0 | 1 => if i < 400 { 1.10 } else { 0.70 },  // E, C
+                0 | 1 => if i < 600 { 1.02 } else { 0.70 },  // E, C
                 _ => f(i),                                   // F
             })
             .collect()
         };
         let race = race(3, 16, MAX, |_| 3, sample, |x| *x, |x| *x, |x, y| y.cmp(&x));
         assert_eq!(race.leader, 2, "{:?}", race.samples.iter().map(|v| v.len()).collect::<Vec<_>>());
-        assert!(!race.tied[0] && !race.tied[1], "{:?}", race.tied);
+        assert!(!race.tied[0] && !race.tied[1] && !race.undecided[1], "{:?}", race.tied);
     }
 }

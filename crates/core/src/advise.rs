@@ -187,6 +187,11 @@ pub struct PlayAdvice {
     /// value on `compare::MAX` rounds the search didn't use, best first
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub reference: Vec<(String, f64)>,
+    /// With `Options::reference`: how far the pick is below the reference's best (as a share
+    /// of the best's value) and the standard error of that, both on another `compare::MAX`
+    /// rounds (the best is chosen on the first block, so its luck there doesn't count)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reference_gap: Option<(f64, f64)>,
     /// Planets from Blue Seals held at the end, on average (counted in the ranking)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub planets: Option<f64>,
@@ -627,8 +632,8 @@ const TARGET_BUDGET: &[(usize, usize)] = &[(16, 12), (32, 6), (64, 3)];
 /// Best play's search over every move (`compare::race`): rounds in the first batch, and the
 /// budget: (up to this many rounds done, at most this many moves still undecided). A cost
 /// limit, not a finding: see `compare`.
-const SEARCH_FIRST: usize = 16;
-const SEARCH_BUDGET: &[(usize, usize)] = &[(16, 48), (32, 24), (64, 12), (128, 8)];
+const SEARCH_FIRST: usize = 32;
+const SEARCH_BUDGET: &[(usize, usize)] = &[(32, 48), (64, 24), (128, 12), (256, 8)];
 fn is_zero_usize(n: &usize) -> bool {
     *n == 0
 }
@@ -849,22 +854,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         });
     }
     let blind_spec = |bl: &crate::save::BlindSlot| -> Spec {
-        let mut start = RoundStart {
-            hand: vec![],
-            deck: fresh_deck.clone(),
-            hand_size: run.hand_size,
-            hands: run.round_hands,
-            discards: run.round_discards,
-            scored: 0.0,
-            target: bl.target,
-        };
-        let rules = RoundRules::for_blind(&bl.key);
-        start.hand_size += rules.hand_size_delta;
-        match bl.key.as_str() {
-            "bl_needle" => start.hands = 1,
-            "bl_water" => start.discards = 0,
-            _ => {}
-        }
+        let (start, rules) = blind_from_start(&bl.key, bl.target, run, &fresh_deck);
         Spec {
             label: if bl.slot == "Boss" { "Boss".into() } else { format!("Next: {}", bl.slot) },
             blind_key: bl.key.clone(),
@@ -1386,12 +1376,17 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         let mut hand = sample_hands(n, run.hand_size, 1, ctx.opts.seed, order).remove(0);
         hand.pop();
         hand.push(n);
-        let (ranked, as_good) = target_race(&lr, e, min, max, &d, &hand, Some(n))?;
+        let TargetRanking { sets: ranked, as_good, samples } = target_race(&lr, e, min, max, &d, &hand, Some(n))?;
         let uses = |v: &[usize]| v.contains(&n);
         if !uses(&ranked[0]) || ranked[1..as_good].iter().any(|v| !uses(v)) {
             return None;
         }
-        let elsewhere = ranked[as_good..].iter().find(|v| !uses(v))?;
+        // a positive finding: the best with the card clearly better than the best without it
+        let j = (as_good..ranked.len()).find(|&j| !uses(&ranked[j]))?;
+        if !compare::clearly_better(&samples[0], &samples[j]) {
+            return None;
+        }
+        let elsewhere = &ranked[j];
         let v = |set: &[usize]| lr.deck_value(&crate::engine::consumable::apply(e, &d, set), 0.0, value::TAROT_ROUNDS);
         Some((v(&ranked[0]), v(elsewhere)))
     });
@@ -3187,7 +3182,7 @@ fn tarot_values(
         if hand_cards.len() < min {
             return Some(base);
         }
-        let (mut ranked, k) = target_race(lr, effect, min, max, deck, &hand_cards, None)?;
+        let TargetRanking { sets: mut ranked, as_good: k, .. } = target_race(lr, effect, min, max, deck, &hand_cards, None)?;
         ranked.truncate(k);
         // this round's odds with the cards changed (copies come into your hand)
         let odds = |v: &[usize]| -> (f64, f64) {
@@ -3301,16 +3296,38 @@ fn tarot_values(
     out
 }
 
-/// `spec` played from the start: a round in progress begins again with your whole deck and a
-/// round's hands and discards (its blind and target kept)
+/// Blind `key` played from the start with `deck`: a round's hands, discards and hand size, and
+/// the blind's own rules (blind.lua: The Needle's one hand, The Water's no discards, a hand-size
+/// change, debuffs)
+fn blind_from_start(key: &str, target: f64, run: &RunState, deck: &[Card]) -> (RoundStart, RoundRules) {
+    let rules = RoundRules::for_blind(key);
+    let mut start = RoundStart {
+        hand: vec![],
+        deck: deck.to_vec(),
+        hand_size: run.hand_size + rules.hand_size_delta,
+        hands: run.round_hands,
+        discards: run.round_discards,
+        scored: 0.0,
+        target,
+    };
+    match key {
+        "bl_needle" => start.hands = 1,
+        "bl_water" => start.discards = 0,
+        _ => {}
+    }
+    (start, rules)
+}
+
+/// `spec` played from the start: a round in progress begins again as the blind does
+/// (`blind_from_start`: your whole deck, its rules); one not started is only given `deck`
 fn fresh_round(spec: &Spec, run: &RunState, deck: &[Card]) -> Spec {
     let mut fresh = spec.clone();
     if fresh.in_progress {
+        let (start, rules) = blind_from_start(&spec.blind_key, spec.start.target, run, deck);
         fresh.in_progress = false;
-        fresh.start.hand.clear();
-        fresh.start.scored = 0.0;
-        fresh.start.hands = run.round_hands;
-        fresh.start.discards = run.round_discards;
+        // the hand size in play already has the blind's change (The Manacle)
+        fresh.start = RoundStart { hand_size: spec.start.hand_size, ..start };
+        fresh.rules = rules;
     }
     fresh.start.deck = deck.to_vec();
     fresh
@@ -3334,8 +3351,7 @@ fn sample_hands(n: usize, hand_size: i64, k: usize, seed: u64, salt: u64) -> Vec
 /// the same deck count once (the fewest cards kept, and one without `avoid` if any). Chosen
 /// by `compare::race` on the deck projection, on rounds of their own (after the
 /// `value::TAROT_ROUNDS` a pick is then valued on, so its luck doesn't inflate its value).
-/// Every set, the best first, then those as good as it, then the rest (by their mean so far);
-/// and how many are as good as the best (it included). `None` if there's no set.
+/// `None` if there's no set.
 fn target_race(
     lr: &value::LongRun,
     effect: crate::engine::consumable::CardEffect,
@@ -3344,7 +3360,7 @@ fn target_race(
     deck: &[Card],
     hand: &[usize],
     avoid: Option<usize>,
-) -> Option<(Vec<Vec<usize>>, usize)> {
+) -> Option<TargetRanking> {
     use crate::engine::consumable::{self, CardEffect};
     let mut sets: Vec<Vec<usize>> = vec![vec![]];
     for v in subsets(hand, min, max) {
@@ -3363,7 +3379,7 @@ fn target_race(
         decks_seen.insert(d)
     });
     if sets.len() <= 1 {
-        return (!sets.is_empty()).then_some((sets, 1));
+        return (!sets.is_empty()).then(|| TargetRanking { samples: vec![vec![]; sets.len()], sets, as_good: 1 });
     }
     let budget = |done: usize| TARGET_BUDGET.iter().find(|b| done <= b.0).map_or(TARGET_BUDGET[TARGET_BUDGET.len() - 1].1, |b| b.1);
     let after = value::TAROT_ROUNDS;
@@ -3392,7 +3408,17 @@ fn target_race(
     let mut rest: Vec<usize> = (0..sets.len()).filter(|&i| i != race.leader && !race.tied[i]).collect();
     rest.sort_by(by_mean);
     let k = 1 + as_good.len();
-    Some((std::iter::once(race.leader).chain(as_good).chain(rest).map(|i| sets[i].clone()).collect(), k))
+    let order: Vec<usize> = std::iter::once(race.leader).chain(as_good).chain(rest).collect();
+    Some(TargetRanking { sets: order.iter().map(|&i| sets[i].clone()).collect(), as_good: k, samples: order.iter().map(|&i| race.samples[i].clone()).collect() })
+}
+
+/// `target_race`'s result: every set, the best first, then those shown as good as it (within
+/// `compare::EQUAL`: `as_good` counts the best too), then the rest by their mean so far; and
+/// each one's samples (per round, on the same rounds as the others').
+struct TargetRanking {
+    sets: Vec<Vec<usize>>,
+    as_good: usize,
+    samples: Vec<Vec<f64>>,
 }
 
 /// Every set of `min..=max` of `items` (in their order)
