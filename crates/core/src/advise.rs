@@ -617,9 +617,6 @@ const TARGET_SCREEN_ROUNDS: usize = 48;
 const TARGET_FIRST: usize = 16;
 const TARGET_MAX: usize = 128;
 const TARGET_BUDGET: &[(usize, usize)] = &[(16, 12), (32, 6), (64, 3)];
-/// Targets as good as the best (a tie in the race), used from your hand in a blind: the most
-/// whose chance of winning this round is worked out to choose between them
-const TARGET_TIES: usize = 8;
 /// Best play's search over every move (`compare::race`): rounds in the first batch, and the
 /// budget: (up to this many rounds done, at most this many moves still undecided). A cost
 /// limit, not a finding: see `compare`.
@@ -3160,7 +3157,8 @@ fn tarot_values(
             return Some(TarotValue { note: format!("{} (not modelled)", effect.label()), ..base });
         }
         let hand_cards: Vec<usize> = (0..deck.len()).filter(|&i| ih[i]).collect();
-        let mut sets: Vec<Vec<usize>> = vec![];
+        // no target (not using it) is an option too: your deck as it is
+        let mut sets: Vec<Vec<usize>> = vec![vec![]];
         for v in subsets(&hand_cards, min, max) {
             if effect == CardEffect::CopyLeftToRight && v.len() == 2 {
                 sets.push(vec![v[1], v[0]]);
@@ -3169,7 +3167,7 @@ fn tarot_values(
         }
         let key = |v: &[usize]| v.iter().map(|&i| deck[i].order_key()).collect::<Vec<_>>();
         // sets that leave the same deck (a card that already has the effect, two of a kind in
-        // hand) are one option: the fewest cards kept
+        // hand, no target) are one option: the fewest cards kept
         sets.sort_by(|a, b| a.len().cmp(&b.len()).then_with(|| key(a).cmp(&key(b))));
         let mut decks_seen = std::collections::HashSet::new();
         sets.retain(|v| {
@@ -3177,7 +3175,7 @@ fn tarot_values(
             d.sort();
             decks_seen.insert(d)
         });
-        if sets.is_empty() {
+        if sets.len() == 1 {
             return Some(base);
         }
         // chosen on rounds of their own (after the ones the value is then measured on), so the
@@ -3213,26 +3211,22 @@ fn tarot_values(
                 simulate(d)
             }
         };
-        // the leader and what's as good as it, best first
+        // the leader, and what's as good as it (listed, best first; which of them wins this
+        // round isn't weighed: known gap 1)
         let mean = |i: usize| race.samples[i].iter().sum::<f64>() / race.samples[i].len().max(1) as f64;
-        let mut as_good: Vec<usize> = std::iter::once(race.leader).chain((0..sets.len()).filter(|&i| race.tied[i])).collect();
-        as_good[1..].sort_by(|&a, &b| mean(b).total_cmp(&mean(a)).then_with(|| key(&sets[a]).cmp(&key(&sets[b]))));
-        // used from your hand in a blind, ties go to this round's chance of winning
-        let (best, (p, r)) = if real && spec.in_progress && as_good.len() > 1 {
-            as_good.truncate(TARGET_TIES);
-            let tried: Vec<(usize, (f64, f64))> = as_good.iter().map(|&i| (i, odds(&sets[i]))).collect();
-            let top = tried.iter().fold(None::<&(usize, (f64, f64))>, |b, x| if b.is_none_or(|b| x.1 .0 > b.1 .0) { Some(x) } else { b }).copied().unwrap();
-            as_good.retain(|&i| i != top.0);
-            as_good.insert(0, top.0);
-            top
-        } else {
-            (race.leader, odds(&sets[race.leader]))
-        };
+        let best = race.leader;
+        let mut as_good: Vec<usize> = (0..sets.len()).filter(|&i| race.tied[i]).collect();
+        as_good.sort_by(|&a, &b| mean(b).total_cmp(&mean(a)).then_with(|| key(&sets[a]).cmp(&key(&sets[b]))));
+        if sets[best].is_empty() {
+            let note = if real { "no target in your hand makes your run worth more now".to_string() } else { "no target worth it in hands you'd hold".to_string() };
+            return Some(TarotValue { simulated: true, deck: Some(deck.clone()), note: format!("{what}: {note}", what = effect.label()), ..base });
+        }
+        let (p, r) = odds(&sets[best]);
         let label = |v: &[usize]| v.iter().map(|&i| deck[i].label()).collect::<Vec<_>>().join(" ");
         let d = consumable::apply(effect, deck, &sets[best]);
         let what = effect.label();
         let note = if real {
-            let others: Vec<String> = as_good.iter().skip(1).take(3).map(|&i| label(&sets[i])).collect();
+            let others: Vec<String> = as_good.iter().take(3).map(|&i| if sets[i].is_empty() { "not using it".to_string() } else { label(&sets[i]) }).collect();
             let ties = if others.is_empty() { String::new() } else { format!("; as good: {}", others.join(", ")) };
             format!("{what} on {} (the cards worth most to your run{ties})", label(&sets[best]))
         } else {
@@ -4054,6 +4048,45 @@ mod tests {
         assert_eq!(sets.len(), 15 + 105 + 455);
         assert!(sets.contains(&vec![14]) && sets.contains(&vec![12, 13, 14]));
         assert!(subsets(&hand, 2, 2).iter().all(|v| v.len() == 2));
+    }
+
+    #[test]
+    fn a_consumable_with_no_good_target_isnt_used() {
+        // Spade jokers, a hand of only Spades and The Star (cards become Diamonds): every
+        // target hurts, so the search answers "no target" and Best play gets no move for it.
+        let mut r = shop_run(&[("j_wrathful_joker", None, None), ("j_arrowhead", None, None)], &[]);
+        r.screen = crate::save::Screen::SelectingHand;
+        r.shop = None;
+        r.hand = Card::parse_list("AS KS QS JS 9S 7S 5S 3S").unwrap();
+        r.draw_pile = crate::bench::standard_deck().into_iter().filter(|c| !r.hand.iter().any(|h| h.rank == c.rank && h.suit == c.suit)).collect();
+        r.consumables = vec![crate::save::ItemCard { key: "c_star".into(), name: "The Star".into(), set: "Tarot".into(), cost: 3, edition: None, card: None }];
+        r.blinds[0].state = "Current".into();
+        r.current_blind = Some(crate::save::CurrentBlind {
+            key: "bl_small".into(), name: "Small Blind".into(), target: 3000.0, scored: 0.0, disabled: false, hands_seen: vec![], only_hand: None,
+        });
+        let a = analyze(&r, GameData::bundled(), None, &quick());
+        let t = a.tarots.iter().find(|t| t.key == "c_star").unwrap();
+        assert!(t.note.contains("no target"), "{}", t.note);
+        assert!(t.use_effect.is_none());
+    }
+
+    #[test]
+    fn a_tarot_you_dont_hold_isnt_valued_on_the_hand_on_screen() {
+        // In a blind, Death (not held) can't be used on this hand: it's valued on hands you'd
+        // hold, and Best play gets no move for it. (Not quick: the whole pool is valued.)
+        let mut r = shop_run(&[("j_joker", None, None)], &[]);
+        r.screen = crate::save::Screen::SelectingHand;
+        r.shop = None;
+        r.hand = Card::parse_list("AS KH QD 9C 7S 5H 4D 3S:blue").unwrap();
+        r.draw_pile = crate::bench::standard_deck().into_iter().filter(|c| !r.hand.iter().any(|h| h.rank == c.rank && h.suit == c.suit)).collect();
+        r.blinds[0].state = "Current".into();
+        r.current_blind = Some(crate::save::CurrentBlind {
+            key: "bl_small".into(), name: "Small Blind".into(), target: 1500.0, scored: 0.0, disabled: false, hands_seen: vec![], only_hand: None,
+        });
+        let a = analyze(&r, GameData::bundled(), None, &Options { sims: 100, seed: 42, ..Default::default() });
+        let t = a.tarots.iter().find(|t| t.key == "c_death").unwrap();
+        assert!(t.note.contains("hands you'd hold"), "{}", t.note);
+        assert!(t.use_effect.is_none());
     }
 
     #[test]

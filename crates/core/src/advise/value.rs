@@ -56,6 +56,8 @@ pub(super) struct LongRun<'a> {
     deck_base: OnceLock<crate::sim::Stats>,
     /// The same on fewer rounds (quick screens), by round count
     deck_base_n: Mutex<std::collections::HashMap<usize, crate::sim::Stats>>,
+    /// Your deck's money while scoring, per round, on given rounds (`deck_rounds`)
+    deck_money: Mutex<std::collections::HashMap<(usize, usize), f64>>,
 }
 
 /// What an option or event adds to your run, applied to the projected board the same way
@@ -161,6 +163,7 @@ impl<'a> LongRun<'a> {
             planets: OnceLock::new(),
             deck_base: OnceLock::new(),
             deck_base_n: Mutex::new(Default::default()),
+            deck_money: Mutex::new(Default::default()),
         };
         {
             let before = lr.long_score(&lr.fill_long(lr.project(&|_| true, run.dollars), None, 0.0));
@@ -568,7 +571,8 @@ impl<'a> LongRun<'a> {
     /// `deck_value` round by round, on rounds `range` (round i draws the same cards for every
     /// deck), so changes can be compared on the same draws (`compare::race`). `income`: the
     /// money per ante its cards earn, as found on an earlier batch (`None`: work it out from
-    /// these rounds); returned with the values, to pass on the next batch.
+    /// these rounds, against your deck's money on the same rounds); returned with the values,
+    /// to pass on the next batch.
     pub fn deck_rounds(&self, d: &[Card], money_once: f64, range: std::ops::Range<usize>, income: Option<f64>) -> (Vec<f64>, f64) {
         let base = self.deck_base().clone();
         let planets = self.seal_planets(d);
@@ -580,7 +584,15 @@ impl<'a> LongRun<'a> {
             Some(x) => (rounds(x), x),
             None => {
                 let r = rounds(0.0);
-                let extra = (r.iter().map(|x| x.money).sum::<f64>() / r.len().max(1) as f64 - base.money) * 3.0;
+                let key = (range.start, range.end);
+                let cached = self.deck_money.lock().unwrap().get(&key).copied();
+                let yours = cached.unwrap_or_else(|| {
+                    let (bb, start) = self.deck_round(&self.ctx.fresh_deck, self.run.dollars, money_once, 0.0, 0.0);
+                    let m = crate::sim::round_results(&bb, &start, range.clone(), self.ctx.opts.seed).iter().map(|x| x.money).sum::<f64>() / range.len().max(1) as f64;
+                    self.deck_money.lock().unwrap().insert(key, m);
+                    m
+                });
+                let extra = (r.iter().map(|x| x.money).sum::<f64>() / r.len().max(1) as f64 - yours) * 3.0;
                 if extra.abs() > 0.5 { (rounds(extra), extra) } else { (r, 0.0) }
             }
         };

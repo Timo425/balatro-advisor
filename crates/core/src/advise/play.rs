@@ -43,9 +43,10 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
             }
             let Some((effect, 1, 1)) = data.center(&held.key).and_then(|x| consumable::card_effect(&held.key, &x.config)) else { continue };
             let val = |card: &Card, rounds: usize| idx_of(card).map(|i| lr.deck_value(&consumable::apply(effect, deck, &[i]), 0.0, rounds));
-            // its searched target (none: your deck as it is), not the best of noisy values
+            // its searched target, not the best of noisy values; never below not using it
+            // (1.0: your deck as it is, exact on the same rounds)
             let target = tarots.iter().find(|t| t.key == held.key).and_then(|t| t.deck.clone());
-            let now = |rounds: usize| target.as_ref().map_or(1.0, |d| lr.deck_value(d, 0.0, rounds));
+            let now = |rounds: usize| target.as_ref().map_or(1.0, |d| lr.deck_value(d, 0.0, rounds)).max(1.0);
             // a quick screen, then what clears the noise margin on the full projection
             let (now_q, now_f) = (now(TARGET_SCREEN_ROUNDS), now(value::TAROT_ROUNDS));
             let quick = par_map(&kinds, |k| val(k, TARGET_SCREEN_ROUNDS).unwrap_or(0.0) - now_q);

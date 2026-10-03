@@ -9,6 +9,9 @@
 //! the rest are dropped by their value so far, then by a secondary value (e.g. points toward
 //! the target, which still separates options in a round you almost always lose). That cut is
 //! a budget limit, not a finding: those options aren't reported as worse or as ties.
+//!
+//! A tie is with the leader of its batch. If that leader is later found clearly worse, so is
+//! what tied with it: a tie only stands when it leads, through ties, to the final leader.
 
 use super::par_map;
 
@@ -54,6 +57,8 @@ pub(super) fn race<T: Send + Sync>(
     let mut samples: Vec<Vec<T>> = (0..n).map(|_| Vec::new()).collect();
     let mut alive: Vec<usize> = (0..n).collect();
     let mut tied = vec![false; n];
+    // whom each tied option was found as good as
+    let mut anchor: Vec<Option<usize>> = vec![None; n];
     let mean = |v: &[T], f: &dyn Fn(&T) -> f64| v.iter().map(f).sum::<f64>() / v.len().max(1) as f64;
     let (mut done, mut batch) = (0usize, first.max(1));
     let mut leader = 0usize;
@@ -83,6 +88,7 @@ pub(super) fn race<T: Send + Sync>(
             }
             if equal {
                 tied[c] = true;
+                anchor[c] = Some(leader);
                 return false;
             }
             true
@@ -96,7 +102,44 @@ pub(super) fn race<T: Send + Sync>(
     for &c in &alive {
         if c != leader {
             tied[c] = true;
+            anchor[c] = Some(leader);
         }
     }
+    // a tie with an option that didn't end as (or as good as) the leader doesn't stand
+    let stands = |c: usize, anchor: &[Option<usize>]| {
+        let mut x = c;
+        for _ in 0..n {
+            match anchor[x] {
+                Some(a) if a == leader => return true,
+                Some(a) => x = a,
+                None => return false,
+            }
+        }
+        false
+    };
+    let tied: Vec<bool> = (0..n).map(|c| c != leader && tied[c] && stands(c, &anchor)).collect();
     Race { samples, leader, tied }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_tie_with_an_early_leader_that_falls_behind_doesnt_stand() {
+        // E leads the first batch by luck and C ties with it there; F (noisy, so still in)
+        // takes the lead later and E turns out clearly worse. C was only as good as E.
+        let f = |i: usize| 1.0 + 0.5 * (i as f64 * 1.7).sin();
+        let sample = |o: usize, r: std::ops::Range<usize>| -> Vec<f64> {
+            r.map(|i| match o {
+                0 => if i < 16 { 1.10 } else { 0.70 },  // E
+                1 => if i < 16 { 1.10 } else { 0.70 },  // C
+                _ => f(i),                              // F
+            })
+            .collect()
+        };
+        let race = race(3, 16, 400, |_| 3, sample, |x| *x, |x| *x, |x, y| y.cmp(&x));
+        assert_eq!(race.leader, 2);
+        assert!(!race.tied[0] && !race.tied[1], "{:?}", race.tied);
+    }
 }
