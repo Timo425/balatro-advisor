@@ -1303,10 +1303,8 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         if let Some(k) = tarots.iter().position(|t| &t.key == last) {
             tarot_long[fi] = tarot_long[k];
         } else if let Some(h) = data.center(last).and_then(|c| c.config.get("hand_type")).and_then(|v| v.as_str()).and_then(crate::engine::HandType::from_name) {
-            let mut b = lr.fill_long(lr.project(&|_| true, run.dollars), None, 0.0);
-            let l = b.levels[h as usize];
-            b.levels[h as usize] = l.with_level(l.level + 1);
-            tarot_long[fi] = lr.long_score(&b) / l0;
+            // the planet it copies, valued as any planet is (its level and Constellation)
+            tarot_long[fi] = lr.planet(h);
         }
     }
     // The Emperor: 2 random tarots (one you don't want is sold, so each is worth at least ×1.00)
@@ -1657,8 +1655,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                         j.x_mult += 0.2;
                     }
                     if let (true, Some(top)) = (level, top_hand) {
-                        let l = b.levels[top as usize];
-                        b.levels[top as usize] = l.with_level(l.level + 1);
+                        b.levels[top as usize] = value::add_levels(b.levels[top as usize], 1.0);
                     }
                 };
                 let mut with_now = ctx.base.clone();
@@ -3851,17 +3848,19 @@ fn grow_one_ante(j: &Joker, hand_mix: &[HandShare], run: &RunState, board: &Boar
         if per <= 0.0 || value::event_price(run, ev).is_none() {
             continue;
         }
-        let money = bought.filter(|b| b.0 == ev).map(|(_, price)| (value::events_bought(dollars, interest_line, price), price));
-        let n = 1.0 + money.map_or(0.0, |m| m.0);
+        // the spare money's events (`value::events_per_ante`, as the projection counts them)
+        let spare = bought.filter(|b| b.0 == ev).map(|_| value::events_per_ante(run, ev, dollars - interest_line));
+        let anyway = if ev == RunEvent::Reroll { 1.0 } else { 0.0 };
+        let n = anyway + spare.unwrap_or(0.0);
         g.grow_from(ev, n);
-        let s = if n > 1.0 { "s" } else { "" };
+        let s = if n == 1.0 { "" } else { "s" };
         let what = match ev {
-            RunEvent::SkipPack => format!("skip {n:.0} booster pack{s} (1 you'd open anyway"),
+            RunEvent::SkipPack => format!("skip {n:.0} booster pack{s} instead of opening"),
             _ => format!("reroll {n:.0} time{s} (1 anyway"),
         };
-        let more = match money {
-            Some((_, price)) => format!(", plus 1 per ${price:.0} above the ${interest_line:.0} interest line"),
-            None => ", your spare money going to another joker's".to_string(),
+        let more = match spare {
+            Some(_) => format!("{}with the money above the ${interest_line:.0} interest line, if it goes there rather than to planets (By Ante 8 weighs both)", if anyway > 0.0 { ", more " } else { " (" }),
+            None => format!("{}your spare money going to another joker's", if anyway > 0.0 { ", " } else { " (" }),
         };
         labels.push(format!("+{} Mult after 1 ante if you {what}{more})", per * n));
     }
@@ -3975,7 +3974,8 @@ mod tests {
         let b = Board::from_run(&r, GameData::bundled());
         let poor = grow_one_ante(&base, &[], &r, &b, 10.0, 25.0).unwrap().0.mult;
         let rich = grow_one_ante(&base, &[], &r, &b, 60.0, 25.0).unwrap().0.mult;
-        assert!(poor > base.mult && rich > poor);
+        // no spare money, no pack skipped (a skipped pack gives up what it holds: it costs one)
+        assert!(poor == base.mult && rich > poor, "{poor} {rich}");
         // the projection buys the same events with your money, over every ante left
         let owned = shop_run(&[("j_red_card", None, None), ("j_joker", None, None)], &[]);
         let longer = with_long_run(&owned, |lr| mults(&lr.board_with(&Gain::default()), "j_red_card")[0]);
@@ -4159,7 +4159,8 @@ mod tests {
     fn money_buys_the_event_the_board_grows_most_from_per_dollar_whatever_the_joker_order() {
         // Red Card (+3 a $4 pack skipped) and Flash Card (+2 a $5 reroll): money held and $20
         // once both buy pack skips, in either order; the jokers' order never decides it, and
-        // the same money doesn't also reroll
+        // the same money doesn't also reroll. (No main hand here: the spare money can only go
+        // to events.)
         // (both at +20 already, so both stay on the projected board)
         let grown = |owned: &[(&str, Option<Edition>, Option<i64>)], reroll: i64| {
             let mut r = shop_run(owned, &[]);
@@ -4171,32 +4172,73 @@ mod tests {
         };
         for owned in [[("j_flash", None, None), ("j_red_card", None, None)], [("j_red_card", None, None), ("j_flash", None, None)]] {
             let (before, after) = grown(&owned, 5);
-            // one of each a 6.5-ante run does anyway; the spare money ($5 above the line) buys skips
+            // a reroll an ante a 6.5-ante run does anyway; the spare money ($5 above the line)
+            // buys a pack skip an ante, and no pack is skipped for free
             let anyway = |per: f64| 20.0 + per * 6.5;
-            assert_eq!(mults(&before, "j_red_card"), vec![anyway(3.0) + 3.0 * 6.5], "{owned:?}: money held buys pack skips");
+            assert_eq!(mults(&before, "j_red_card"), vec![20.0 + 3.0 * 6.5], "{owned:?}: money held buys pack skips");
             assert!(mults(&after, "j_red_card")[0] > mults(&before, "j_red_card")[0], "{owned:?}: so does money once");
             assert_eq!(mults(&before, "j_flash"), vec![anyway(2.0)], "{owned:?}: Flash rerolls once an ante, the money doesn't also reroll");
             assert_eq!(mults(&after, "j_flash"), vec![anyway(2.0)], "{owned:?}: nor does money once");
         }
         // with rerolls at $1 (vouchers lower the base cost) Flash's +2 a dollar wins
         let (b, _) = grown(&[("j_red_card", None, None), ("j_flash", None, None)], 1);
-        assert!(mults(&b, "j_flash")[0] > 20.0 + 2.0 * 6.5 && mults(&b, "j_red_card") == vec![20.0 + 3.0 * 6.5], "{:?} {:?}", mults(&b, "j_flash"), mults(&b, "j_red_card"));
+        assert!(mults(&b, "j_flash")[0] > 20.0 + 2.0 * 6.5 && mults(&b, "j_red_card") == vec![20.0], "{:?} {:?}", mults(&b, "j_flash"), mults(&b, "j_red_card"));
     }
 
     #[test]
     fn a_price_takes_back_what_money_buys_then_levels_never_mult_already_earned() {
         // A Red Card at +30 already, in the last ante (half an ante left): a big price takes
-        // back the pack skips money would buy, then main-hand levels; never the +30, nor the
-        // skip done anyway, and never for free
+        // back what the spare money would buy (pack skips or main-hand levels); never the +30,
+        // and never for free
         let mut r = shop_run(&[("j_red_card", None, None), ("j_joker", None, None)], &[]);
         r.jokers[0].ability["mult"] = 30.into();
         r.ante = 8;
         r.dollars = 100.0;
         let mix = [HandShare { hand: "Pair".into(), share: 1.0, played: 1.0, mean: 1.0 }];
         let (rich, poor) = with_long_run_mix(&r, &mix, |lr| (lr.board_with(&Gain::default()), lr.board_with(&Gain::money(-100.0))));
-        assert_eq!(mults(&poor, "j_red_card"), vec![30.0 + 3.0 * 0.5]);
+        assert_eq!(mults(&poor, "j_red_card"), vec![30.0]);
         let pair = |b: &Board| b.levels[crate::engine::HandType::Pair as usize];
-        assert!(mults(&rich, "j_red_card")[0] > 31.5 && pair(&poor).mult < pair(&rich).mult, "{:?} {:?}", pair(&poor), pair(&rich));
+        assert!(mults(&rich, "j_red_card")[0] > 30.0 || pair(&poor).mult < pair(&rich).mult, "{:?} {:?}", pair(&poor), pair(&rich));
+    }
+
+    #[test]
+    fn a_money_joker_the_projection_replaces_pays_nothing_there() {
+        // Mail-In Rebate, weaker by Ante 8 than a typical find, is replaced on the projected
+        // board: its income doesn't buy Red Card pack skips there (the board you'd have is the
+        // one money is counted for)
+        let red = |extra: i64| {
+            let mut r = shop_run(&[("j_red_card", None, None), ("j_mail", None, None), ("j_joker", None, None)], &[]);
+            r.dollars = 25.0;
+            r.jokers[0].ability["mult"] = 20.into();
+            r.jokers[1].ability["extra"] = extra.into();
+            with_long_run(&r, |lr| {
+                let b = lr.board_with(&Gain::default());
+                (mults(&b, "j_red_card")[0], b.jokers.iter().any(|j| j.key == "j_mail"))
+            })
+        };
+        let ((paid, kept), (unpaid, _)) = (red(5), red(0));
+        assert!(!kept, "Mail-In is replaced by Ante 8 here");
+        assert_eq!(paid, unpaid);
+    }
+
+    #[test]
+    fn spare_money_buys_levels_or_events_never_both() {
+        // $45 held, $20 above the interest line (less than levels can use), a Red Card and a
+        // Pair main hand: the spare money buys pack skips or Pair levels, whichever the
+        // projection scores higher, never both with the same dollars. Against the same run
+        // with no spare money, exactly one grew.
+        let pair = |b: &Board| b.levels[crate::engine::HandType::Pair as usize].mult;
+        let mix = [HandShare { hand: "Pair".into(), share: 1.0, played: 1.0, mean: 1.0 }];
+        let board = |dollars: f64| {
+            let mut r = shop_run(&[("j_red_card", None, None), ("j_joker", None, None)], &[]);
+            r.jokers[0].ability["mult"] = 30.into();
+            r.dollars = dollars;
+            with_long_run_mix(&r, &mix, |lr| lr.board_with(&Gain::default()))
+        };
+        let (rich, poor) = (board(45.0), board(25.0));
+        let skipped = mults(&rich, "j_red_card")[0] > mults(&poor, "j_red_card")[0];
+        let levelled = pair(&rich) > pair(&poor);
+        assert!(skipped != levelled, "skips {skipped} ({:?} vs {:?}), levels {levelled} ({} vs {})", mults(&rich, "j_red_card"), mults(&poor, "j_red_card"), pair(&rich), pair(&poor));
     }
 
     #[test]

@@ -32,9 +32,11 @@ pub(super) const RENT_PER_ANTE: f64 = 9.0;
 /// The cheapest booster pack ($4: game.lua P_CENTERS, a normal pack): what money pays to open,
 /// or skip, one.
 pub(super) const PACK_PRICE: f64 = 4.0;
-/// Events money held buys: at most this many an ante (on top of the one of each kind you'd do
-/// anyway).
-const EVENTS_BOUGHT_PER_ANTE_MAX: f64 = 5.0;
+/// Booster packs an ante: 2 in each shop (game.lua: `for i = 1, 2` in the shop's booster
+/// area, not refreshed by a reroll), 3 shops an ante. The most packs that can be skipped.
+pub(super) const PACKS_PER_ANTE: f64 = 6.0;
+/// Rerolls money buys: at most this many an ante (on top of the one you'd do anyway)
+const REROLLS_BOUGHT_PER_ANTE_MAX: usize = 5;
 
 /// What the `i`-th reroll in a shop costs: the base cost, +$1 for each one before it in the
 /// same shop (`G.GAME.current_round.reroll_cost_increase`, reset every shop).
@@ -69,6 +71,9 @@ pub(super) struct LongRun<'a> {
     deck_base: OnceLock<crate::sim::Stats>,
     /// The same on fewer rounds (quick screens), by round count
     deck_base_n: Mutex<std::collections::HashMap<usize, crate::sim::Stats>>,
+    /// Whether the spare money goes to shop events rather than main-hand levels, by the jokers
+    /// that grow from events (`spare_to_events`)
+    spare_choice: Mutex<std::collections::HashMap<String, bool>>,
     /// Your deck's money while scoring, per round, on given rounds (`deck_rounds`)
     deck_money: Mutex<std::collections::HashMap<(usize, usize), f64>>,
 }
@@ -142,12 +147,61 @@ pub(super) fn bought_event(b: &Board, run: &RunState) -> Option<(RunEvent, f64)>
         })
 }
 
-/// Events money held at `dollars` buys each ante, at `price` each: one per `price` above the
-/// interest line `line` (cash that isn't earning anything), at most
-/// `EVENTS_BOUGHT_PER_ANTE_MAX`. On top of these, one of each kind is done anyway (a pack you'd
-/// open skipped instead, a reroll): `fill_long`.
-pub(super) fn events_bought(dollars: f64, line: f64, price: f64) -> f64 {
-    ((dollars - line).max(0.0) / price).floor().min(EVENTS_BOUGHT_PER_ANTE_MAX)
+/// How many `ev` a `budget` buys in an ante: pack skips at `PACK_PRICE` each (a pack skipped
+/// gives up what it holds, so it costs a pack), at most `PACKS_PER_ANTE`; rerolls at the
+/// game's price (+$1 for each before it in the same shop: `reroll_cost`), spread over the
+/// ante's 3 shops, at most `REROLLS_BOUGHT_PER_ANTE_MAX`. The one place this is counted: the
+/// projection (`fill_long`) and the growth label (`grow_one_ante`) both read it.
+pub(super) fn events_per_ante(run: &RunState, ev: RunEvent, budget: f64) -> f64 {
+    events_bought_for(run, ev, budget).0
+}
+
+/// `events_per_ante`, with what they cost
+fn events_bought_for(run: &RunState, ev: RunEvent, budget: f64) -> (f64, f64) {
+    let budget = budget.max(0.0);
+    match ev {
+        RunEvent::SkipPack => {
+            let n = (budget / PACK_PRICE).floor().min(PACKS_PER_ANTE);
+            (n, n * PACK_PRICE)
+        }
+        RunEvent::Reroll => {
+            // the k-th reroll of the ante is the (k / 3)-th in its shop (the one done anyway first)
+            let mut spent = 0.0;
+            let mut k = 0;
+            while k < REROLLS_BOUGHT_PER_ANTE_MAX {
+                let price = reroll_cost(run.base_reroll_cost, (k + 1) / 3).max(1) as f64;
+                if spent + price > budget {
+                    break;
+                }
+                spent += price;
+                k += 1;
+            }
+            (k as f64, spent)
+        }
+        RunEvent::SkipBlind => (0.0, 0.0),
+    }
+}
+
+/// The most of `ev` a run can do in an ante (`PACKS_PER_ANTE` packs; the rerolls bought plus the
+/// one done anyway)
+fn event_cap(ev: RunEvent) -> f64 {
+    match ev {
+        RunEvent::SkipPack => PACKS_PER_ANTE,
+        RunEvent::Reroll => REROLLS_BOUGHT_PER_ANTE_MAX as f64,
+        RunEvent::SkipBlind => 0.0,
+    }
+}
+
+/// `l` with `n` levels more (or fewer), added to the chips and Mult already there: a fractional
+/// level counts as its share of a level, and one already in `l` (the projection's) is kept
+/// (`Level::with_level` recomputes from the base values and would drop it); never below level 1.
+pub(super) fn add_levels(l: crate::engine::Level, n: f64) -> crate::engine::Level {
+    let floor = l.with_level(1);
+    let mut out = l;
+    out.chips = (l.chips + l.l_chips * n).max(floor.chips);
+    out.mult = (l.mult + l.l_mult * n).max(floor.mult);
+    out.level = (l.level as f64 + n).floor().max(1.0) as i64;
+    out
 }
 
 /// A projected board (`LongRun::project_rent`) and the money held it was projected with,
@@ -155,6 +209,10 @@ pub(super) fn events_bought(dollars: f64, line: f64, price: f64) -> f64 {
 pub(super) struct Projected {
     board: Board,
     dollars: f64,
+    /// Money per ante from money jokers minus rent (in `dollars`), and your main hand's level
+    /// before the projection's levels: `fill_long` decides what the spare money buys
+    flow: f64,
+    top_base: Option<crate::engine::Level>,
 }
 
 impl std::ops::Deref for Projected {
@@ -251,6 +309,7 @@ impl<'a> LongRun<'a> {
             deck_base: OnceLock::new(),
             deck_base_n: Mutex::new(Default::default()),
             deck_money: Mutex::new(Default::default()),
+            spare_choice: Mutex::new(Default::default()),
         };
         {
             let before = lr.long_score(&lr.fill_long(lr.project(&|_| true, run.dollars), None, 0.0));
@@ -302,10 +361,12 @@ impl<'a> LongRun<'a> {
         (per_ante, per_ante * self.antes_left)
     }
 
-    /// Money jokers you keep pay every ante, like rent in reverse.
+    /// Money jokers you keep pay every ante, like rent in reverse; one the projection replaces
+    /// (`replaced`) isn't on the board it pays for.
     pub fn owned_income(&self, keep: &dyn Fn(usize) -> bool) -> f64 {
         let run = self.run;
-        run.jokers.iter().enumerate().filter(|(i, sj)| keep(*i) && self.lasts(sj) && !sj.debuff).map(|(_, sj)| income_per_ante(&sj.key, &sj.ability, run, self.antes_left)).sum::<f64>()
+        let replaced = |i: usize| self.replaced.get().is_some_and(|r| r[i]);
+        run.jokers.iter().enumerate().filter(|(i, sj)| keep(*i) && self.lasts(sj) && !sj.debuff && !replaced(*i)).map(|(_, sj)| income_per_ante(&sj.key, &sj.ability, run, self.antes_left)).sum::<f64>()
     }
 
     /// Stand-ins for the jokers you'd find over the run: empty slots get alternating ×1.5,
@@ -337,13 +398,9 @@ impl<'a> LongRun<'a> {
         let dollars = dollars + flow;
         let mut b = ctx.base.clone();
         b.blind = Default::default();
-        if let Some(top) = self.top_hand {
-            let l = b.levels[top as usize];
-            let n = self.levels_for(dollars, flow).1;
-            let mut lv = l.with_level(l.level + n.floor() as i64);
-            lv.chips += lv.l_chips * (n - n.floor());
-            lv.mult += lv.l_mult * (n - n.floor());
-            b.levels[top as usize] = lv;
+        let top_base = self.top_hand.map(|top| b.levels[top as usize]);
+        if let (Some(top), Some(l)) = (self.top_hand, top_base) {
+            b.levels[top as usize] = self.top_level(l, dollars, flow);
         }
         b.jokers = ctx
             .base
@@ -360,7 +417,12 @@ impl<'a> LongRun<'a> {
                 }
             })
             .collect();
-        Projected { board: b, dollars }
+        Projected { board: b, dollars, flow, top_base }
+    }
+
+    /// Your main hand's level by Ante 8 with money held at `dollars` (`levels_for`)
+    fn top_level(&self, l: crate::engine::Level, dollars: f64, flow: f64) -> crate::engine::Level {
+        add_levels(l, self.levels_for(dollars, flow).1)
     }
 
     pub fn project(&self, keep: &dyn Fn(usize) -> bool, dollars: f64) -> Projected {
@@ -377,42 +439,65 @@ impl<'a> LongRun<'a> {
             j.x_mult = (j.x_mult + 0.1 * once / 4.0).max(1.0);
         }
         if let Some(top) = self.top_hand {
-            let buys = levels / 12.0;
-            // Fractional levels (as their chips and mult): rounding made any small purchase
-            // cost a whole level
-            let l = b.levels[top as usize];
-            let whole = buys.floor();
-            let mut n = l.with_level((l.level + whole as i64).max(1));
-            if n.level + 1 > 1 || buys - whole > 0.0 {
-                let frac = buys - whole;
-                n.chips += n.l_chips * frac;
-                n.mult += n.l_mult * frac;
-            }
-            b.levels[top as usize] = n;
+            // (a fractional level counts: rounding made any small purchase cost a whole level)
+            b.levels[top as usize] = add_levels(b.levels[top as usize], levels / 12.0);
         }
     }
 
     /// The board with the option (or a typical find) in its slot, what money buys, and empty
-    /// slots filled with stand-ins. Shop events: one an ante of each kind the board grows from
-    /// (done anyway), and the event `bought_event` picks, bought with money held
-    /// (`events_bought`) and one-off money at its price. A price takes back those purchases
-    /// first, then main-hand levels (`spend_once`), so it never takes Mult a joker already has
-    /// and never comes free.
+    /// slots filled with stand-ins. Shop events: a reroll an ante done anyway for each joker that
+    /// grows from one; a pack skipped only when bought (it gives up what the pack holds). The
+    /// spare money (held above the interest line, every ante) is one budget for main-hand
+    /// levels and the event `bought_event` picks (`events_per_ante`, up to what the shops hold):
+    /// levels first (up to the most `levels_for` buys) and the rest on events, or events first
+    /// and the rest on levels, whichever the projection scores higher (`spare_to_events`); each
+    /// dollar is spent once. One-off money goes the same way (a price takes back what it bought).
     pub fn fill_long(&self, p: Projected, option: Option<Joker>, once: f64) -> Board {
-        let Projected { board: mut b, dollars } = p;
+        let Projected { board: mut b, dollars, flow, top_base } = p;
         b.jokers.push(option.unwrap_or_else(|| self.stand_in(1.25, 0.0, 0.0)));
-        for ev in RunEvent::ALL {
-            if event_price(self.run, ev).is_some() && b.changes_with(ev) {
-                b.after(ev, self.antes_left);
+        if event_price(self.run, RunEvent::Reroll).is_some() && b.changes_with(RunEvent::Reroll) {
+            b.after(RunEvent::Reroll, self.antes_left);
+        }
+        match bought_event(&b, self.run) {
+            None => self.spend_once(&mut b, once, once),
+            Some((ev, price)) => {
+                let spare = (dollars - self.line).max(0.0);
+                let below = dollars.min(self.line);
+                // the spare money levels can use before they top out (`levels_for`'s cap)
+                let for_levels = (0..=200).map(|k| k as f64).find(|&s| self.levels_for(below + s + 1.0, flow).0 <= self.levels_for(below + s, flow).0 + 1e-9).unwrap_or(spare);
+                let split = |to_levels: f64, to_events: f64, once: f64, events_first: bool| {
+                    let mut e = b.clone();
+                    if let (Some(top), Some(l)) = (self.top_hand, top_base) {
+                        e.levels[top as usize] = self.top_level(l, below + to_levels, flow);
+                    }
+                    let held = events_per_ante(self.run, ev, to_events) * self.antes_left;
+                    // a price takes back the events the budget bought, then levels; money once
+                    // goes where this split puts it first
+                    if events_first || once < 0.0 {
+                        let n = (held + once / price).min(event_cap(ev) * self.antes_left);
+                        e.after(ev, n.max(0.0));
+                        if n < 0.0 {
+                            self.spend_once(&mut e, 0.0, n * price);
+                        }
+                    } else {
+                        e.after(ev, held);
+                        self.spend_once(&mut e, once, once);
+                    }
+                    e
+                };
+                // levels first: what they can use, the rest on events
+                let levels_first = |once: f64| {
+                    let l = spare.min(for_levels);
+                    split(l, spare - l, once, false)
+                };
+                // events first: what the shops hold, the rest on levels
+                let events_first = |once: f64| {
+                    let spent = events_bought_for(self.run, ev, spare).1;
+                    split(spare - spent, spent, once, true)
+                };
+                b = if self.spare_to_events(&levels_first(0.0), &events_first(0.0)) { events_first(once) } else { levels_first(once) };
             }
         }
-        let mut levels = once;
-        if let Some((ev, price)) = bought_event(&b, self.run) {
-            let n = events_bought(dollars, self.line, price) * self.antes_left + once / price;
-            b.after(ev, n.max(0.0));
-            levels = n.min(0.0) * price;
-        }
-        self.spend_once(&mut b, once, levels);
         let mut k = 0;
         while (b.jokers.len() as i64) < b.joker_slots {
             b.jokers.push(match self.fill_types.get(k).copied().unwrap_or(0) {
@@ -423,6 +508,27 @@ impl<'a> LongRun<'a> {
             k += 1;
         }
         b
+    }
+
+    /// Whether the spare money buys shop events (`events`: the board with them) rather than
+    /// main-hand levels (`levels`), whichever the projection scores higher. Decided once for
+    /// each set of jokers that grow from events (it's what they're worth against your main
+    /// hand's planets), on the first board with them.
+    fn spare_to_events(&self, levels: &Board, events: &Board) -> bool {
+        let mut growers: Vec<String> = levels
+            .jokers
+            .iter()
+            .filter(|j| RunEvent::ALL.iter().any(|&ev| j.mult_from(ev) != 0.0 || j.xmult_from(ev) != 0.0))
+            .map(|j| format!("{}:{}", j.key, RunEvent::ALL.iter().map(|&ev| j.mult_from(ev)).sum::<f64>()))
+            .collect();
+        growers.sort();
+        let key = growers.join(",");
+        if let Some(&c) = self.spare_choice.lock().unwrap().get(&key) {
+            return c;
+        }
+        let c = self.long_score(events) > self.long_score(levels);
+        self.spare_choice.lock().unwrap().insert(key, c);
+        c
     }
 
     /// Hand size, hands and discards from the jokers on the projected board. Turtle Bean has
@@ -547,11 +653,7 @@ impl<'a> LongRun<'a> {
             j.x_mult += 0.1 * n_all;
         }
         for &(h, n) in planets {
-            let l = b.levels[h as usize];
-            let mut lv = l.with_level(l.level + n.floor() as i64);
-            lv.chips += lv.l_chips * (n - n.floor());
-            lv.mult += lv.l_mult * (n - n.floor());
-            b.levels[h as usize] = lv;
+            b.levels[h as usize] = add_levels(b.levels[h as usize], n);
         }
     }
 
@@ -560,7 +662,7 @@ impl<'a> LongRun<'a> {
         let mut b = self.fill_long(self.project(&|_| true, self.run.dollars + g.held), None, self.once(g.money));
         if g.all_levels != 0 {
             for l in b.levels.iter_mut() {
-                *l = l.with_level(l.level + g.all_levels);
+                *l = add_levels(*l, g.all_levels as f64);
             }
         }
         Self::add_planets(&mut b, &g.planets, g.other_planets);

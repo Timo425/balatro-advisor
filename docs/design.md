@@ -85,10 +85,10 @@ vs actual blind results and every shop seen).
 | Typical find ×1.25; empty slots ×1.5 / +60 Chips / +15 Mult by shop weights | `value.rs` `stand_in`, `fill_long` | the jokers you'll find by Ante 8 | final boards of won runs (calibration log) |
 | Money worth 30·(1 − e^(−m/30)) | `value.rs` `spendable` | money buys less the more you have | what money turned into in logged shops |
 | Planet levels from money held: 0.5 an ante + (money − interest line)/20, at most 2 an ante; $18 an ante below the line | `value.rs` `levels_for` | planets bought with spare money | logged planet buys per ante |
-| One-off money: a pack skip at $4 (the cheapest pack, `PACK_PRICE`, as in Spending) or a reroll at a shop's first reroll cost (`reroll_cost`), whichever the board's jokers grow most from per dollar (`bought_event`); a price takes back those purchases (with money held's), then main-hand levels; else $12 a main-hand level; $4 any planet (the same planets both level and grow Constellation) | `value.rs` `fill_long`, `spend_once`, `event_price` | what a one-off sum buys | logged shops |
+| Spare money (held above the interest line, each ante) and one-off money are one budget: on a board with a joker that grows from shop events, it buys main-hand levels or the event `bought_event` picks (the one its jokers grow most from per dollar), whichever the projection scores higher (`spare_to_events`, decided once per set of such jokers), never both; a price takes back what it bought; levels $20 an ante held (`levels_for`) or $12 once, added to the level already there (`add_levels`, a fraction included); $4 any planet (the same planets both level and grow Constellation) | `value.rs` `fill_long`, `spare_to_events`, `spend_once`, `add_levels`, `event_price` | what spare money buys | logged shops |
 | Rent $9 an ante | `value.rs` `RENT_PER_ANTE` | $3 a round × 3 | exact |
 | 48 rounds per projected board | `value.rs` `long_score` | projection noise | compare against more rounds |
-| Growth by Ante 8: one pack skip and one reroll an ante done anyway, plus what money held buys: 1 per event price above the interest line, at most 5 an ante, of the event `bought_event` picks (every joker that grows from an event grows); 12 hands an ante, per-joker rates for in-round growth | `value.rs` `fill_long`, `events_bought`; `advise.rs` `grow_antes`, `grow_one_ante` | how growing jokers grow | logged runs |
+| Growth by Ante 8: a reroll an ante done anyway; a pack skipped only when the budget buys it (skipping gives up what the pack holds, so it costs a pack: $4), at most the 6 packs an ante's shops hold (2 a shop, game.lua); rerolls at the game's price (+$1 for each before it in a shop), at most 5 bought an ante; every joker that grows from an event grows; 12 hands an ante, per-joker rates for in-round growth. The dig list's growth label counts the same events (`events_per_ante`) | `value.rs` `fill_long`, `events_per_ante`, `PACKS_PER_ANTE`; `advise.rs` `grow_antes`, `grow_one_ante` | how growing jokers grow | logged runs |
 | Madness horizon 1 ante | `value.rs` `long_of` | it eats your jokers | — |
 | Spending: level cap reached at the interest line + $30; packs $4 (`PACK_PRICE`), 2 a shop, each further one ×0.8; typical pack by shop weights (game.lua 4/4/1.2/0.6/4), Standard counted as 0 | `value.rs` `Spending` | money past the cap buys rerolls and packs | logged packs opened and picks |
 | Rerolls: up to 8 a shop; each further joker bought counts ×0.6 | `advise.rs` `money_value_with`, `expected_buys` | joker gains don't simply add up | logged rerolls |
@@ -149,9 +149,10 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    decided once (in the target race, from its first batch: a fixed offset its paired test
    can't see); the voucher, tag and Emperor
    formulas, and the shop ranking spend leftover money on rerolls in each of its three
-   factors; money held above the interest line buys both events (`events_held`: pack skips or
-   rerolls) and planet levels (`levels_for`); a price lowers Constellation and main-hand
-   levels below what you already have (only event Mult is protected); the rerolls `Spending`
+   factors (the projection's spare money is one budget for levels or events, but not yet for
+   the rerolls and packs `Spending` and `money_value_with` count); a price lowers
+   Constellation and main-hand levels below what you already have (only event Mult is
+   protected); a concrete pack's skip counts as one more on top of the projection's; the rerolls `Spending`
    and `money_value_with` assume don't grow Flash Card; the projection keeps a joker debuffed by
    the current boss debuffed (so it doesn't grow either). The general fix: deck, joker and hand-size fields in `Gain`, and each dollar
    spent once in one model.
@@ -168,10 +169,7 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    Mystic Summit and Green Joker, burning discards looks free. The general fix belongs in the
    engine's discard step (the game's own discard effects), not in the policy.
 8. **The long-run projection spends money on your main hand's planets.** A board that wants
-   several hands levelled is valued as if it wanted one. Its fractional main-hand level
-   (`project_rent`) is dropped wherever a level is set again (`Level::with_level` in
-   `spend_once` and `add_planets`), so every board is valued on whole levels; adding levels to
-   the chips and Mult already there would keep it.
+   several hands levelled is valued as if it wanted one.
 9. **Packs are valued in two places, sized by their label.** A shop pack and the same pack
    from a skip tag have their own branches (Meteor's Mega Celestial by explicit planets, the
    shop's by an average), and "Mega" / "Jumbo" are read from the name, not the center's
