@@ -176,6 +176,12 @@ impl Card {
         Card { rank, suit, enhancement: None, edition: None, seal: None, perma_bonus: 0.0, debuff: false, face_down: false }
     }
 
+    /// The same card as far as play goes (rank, suit, enhancement, seal, edition), whatever its
+    /// debuff or face-down state.
+    pub fn same_kind(&self, other: &Card) -> bool {
+        self.rank == other.rank && self.suit == other.suit && self.enhancement == other.enhancement && self.seal == other.seal && self.edition == other.edition
+    }
+
     /// A fixed order over every field (rank high first, then suit, then the rest): whatever
     /// order cards come in, sorting by this gives the same result, so the advice never
     /// depends on how a hand or pile happened to be ordered.

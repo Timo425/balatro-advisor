@@ -121,7 +121,7 @@ pub fn run(run: &RunState, data: &GameData, plan: &Plan, sims: usize, seed: u64)
     // Cards after the plan: changes land on the hand first, then the draw pile
     let mut hand = run.hand.clone();
     let mut pile = run.draw_pile.clone();
-    let same = |a: &Card, b: &Card| a.rank == b.rank && a.suit == b.suit && a.enhancement == b.enhancement && a.seal == b.seal && a.edition == b.edition;
+    let same = |a: &Card, b: &Card| a.same_kind(b);
     for (from, to) in &plan.set_cards {
         if let Some(c) = hand.iter_mut().find(|c| same(c, from)) {
             *c = *to;

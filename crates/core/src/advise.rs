@@ -176,6 +176,10 @@ pub struct PlayAdvice {
     /// How many other moves are as good, as far as the simulation can tell
     #[serde(skip_serializing_if = "is_zero_usize")]
     pub ties: usize,
+    /// Cards worth drawing this round: (card, the consumable you hold that would be worth more
+    /// on it, how much more by Ante 8, as a share of your run)
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub worth_drawing: Vec<(String, String, f64)>,
     /// Planets from Blue Seals held at the end, on average (counted in the ranking)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub planets: Option<f64>,
@@ -380,9 +384,6 @@ pub struct TarotValue {
     /// Random outcomes as weighted decks (Sigil's suit, Aura's edition), for By Ante 8
     #[serde(skip)]
     pub decks: Vec<(f64, Vec<Card>)>,
-    /// Planets a seal or card creates per ante (Trance's Blue Seal), for By Ante 8
-    #[serde(skip)]
-    pub planets_per_ante: f64,
     /// By Ante 8 value (see `Candidate::long_mult`)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub long_mult: Option<f64>,
@@ -605,6 +606,8 @@ fn apply_mods(start: &RoundStart, added: &[&Joker], removed: &[&Joker], fresh: b
 
 /// Fresh deals per board in the quick screen of the whole pool.
 const SCREEN_DEALS: usize = 100;
+/// Random outcomes a random effect (Immolate's, Familiar's…) is valued over
+const RANDOM_OUTCOMES: usize = 6;
 /// Rounds in the quick projection that screens a consumable's possible targets (the best few
 /// then get the full `value::TAROT_ROUNDS`).
 const TARGET_SCREEN_ROUNDS: usize = 48;
@@ -1244,22 +1247,14 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     // Tarots: a changed deck is permanent, so it's projected like everything else; money
     // tarots through money; Judgement as a random joker. Arcana packs take the best card
     // in them, or the skip when Red Card grows from it (+3 Mult).
-    let deck_base = lr.deck_base().clone();
     let tarot_long: Vec<f64> = par_map(&tarots, |t| {
+        // Every deck change through one valuation: its score, what its cards earn, and the
+        // planets of any Blue Seal cards it adds (`LongRun::deck_value`)
         if !t.decks.is_empty() {
-            return t.decks.iter().map(|(w, d)| w * lr.deck_stats(d, run.dollars, 0.0, 0.0).mean.max(1.0) / deck_base.mean.max(1.0)).sum::<f64>();
-        }
-        if t.planets_per_ante > 0.0 {
-            // planets of your main hand from the seal: levels and Constellation by Ante 8
-            // (with its deck change, e.g. Cryptid's copies, counted too)
-            let n = t.planets_per_ante * antes_left;
-            let mut b = lr.fill_long(lr.project(&|_| true, run.dollars), None, 0.0);
-            let deck_now = t.deck.clone().unwrap_or_else(|| ctx.fresh_deck.clone());
-            b.playing_cards = deck_now.len() as i64;
-            value::LongRun::add_planets(&mut b, &top_hand.map(|t| vec![(t, n)]).unwrap_or_default(), if top_hand.is_none() { n } else { 0.0 });
-            let mut sp = lr.long_spec_for(&b);
-            sp.start.deck = deck_now;
-            return ctx.odds_one(&b, &sp, value::TAROT_ROUNDS).1.mean.max(1.0) / deck_base.mean.max(1.0);
+            // the projection's rounds shared across the outcomes (same seeds for each)
+            let money = if t.spectral { lr.once(t.money_gain) } else { 0.0 };
+            let rounds = (value::TAROT_ROUNDS / t.decks.len()).max(TARGET_SCREEN_ROUNDS);
+            return t.decks.iter().map(|(w, d)| w * lr.deck_value(d, money, rounds)).sum::<f64>();
         }
         if let Some(d) = &t.deck {
             // Immolate's $20 comes with its deck change
@@ -1362,7 +1357,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         let with = |c: Card| {
             let mut d = ctx.fresh_deck.clone();
             d.push(c);
-            let gain = lr.deck_stats(&d, run.dollars, 0.0, 0.0).mean.max(1.0) / deck_base.mean.max(1.0);
+            let gain = lr.deck_value(&d, 0.0, value::TAROT_ROUNDS);
             if c.enhancement == Some(crate::model::Enhancement::Glass) { 1.0 + (gain - 1.0) * glass_presence(antes_left) } else { gain }
         };
         let wild = (lovers && card.enhancement.is_none()).then(|| with(Card { enhancement: Some(crate::model::Enhancement::Wild), ..*card }));
@@ -2915,7 +2910,7 @@ fn tarot_values(
     let spectral_value = |t: &crate::data::Center| -> TarotValue {
         use crate::model::Seal;
         let tv = |p: f64, reach: f64, note: String, simulated: bool, deck: Option<Vec<Card>>, gain: f64| TarotValue {
-            use_effect: None, long_mult: None, decks: vec![], planets_per_ante: 0.0, spectral: true, deck, key: t.key.clone(), name: t.name.clone(), p_win: p, note, simulated,
+            use_effect: None, long_mult: None, decks: vec![], spectral: true, deck, key: t.key.clone(), name: t.name.clone(), p_win: p, note, simulated,
             per_shop: spectral_per_shop, reach, reach_now, money_gain: gain,
         };
         let mut rng = crate::engine::Rng::new(ctx.opts.seed ^ 0x5bec ^ t.order as u64);
@@ -2961,10 +2956,16 @@ fn tarot_values(
         let on = |i: usize| if from_hand { format!(" on {}", deck[i].label()) } else { String::new() };
         match t.key.as_str() {
             "c_immolate" => {
-                let mut d = deck.clone();
-                destroy_random(&mut d, 5, &mut rng);
-                let (p, r) = simulate(d.clone());
-                tv(p, r, "+$20, destroys 5 random cards in your hand".into(), true, Some(d), 20.0)
+                // random: valued over several outcomes (`decks`), not one
+                let decks: Vec<(f64, Vec<Card>)> = (0..RANDOM_OUTCOMES)
+                    .map(|_| {
+                        let mut d = deck.clone();
+                        destroy_random(&mut d, 5, &mut rng);
+                        (1.0 / RANDOM_OUTCOMES as f64, d)
+                    })
+                    .collect();
+                let (p, r) = simulate(decks[0].1.clone());
+                TarotValue { decks, ..tv(p, r, "+$20, destroys 5 random cards in your hand".into(), true, None, 20.0) }
             }
             "c_black_hole" => {
                 let mut b = board_for_deck(deck);
@@ -2976,7 +2977,10 @@ fn tarot_values(
                 TarotValue { use_effect, ..tv(p, r, "+1 level to every poker hand".into(), true, None, 0.0) }
             }
             "c_talisman" | "c_deja_vu" => {
-                let Some(i) = best_card else { return tv(now, reach_now, "needs a card in hand".into(), false, None, 0.0) };
+                // a seal replaces the card's seal: valued on your main suit's highest card
+                // without one (with your hand on screen, every target is searched instead)
+                let unsealed = |pred: &dyn Fn(&Card) -> bool| hand_cards.iter().copied().filter(|&i| deck[i].seal.is_none() && pred(&deck[i])).max_by_key(|&i| deck[i].rank.0);
+                let Some(i) = unsealed(&is_main).or_else(|| unsealed(&|_| true)) else { return tv(now, reach_now, "needs a card without a seal in hand".into(), false, None, 0.0) };
                 let mut d = deck.clone();
                 let (seal, what) = if t.key == "c_talisman" { (Seal::Gold, "Gold Seal ($3 when it scores)") } else { (Seal::Red, "Red Seal (retriggers)") };
                 d[i].seal = Some(seal);
@@ -2999,9 +3003,8 @@ fn tarot_values(
                 } else {
                     simulate(d.clone())
                 };
-                // copies of a Blue Seal card make planets too
-                let planets = if c.seal == Some(Seal::Blue) { 2.0 * 3.0 * seal_round_chance(run, d.len()) } else { 0.0 };
-                TarotValue { planets_per_ante: planets, ..tv(p, r, format!("2 copies of {}", c.label()), true, Some(d), 0.0) }
+                // (copies of a Blue Seal card make planets: counted by the deck valuation)
+                tv(p, r,format!("2 copies of {}", c.label()), true, Some(d), 0.0)
             }
             "c_aura" => {
                 // poll_edition(guaranteed, no negative): Polychrome 15%, Holo 35%, Foil 50%
@@ -3026,14 +3029,20 @@ fn tarot_values(
                     "c_grim" => (2, &[14], "2 enhanced Aces"),
                     _ => (4, &[2, 3, 4, 5, 6, 7, 8, 9, 10], "4 enhanced numbered cards"),
                 };
-                let mut d = deck.clone();
-                destroy_random(&mut d, 1, &mut rng);
-                for _ in 0..k {
-                    let c = random_card(&mut rng, ranks);
-                    d.push(c);
-                }
-                let (p, r) = simulate(d.clone());
-                tv(p, r, format!("destroys a random card in hand, adds {what} (random suits and enhancements)"), true, Some(d), 0.0)
+                // random: valued over several outcomes (`decks`), not one
+                let decks: Vec<(f64, Vec<Card>)> = (0..RANDOM_OUTCOMES)
+                    .map(|_| {
+                        let mut d = deck.clone();
+                        destroy_random(&mut d, 1, &mut rng);
+                        for _ in 0..k {
+                            let c = random_card(&mut rng, ranks);
+                            d.push(c);
+                        }
+                        (1.0 / RANDOM_OUTCOMES as f64, d)
+                    })
+                    .collect();
+                let (p, r) = simulate(decks[0].1.clone());
+                TarotValue { decks, ..tv(p, r, format!("destroys a random card in hand, adds {what} (random suits and enhancements)"), true, None, 0.0) }
             }
             "c_sigil" => {
                 if hand_cards.is_empty() {
@@ -3123,7 +3132,7 @@ fn tarot_values(
                 let per_round = seal_round_chance(run, deck.len());
                 let mut d = deck.clone();
                 d[i].seal = Some(Seal::Blue);
-                TarotValue { planets_per_ante: 3.0 * per_round, ..tv(now, reach_now, format!("Blue Seal{}: a planet for your last hand when it's held at round end (about {:.1} an ante)", on(i), 3.0 * per_round), true, Some(d), 0.0) }
+                tv(now, reach_now, format!("Blue Seal{}: a planet for your last hand when it's held at round end (about {:.1} an ante)", on(i), 3.0 * per_round), true, Some(d), 0.0)
             }
             "c_medium" => tv(now, reach_now, "Purple Seal: a tarot when discarded (not valued)".into(), false, None, 0.0),
             _ => tv(now, reach_now, "not valued".into(), false, None, 0.0),
@@ -3210,14 +3219,14 @@ fn tarot_values(
                 "c_judgement" => {
                     let mut rng = crate::engine::Rng::new(ctx.opts.seed ^ 0x7a70);
                     let reach = pool_reach(pool, 1, &mut rng).unwrap_or(reach_now).max(reach_now);
-                    return TarotValue { use_effect: None, long_mult: None, decks: vec![], planets_per_ante: 0.0, spectral: false, deck: None, key: t.key.clone(), name: t.name.clone(), p_win: expected_best(pool, round, now, 1, 1.0, f64::INFINITY, per_rarity, &mut rng).max(now), note, simulated: true, per_shop, reach, reach_now, money_gain: 0.0 };
+                    return TarotValue { use_effect: None, long_mult: None, decks: vec![], spectral: false, deck: None, key: t.key.clone(), name: t.name.clone(), p_win: expected_best(pool, round, now, 1, 1.0, f64::INFINITY, per_rarity, &mut rng).max(now), note, simulated: true, per_shop, reach, reach_now, money_gain: 0.0 };
                 }
                 "c_wheel_of_fortune" => {
                     // card.lua: 1 in 4 hits a random joker without an edition; the edition is
                     // poll_edition(guaranteed, no negative): Polychrome 15%, Holo 35%, Foil 50%.
                     let plain: Vec<usize> = ctx.base.jokers.iter().enumerate().filter(|(_, j)| j.edition.is_none()).map(|(i, _)| i).collect();
                     if plain.is_empty() {
-                        return TarotValue { use_effect: None, long_mult: None, decks: vec![], planets_per_ante: 0.0, spectral: false, deck: None, key: t.key.clone(), name: t.name.clone(), p_win: now, note: "no joker without an edition to hit".into(), simulated: true, per_shop, reach: reach_now, reach_now, money_gain: 0.0 };
+                        return TarotValue { use_effect: None, long_mult: None, decks: vec![], spectral: false, deck: None, key: t.key.clone(), name: t.name.clone(), p_win: now, note: "no joker without an edition to hit".into(), simulated: true, per_shop, reach: reach_now, reach_now, money_gain: 0.0 };
                     }
                     let hit = (run.probability_normal / 4.0).min(1.0);
                     let (mut p, mut r) = (0.0, 0.0);
@@ -3235,18 +3244,18 @@ fn tarot_values(
                     let p = (1.0 - hit) * now + hit * p / k;
                     let reach = (1.0 - hit) * reach_now + hit * r / k;
                     let note = format!("{:.0}% chance: one of your {} jokers without an edition gets Polychrome 15% / Holo 35% / Foil 50%", hit * 100.0, plain.len());
-                    return TarotValue { use_effect: None, long_mult: None, decks: vec![], planets_per_ante: 0.0, spectral: false, deck: None, key: t.key.clone(), name: t.name.clone(), p_win: p, note, simulated: true, per_shop, reach, reach_now, money_gain: 0.0 };
+                    return TarotValue { use_effect: None, long_mult: None, decks: vec![], spectral: false, deck: None, key: t.key.clone(), name: t.name.clone(), p_win: p, note, simulated: true, per_shop, reach, reach_now, money_gain: 0.0 };
                 }
                 "c_high_priestess" if !planet_p.is_empty() => best_of_subsets(planet_p, 2).0.max(now),
                 _ => now,
             };
-            return TarotValue { use_effect: None, long_mult: None, decks: vec![], planets_per_ante: 0.0, spectral: false, deck: None, key: t.key.clone(), name: t.name.clone(), p_win: p, note, simulated: p != now, per_shop, reach: reach_now, reach_now, money_gain: 0.0 };
+            return TarotValue { use_effect: None, long_mult: None, decks: vec![], spectral: false, deck: None, key: t.key.clone(), name: t.name.clone(), p_win: p, note, simulated: p != now, per_shop, reach: reach_now, reach_now, money_gain: 0.0 };
         };
         let changed = sim.then(|| d.clone());
         let (p, reach) = if sim { simulate(d) } else { (now, reach_now) };
         // Card-targeting tarots only work on cards in hand (in a blind or an opened pack)
         let note = if n > 0 && !from_hand { format!("{note}, if you hold suitable cards") } else if n > 0 { format!("{note} (from your hand)") } else { note };
-        TarotValue { use_effect: None, long_mult: None, decks: vec![], planets_per_ante: 0.0, spectral: false, deck: changed, key: t.key.clone(), name: t.name.clone(), p_win: p, note, simulated: sim, per_shop, reach, reach_now, money_gain: 0.0 }
+        TarotValue { use_effect: None, long_mult: None, decks: vec![], spectral: false, deck: changed, key: t.key.clone(), name: t.name.clone(), p_win: p, note, simulated: sim, per_shop, reach, reach_now, money_gain: 0.0 }
     };
     // With no hand on screen, a card-targeting tarot is valued on hands you'd hold (random
     // hands from your deck: you can only use it on cards in hand), not on any card in the
@@ -3339,11 +3348,11 @@ fn tarot_values(
                 continue;
             }
             let key = |v: &[usize]| v.iter().map(|&i| deck[i].order_key()).collect::<Vec<_>>();
-            let quick: Vec<f64> = par_map(&sets, |v| lr.deck_value_with(&consumable::apply(effect, deck, v), 0.0, TARGET_SCREEN_ROUNDS, true));
+            let quick: Vec<f64> = par_map(&sets, |v| lr.deck_value(&consumable::apply(effect, deck, v), 0.0, TARGET_SCREEN_ROUNDS));
             let mut order: Vec<usize> = (0..sets.len()).collect();
             order.sort_by(|&a, &b| quick[b].total_cmp(&quick[a]).then_with(|| key(&sets[a]).cmp(&key(&sets[b]))));
             order.truncate(4);
-            let full: Vec<f64> = par_map(&order, |&i| lr.deck_value_with(&consumable::apply(effect, deck, &sets[i]), 0.0, value::TAROT_ROUNDS, true));
+            let full: Vec<f64> = par_map(&order, |&i| lr.deck_value(&consumable::apply(effect, deck, &sets[i]), 0.0, value::TAROT_ROUNDS));
             let Some(best) = (0..order.len()).max_by(|&a, &b| full[a].total_cmp(&full[b]).then_with(|| key(&sets[order[b]]).cmp(&key(&sets[order[a]])))).map(|k| sets[order[k]].clone()) else { continue };
             let d = consumable::apply(effect, deck, &best);
             // this round's odds with the cards changed (copies come into your hand)
@@ -3360,7 +3369,6 @@ fn tarot_values(
             t.simulated = true;
             t.decks.clear();
             if let CardEffect::Copies(k) = effect {
-                t.planets_per_ante = if deck[best[0]].seal == Some(crate::model::Seal::Blue) { k as f64 * 3.0 * seal_round_chance(run, d.len()) } else { 0.0 };
                 t.note = format!("{k} copies of {}", names[0]);
             } else {
                 let what = match effect {
@@ -3400,6 +3408,7 @@ fn tarot_values(
             });
             if let Some(u) = &mut t.use_effect {
                 u.name = t.name.clone();
+                u.key = t.key.clone();
             }
         }
     }
@@ -4110,6 +4119,27 @@ mod tests {
         let cards: Vec<&str> = targets.split(' ').filter(|x| !x.is_empty()).collect();
         assert_eq!(cards.len(), 3, "{}", t.note);
         assert!(cards.iter().all(|c| !c.contains('♠')), "{}", t.note);
+    }
+
+    #[test]
+    fn a_better_target_in_the_pile_is_worth_drawing() {
+        // Cryptid held, no Blue Seal card in hand, one in the draw pile: Best play lists it as
+        // worth drawing (Cryptid's copies of it make planets), from the deck valuation alone.
+        let mut r = shop_run(&[("j_joker", None, None)], &[]);
+        r.screen = crate::save::Screen::SelectingHand;
+        r.shop = None;
+        r.hand = Card::parse_list("AS KH QD 9C 7S 5H 4D 2C").unwrap();
+        let seal = Card::parse_list("3S:blue").unwrap()[0];
+        let mut pile: Vec<Card> = crate::bench::standard_deck().into_iter().filter(|c| !r.hand.iter().any(|h| h.rank == c.rank && h.suit == c.suit) && !(c.rank == seal.rank && c.suit == seal.suit)).collect();
+        pile.push(seal);
+        r.draw_pile = pile;
+        r.consumables = vec![crate::save::ItemCard { key: "c_cryptid".into(), name: "Cryptid".into(), set: "Spectral".into(), cost: 4, edition: None, card: None }];
+        r.blinds[0].state = "Current".into();
+        r.current_blind = Some(crate::save::CurrentBlind {
+            key: "bl_small".into(), name: "Small Blind".into(), target: 1500.0, scored: 0.0, disabled: false, hands_seen: vec![], only_hand: None,
+        });
+        let bp = analyze(&r, GameData::bundled(), None, &quick()).best_play.unwrap();
+        assert!(bp.worth_drawing.iter().any(|(c, by, g)| c == &seal.label() && by == "Cryptid" && *g > 0.0), "{:?}", bp.worth_drawing);
     }
 
     #[test]

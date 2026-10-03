@@ -54,6 +54,8 @@ pub(super) struct LongRun<'a> {
     planets: OnceLock<Vec<f64>>,
     /// Your deck as it is, projected (`deck_stats`), computed once
     deck_base: OnceLock<crate::sim::Stats>,
+    /// The same on fewer rounds (quick screens), by round count
+    deck_base_n: Mutex<std::collections::HashMap<usize, crate::sim::Stats>>,
 }
 
 /// What an option or event adds to your run, applied to the projected board the same way
@@ -158,6 +160,7 @@ impl<'a> LongRun<'a> {
             sell_base: vec![],
             planets: OnceLock::new(),
             deck_base: OnceLock::new(),
+            deck_base_n: Mutex::new(Default::default()),
         };
         {
             let before = lr.long_score(&lr.fill_long(lr.project(&|_| true, run.dollars), None, 0.0));
@@ -507,20 +510,25 @@ impl<'a> LongRun<'a> {
 
     /// What a changed deck makes your run worth by Ante 8, as a ratio of your deck as it is:
     /// its score, plus what its cards make: the money they earn while scoring (Lucky cards,
-    /// Gold Seals, Gold cards) as money you get every round (about 3 rounds an ante), and with
-    /// `with_planets`, the planets of Blue Seal cards it has more (or fewer) of than yours
+    /// Gold Seals, Gold cards) as money you get every round (about 3 rounds an ante), and the
+    /// planets of Blue Seal cards it has more (or fewer) of than yours
     /// (each drawn with `seal_round_chance` a round and held for its planet, 3 rounds an ante).
     /// `money_once`: one-off money that comes with the change (already through `once`).
     /// `rounds`: projection rounds.
     pub fn deck_value(&self, d: &[Card], money_once: f64, rounds: usize) -> f64 {
-        self.deck_value_with(d, money_once, rounds, false)
-    }
-
-    pub fn deck_value_with(&self, d: &[Card], money_once: f64, rounds: usize, with_planets: bool) -> f64 {
         let dollars = self.run.dollars;
-        let base = if rounds == TAROT_ROUNDS { self.deck_base().clone() } else { self.deck_stats_n(&self.ctx.fresh_deck, dollars, 0.0, 0.0, rounds) };
+        let base = if rounds == TAROT_ROUNDS {
+            self.deck_base().clone()
+        } else {
+            let cached = self.deck_base_n.lock().unwrap().get(&rounds).copied();
+            cached.unwrap_or_else(|| {
+                let st = self.deck_stats_n(&self.ctx.fresh_deck, dollars, 0.0, 0.0, rounds);
+                self.deck_base_n.lock().unwrap().insert(rounds, st);
+                st
+            })
+        };
         let blue = |deck: &[Card]| deck.iter().filter(|c| c.seal == Some(crate::model::Seal::Blue)).count() as f64;
-        let planets = if with_planets { (blue(d) - blue(&self.ctx.fresh_deck)) * 3.0 * seal_round_chance(self.run, d.len()) * self.antes_left } else { 0.0 };
+        let planets = (blue(d) - blue(&self.ctx.fresh_deck)) * 3.0 * seal_round_chance(self.run, d.len()) * self.antes_left;
         let mut st = self.deck_stats_p(d, dollars, money_once, 0.0, rounds, planets);
         let extra = (st.money - base.money) * 3.0;
         if extra.abs() > 0.5 {

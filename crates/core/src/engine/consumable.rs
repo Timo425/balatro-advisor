@@ -76,3 +76,45 @@ pub fn apply(effect: CardEffect, deck: &[Card], targets: &[usize]) -> Vec<Card> 
     }
     d
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::data::GameData;
+
+    fn effect(key: &str) -> (CardEffect, usize, usize) {
+        card_effect(key, &GameData::bundled().center(key).unwrap().config).unwrap()
+    }
+
+    #[test]
+    fn effects_follow_the_game() {
+        let deck = Card::parse_list("AS 5H KD 2C").unwrap();
+        // Death (2 cards exactly): the first becomes a copy of the second
+        let (death, min, max) = effect("c_death");
+        assert_eq!((death, min, max), (CardEffect::CopyLeftToRight, 2, 2));
+        assert_eq!(apply(death, &deck, &[1, 2])[1].label(), "K♦");
+        // Strength: +1 rank, an Ace wraps to 2
+        let (strength, _, max) = effect("c_strength");
+        assert_eq!(max, 2);
+        let up = apply(strength, &deck, &[0, 1]);
+        assert_eq!((up[0].rank.0, up[1].rank.0), (2, 6));
+        // Cryptid: two copies added
+        let (cryptid, _, _) = effect("c_cryptid");
+        let d = apply(cryptid, &deck, &[2]);
+        assert_eq!(d.len(), 6);
+        assert_eq!((d[4].label(), d[5].label()), ("K♦".to_string(), "K♦".to_string()));
+        // The Hanged Man: destroys
+        let (hanged, _, _) = effect("c_hanged_man");
+        assert_eq!(apply(hanged, &deck, &[0, 3]).iter().map(Card::label).collect::<Vec<_>>(), vec!["5♥", "K♦"]);
+        // seals, suits, enhancements
+        assert_eq!(effect("c_trance").0, CardEffect::Seal(Seal::Blue));
+        assert_eq!(effect("c_world").0, CardEffect::Suit(Suit::Spades));
+        assert_eq!(effect("c_chariot").0, CardEffect::Enhance(Enhancement::Steel));
+        // random effects aren't here
+        assert!(data_effect("c_aura").is_none() && data_effect("c_familiar").is_none());
+    }
+
+    fn data_effect(key: &str) -> Option<(CardEffect, usize, usize)> {
+        card_effect(key, &GameData::bundled().center(key).unwrap().config)
+    }
+}

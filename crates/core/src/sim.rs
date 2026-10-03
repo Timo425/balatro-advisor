@@ -666,6 +666,8 @@ pub fn sim_round(board: &Board, start: &RoundStart, rng: &mut Rng) -> RoundResul
 #[derive(Debug, Clone, Default)]
 pub struct Use {
     pub name: String,
+    /// The consumable's key: once used, it's no longer held (its `RoundGoals::seen` entries go)
+    pub key: String,
     pub swap: Vec<(Card, Card)>,
     pub add: Vec<Card>,
     pub levels: [i64; 12],
@@ -675,16 +677,18 @@ pub struct Use {
 
 impl Use {
     pub fn apply(&self, b: &Board, hand: &[Card]) -> Option<(Board, Vec<Card>)> {
-        let same = |a: &Card, c: &Card| a.rank == c.rank && a.suit == c.suit && a.enhancement == c.enhancement && a.edition == c.edition && a.seal == c.seal;
         let mut h = hand.to_vec();
         let mut done = vec![false; h.len()];
         for (from, to) in &self.swap {
-            let i = (0..h.len()).find(|&i| !done[i] && same(&h[i], from))?;
+            let i = (0..h.len()).find(|&i| !done[i] && h[i].same_kind(from))?;
             h[i] = Card { debuff: h[i].debuff, face_down: h[i].face_down, ..*to };
             done[i] = true;
         }
         h.extend(self.add.iter().copied());
         let mut b = b.clone();
+        if let Some(g) = b.goals.as_mut() {
+            g.seen.retain(|(k, _, _)| k != &self.key);
+        }
         b.playing_cards += self.add.len() as i64;
         for (l, d) in b.levels.iter_mut().zip(self.levels) {
             if d != 0 {
@@ -710,9 +714,10 @@ pub struct RoundGoals {
     pub planet: [f64; 12],
     pub dollar: f64,
     pub per_hand: f64,
-    /// Cards worth drawing this round, and by how much: a held consumable would be worth that
-    /// much more used on one of them than on the best card in your hand
-    pub seen: Vec<(Card, f64)>,
+    /// Cards worth drawing this round, and by how much: (the held consumable's key, the card,
+    /// how much more it's worth used on that card than on the best card in your hand). Gone
+    /// once the consumable is used.
+    pub seen: Vec<(String, Card, f64)>,
 }
 
 impl RoundGoals {
@@ -724,8 +729,7 @@ impl RoundGoals {
 
     /// The most a card in `cards` adds (`seen`)
     pub fn seen_gain(&self, cards: &[Card]) -> f64 {
-        let same = |a: &Card, b: &Card| a.rank == b.rank && a.suit == b.suit && a.enhancement == b.enhancement && a.seal == b.seal && a.edition == b.edition;
-        cards.iter().filter_map(|c| self.seen.iter().find(|(k, _)| same(k, c)).map(|(_, g)| *g)).fold(0.0, f64::max)
+        cards.iter().flat_map(|c| self.seen.iter().filter(move |(_, k, _)| k.same_kind(c)).map(|(_, _, g)| *g)).fold(0.0, f64::max)
     }
 }
 
@@ -1094,7 +1098,7 @@ mod tests {
         let mut deck: Vec<Card> = standard_deck().into_iter().filter(|c| !hand.iter().any(|h| h.rank == c.rank && h.suit == c.suit) && !(c.rank == seal.rank && c.suit == seal.suit)).collect();
         deck.push(seal);
         let mut b = sample_board(&["j_joker"]);
-        b.goals = Some(RoundGoals { seen: vec![(seal, 0.5)], ..Default::default() });
+        b.goals = Some(RoundGoals { seen: vec![("c_cryptid".into(), seal, 0.5)], ..Default::default() });
         let start = RoundStart { hand: hand.clone(), deck, hand_size: 8, hands: 4, discards: 3, scored: 0.0, target: 1.0 };
         let outs = outcomes_after(&b, &start, &Move::Discard(vec![4, 5, 6, 7]), 0..400, 7, &[]);
         let g = b.goals.clone().unwrap();
@@ -1104,6 +1108,19 @@ mod tests {
             assert!(o.seen == 0.0 || o.seen == 0.5);
             assert_eq!(g.value(o), o.won * (1.0 + o.seen));
         }
+    }
+
+    #[test]
+    fn using_a_consumable_drops_its_cards_worth_drawing() {
+        let seal = Card::parse_list("3S:blue").unwrap()[0];
+        let mut b = sample_board(&["j_joker"]);
+        b.goals = Some(RoundGoals { seen: vec![("c_cryptid".into(), seal, 0.5), ("c_talisman".into(), seal, 0.2)], ..Default::default() });
+        let hand = Card::parse_list("3S:blue AH").unwrap();
+        let used = Use { key: "c_cryptid".into(), swap: vec![(seal, seal)], add: vec![seal, seal], ..Default::default() };
+        let (after, _) = used.apply(&b, &hand).unwrap();
+        let g = after.goals.unwrap();
+        assert_eq!(g.seen.len(), 1);
+        assert_eq!(g.seen_gain(&[seal]), 0.2, "only the Talisman entry is left");
     }
 
     #[test]

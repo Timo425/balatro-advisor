@@ -25,35 +25,41 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
     // much more your run is worth with it used on a card in the draw pile than on the best card
     // in your hand (`LongRun::deck_value`, quick projection; Blue Seal planets counted). A
     // simulated round that draws one is worth that much more (`RoundGoals::seen`).
-    let seen: Vec<(Card, f64)> = {
+    let seen: Vec<(String, Card, f64)> = {
         use crate::engine::consumable;
         let deck = &ctx.fresh_deck;
-        let same = |a: &Card, b: &Card| a.rank == b.rank && a.suit == b.suit && a.enhancement == b.enhancement && a.seal == b.seal && a.edition == b.edition;
-        let idx_of = |c: &Card| deck.iter().position(|d| same(d, c));
+        let idx_of = |c: &Card| deck.iter().position(|d| d.same_kind(c));
         let mut kinds: Vec<Card> = vec![];
         for c in &run.draw_pile {
-            if !kinds.iter().any(|k| same(k, c)) {
+            if !kinds.iter().any(|k| k.same_kind(c)) {
                 kinds.push(*c);
             }
         }
-        let mut out: Vec<(Card, f64)> = vec![];
+        let mut out: Vec<(String, Card, f64)> = vec![];
         for held in &run.consumables {
+            if out.iter().any(|(k, _, _)| k == &held.key) {
+                continue;
+            }
             let Some((effect, 1, 1)) = data.center(&held.key).and_then(|x| consumable::card_effect(&held.key, &x.config)) else { continue };
-            let val = |card: &Card| idx_of(card).map(|i| lr.deck_value_with(&consumable::apply(effect, deck, &[i]), 0.0, TARGET_SCREEN_ROUNDS, true));
-            let now = run.hand.iter().filter_map(val).fold(1.0f64, f64::max);
-            let vals = par_map(&kinds, |k| val(k).unwrap_or(0.0));
-            for (k, v) in kinds.iter().zip(vals) {
-                let gain = v - now;
-                if gain > 0.0 {
-                    match out.iter_mut().find(|(c, _)| same(c, k)) {
-                        Some(e) => e.1 = e.1.max(gain),
-                        None => out.push((*k, gain)),
-                    }
+            let val = |card: &Card, rounds: usize| idx_of(card).map(|i| lr.deck_value(&consumable::apply(effect, deck, &[i]), 0.0, rounds));
+            let now = |rounds: usize| run.hand.iter().filter_map(|c| val(c, rounds)).fold(1.0f64, f64::max);
+            // a quick screen, then what clears the noise margin on the full projection
+            let (now_q, now_f) = (now(TARGET_SCREEN_ROUNDS), now(value::TAROT_ROUNDS));
+            let quick = par_map(&kinds, |k| val(k, TARGET_SCREEN_ROUNDS).unwrap_or(0.0) - now_q);
+            let likely: Vec<Card> = kinds.iter().zip(&quick).filter(|(_, g)| **g > compare::EQUAL).map(|(k, _)| *k).collect();
+            let full = par_map(&likely, |k| val(k, value::TAROT_ROUNDS).unwrap_or(0.0) - now_f);
+            for (k, g) in likely.into_iter().zip(full) {
+                if g > compare::EQUAL {
+                    out.push((held.key.clone(), k, g));
                 }
             }
         }
         out
     };
+    let worth_drawing: Vec<(String, String, f64)> = seen
+        .iter()
+        .map(|(k, c, g)| (c.label(), run.consumables.iter().find(|x| &x.key == k).map_or(k.clone(), |x| x.name.clone()), *g))
+        .collect();
     // Look-ahead: each candidate first move is simulated through the rest of the round.
     let look = ctx.specs.iter().find(|x| x.in_progress).map(|spec| {
         let mut bb = ctx.board_for(&b, spec);
@@ -77,7 +83,7 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
                 let h = center.config.get("hand_type")?.as_str().and_then(crate::engine::HandType::from_name)?;
                 let mut levels = [0; 12];
                 levels[h as usize] = 1;
-                Some(sim::Use { name: center.name.clone(), levels, planet: true, ..Default::default() })
+                Some(sim::Use { name: center.name.clone(), key: c.key.clone(), levels, planet: true, ..Default::default() })
             })
             .collect();
         let to_opt = |m: &sim::Move, hand: &[Card], board: &Board, (p, mean, spare, cash, planets): (f64, f64, f64, f64, f64), use_first: Option<String>| {
@@ -219,10 +225,11 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
                 let m = format!("Not used in this look-ahead (no modelled effect on this hand): {}", missing.join(", "));
                 Some(m)
             };
-            Some(PlayAdvice { then: best.then.clone(), ties: opts.iter().filter(|o| o.tie).count(), planets: Some(best.planets), use_first: best.use_first, spare_hands: Some(best.spare_hands), round_money: Some(best.round_money), action: best.action, cards: best.cards, dig: best.dig, indices: best.indices, hand: best.hand, score: best.score, p_win: Some(best.p_win), alternatives: opts, tip })
+            Some(PlayAdvice { worth_drawing: worth_drawing.clone(), then: best.then.clone(), ties: opts.iter().filter(|o| o.tie).count(), planets: Some(best.planets), use_first: best.use_first, spare_hands: Some(best.spare_hands), round_money: Some(best.round_money), action: best.action, cards: best.cards, dig: best.dig, indices: best.indices, hand: best.hand, score: best.score, p_win: Some(best.p_win), alternatives: opts, tip })
         }
         None => sim::best_play(&b, &hand_order.iter().map(|&i| run.hand[i]).collect::<Vec<_>>()).map(|p| PlayAdvice {
             use_first: None,
+            worth_drawing: worth_drawing.clone(),
             planets: None,
             then: None,
             ties: 0,
