@@ -566,20 +566,25 @@ impl<'a> LongRun<'a> {
     }
 
     /// `deck_value` round by round, on rounds `range` (round i draws the same cards for every
-    /// deck), so changes can be compared on the same draws (`compare::race`)
-    pub fn deck_rounds(&self, d: &[Card], money_once: f64, range: std::ops::Range<usize>) -> Vec<f64> {
+    /// deck), so changes can be compared on the same draws (`compare::race`). `income`: the
+    /// money per ante its cards earn, as found on an earlier batch (`None`: work it out from
+    /// these rounds); returned with the values, to pass on the next batch.
+    pub fn deck_rounds(&self, d: &[Card], money_once: f64, range: std::ops::Range<usize>, income: Option<f64>) -> (Vec<f64>, f64) {
         let base = self.deck_base().clone();
         let planets = self.seal_planets(d);
         let rounds = |income: f64| {
             let (bb, start) = self.deck_round(d, self.run.dollars, money_once, income, planets);
             crate::sim::round_results(&bb, &start, range.clone(), self.ctx.opts.seed)
         };
-        let mut r = rounds(0.0);
-        let extra = (r.iter().map(|x| x.money).sum::<f64>() / r.len().max(1) as f64 - base.money) * 3.0;
-        if extra.abs() > 0.5 {
-            r = rounds(extra);
-        }
-        r.iter().map(|x| x.total.max(1.0) / base.mean.max(1.0)).collect()
+        let (r, used) = match income {
+            Some(x) => (rounds(x), x),
+            None => {
+                let r = rounds(0.0);
+                let extra = (r.iter().map(|x| x.money).sum::<f64>() / r.len().max(1) as f64 - base.money) * 3.0;
+                if extra.abs() > 0.5 { (rounds(extra), extra) } else { (r, 0.0) }
+            }
+        };
+        (r.iter().map(|x| x.total.max(1.0) / base.mean.max(1.0)).collect(), used)
     }
 
     /// Your deck as it is, projected the same way: the baseline deck changes are compared to

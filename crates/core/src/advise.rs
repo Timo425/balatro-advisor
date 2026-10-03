@@ -617,6 +617,9 @@ const TARGET_SCREEN_ROUNDS: usize = 48;
 const TARGET_FIRST: usize = 16;
 const TARGET_MAX: usize = 128;
 const TARGET_BUDGET: &[(usize, usize)] = &[(16, 12), (32, 6), (64, 3)];
+/// Targets as good as the best (a tie in the race), used from your hand in a blind: the most
+/// whose chance of winning this round is worked out to choose between them
+const TARGET_TIES: usize = 8;
 /// Best play's search over every move (`compare::race`): rounds in the first batch, and the
 /// budget: (up to this many rounds done, at most this many moves still undecided). A cost
 /// limit, not a finding: see `compare`.
@@ -2595,20 +2598,6 @@ fn order_tips(run: &RunState, data: &GameData, tarots: &[TarotValue]) -> Vec<Str
     if held("c_wheel_of_fortune") && held("c_ankh") {
         tips.push("Use The Wheel of Fortune before Ankh: an edition it gives is kept on Ankh's copy".into());
     }
-    // Cryptid on a sealed or enhanced card in hand
-    if held("c_cryptid") {
-        use crate::model::Seal;
-        let best = run.hand.iter().max_by_key(|c| match (c.seal, c.enhancement) {
-            (Some(Seal::Blue), _) => 4,
-            (Some(Seal::Red), Some(crate::model::Enhancement::Glass)) => 3,
-            (Some(_), _) | (_, Some(crate::model::Enhancement::Glass)) => 2,
-            (_, Some(_)) => 1,
-            _ => 0,
-        });
-        if let Some(c) = best.filter(|c| c.seal.is_some() || c.enhancement.is_some()) {
-            tips.push(format!("Use Cryptid on {}: two more copies of it", c.label()));
-        }
-    }
     tips
 }
 
@@ -2829,7 +2818,7 @@ fn tarot_values(
     let mut hand_idx: Vec<Option<usize>> = Vec::new();
     if !run.hand.is_empty() {
         for h in &run.hand {
-            let i = (0..deck.len()).find(|&i| !in_hand[i] && deck[i].rank == h.rank && deck[i].suit == h.suit && deck[i].enhancement == h.enhancement && deck[i].seal == h.seal);
+            let i = (0..deck.len()).find(|&i| !in_hand[i] && deck[i].same_kind(h));
             if let Some(i) = i {
                 in_hand[i] = true;
             }
@@ -3157,7 +3146,8 @@ fn tarot_values(
     // consumable`) is valued on the cards that make your run worth most: every set of targets in
     // the hand it's used from, on a quick projection, the best few on the full one (Blue Seal
     // planets counted). The hand is yours when one is on screen, else sampled ones.
-    let search = |t: &crate::data::Center, ih: &[bool]| -> Option<TarotValue> {
+    // `real`: `ih` is the hand on screen, where the consumable can be used now
+    let search = |t: &crate::data::Center, ih: &[bool], real: bool| -> Option<TarotValue> {
         use crate::engine::consumable::{self, CardEffect};
         let (effect, min, max) = consumable::card_effect(&t.key, &t.config)?;
         let spectral = t.set == "Spectral";
@@ -3170,14 +3160,8 @@ fn tarot_values(
             return Some(TarotValue { note: format!("{} (not modelled)", effect.label()), ..base });
         }
         let hand_cards: Vec<usize> = (0..deck.len()).filter(|&i| ih[i]).collect();
-        let n = hand_cards.len().min(12);
         let mut sets: Vec<Vec<usize>> = vec![];
-        for m in 1u32..(1 << n) {
-            let k = m.count_ones() as usize;
-            if k < min || k > max {
-                continue;
-            }
-            let v: Vec<usize> = (0..n).filter(|i| m & (1 << i) != 0).map(|i| hand_cards[i]).collect();
+        for v in subsets(&hand_cards, min, max) {
             if effect == CardEffect::CopyLeftToRight && v.len() == 2 {
                 sets.push(vec![v[1], v[0]]);
             }
@@ -3200,45 +3184,75 @@ fn tarot_values(
         // pick's luck doesn't inflate its value
         let budget = |done: usize| TARGET_BUDGET.iter().find(|b| done <= b.0).map_or(TARGET_BUDGET[TARGET_BUDGET.len() - 1].1, |b| b.1);
         let after = value::TAROT_ROUNDS;
+        // the money a set's cards earn becomes income once, from its first batch (not again
+        // on each batch's own noise)
+        let incomes: Vec<std::sync::Mutex<Option<f64>>> = sets.iter().map(|_| std::sync::Mutex::new(None)).collect();
         let race = compare::race(
             sets.len(),
             TARGET_FIRST,
             TARGET_MAX,
             budget,
-            |i, r| lr.deck_rounds(&consumable::apply(effect, deck, &sets[i]), 0.0, after + r.start..after + r.end),
+            |i, r| {
+                let mut inc = incomes[i].lock().unwrap();
+                let (v, used) = lr.deck_rounds(&consumable::apply(effect, deck, &sets[i]), 0.0, after + r.start..after + r.end, *inc);
+                *inc = Some(used);
+                v
+            },
             |x| *x,
             |x| *x,
             |x, y| key(&sets[y]).cmp(&key(&sets[x])),
         );
-        let best = sets[race.leader].clone();
-        let d = consumable::apply(effect, deck, &best);
         // this round's odds with the cards changed (copies come into your hand)
-        let (p, r) = if let (CardEffect::Copies(k), true) = (effect, spec.in_progress && from_hand) {
-            let mut live = spec.clone();
-            live.start.hand.extend(std::iter::repeat_n(deck[best[0]], k));
-            (ctx.odds_one(&board_for_deck(&d), &live, sims).0, reach_of(&d))
-        } else {
-            simulate(d.clone())
+        let odds = |v: &[usize]| -> (f64, f64) {
+            let d = consumable::apply(effect, deck, v);
+            if let (CardEffect::Copies(k), true) = (effect, spec.in_progress && real) {
+                let mut live = spec.clone();
+                live.start.hand.extend(std::iter::repeat_n(deck[v[0]], k));
+                (ctx.odds_one(&board_for_deck(&d), &live, sims).0, reach_of(&d))
+            } else {
+                simulate(d)
+            }
         };
-        let names: Vec<String> = best.iter().map(|&i| deck[i].label()).collect();
+        // the leader and what's as good as it, best first
+        let mean = |i: usize| race.samples[i].iter().sum::<f64>() / race.samples[i].len().max(1) as f64;
+        let mut as_good: Vec<usize> = std::iter::once(race.leader).chain((0..sets.len()).filter(|&i| race.tied[i])).collect();
+        as_good[1..].sort_by(|&a, &b| mean(b).total_cmp(&mean(a)).then_with(|| key(&sets[a]).cmp(&key(&sets[b]))));
+        // used from your hand in a blind, ties go to this round's chance of winning
+        let (best, (p, r)) = if real && spec.in_progress && as_good.len() > 1 {
+            as_good.truncate(TARGET_TIES);
+            let tried: Vec<(usize, (f64, f64))> = as_good.iter().map(|&i| (i, odds(&sets[i]))).collect();
+            let top = tried.iter().fold(None::<&(usize, (f64, f64))>, |b, x| if b.is_none_or(|b| x.1 .0 > b.1 .0) { Some(x) } else { b }).copied().unwrap();
+            as_good.retain(|&i| i != top.0);
+            as_good.insert(0, top.0);
+            top
+        } else {
+            (race.leader, odds(&sets[race.leader]))
+        };
+        let label = |v: &[usize]| v.iter().map(|&i| deck[i].label()).collect::<Vec<_>>().join(" ");
+        let d = consumable::apply(effect, deck, &sets[best]);
         let what = effect.label();
-        let note = if from_hand {
-            format!("{what} on {} (the cards worth most to your run)", names.join(" "))
+        let note = if real {
+            let others: Vec<String> = as_good.iter().skip(1).take(3).map(|&i| label(&sets[i])).collect();
+            let ties = if others.is_empty() { String::new() } else { format!("; as good: {}", others.join(", ")) };
+            format!("{what} on {} (the cards worth most to your run{ties})", label(&sets[best]))
         } else {
             format!("{what}, on the cards worth most in hands you'd hold")
         };
         Some(TarotValue { p_win: p, reach: r, simulated: true, deck: Some(d), note, ..base })
     };
+    // A consumable you hold or can pick from the open pack goes on the hand on screen; the
+    // rest of the pool on hands you'd hold
+    let usable_now = |key: &str| run.consumables.iter().chain(&run.open_pack).any(|c| c.key == key);
     let mut out = par_map(&tarots, |t| {
         let targets_cards = crate::engine::consumable::card_effect(&t.key, &t.config).is_some();
         if !targets_cards {
             return if t.set == "Spectral" { spectral_value(t) } else { tarot_value(t) };
         }
-        if from_hand {
-            return search(t, &in_hand).expect("a card effect");
+        if from_hand && usable_now(&t.key) {
+            return search(t, &in_hand, true).expect("a card effect");
         }
         let shown = run.shop.iter().flat_map(|s| &s.other_cards).chain(&run.open_pack).chain(&run.consumables).any(|c| c.key == t.key);
-        let vals: Vec<TarotValue> = hands_of(if shown { 4 } else { 1 }, t.order as u64).iter().filter_map(|h| search(t, h)).collect();
+        let vals: Vec<TarotValue> = hands_of(if shown { 4 } else { 1 }, t.order as u64).iter().filter_map(|h| search(t, h, false)).collect();
         let k = vals.len() as f64;
         let mut v = vals[0].clone();
         v.p_win = vals.iter().map(|x| x.p_win).sum::<f64>() / k;
@@ -3277,7 +3291,7 @@ fn tarot_values(
     // moves (not modelled in the Best play look-ahead).
 
     if spec.in_progress && from_hand {
-        for t in out.iter_mut() {
+        for t in out.iter_mut().filter(|t| usable_now(&t.key)) {
             t.use_effect = t.use_effect.take().or_else(|| {
                 let d = t.deck.as_ref()?;
                 let n = deck.len();
@@ -3303,6 +3317,26 @@ fn tarot_values(
             }
         }
     }
+    out
+}
+
+/// Every set of `min..=max` of `items` (in their order)
+fn subsets(items: &[usize], min: usize, max: usize) -> Vec<Vec<usize>> {
+    fn go(items: &[usize], from: usize, max: usize, cur: &mut Vec<usize>, min: usize, out: &mut Vec<Vec<usize>>) {
+        if cur.len() >= min {
+            out.push(cur.clone());
+        }
+        if cur.len() == max {
+            return;
+        }
+        for i in from..items.len() {
+            cur.push(items[i]);
+            go(items, i + 1, max, cur, min, out);
+            cur.pop();
+        }
+    }
+    let mut out = vec![];
+    go(items, 0, max, &mut vec![], min.max(1), &mut out);
     out
 }
 
@@ -4010,6 +4044,16 @@ mod tests {
         let cards: Vec<&str> = targets.split(' ').filter(|x| !x.is_empty()).collect();
         assert_eq!(cards.len(), 3, "{}", t.note);
         assert!(cards.iter().all(|c| !c.contains('♠')), "{}", t.note);
+    }
+
+    #[test]
+    fn every_card_in_a_big_hand_can_be_a_target() {
+        // 15 cards in hand (Juggler, Troubadour…): every set of 1 to 3 of them, the last ones too
+        let hand: Vec<usize> = (0..15).collect();
+        let sets = subsets(&hand, 1, 3);
+        assert_eq!(sets.len(), 15 + 105 + 455);
+        assert!(sets.contains(&vec![14]) && sets.contains(&vec![12, 13, 14]));
+        assert!(subsets(&hand, 2, 2).iter().all(|v| v.len() == 2));
     }
 
     #[test]

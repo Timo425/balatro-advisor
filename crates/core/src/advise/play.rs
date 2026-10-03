@@ -22,8 +22,9 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
     let dollar_gain = ((lr.value(&Gain::money(10.0)) * spending.factor(run.dollars + 10.0) / spending.factor(run.dollars).max(1e-9) - 1.0) / 10.0).max(0.0);
     b.deck_remaining = run.draw_pile.len() as i64;
     // Cards worth drawing this round: for each consumable you hold that goes on one card, how
-    // much more your run is worth with it used on a card in the draw pile than on the best card
-    // in your hand (`LongRun::deck_value`, quick projection; Blue Seal planets counted). A
+    // much more your run is worth with it used on a card in the draw pile than on its target in
+    // your hand (the one its search chose: `tarot_values`), by `LongRun::deck_value` (quick
+    // projection, then the full one; Blue Seal planets counted). A
     // simulated round that draws one is worth that much more (`RoundGoals::seen`).
     let seen: Vec<(String, Card, f64)> = {
         use crate::engine::consumable;
@@ -42,7 +43,9 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
             }
             let Some((effect, 1, 1)) = data.center(&held.key).and_then(|x| consumable::card_effect(&held.key, &x.config)) else { continue };
             let val = |card: &Card, rounds: usize| idx_of(card).map(|i| lr.deck_value(&consumable::apply(effect, deck, &[i]), 0.0, rounds));
-            let now = |rounds: usize| run.hand.iter().filter_map(|c| val(c, rounds)).fold(1.0f64, f64::max);
+            // its searched target (none: your deck as it is), not the best of noisy values
+            let target = tarots.iter().find(|t| t.key == held.key).and_then(|t| t.deck.clone());
+            let now = |rounds: usize| target.as_ref().map_or(1.0, |d| lr.deck_value(d, 0.0, rounds));
             // a quick screen, then what clears the noise margin on the full projection
             let (now_q, now_f) = (now(TARGET_SCREEN_ROUNDS), now(value::TAROT_ROUNDS));
             let quick = par_map(&kinds, |k| val(k, TARGET_SCREEN_ROUNDS).unwrap_or(0.0) - now_q);
