@@ -32,6 +32,15 @@ pub(super) const RENT_PER_ANTE: f64 = 9.0;
 /// The cheapest booster pack ($4: game.lua P_CENTERS, a normal pack): what money pays to open,
 /// or skip, one.
 pub(super) const PACK_PRICE: f64 = 4.0;
+/// Consumables held at the end of a round, besides the planets Blue Seal cards make there: they
+/// take slots those planets need (card.lua `Card:get_end_of_round_effect`: a Blue Seal makes its
+/// planet only while the consumables held are fewer than the slots). Measured in the calibration
+/// log on the rounds that had Blue Seal cards to lose a planet to it: the consumables in each
+/// round's first shop, less planets new since the last shop (only Blue Seals make planets at
+/// round end): 1 held in 1 of 4 rounds, none in the rest (one run, rounds 10–13, 2 slots; over
+/// all 13 rounds it was 7, mostly a Cryptid held while there were no Blue Seals). Taken as the
+/// same count however many slots you have.
+pub(super) const HELD_AT_ROUND_END: f64 = 1.0 / 4.0;
 /// Booster packs an ante: 2 in each shop (game.lua: `for i = 1, 2` in the shop's booster
 /// area, not refreshed by a reroll), 3 shops an ante. The most packs that can be skipped.
 pub(super) const PACKS_PER_ANTE: f64 = 6.0;
@@ -114,6 +123,9 @@ pub(super) struct Gain {
     pub pack_skips: f64,
     pub rerolls: f64,
     pub blind_skips: f64,
+    /// Consumable slots more by Ante 8 (a voucher's, Crystal Ball): the planets your Blue Seal
+    /// cards make with them (`LongRun::slot_planets`)
+    pub consumable_slots: i64,
 }
 
 impl Gain {
@@ -746,7 +758,17 @@ impl<'a> LongRun<'a> {
                 *l = add_levels(*l, g.all_levels as f64);
             }
         }
-        Self::add_planets(&mut b, &g.planets, g.other_planets);
+        // more slots: more planets from your Blue Seal cards, on the hand they go to (as a deck's
+        // are: `deck_round`)
+        let (mut planets, mut other) = (g.planets.clone(), g.other_planets);
+        let seal = self.slot_planets(g.consumable_slots);
+        if seal != 0.0 {
+            match self.top_hand {
+                Some(top) => planets.push((top, seal)),
+                None => other += seal,
+            }
+        }
+        Self::add_planets(&mut b, &planets, other);
         for (ev, n) in g.events() {
             if n != 0.0 {
                 b.after(ev, n);
@@ -837,7 +859,7 @@ impl<'a> LongRun<'a> {
     /// Gold Seals, Gold cards) as money you get every round (about 3 rounds an ante), and the
     /// planets of Blue Seal cards it has more (or fewer) of than yours
     /// (each drawn with `seal_round_chance` a round and held for its planet, 3 rounds an ante,
-    /// at most your consumable slots a round: `seal_planets`).
+    /// at most the consumable slots left free at round end: `seal_planets`).
     /// `money_once`: one-off money that comes with the change (already through `once`).
     /// `rounds`: projection rounds.
     pub fn deck_value(&self, d: &[Card], money_once: f64, rounds: usize) -> f64 {
@@ -902,14 +924,41 @@ impl<'a> LongRun<'a> {
         self.seal_planets_round(d) * 3.0 * self.antes_left
     }
 
-    /// The planets a deck's Blue Seal cards make in a round, against yours (`seal_planets_a_round`
-    /// in a deck of its size, with all your consumable slots free: you'd keep room for them)
+    /// The planets a deck's Blue Seal cards make in a round, against yours (`seal_planets_in`
+    /// in a deck of its size, with your consumable slots by Ante 8)
     pub(super) fn seal_planets_round(&self, d: &[Card]) -> f64 {
-        let blue = |deck: &[Card]| deck.iter().filter(|c| c.seal == Some(crate::model::Seal::Blue)).count();
-        let slots = self.run.consumable_slots.max(0) as usize;
+        let slots = self.consumable_slots(0);
         // each deck at its own size: a deck change that removes cards draws your Blue Seals more
-        let round = |deck: &[Card]| seal_planets_a_round(self.run, blue(deck), deck.len(), slots);
-        round(d) - round(&self.ctx.fresh_deck)
+        self.seal_planets_in(d, slots) - self.seal_planets_in(&self.ctx.fresh_deck, slots)
+    }
+
+    /// Your consumable slots by Ante 8, `more` added (a projected quantity, as hands and hand
+    /// size are: `long_spec_for`): today's, less the one each Negative consumable you hold adds
+    /// (it goes when the card does: card.lua `Card:remove`, `queue_negative_removal`)
+    pub(super) fn consumable_slots(&self, more: i64) -> i64 {
+        let negative = self.run.consumables.iter().filter(|c| c.edition == Some(crate::model::Edition::Negative)).count() as i64;
+        (self.run.consumable_slots - negative + more).max(0)
+    }
+
+    /// The planets deck `d`'s Blue Seal cards make in a round with `slots` consumable slots, the
+    /// consumables held at round end (`HELD_AT_ROUND_END`, a mix of the whole counts either side
+    /// of it) taking theirs: `seal_planets_a_round` on what's left
+    fn seal_planets_in(&self, d: &[Card], slots: i64) -> f64 {
+        let blue = d.iter().filter(|c| c.seal == Some(crate::model::Seal::Blue)).count();
+        let lo = HELD_AT_ROUND_END.floor();
+        let at = |held: f64| seal_planets_a_round(self.run, blue, d.len(), (slots as f64 - held).max(0.0) as usize);
+        let w = HELD_AT_ROUND_END - lo;
+        (1.0 - w) * at(lo) + if w > 0.0 { w * at(lo + 1.0) } else { 0.0 }
+    }
+
+    /// The planets your Blue Seal cards make by Ante 8 with `more` consumable slots (3 rounds an
+    /// ante; 0 when `more` is 0)
+    pub(super) fn slot_planets(&self, more: i64) -> f64 {
+        if more == 0 {
+            return 0.0;
+        }
+        let d = &self.ctx.fresh_deck;
+        (self.seal_planets_in(d, self.consumable_slots(more)) - self.seal_planets_in(d, self.consumable_slots(0))) * 3.0 * self.antes_left
     }
 
     /// `deck_value` round by round, on rounds `range` (round i draws the same cards for every
