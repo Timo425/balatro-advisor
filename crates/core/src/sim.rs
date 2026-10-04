@@ -15,8 +15,26 @@ pub struct Play {
     /// Indices into the hand, in the order to play them.
     pub cards: Vec<usize>,
     pub hand: HandType,
-    /// Score with every random roll failing (used to choose).
+    /// Score with every random roll failing (used to choose, and to know a play surely wins).
     pub floor: f64,
+    /// Average score over the random rolls (Misprint, Lucky cards, …): what the play is
+    /// expected to add, the measure for pace and for comparing it with a chase. The floor
+    /// when nothing in it is random.
+    pub mean: f64,
+}
+
+/// Rolls averaged for `Play::mean`
+const MEAN_ROLLS: usize = 8;
+
+/// `Play::mean` of `play` (cards of `hand`) whose floor is `floor`.
+fn mean_score(b: &Board, hand: &[Card], play: &[usize], floor: f64) -> f64 {
+    let played: Vec<Card> = play.iter().map(|&i| hand[i]).collect();
+    let held: Vec<Card> = (0..hand.len()).filter(|i| !play.contains(i)).map(|i| hand[i]).collect();
+    if score::score(b, &played, &held, &mut crate::engine::Lucky, false).score <= floor {
+        return floor;
+    }
+    let mut rolls = Rng::new(0x6d65616e);
+    (0..MEAN_ROLLS).map(|_| score::score(b, &played, &held, &mut rolls, false).score).sum::<f64>() / MEAN_ROLLS as f64
 }
 
 /// Whether the board has jokers that care about unscored kickers (so kicker choices matter).
@@ -37,6 +55,11 @@ fn arrange(hand: &[Card], idx: &mut [usize]) {
 /// Tries every 1–5 card subset of `hand` and returns the highest-scoring play.
 /// Subsets with unscored kickers are skipped unless a joker or the boss cares about them.
 pub fn best_play(b: &Board, hand: &[Card]) -> Option<Play> {
+    best_play_with(b, hand, true)
+}
+
+/// `best_play`; `prefilter`: skip the plays `could_all_score` rules out before detecting them
+fn best_play_with(b: &Board, hand: &[Card], prefilter: bool) -> Option<Play> {
     let n = hand.len().min(16);
     let flags = b.rule_flags();
     let keep_kickers = kickers_matter(b);
@@ -49,6 +72,9 @@ pub fn best_play(b: &Board, hand: &[Card]) -> Option<Play> {
     for mask in 1u32..(1 << n) {
         let k = mask.count_ones();
         if k > 5 || mask & hidden != 0 {
+            continue;
+        }
+        if prefilter && !keep_kickers && !could_all_score(hand, mask, n, flags) {
             continue;
         }
         idx.clear();
@@ -64,10 +90,44 @@ pub fn best_play(b: &Board, hand: &[Card]) -> Option<Play> {
         held.extend((0..n).filter(|i| mask & (1 << i) == 0).map(|i| hand[i]));
         let o = score::score_detected(b, &played, &held, info, &mut Unlucky, false);
         if best.as_ref().is_none_or(|p| o.score > p.floor) {
-            best = Some(Play { cards: idx.clone(), hand: o.hand, floor: o.score });
+            best = Some(Play { cards: idx.clone(), hand: o.hand, floor: o.score, mean: o.score });
         }
     }
-    best
+    best.map(|mut p| {
+        p.mean = mean_score(b, hand, &p.cards, p.floor);
+        p
+    })
+}
+
+/// Whether every card of the play `mask` (of `hand`'s first `n`) could score, before running
+/// hand detection: Stone cards always do (hand.lua `evaluate_play`); of the rest, 2 or 3 can
+/// only all score as one rank (a Pair, Three of a Kind: no flush or straight is that short),
+/// and 4 without Four Fingers only as Two Pair or Four of a Kind. Splash isn't checked here
+/// (`best_play` doesn't call this with it). A shortcut: `hand::detect` decides.
+fn could_all_score(hand: &[Card], mask: u32, n: usize, flags: hand::RuleFlags) -> bool {
+    if flags.splash {
+        return true;
+    }
+    let mut ranks = [0u8; 4];
+    let mut k = 0;
+    for i in 0..n {
+        if mask & (1 << i) != 0 && hand[i].enhancement != Some(Enhancement::Stone) {
+            if k == 4 {
+                return true;
+            }
+            ranks[k] = hand[i].rank.0;
+            k += 1;
+        }
+    }
+    match k {
+        2 | 3 => ranks[1..k].iter().all(|&r| r == ranks[0]),
+        4 if !flags.four_fingers => {
+            let mut r = ranks;
+            r.sort_unstable();
+            r[0] == r[1] && r[2] == r[3]
+        }
+        _ => true,
+    }
 }
 
 /// A play of fewer than 5 cards topped up with junk from the hand, as a free discard (the
@@ -428,16 +488,18 @@ pub fn flush_odds(hold: usize, deck_suit: usize, deck_size: usize, hand_size: us
 }
 
 fn flush_odds_uncached(hold: usize, deck_suit: usize, deck_size: usize, hand_size: usize, need: usize, draws: usize) -> f64 {
-    use std::collections::HashMap;
+    // a BTreeMap: the sum below in a fixed order, so the odds are the same to the last bit
+    // every time (a HashMap's order differs per map, and near-ties between plans flipped)
+    use std::collections::BTreeMap;
     fn comb(n: usize, k: usize) -> f64 {
         if k > n {
             return 0.0;
         }
         (0..k).fold(1.0, |acc, i| acc * (n - i) as f64 / (i + 1) as f64)
     }
-    let mut dist: HashMap<(usize, usize, usize), f64> = HashMap::from([((hold, deck_suit, deck_size), 1.0)]);
+    let mut dist: BTreeMap<(usize, usize, usize), f64> = BTreeMap::from([((hold, deck_suit, deck_size), 1.0)]);
     for _ in 0..draws {
-        let mut next: HashMap<(usize, usize, usize), f64> = HashMap::new();
+        let mut next: BTreeMap<(usize, usize, usize), f64> = BTreeMap::new();
         for (&(h, s, d), &pr) in &dist {
             let k = 5.min(hand_size.saturating_sub(h)).min(d);
             if h >= need || k == 0 {
@@ -473,7 +535,7 @@ fn decide(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i64, ne
     if !keep.is_empty() && hands > 1 {
         let free: Vec<usize> = (0..hand.len()).filter(|i| !keep.contains(i)).collect();
         let cards: Vec<Card> = free.iter().map(|&i| hand[i]).collect();
-        if best_play(b, &cards).is_some_and(|p| p.floor * hands as f64 >= need) {
+        if best_play(b, &cards).is_some_and(|p| p.mean * hands as f64 >= need) {
             return match decide_cards(b, &cards, deck, hands, discards, need, size.saturating_sub(keep.len()).max(1), true) {
                 Action::Play(v, d) => Action::Play(v.into_iter().map(|k| free[k]).collect(), d),
                 Action::Discard(v) => Action::Discard(v.into_iter().map(|k| free[k]).collect()),
@@ -508,11 +570,14 @@ fn burn_pays(b: &Board, hand: &[Card], play: &[usize]) -> bool {
 /// - while safe, cash the discard that pays most (`discard_money`); the last discard right
 ///   before the round ends;
 /// - with discards left and a best play that scores more with none left, discard first;
-/// - play the best hand if it wins, if it's the last hand, or if repeating it keeps pace;
-/// - otherwise, if chasing a flush is worth more than the best hand (exact draw odds ×
-///   what that flush would score), throw away off-suit cards: with a discard, or by
-///   playing them as a junk hand once discards are gone;
+/// - play the best hand if it surely wins, if it's the last hand, or if repeating it keeps
+///   pace (its average score: `Play::mean`);
+/// - otherwise, if digging for a hand (`aims`: a flush, a straight, one more of a rank, a
+///   Full House) is worth more than the best hand (exact draw odds × what completing it
+///   scores), throw away the cards outside it: with a discard, or by playing them as a junk
+///   hand once discards are gone;
 /// - otherwise discard the cards outside the best play and hope to improve it.
+/// Cards that add to the best play while held (`held_value`) are never thrown away.
 /// `burn`: whether to check if burning discards pays (off inside that check itself).
 #[allow(clippy::too_many_arguments)]
 fn decide_cards(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i64, need: f64, size: usize, burn: bool) -> Action {
@@ -526,7 +591,7 @@ fn decide_cards(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i
     // round's value (`RoundGoals`): see the register in design.md.
     let all: Vec<usize> = (0..hand.len()).collect();
     let now = discards > 1 || best.floor >= need || hands <= 1;
-    if now && discards > 0 && best.floor * hands as f64 >= need && discard_money(b, hand, &all) > 0.0 {
+    if now && discards > 0 && best.mean * hands as f64 >= need && discard_money(b, hand, &all) > 0.0 {
         let n = hand.len().min(12);
         let key = |v: &[usize]| {
             let mut k: Vec<_> = v.iter().map(|&i| hand[i].order_key()).collect();
@@ -551,7 +616,7 @@ fn decide_cards(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i
         paying.sort_by(|x, y| y.1.total_cmp(&x.1).then(x.0.len().cmp(&y.0.len())).then_with(|| key(&x.0).cmp(&key(&y.0))));
         let keeps_pace = |v: &[usize]| {
             let rest: Vec<Card> = (0..hand.len()).filter(|i| !v.contains(i)).map(|i| hand[i]).collect();
-            best_play(b, &rest).is_some_and(|p| p.floor * hands as f64 >= need)
+            best_play(b, &rest).is_some_and(|p| p.mean * hands as f64 >= need)
         };
         if let Some((v, _)) = paying.into_iter().take(16).find(|(v, _)| keeps_pace(v)) {
             return Action::Discard(v);
@@ -560,7 +625,7 @@ fn decide_cards(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i
     if best.floor >= need || hands <= 1 || deck.is_empty() {
         return play_best;
     }
-    let on_pace = best.floor * hands as f64 >= need;
+    let on_pace = best.mean * hands as f64 >= need;
     // When your best play scores more with no discards left (the engine knows which jokers
     // pay that way), discard before playing. Which cards: what the policy digs with when it's
     // behind (a flush chase when the odds are there, else what's outside the best play). The
@@ -572,63 +637,59 @@ fn decide_cards(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i
         }
         return play_best;
     }
-    let f = b.rule_flags();
-    let need_f = if f.four_fingers { 4 } else { 5 };
-    let suited = |c: &Card, s: Suit| hand::is_suit(c, s, false, true, f.smeared);
-    // Flush plan: for each suit you could chase, the exact odds of completing it with the
-    // digs left (from what's in hand and what's left in the draw pile) × what it would
-    // score; the best suit is the one to chase, not simply the one you hold most of.
+    // Dig plans (`aims`): every hand you could dig for, with the exact odds of completing it
+    // with the digs left × what a typical completion scores; the best is the one to chase.
     let digs = (discards + hands - 1).max(0) as usize;
-    let plan = Suit::ALL
-        .iter()
-        .filter_map(|&suit| {
-            let group: Vec<usize> = (0..hand.len()).filter(|&i| suited(&hand[i], suit)).collect();
-            if group.len() >= need_f || group.len() < 2 {
-                return None;
-            }
-            let in_deck: Vec<&Card> = deck.iter().filter(|c| suited(c, suit)).collect();
-            if in_deck.len() + group.len() < need_f {
-                return None;
-            }
-            let p = flush_odds(group.len(), in_deck.len(), deck.len(), size, need_f, digs);
-            let mut cards: Vec<Card> = group.iter().map(|&i| hand[i]).collect();
-            // The cards you'd draw: typical ones of the suit (the middle of what's left), not
-            // the best; with the best, a suit you hold fewer of looked better than it is.
-            let mut extra: Vec<Card> = in_deck.iter().map(|c| **c).collect();
-            extra.sort_by(|a, c| c.rank.chips().total_cmp(&a.rank.chips()));
-            let want = need_f - group.len();
-            let start = extra.len().saturating_sub(want) / 2;
-            cards.extend(extra.into_iter().skip(start).take(want));
-            cards.truncate(5);
-            // Average over a few rolls, so Lucky cards count for their average, not for nothing
-            let mut rolls = Rng::new(0x1d1e ^ suit as u64);
-            let est = (0..4).map(|_| score::score(b, &cards, &[], &mut rolls, false).score).sum::<f64>() / 4.0;
-            Some((group, p, est))
+    // the cards worth holding (`held_value`), worked out only when needed
+    let held_cell = std::cell::OnceCell::new();
+    let held_keep = || held_cell.get_or_init(|| held_value(b, hand, &best.cards));
+    // When on pace, a hand is only chased if it's one card away and the best hand would spend
+    // 2+ of its cards (playing it would break the draw); then only if clearly better.
+    let eligible = |a: &Aim| {
+        let breaks_draw = best.hand != a.hand && best.cards.iter().filter(|i| a.keep.contains(i)).count() >= 2;
+        let one_away = a.groups.iter().map(|g| g.1).sum::<usize>() == 1;
+        !on_pace || (breaks_draw && one_away)
+    };
+    let mut plan = aims(b, hand, deck)
+        .into_iter()
+        .filter(|a| eligible(a))
+        .filter_map(|a| {
+            let p = aim_odds(&a, deck.len(), size, digs);
+            // a plan with odds of 10% or less isn't chased: not worth scoring
+            (p > 0.1).then(|| {
+                let quick = aim_quick(b, &a, hand, held_keep());
+                (a, p, quick)
+            })
+        })
+        .collect::<Vec<_>>();
+    // screened on one completion each; the best few get the full estimate
+    plan.sort_by(|a, c| (c.1 * c.2).total_cmp(&(a.1 * a.2)));
+    plan.truncate(AIM_FINALISTS);
+    let plan = plan
+        .into_iter()
+        .map(|(a, p, _)| {
+            let est = aim_score(b, &a, hand, held_keep());
+            (a, p, est)
         })
         .max_by(|a, c| (a.1 * a.2).total_cmp(&(c.1 * c.2)));
-    if let Some((group, p, est)) = plan {
+    if let Some((aim, p, est)) = plan {
+        let group = &aim.keep;
         let off: Vec<usize> = (0..hand.len()).filter(|i| !group.contains(i)).collect();
-        if p > 0.1 {
-            // When on pace, only chase if the flush is clearly better AND the best hand
-            // would spend 2+ of the suited cards (playing it would break the draw).
-            let breaks_draw = best.hand != HandType::Flush && best.cards.iter().filter(|i| group.contains(i)).count() >= 2;
-            let chase = if on_pace {
-                breaks_draw && group.len() + 1 >= need_f && p * est > 1.5 * best.floor
-            } else {
-                p * est * (hands as f64 - 1.0).clamp(1.0, 2.0) > best.floor * hands as f64
-            };
+        {
+            let chase = if on_pace { p * est > 1.5 * best.mean } else { p * est * (hands as f64 - 1.0).clamp(1.0, 2.0) > best.mean * hands as f64 };
             if chase {
-                let mut toss = off.clone();
+                let mut toss: Vec<usize> = off.iter().copied().filter(|i| !held_keep().contains(i)).collect();
                 toss.sort_by(|&a, &c| hand[a].rank.chips().total_cmp(&hand[c].rank.chips()));
                 toss.truncate(5);
                 if !toss.is_empty() {
                     if discards > 0 {
                         return Action::Discard(toss);
                     }
-                    // No discards: dig with the best hand the off-suit cards make (so it still
-                    // scores), topped up with off-suit kickers to throw away 5 cards.
-                    let cards: Vec<Card> = off.iter().map(|&i| hand[i]).collect();
-                    let mut dig: Vec<usize> = best_play(b, &cards).map(|p| p.cards.iter().map(|&k| off[k]).collect()).unwrap_or_default();
+                    // No discards: dig with the best hand the other cards make (so it still
+                    // scores), topped up with the other kickers to throw away 5 cards.
+                    let free: Vec<usize> = off.iter().copied().filter(|i| !held_keep().contains(i)).collect();
+                    let cards: Vec<Card> = free.iter().map(|&i| hand[i]).collect();
+                    let mut dig: Vec<usize> = best_play(b, &cards).map(|p| p.cards.iter().map(|&k| free[k]).collect()).unwrap_or_default();
                     for i in toss {
                         if dig.len() >= 5 {
                             break;
@@ -646,7 +707,7 @@ fn decide_cards(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i
         return play_best;
     }
     if discards > 0 {
-        let mut toss: Vec<usize> = (0..hand.len()).filter(|i| !best.cards.contains(i)).collect();
+        let mut toss: Vec<usize> = (0..hand.len()).filter(|i| !best.cards.contains(i) && !held_keep().contains(i)).collect();
         toss.sort_by(|&a, &c| hand[a].rank.chips().total_cmp(&hand[c].rank.chips()));
         toss.truncate(5);
         if !toss.is_empty() {
@@ -654,6 +715,447 @@ fn decide_cards(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i
         }
     }
     play_best
+}
+
+thread_local! {
+    /// Futures per alternative for the oracle player (0: off, the default)
+    static ORACLE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static IN_ROLLOUT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// A yardstick for the simulated player, never used by the advice: with `rollouts` > 0, every
+/// decision in this thread's simulated rounds that isn't a win on the table compares the
+/// policy's move with the alternatives from the hand's structure (`oracle_moves`), each on
+/// `rollouts` futures played on by the policy, and takes one only when it's clearly better on
+/// the same futures (paired, 2 standard errors). Hundreds of times slower than the policy:
+/// for measuring how much it leaves on the table (`tests/player.rs`).
+pub fn set_oracle(rollouts: usize) {
+    ORACLE.with(|o| o.set(rollouts));
+}
+
+#[allow(clippy::too_many_arguments)]
+fn oracle_decide(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i64, scored: f64, target: f64, size: usize, uses: &[Use], rng: &mut Rng) -> Option<Action> {
+    let r = ORACLE.with(|o| o.get());
+    if r < 2 || IN_ROLLOUT.with(|x| x.get()) || hand.is_empty() {
+        return None;
+    }
+    let base = decide(b, hand, deck, hands, discards, target - scored, size);
+    let mut cands: Vec<Move> = vec![match &base {
+        Action::Play(v, _) => Move::Play(v.clone()),
+        Action::Discard(v) => Move::Discard(v.clone()),
+    }];
+    let norm = |m: &Move| match m {
+        Move::Play(v) => (0, { let mut v = v.clone(); v.sort(); v }),
+        Move::Discard(v) => (1, { let mut v = v.clone(); v.sort(); v }),
+    };
+    for m in oracle_moves(b, hand, deck, discards) {
+        if !cands.iter().any(|x| norm(x) == norm(&m)) {
+            cands.push(m);
+        }
+    }
+    if cands.len() <= 1 {
+        return None;
+    }
+    let start = RoundStart { hand: hand.to_vec(), deck: deck.to_vec(), hand_size: size as i64, hands, discards, scored, target };
+    let seed = rng.next_u64();
+    IN_ROLLOUT.with(|x| x.set(true));
+    let g = b.goals.clone();
+    let vals: Vec<Vec<f64>> = cands
+        .iter()
+        .map(|m| outcomes_after(b, &start, m, 0..r, seed, uses).iter().map(|o| g.as_ref().map_or(o.won, |g| g.value(o))).collect())
+        .collect();
+    IN_ROLLOUT.with(|x| x.set(false));
+    let mut pick = 0;
+    let mut gain = 0.0;
+    for (i, v) in vals.iter().enumerate().skip(1) {
+        let d: Vec<f64> = v.iter().zip(&vals[0]).map(|(x, y)| x - y).collect();
+        let m = d.iter().sum::<f64>() / r as f64;
+        let sd = (d.iter().map(|x| (x - m).powi(2)).sum::<f64>() / (r - 1) as f64).sqrt();
+        if m > 2.0 * sd / (r as f64).sqrt() + 1e-9 && m > gain {
+            pick = i;
+            gain = m;
+        }
+    }
+    if pick == 0 {
+        return Some(base);
+    }
+    // its only play is the best hand (`oracle_moves`): a play for points, not a dig
+    Some(match cands.swap_remove(pick) {
+        Move::Play(v) => Action::Play(v, false),
+        Move::Discard(v) => Action::Discard(v),
+    })
+}
+
+/// The oracle's alternatives, kept simple and apart from the policy's own plans: playing the
+/// best hand, and (with a discard) throwing away up to 5 of the lowest cards outside each set
+/// worth keeping: each suit you hold 2+ of, each run of 5 ranks you hold 3+ of, the cards that
+/// pair, the biggest rank group, the best play; each also with the cards that pay at round
+/// end kept.
+fn oracle_moves(b: &Board, hand: &[Card], deck: &[Card], discards: i64) -> Vec<Move> {
+    let mut out = vec![];
+    let Some(best) = best_play(b, hand) else { return out };
+    out.push(Move::Play(with_fillers(b, hand, &best.cards)));
+    if discards <= 0 || deck.is_empty() {
+        return out;
+    }
+    let mut sets: Vec<Vec<usize>> = vec![];
+    for s in Suit::ALL {
+        let g: Vec<usize> = (0..hand.len()).filter(|&i| hand[i].suit == s).collect();
+        if g.len() >= 2 {
+            sets.push(g);
+        }
+    }
+    for lo in 1u8..=10 {
+        let g: Vec<usize> = (lo..lo + 5).filter_map(|r| (0..hand.len()).find(|&i| hand[i].rank.0 == if r == 1 { 14 } else { r })).collect();
+        if g.len() >= 3 {
+            sets.push(g);
+        }
+    }
+    let count = |r: u8| hand.iter().filter(|c| c.rank.0 == r).count();
+    let paired: Vec<usize> = (0..hand.len()).filter(|&i| count(hand[i].rank.0) >= 2).collect();
+    if let Some(&top) = paired.iter().max_by_key(|&&i| (count(hand[i].rank.0), hand[i].rank.0)) {
+        sets.push((0..hand.len()).filter(|&i| hand[i].rank.0 == hand[top].rank.0).collect());
+        sets.push(paired);
+    }
+    sets.push(best.cards);
+    let pay = pays_at_end(b, hand);
+    for keep in sets {
+        for with_pay in [false, true] {
+            if with_pay && pay.is_empty() {
+                continue;
+            }
+            let mut toss: Vec<usize> = (0..hand.len()).filter(|i| !keep.contains(i) && !(with_pay && pay.contains(i))).collect();
+            toss.sort_by(|&a, &c| hand[a].rank.chips().total_cmp(&hand[c].rank.chips()).then(a.cmp(&c)));
+            toss.truncate(5);
+            if !toss.is_empty() {
+                out.push(Move::Discard(toss));
+            }
+        }
+    }
+    out
+}
+
+/// A hand the player could dig for: the cards of the hand it keeps, the hand they'd make, and
+/// what the draw pile must still give (each: the cards that fit, how many are needed).
+#[derive(Debug)]
+struct Aim {
+    hand: HandType,
+    keep: Vec<usize>,
+    groups: Vec<(Vec<Card>, usize)>,
+}
+
+/// Every hand worth digging for, from the game's own hand rules (hand.lua `get_flush`,
+/// `get_straight`, `get_X_same`, with Four Fingers, Shortcut and Smeared Joker): a flush of
+/// each suit with 2+ cards of it; each straight with all but 1 or 2 of its ranks in hand
+/// (one card of each kept); one more of a rank you hold 2+ of (Three, Four, Five of a Kind);
+/// a Full House from Two Pair. Hands already made aren't aims (the best play has them).
+fn aims(b: &Board, hand: &[Card], deck: &[Card]) -> Vec<Aim> {
+    use HandType::*;
+    let f = b.rule_flags();
+    let need = if f.four_fingers { 4 } else { 5 };
+    let mut out = vec![];
+    let suited = |c: &Card, s: Suit| hand::is_suit(c, s, false, true, f.smeared);
+    for s in Suit::ALL {
+        let keep: Vec<usize> = (0..hand.len()).filter(|&i| suited(&hand[i], s)).collect();
+        let fits: Vec<Card> = deck.iter().filter(|c| suited(c, s)).copied().collect();
+        if keep.len() >= 2 && keep.len() < need && fits.len() + keep.len() >= need {
+            let n = need - keep.len();
+            out.push(Aim { hand: Flush, keep, groups: vec![(fits, n)] });
+        }
+    }
+    // a card's rank as straights see it (Stone cards have none); an Ace is also 1
+    let id = |c: &Card, i: usize| hand::card_id(c, i);
+    // of two copies of a rank, the one of the suit you hold most (a straight flush stays
+    // possible), then the first
+    let suit_count = |i: usize| (0..hand.len()).filter(|&k| suited(&hand[k], hand[i].suit)).count();
+    let by_rank = |r: i32| -> Option<usize> {
+        let r = if r == 1 { 14 } else { r };
+        (0..hand.len()).filter(|&i| id(&hand[i], i) == r).max_by_key(|&i| (suit_count(i), std::cmp::Reverse(i)))
+    };
+    let runs = straight_runs(need, f.shortcut);
+    // runs keeping the same cards and missing one rank are one draw (open-ended: either
+    // end's rank completes it); one missing two ranks needs both
+    let rank_fits = |m: i32| -> Vec<Card> {
+        let m = if m == 1 { 14 } else { m };
+        deck.iter().enumerate().filter(|(i, c)| id(c, 100 + i) == m).map(|(_, c)| *c).collect()
+    };
+    let mut straights: Vec<(Vec<usize>, Vec<i32>, Vec<Vec<i32>>)> = vec![];
+    for run in runs.iter() {
+        let mut keep: Vec<usize> = run.iter().filter_map(|&r| by_rank(r)).collect();
+        keep.sort();
+        keep.dedup();
+        let missing: Vec<i32> = run.iter().copied().filter(|&r| by_rank(r).is_none()).map(|r| if r == 1 { 14 } else { r }).collect();
+        match missing.len() {
+            1 => match straights.iter_mut().find(|s| s.0 == keep) {
+                Some(s) => {
+                    if !s.1.contains(&missing[0]) {
+                        s.1.push(missing[0]);
+                    }
+                }
+                None => straights.push((keep, missing, vec![])),
+            },
+            2 => match straights.iter_mut().find(|s| s.0 == keep) {
+                Some(s) => {
+                    if !s.2.contains(&missing) {
+                        s.2.push(missing);
+                    }
+                }
+                None => straights.push((keep, vec![], vec![missing])),
+            },
+            _ => {}
+        }
+    }
+    let one_away: Vec<Vec<usize>> = straights.iter().filter(|s| !s.1.is_empty()).map(|s| s.0.clone()).collect();
+    for (keep, one, two) in straights {
+        if !one.is_empty() {
+            let g: Vec<Card> = one.iter().flat_map(|&m| rank_fits(m)).collect();
+            if !g.is_empty() {
+                out.push(Aim { hand: Straight, keep, groups: vec![(g, 1)] });
+            }
+            continue;
+        }
+        // two ranks away: the likeliest way to fill it (the most cards that fit), unless these
+        // cards are part of a straight one rank away (that draw is the likelier one)
+        if one_away.iter().any(|k: &Vec<usize>| keep.iter().all(|i| k.contains(i))) {
+            continue;
+        }
+        let best = two
+            .iter()
+            .map(|m| m.iter().map(|&r| (rank_fits(r), 1)).collect::<Vec<(Vec<Card>, usize)>>())
+            .filter(|g| g.iter().all(|x| !x.0.is_empty()))
+            .max_by_key(|g| g.iter().map(|x| x.0.len()).product::<usize>());
+        if let Some(groups) = best {
+            out.push(Aim { hand: Straight, keep, groups });
+        }
+    }
+    let rank_of = |r: i32| -> Vec<usize> { (0..hand.len()).filter(|&i| id(&hand[i], i) == r).collect() };
+    let fits = |r: i32| -> Vec<Card> { deck.iter().enumerate().filter(|(i, c)| id(c, 100 + i) == r).map(|(_, c)| *c).collect() };
+    let mut pairs = vec![];
+    for r in 2..=14 {
+        let keep = rank_of(r);
+        let more = match keep.len() {
+            2 => ThreeOfAKind,
+            3 => FourOfAKind,
+            4 => FiveOfAKind,
+            _ => continue,
+        };
+        if keep.len() == 2 {
+            pairs.push(r);
+        }
+        let g = fits(r);
+        if !g.is_empty() {
+            out.push(Aim { hand: more, keep, groups: vec![(g, 1)] });
+        }
+    }
+    for (k, &r1) in pairs.iter().enumerate() {
+        for &r2 in &pairs[k + 1..] {
+            let mut keep = rank_of(r1);
+            keep.extend(rank_of(r2));
+            let mut g = fits(r1);
+            g.extend(fits(r2));
+            if !g.is_empty() {
+                out.push(Aim { hand: FullHouse, keep, groups: vec![(g, 1)] });
+            }
+        }
+    }
+    // the same plan twice (Smeared Joker: Hearts and Diamonds are one suit) counts once
+    let mut seen = vec![];
+    out.retain(|a| {
+        let mut k = a.keep.clone();
+        k.sort();
+        let fits = |g: &(Vec<Card>, usize)| {
+            let mut v: Vec<_> = g.0.iter().map(Card::order_key).collect();
+            v.sort();
+            (v, g.1)
+        };
+        let key = (a.hand, k, a.groups.iter().map(fits).collect::<Vec<_>>());
+        let new = !seen.contains(&key);
+        seen.push(key);
+        new
+    });
+    out
+}
+
+/// Every run of `need` ranks a straight can be (hand.lua `get_straight`): consecutive ranks,
+/// or with Shortcut a gap of one rank between any two; an Ace is 1 or 14. Computed once per
+/// rule set.
+fn straight_runs(need: usize, shortcut: bool) -> std::rc::Rc<Vec<Vec<i32>>> {
+    thread_local! {
+        static RUNS: std::cell::RefCell<Vec<((usize, bool), std::rc::Rc<Vec<Vec<i32>>>)>> = const { std::cell::RefCell::new(vec![]) };
+    }
+    if let Some(r) = RUNS.with(|c| c.borrow().iter().find(|e| e.0 == (need, shortcut)).map(|e| e.1.clone())) {
+        return r;
+    }
+    let mut runs: Vec<Vec<i32>> = vec![];
+    for lo in 1..=14 {
+        let mut stack = vec![vec![lo]];
+        while let Some(run) = stack.pop() {
+            if run.len() == need {
+                runs.push(run);
+                continue;
+            }
+            let last = *run.last().unwrap();
+            for step in if shortcut { 1..=2 } else { 1..=1 } {
+                if last + step <= 14 {
+                    let mut r = run.clone();
+                    r.push(last + step);
+                    stack.push(r);
+                }
+            }
+        }
+    }
+    let runs = std::rc::Rc::new(runs);
+    RUNS.with(|c| c.borrow_mut().push(((need, shortcut), runs.clone())));
+    runs
+}
+
+/// The chance of completing `aim` with `digs` digs, each throwing away up to 5 cards not in
+/// it. A flush: the exact draw (`flush_odds`: the suited cards you draw stay, so later digs
+/// see fewer). Others: the cards the digs would see if each refilled every slot outside the
+/// aim (up to 5), taken as one draw from the pile (`draw_odds`): a little generous, as a card
+/// that completes part of it stays in hand.
+fn aim_odds(aim: &Aim, pile: usize, size: usize, digs: usize) -> f64 {
+    if aim.hand == HandType::Flush {
+        let (fits, n) = &aim.groups[0];
+        return flush_odds(aim.keep.len(), fits.len(), pile, size, aim.keep.len() + n, digs);
+    }
+    let seen = (digs * size.saturating_sub(aim.keep.len()).min(5)).min(pile);
+    let groups: Vec<(usize, usize)> = aim.groups.iter().map(|g| (g.0.len(), g.1)).collect();
+    draw_odds(&groups, pile, seen)
+}
+
+/// The chance that `seen` cards drawn from a pile of `pile` hold at least `need` of each
+/// (disjoint) group of `size` cards: the multivariate hypergeometric, exactly.
+fn draw_odds(groups: &[(usize, usize)], pile: usize, seen: usize) -> f64 {
+    fn comb(n: usize, k: usize) -> f64 {
+        if k > n {
+            return 0.0;
+        }
+        (0..k).fold(1.0, |acc, i| acc * (n - i) as f64 / (i + 1) as f64)
+    }
+    let in_groups: usize = groups.iter().map(|g| g.0).sum();
+    if in_groups > pile {
+        return 0.0;
+    }
+    let total = comb(pile, seen);
+    if total == 0.0 {
+        return 0.0;
+    }
+    // ways over the groups' counts (each at least its need), the rest from outside them
+    fn ways(groups: &[(usize, usize)], left: usize, rest: usize, comb: &dyn Fn(usize, usize) -> f64) -> f64 {
+        match groups.split_first() {
+            None => comb(rest, left),
+            Some((&(size, need), more)) => (need..=size.min(left)).map(|x| comb(size, x) * ways(more, left - x, rest, comb)).sum(),
+        }
+    }
+    (ways(groups, seen, pile - in_groups, &comb) / total).min(1.0)
+}
+
+/// Plans given the full estimate (`aim_score`) after the screen on one completion
+/// (`aim_quick`)
+const AIM_FINALISTS: usize = 2;
+
+/// The screen for `aim_score`: its first completion only, every random roll failing.
+fn aim_quick(b: &Board, aim: &Aim, hand: &[Card], held: &[usize]) -> f64 {
+    let kept: Vec<Card> = held.iter().filter(|i| !aim.keep.contains(i)).map(|&i| hand[i]).collect();
+    score::score(b, &aim_middle(aim, hand), &kept, &mut Unlucky, false).score
+}
+
+/// The middle one of `aim`'s completions (the screen's and the random check's: not the best,
+/// not the worst)
+fn aim_middle(aim: &Aim, hand: &[Card]) -> Vec<Card> {
+    let mut all = aim_completions(aim, hand);
+    let k = all.len() / 2;
+    all.swap_remove(k).0
+}
+
+/// Random completions drawn for a plan more than one card away
+const AIM_FILLS: usize = 4;
+
+/// The ways `aim` can be completed, each with its weight: with one card missing from each
+/// group (at most two groups), every distinct card that fits, weighted by its copies (exact);
+/// otherwise `AIM_FILLS` draws at
+/// random from what fits (a fixed seed: the same draws for every call). Not a fixed "typical"
+/// card: the middle ones are neighbouring ranks, so a flush draw looked like a straight flush;
+/// spread ones never are, though with Four Fingers and Shortcut one often is.
+fn aim_completions(aim: &Aim, hand: &[Card]) -> Vec<(Vec<Card>, f64)> {
+    let base: Vec<Card> = aim.keep.iter().map(|&i| hand[i]).collect();
+    let distinct = |fits: &[Card]| -> Vec<(Card, f64)> {
+        let mut v: Vec<(Card, f64)> = vec![];
+        for c in fits {
+            match v.iter_mut().find(|x| x.0.same_kind(c)) {
+                Some(x) => x.1 += 1.0,
+                None => v.push((*c, 1.0)),
+            }
+        }
+        v.sort_by_key(|x| x.0.order_key());
+        v
+    };
+    let mut out = vec![];
+    if aim.groups.len() <= 2 && aim.groups.iter().all(|g| g.1 == 1) {
+        let firsts = distinct(&aim.groups[0].0);
+        let seconds = aim.groups.get(1).map(|g| distinct(&g.0));
+        for (c, w) in &firsts {
+            match &seconds {
+                None => out.push((base.iter().copied().chain([*c]).collect(), *w)),
+                Some(v) => out.extend(v.iter().map(|(d, w2)| (base.iter().copied().chain([*c, *d]).collect(), w * w2))),
+            }
+        }
+    } else {
+        let mut rng = Rng::new(0x1d1e);
+        for _ in 0..AIM_FILLS {
+            let mut cards = base.clone();
+            for (fits, n) in &aim.groups {
+                let mut pool = fits.clone();
+                for _ in 0..*n {
+                    if !pool.is_empty() {
+                        cards.push(pool.swap_remove(rng.below(pool.len())));
+                    }
+                }
+            }
+            out.push((cards, 1.0));
+        }
+    }
+    for c in &mut out {
+        c.0.truncate(5);
+    }
+    out
+}
+
+/// What completing `aim` is expected to score: the weighted average over its completions
+/// (`aim_completions`), with the cards worth holding (`held`) held, random effects at their
+/// average (`MEAN_ROLLS` rolls in all) when the middle completion or any Lucky card in it is
+/// random. Only the cards that complete it count, not what else the chase leaves in hand (see
+/// the register).
+fn aim_score(b: &Board, aim: &Aim, hand: &[Card], held: &[usize]) -> f64 {
+    let kept: Vec<Card> = held.iter().filter(|i| !aim.keep.contains(i)).map(|&i| hand[i]).collect();
+    let all = aim_completions(aim, hand);
+    let mid = &all[all.len() / 2].0;
+    let lucky = |c: &Card| c.enhancement == Some(Enhancement::Lucky);
+    let random = all.iter().any(|x| x.0.iter().any(lucky))
+        || kept.iter().any(lucky)
+        || score::score(b, mid, &kept, &mut crate::engine::Lucky, false).score > score::score(b, mid, &kept, &mut Unlucky, false).score;
+    let mut rolls = Rng::new(0x1d1e);
+    let per = if random { MEAN_ROLLS.div_ceil(all.len()) } else { 1 };
+    let (mut total, mut weight) = (0.0, 0.0);
+    for (cards, w) in &all {
+        for _ in 0..per {
+            total += w * if random { score::score(b, cards, &kept, &mut rolls, false).score } else { score::score(b, cards, &kept, &mut Unlucky, false).score };
+            weight += w;
+        }
+    }
+    total / weight
+}
+
+/// The cards of `hand` outside `play` that add to its score while held (Baron's Kings, Steel
+/// cards, Shoot the Moon's Queens, …: the engine's held effects): thrown away, they'd cost
+/// the play now. One scoring per card.
+fn held_value(b: &Board, hand: &[Card], play: &[usize]) -> Vec<usize> {
+    let played: Vec<Card> = play.iter().map(|&i| hand[i]).collect();
+    let rest: Vec<usize> = (0..hand.len()).filter(|i| !play.contains(i)).collect();
+    let held = |skip: Option<usize>| -> Vec<Card> { rest.iter().filter(|&&i| Some(i) != skip).map(|&i| hand[i]).collect() };
+    let all = score::score(b, &played, &held(None), &mut Unlucky, false).score;
+    rest.iter().copied().filter(|&i| score::score(b, &played, &held(Some(i)), &mut Unlucky, false).score < all).collect()
 }
 
 /// Simulates the rest of a round with the `decide` policy.
@@ -885,7 +1387,7 @@ fn note_seen(b: &Board, hand: &[Card], acc: &mut Vec<(String, f64)>) {
 /// (`finish_with_uses`) it's worth more. Others gain nothing by waiting.
 fn use_if_better(b: &mut Board, hand: &mut Vec<Card>, uses: &[Use], used: &mut [bool], need: f64, hands: i64) {
     while used.iter().any(|u| !u) {
-        let now = best_play(b, hand).map_or(0.0, |p| p.floor);
+        let now = best_play(b, hand).map_or(0.0, |p| p.mean);
         let on_pace = now * hands.max(1) as f64 >= need;
         let pays = |b: &Board, h: &[Card]| pays_at_end(b, h).len();
         let mut best: Option<(f64, usize, Board, Vec<Card>)> = None;
@@ -898,7 +1400,7 @@ fn use_if_better(b: &mut Board, hand: &mut Vec<Card>, uses: &[Use], used: &mut [
             if on_pace && pays(&b2, &h2) > pays(&b2, hand) {
                 continue;
             }
-            let lift = best_play(&b2, &h2).map_or(0.0, |p| p.floor);
+            let lift = best_play(&b2, &h2).map_or(0.0, |p| p.mean);
             if lift <= now * 1.01 {
                 continue;
             }
@@ -958,7 +1460,16 @@ pub fn sim_round_uses(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[
                     },
                 }
             }
-            None => decide(&b, &hand, &deck, hands, discards, start.target - total, size),
+            None => {
+                // the yardstick (`set_oracle`), when it's on
+                let oracle = (ORACLE.with(|o| o.get()) > 0)
+                    .then(|| {
+                        let unused: Vec<Use> = uses.iter().zip(&used).filter(|(_, u)| !**u).map(|(x, _)| x.clone()).collect();
+                        oracle_decide(&b, &hand, &deck, hands, discards, total, start.target, size, &unused, rng)
+                    })
+                    .flatten();
+                oracle.unwrap_or_else(|| decide(&b, &hand, &deck, hands, discards, start.target - total, size))
+            }
         };
         match act {
             Action::Play(mut idx, dig) => {
@@ -1139,7 +1650,8 @@ mod tests {
         // On pace with a Pair, so without a reason to discard the player plays it. With
         // Mystic Summit the best play scores more with no discards left: discard first.
         let hand = Card::parse_list("AS AH KD 9C 7S 5H 3D 2C").unwrap();
-        let deck: Vec<Card> = standard_deck().into_iter().filter(|c| !hand.iter().any(|h| h.rank == c.rank && h.suit == c.suit)).collect();
+        // no Aces left to draw: no Three of a Kind to dig for while on pace
+        let deck: Vec<Card> = standard_deck().into_iter().filter(|c| !hand.iter().any(|h| h.rank == c.rank && h.suit == c.suit) && c.rank.0 != 14).collect();
         let act = |keys: &[&str]| {
             let mut b = sample_board(keys);
             b.discards_left = 2;
@@ -1152,10 +1664,63 @@ mod tests {
     }
 
     #[test]
+    fn the_best_play_shortcut_changes_nothing() {
+        // `could_all_score` only skips plays hand detection would rule out: the same best
+        // play with it and without, on random hands (Stone cards among them) and boards
+        // with the rules that change hands
+        let mut rng = Rng::new(5);
+        let boards: [&[&str]; 6] = [&[], &["j_four_fingers"], &["j_shortcut", "j_smeared"], &["j_jolly", "j_droll"], &["j_four_fingers", "j_shortcut"], &["j_pareidolia", "j_four_fingers", "j_smeared"]];
+        for keys in boards {
+            let b = sample_board(keys);
+            for _ in 0..300 {
+                let mut deck = standard_deck();
+                shuffle(&mut deck, &mut rng);
+                let mut hand: Vec<Card> = deck[..8].to_vec();
+                if rng.below(3) == 0 {
+                    hand[rng.below(8)].enhancement = Some(Enhancement::Stone);
+                }
+                let fast = best_play_with(&b, &hand, true).map(|p| (p.cards, p.floor));
+                let full = best_play_with(&b, &hand, false).map(|p| (p.cards, p.floor));
+                assert_eq!(fast, full, "{keys:?} {hand:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn pace_counts_a_random_jokers_average() {
+        // Misprint adds +0 to +23 Mult: its floor (+0) says the Pair is behind, its average
+        // says the Pair keeps pace. The player plays it, as it would with a fixed +12 Mult.
+        let hand = Card::parse_list("AS AH KD 9C 7S 5H 3D 2C").unwrap();
+        let deck: Vec<Card> = standard_deck().into_iter().filter(|c| !hand.iter().any(|h| h.same_kind(c))).collect();
+        let b = sample_board(&["j_misprint"]);
+        let p = best_play(&b, &hand).unwrap();
+        assert!(p.mean > 2.0 * p.floor, "the average counts the rolls: {} vs {}", p.mean, p.floor);
+        let need = 3.0 * (p.floor + p.mean) / 2.0;
+        assert!(matches!(decide(&b, &hand, &deck, 3, 2, need, 8), Action::Play(..)));
+    }
+
+    #[test]
+    fn cards_that_score_while_held_arent_discarded() {
+        // Behind with a Pair of Aces: the player digs with what's outside it, but Baron's
+        // Kings score while held (×1.5 each), so they stay; the rest goes.
+        // (two cards of each suit and one discard: no flush worth chasing)
+        let hand = Card::parse_list("AS AH KD KC 9H 7S 3D 2C").unwrap();
+        let deck: Vec<Card> = standard_deck().into_iter().filter(|c| !hand.iter().any(|h| h.same_kind(c))).collect();
+        let b = sample_board(&["j_baron"]);
+        let pair = best_play(&b, &hand).unwrap();
+        let Action::Discard(v) = decide(&b, &hand, &deck, 2, 1, pair.mean * 10.0, 8) else { panic!("behind: dig") };
+        let tossed: Vec<String> = v.iter().map(|&i| hand[i].label()).collect();
+        assert!(!tossed.iter().any(|c| c.starts_with('K')), "{tossed:?}");
+        assert_eq!(tossed.len(), 4, "{tossed:?}");
+    }
+
+    #[test]
     fn discards_that_pay_are_cashed_while_safe() {
         // Money for discards comes from the engine (`discard_money`), the policy names no
         // joker: Mail-In pays per card of its rank, Faceless Joker for 3+ faces at once.
-        let deck: Vec<Card> = standard_deck();
+        // no Aces left to draw: the Pair of Aces has no Three of a Kind to dig for, so only
+        // the money decides
+        let deck: Vec<Card> = standard_deck().into_iter().filter(|c| c.rank.0 != 14).collect();
         let decide_on = |keys: &[&str], hand: &str, discards: i64, need_mult: f64| {
             let hand = Card::parse_list(hand).unwrap();
             let mut b = sample_board(keys);

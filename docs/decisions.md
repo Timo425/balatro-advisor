@@ -244,3 +244,21 @@ its cost (about a third more samples per target race) becomes a problem.
 Proposed by the cloud session in PR #2 (as `race_keeping`, 391cd2e, reverted pending approval);
 approved by the owner 2026-10-04, then narrowed to uses where not acting keeps something (owner,
 the same day).
+
+## D9. Simulated player changes are judged by the player benchmark (proposed)
+
+**Decision.** A change to the simulated player (`sim::decide` and what it calls) runs
+`tests/player.rs` before and after: win rates on one synthetic board per play style at fixed
+targets (the 50% points of the player at 3cfb122), and the gap to the oracle (`sim::set_oracle`:
+a slow player that tries alternatives on simulated futures, never used by the advice). Every
+board that gets worse is explained. CLAUDE.md step 4.
+
+**Why.** The replay fixtures are one run's board (Spades, 4 hands, 2 discards), so they can't
+show how the player handles other play styles, and the reference measurement (D7) judges the
+search against the same player. The rulebook only chased flushes and lost 5 to 33 points
+against the oracle on boards it didn't fit (straights, trips, Misprint, held-card jokers)
+without any fixture noticing.
+
+**Revisit if** the synthetic boards stop resembling real runs (calibration of win chances
+disagrees with them), or the fixed targets drift so far that every board is won or lost.
+

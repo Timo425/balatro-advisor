@@ -1734,6 +1734,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
 
     lap("outlook");
     let best_play = play::best_play(&ctx, &lr, &spending, &tarots, &hand_order);
+    lap("best play");
 
     let tips = order_tips(run, data, &tarots);
     Analysis {
