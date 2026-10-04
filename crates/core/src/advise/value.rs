@@ -79,6 +79,10 @@ pub(super) struct LongRun<'a> {
     fill_types: Vec<u8>,
     long_spec: Spec,
     mods_now: (i64, i64, i64),
+    /// Your round by Ante 8: hand size, hands and discards on your projected board
+    /// (`long_spec_for`), what your Blue Seal cards are seen in (`seal_planets_in`); set once
+    /// your board is known (`new`), before then no board's own round adds planets
+    round: OnceLock<(i64, i64, i64)>,
     /// Your jokers weaker by Ante 8 than a typical find (assumed replaced by then)
     replaced: OnceLock<Vec<bool>>,
     /// Your board's projected score: the baseline every value is a ratio of
@@ -124,8 +128,14 @@ pub(super) struct Gain {
     pub rerolls: f64,
     pub blind_skips: f64,
     /// Consumable slots more by Ante 8 (a voucher's, Crystal Ball): the planets your Blue Seal
-    /// cards make with them (`LongRun::slot_planets`)
+    /// cards make with them (`LongRun::seal_planets_for`)
     pub consumable_slots: i64,
+    /// Hand size, hands and discards more every round by Ante 8 (a voucher's: Paint Brush,
+    /// Grabber, Wasteful): part of the projected round (`LongRun::long_spec_for`), so it's
+    /// played with them, and your Blue Seal cards are seen more (`LongRun::seal_planets_for`)
+    pub hand_size: i64,
+    pub hands: i64,
+    pub discards: i64,
 }
 
 impl Gain {
@@ -141,6 +151,11 @@ impl Gain {
             RunEvent::SkipBlind => self.blind_skips += n,
         }
         self
+    }
+
+    /// What it adds to a round: (hand size, hands, discards), as `round_mods` counts them
+    pub fn round(&self) -> (i64, i64, i64) {
+        (self.hand_size, self.hands, self.discards)
     }
 
     fn events(&self) -> [(RunEvent, f64); 3] {
@@ -329,6 +344,7 @@ impl<'a> LongRun<'a> {
             fill_types,
             long_spec,
             mods_now,
+            round: OnceLock::new(),
             replaced: OnceLock::new(),
             l0: 0.0,
             full: false,
@@ -357,7 +373,10 @@ impl<'a> LongRun<'a> {
             });
             let _ = lr.replaced.set(swap);
         }
-        lr.l0 = lr.long_score(&lr.fill_long(lr.project(&|_| true, run.dollars), None, 0.0));
+        let yours = lr.fill_long(lr.project(&|_| true, run.dollars), None, 0.0);
+        let start = lr.long_spec_for(&yours, (0, 0, 0)).start;
+        let _ = lr.round.set((start.hand_size, start.hands, start.discards));
+        lr.l0 = lr.long_score(&yours);
         let lasting = run.jokers.iter().filter(|sj| lr.lasts(sj)).count() as i64;
         lr.full = lasting >= ctx.base.joker_slots;
         lr.sell_base = if lr.full {
@@ -583,21 +602,42 @@ impl<'a> LongRun<'a> {
         c
     }
 
-    /// Hand size, hands and discards from the jokers on the projected board. Turtle Bean has
-    /// shrunk away by then (−1 hand size a round).
-    pub fn long_spec_for(&self, b: &Board) -> Spec {
+    /// Hand size, hands and discards from the jokers on the projected board, `more` (hand
+    /// size, hands, discards: a `Gain`'s) added. Turtle Bean has shrunk away by then (−1 hand
+    /// size a round).
+    pub fn long_spec_for(&self, b: &Board, more: (i64, i64, i64)) -> Spec {
         let run = self.run;
         let later = b.jokers.iter().map(|j| if j.key == "j_turtle_bean" { (0, 0, 0) } else { round_mods(j) }).fold((0, 0, 0), |a, m| (a.0 + m.0, a.1 + m.1, a.2 + m.2.max(-run.round_discards)));
         let mut sp = self.long_spec.clone();
-        sp.start.hand_size = (sp.start.hand_size + later.0 - self.mods_now.0).max(1);
-        sp.start.hands = (sp.start.hands + later.1 - self.mods_now.1).max(1);
-        sp.start.discards = (sp.start.discards + later.2 - self.mods_now.2).max(0);
+        sp.start.hand_size = (sp.start.hand_size + later.0 - self.mods_now.0 + more.0).max(1);
+        sp.start.hands = (sp.start.hands + later.1 - self.mods_now.1 + more.1).max(1);
+        sp.start.discards = (sp.start.discards + later.2 - self.mods_now.2 + more.2).max(0);
         sp
     }
 
-    /// A projected board's mean round score
+    /// A projected board's mean round score, on its own round (`long_spec_for`: the hand size,
+    /// hands and discards its jokers give), with the planets your Blue Seal cards make more (or
+    /// fewer) in that round than in yours (`seal_planets_for`)
     pub fn long_score(&self, b: &Board) -> f64 {
-        self.ctx.odds_one(b, &self.long_spec_for(b), 48).1.mean.max(1.0)
+        self.long_score_more(b, (0, 0, 0), 0)
+    }
+
+    /// `long_score` with `more` hand size, hands and discards a round and `slots` consumable
+    /// slots more (a `Gain`'s)
+    fn long_score_more(&self, b: &Board, more: (i64, i64, i64), slots: i64) -> f64 {
+        let sp = self.long_spec_for(b, more);
+        let seal = self.seal_planets_in_round(slots, &sp);
+        let score = |b: &Board| self.ctx.odds_one(b, &sp, 48).1.mean.max(1.0);
+        if seal == 0.0 {
+            return score(b);
+        }
+        // on the hand they go to (as a deck's are: `deck_round`)
+        let mut b = b.clone();
+        match self.top_hand {
+            Some(top) => Self::add_planets(&mut b, &[(top, seal)], 0.0),
+            None => Self::add_planets(&mut b, &[], seal),
+        }
+        score(&b)
     }
 
     /// Money is worth less the more you have: what limits a rich run is what the shops
@@ -707,11 +747,9 @@ impl<'a> LongRun<'a> {
     }
 
     /// What one hand fewer a round leaves of board `b`'s projected score (a share): what a
-    /// joker that spends your first hand costs (DNA)
+    /// joker that spends your first hand costs (DNA); your Blue Seals seen in fewer cards too
     fn hand_cost(&self, b: &Board) -> f64 {
-        let mut sp = self.long_spec_for(b);
-        sp.start.hands = (sp.start.hands - 1).max(1);
-        self.ctx.odds_one(b, &sp, 48).1.mean.max(1.0) / self.long_score(b)
+        self.long_score_more(b, (0, -1, 0), 0) / self.long_score(b)
     }
 
     /// A joker that changes a card each round (`round_decks`) on its projected board `b`: the
@@ -750,7 +788,8 @@ impl<'a> LongRun<'a> {
         }
     }
 
-    /// Your projected board with `g` added
+    /// Your projected board with `g` added (what it adds to a round, `Gain::round`, and its
+    /// consumable slots are in the round it's played in: `value`)
     pub fn board_with(&self, g: &Gain) -> Board {
         let mut b = self.fill_long(self.project(&|_| true, self.run.dollars + g.held), None, self.once(g.money));
         if g.all_levels != 0 {
@@ -758,17 +797,7 @@ impl<'a> LongRun<'a> {
                 *l = add_levels(*l, g.all_levels as f64);
             }
         }
-        // more slots: more planets from your Blue Seal cards, on the hand they go to (as a deck's
-        // are: `deck_round`)
-        let (mut planets, mut other) = (g.planets.clone(), g.other_planets);
-        let seal = self.slot_planets(g.consumable_slots);
-        if seal != 0.0 {
-            match self.top_hand {
-                Some(top) => planets.push((top, seal)),
-                None => other += seal,
-            }
-        }
-        Self::add_planets(&mut b, &planets, other);
+        Self::add_planets(&mut b, &g.planets, g.other_planets);
         for (ev, n) in g.events() {
             if n != 0.0 {
                 b.after(ev, n);
@@ -779,7 +808,7 @@ impl<'a> LongRun<'a> {
 
     /// What `g` makes your run worth by Ante 8, as a ratio of your board as it is
     pub fn value(&self, g: &Gain) -> f64 {
-        self.long_score(&self.board_with(g)) / self.l0
+        self.long_score_more(&self.board_with(g), g.round(), g.consumable_slots) / self.l0
     }
 
     /// One `ev` by Ante 8 (`value`); exactly ×1.00 when it changes nothing on your board
@@ -847,7 +876,7 @@ impl<'a> LongRun<'a> {
         b.stone_tally = tally(crate::model::Enhancement::Stone);
         b.driver_tally = d.iter().filter(|c| c.enhancement.is_some()).count() as i64;
         b.playing_cards = d.len() as i64;
-        let mut sp = self.long_spec_for(&b);
+        let mut sp = self.long_spec_for(&b, (0, 0, 0));
         sp.start.deck = d.to_vec();
         let bb = self.ctx.board_for(&b, &sp);
         let start = self.ctx.start_for(&sp, &bb);
@@ -927,9 +956,10 @@ impl<'a> LongRun<'a> {
     /// The planets a deck's Blue Seal cards make in a round, against yours (`seal_planets_in`
     /// in a deck of its size, with your consumable slots by Ante 8)
     pub(super) fn seal_planets_round(&self, d: &[Card]) -> f64 {
+        let Some(&round) = self.round.get() else { return 0.0 };
         let slots = self.consumable_slots(0);
         // each deck at its own size: a deck change that removes cards draws your Blue Seals more
-        self.seal_planets_in(d, slots) - self.seal_planets_in(&self.ctx.fresh_deck, slots)
+        self.seal_planets_in(d, slots, round) - self.seal_planets_in(&self.ctx.fresh_deck, slots, round)
     }
 
     /// Your consumable slots by Ante 8, `more` added (a projected quantity, as hands and hand
@@ -940,25 +970,35 @@ impl<'a> LongRun<'a> {
         (self.run.consumable_slots - negative + more).max(0)
     }
 
-    /// The planets deck `d`'s Blue Seal cards make in a round with `slots` consumable slots, the
-    /// consumables held at round end (`HELD_AT_ROUND_END`, a mix of the whole counts either side
-    /// of it) taking theirs: `seal_planets_a_round` on what's left
-    fn seal_planets_in(&self, d: &[Card], slots: i64) -> f64 {
+    /// The planets deck `d`'s Blue Seal cards make in a round with `slots` consumable slots and
+    /// `round` (hand size, hands, discards: the cards they're seen in), the consumables held at
+    /// round end (`HELD_AT_ROUND_END`, a mix of the whole counts either side of it) taking
+    /// theirs: `seal_planets_a_round` on what's left
+    fn seal_planets_in(&self, d: &[Card], slots: i64, round: (i64, i64, i64)) -> f64 {
         let blue = d.iter().filter(|c| c.seal == Some(crate::model::Seal::Blue)).count();
         let lo = HELD_AT_ROUND_END.floor();
-        let at = |held: f64| seal_planets_a_round(self.run, blue, d.len(), (slots as f64 - held).max(0.0) as usize);
+        let at = |held: f64| seal_planets_a_round(round, blue, d.len(), (slots as f64 - held).max(0.0) as usize);
         let w = HELD_AT_ROUND_END - lo;
         (1.0 - w) * at(lo) + if w > 0.0 { w * at(lo + 1.0) } else { 0.0 }
     }
 
-    /// The planets your Blue Seal cards make by Ante 8 with `more` consumable slots (3 rounds an
-    /// ante; 0 when `more` is 0)
-    pub(super) fn slot_planets(&self, more: i64) -> f64 {
-        if more == 0 {
+    /// The planets your Blue Seal cards make by Ante 8 on board `b` with `more` hand size,
+    /// hands and discards a round and `slots` consumable slots more (a `Gain`'s), against your
+    /// board: a board whose jokers make the round bigger or smaller (Juggler, Stuntman…) sees
+    /// them in more or fewer cards (3 rounds an ante; 0 when the round and slots are yours)
+    pub(super) fn seal_planets_for(&self, b: &Board, more: (i64, i64, i64), slots: i64) -> f64 {
+        self.seal_planets_in_round(slots, &self.long_spec_for(b, more))
+    }
+
+    /// `seal_planets_for` on the round `sp` starts with
+    fn seal_planets_in_round(&self, slots: i64, sp: &Spec) -> f64 {
+        let Some(&yours) = self.round.get() else { return 0.0 };
+        let round = (sp.start.hand_size, sp.start.hands, sp.start.discards);
+        if slots == 0 && round == yours {
             return 0.0;
         }
         let d = &self.ctx.fresh_deck;
-        (self.seal_planets_in(d, self.consumable_slots(more)) - self.seal_planets_in(d, self.consumable_slots(0))) * 3.0 * self.antes_left
+        (self.seal_planets_in(d, self.consumable_slots(slots), round) - self.seal_planets_in(d, self.consumable_slots(0), yours)) * 3.0 * self.antes_left
     }
 
     /// `deck_value` round by round, on rounds `range` (round i draws the same cards for every
