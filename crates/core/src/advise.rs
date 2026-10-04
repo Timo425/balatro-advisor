@@ -1470,13 +1470,24 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         }
         let Some(g) = voucher_gain(run, &after, o.cost) else { continue };
         o.long_mult = Some(lr.value(&g));
-        if g.consumable_slots != 0 {
+        let seal = lr.seal_planets_for(&lr.board_with(&g), g.round(), g.consumable_slots);
+        // (shown when it rounds to something)
+        if format!("{seal:.1}") != "0.0" && format!("{seal:.1}") != "-0.0" {
             o.note = format!(
-                "{} · about {:.1} more Blue Seal planets by Ante 8 (estimate: a consumable held at round end in {:.0}% of rounds); room to hold more tarots and planets not modelled",
+                "{} · about {seal:.1} more Blue Seal planets by Ante 8 (estimate: {}a consumable held at round end in {:.0}% of rounds)",
                 o.note,
-                lr.slot_planets(g.consumable_slots),
+                if g.round() != (0, 0, 0) { "3 cards seen a hand or discard; " } else { "" },
                 value::HELD_AT_ROUND_END * 100.0
             );
+        }
+        if g.consumable_slots != 0 {
+            o.note = format!("{}; room to hold more tarots and planets not modelled", o.note);
+        }
+        if g.round() != (0, 0, 0) {
+            // projected rounds are played out with no target (`LongRun::long_spec_for`): every
+            // hand is played, so none is left to pay at cash-out, and what a hand or discard more
+            // is worth is what the simulated player makes of it there (known gap 12)
+            o.note = format!("{}; a hand or discard more valued on rounds played out with no target (estimate: what the simulated player makes of it there); money for hands left not modelled", o.note);
         }
     }
     // Economy vouchers: money they're worth every ante (an estimate, labelled), plus their price
@@ -1608,7 +1619,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         // the money cards counted as used either way (above) don't hold a slot at round end
         let used = run.consumables.iter().filter(|c| tarots.iter().any(|t| t.key == c.key && t.money_gain > 0.0)).count() as i64;
         let free = (run.consumable_slots - run.consumables.len() as i64 + used).max(0) as usize;
-        let seal_planets = seal_planets_a_round(run, blue, run.full_deck().len(), free);
+        let seal_planets = seal_planets_a_round(round_now(run), blue, run.full_deck().len(), free);
         let gain = held + bv.reward as f64 + interest(run.dollars + held, run.interest_amount, run.interest_cap) as f64 + run.money_per_hand - rent_now + round_income;
         let play_survive = p_blind * survive_with(run.dollars + gain, k, p_boss);
         let mut play_long = money_long(gain);
@@ -2280,35 +2291,37 @@ fn shop_options(
             out.push(o);
         }
         for v in shop.vouchers.iter().filter(|v| !matches!(v.key.as_str(), "v_directors_cut" | "v_retcon")) {
+            // what it changes in a round (`plan::apply_voucher`): this round played with it, the
+            // blind's own rules on top (The Needle's one hand, The Water's no discards)
+            let mut after = run.clone();
+            crate::plan::apply_voucher(&mut after, &v.key, data);
+            let start = |r: &RunState| blind_from_start(&spec.blind_key, spec.start.target, r, &spec.start.deck).0;
+            let (with, without) = (start(&after), start(run));
+            let more = (with.hand_size - without.hand_size, with.hands - without.hands, with.discards - without.discards);
             let mut sp = spec.clone();
-            let (sim, note): (bool, String) = match v.key.as_str() {
-                "v_grabber" | "v_nacho_tong" => {
-                    sp.start.hands += 1;
-                    (true, "+1 hand every round".into())
-                }
-                "v_wasteful" | "v_recyclomancy" => {
-                    sp.start.discards += 1;
-                    (true, "+1 discard every round".into())
-                }
-                "v_paint_brush" | "v_palette" => {
-                    sp.start.hand_size += 1;
-                    (true, "+1 hand size".into())
-                }
-                "v_antimatter" => (false, "+1 joker slot: add jokers instead of selling one".into()),
-                "v_seed_money" => (false, format!("interest cap ${} → $10 per round", run.interest_cap / 5)),
-                "v_money_tree" => (false, format!("interest cap ${} → $20 per round", run.interest_cap / 5)),
-                "v_overstock_norm" | "v_overstock_plus" => (false, format!("+1 shop card slot ({} → {} per shop and reroll)", run.shop_rates.slots, run.shop_rates.slots + 1)),
-                "v_reroll_surplus" | "v_reroll_glut" => (false, "rerolls cost $2 less".into()),
-                "v_clearance_sale" => (false, "everything in the shop 25% off".into()),
-                "v_liquidation" => (false, "everything in the shop 50% off".into()),
-                "v_hieroglyph" => (false, "−1 ante, but −1 hand every round".into()),
-                "v_petroglyph" => (false, "−1 ante, but −1 discard every round".into()),
-                "v_crystal_ball" => (false, "+1 consumable slot".into()),
-                "v_tarot_merchant" | "v_tarot_tycoon" => (false, "more tarots in the shop, so fewer jokers per slot".into()),
-                "v_planet_merchant" | "v_planet_tycoon" => (false, "more planets in the shop, so fewer jokers per slot".into()),
-                "v_observatory" => (false, "planets you hold give ×1.5 mult for their hand".into()),
-                "v_telescope" => (false, "Celestial packs always contain your most played hand's planet".into()),
-                _ => (false, "not valued".into()),
+            sp.start.hand_size += more.0;
+            sp.start.hands += more.1;
+            sp.start.discards += more.2;
+            let sim = more != (0, 0, 0);
+            let note: String = match v.key.as_str() {
+                "v_grabber" | "v_nacho_tong" => "+1 hand every round".into(),
+                "v_wasteful" | "v_recyclomancy" => "+1 discard every round".into(),
+                "v_paint_brush" | "v_palette" => "+1 hand size".into(),
+                "v_antimatter" => "+1 joker slot: add jokers instead of selling one".into(),
+                "v_seed_money" => format!("interest cap ${} → $10 per round", run.interest_cap / 5),
+                "v_money_tree" => format!("interest cap ${} → $20 per round", run.interest_cap / 5),
+                "v_overstock_norm" | "v_overstock_plus" => format!("+1 shop card slot ({} → {} per shop and reroll)", run.shop_rates.slots, run.shop_rates.slots + 1),
+                "v_reroll_surplus" | "v_reroll_glut" => "rerolls cost $2 less".into(),
+                "v_clearance_sale" => "everything in the shop 25% off".into(),
+                "v_liquidation" => "everything in the shop 50% off".into(),
+                "v_hieroglyph" => "−1 ante, but −1 hand every round".into(),
+                "v_petroglyph" => "−1 ante, but −1 discard every round".into(),
+                "v_crystal_ball" => "+1 consumable slot".into(),
+                "v_tarot_merchant" | "v_tarot_tycoon" => "more tarots in the shop, so fewer jokers per slot".into(),
+                "v_planet_merchant" | "v_planet_tycoon" => "more planets in the shop, so fewer jokers per slot".into(),
+                "v_observatory" => "planets you hold give ×1.5 mult for their hand".into(),
+                "v_telescope" => "Celestial packs always contain your most played hand's planet".into(),
+                _ => "not valued".into(),
             };
             let p = if sim { ctx.odds_one(&ctx.base, &sp, ctx.opts.sims).0 } else { now };
             out.push(ShopOption { survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None, label: v.name.clone(), kind: "voucher".into(), cost: v.cost, p_win: p, note, money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: Some(v.key.clone()), desc: None });
@@ -2597,19 +2610,33 @@ fn reach_draw(pool: &[Candidate], round: usize, now: f64, cards: usize, joker_sh
 }
 
 /// What a voucher adds to your run by Ante 8, from the run before and after it (`plan::apply_voucher`),
-/// its price paid once: the changes the projection reads (consumable slots); `None` when it
-/// changes none of them. Where a voucher's run change is meant to become a `Gain`; the economy,
-/// Hone / Glow Up and Planet Merchant vouchers are still valued by their own blocks in `analyze`,
-/// and hands, hand size, discards and joker slots aren't read yet (known gap 12).
+/// its price paid once: the changes the projection reads (consumable slots; hand size, hands
+/// and discards a round); `None` when it changes none of them. Where a voucher's run change is
+/// meant to become a `Gain`; the economy, Hone / Glow Up and Planet Merchant vouchers are still
+/// valued by their own blocks in `analyze`, and joker slots aren't read yet (known gap 12).
 fn voucher_gain(before: &RunState, after: &RunState, cost: i64) -> Option<Gain> {
-    let g = Gain { money: -(cost as f64), consumable_slots: after.consumable_slots - before.consumable_slots, ..Default::default() };
-    (g.consumable_slots != 0).then_some(g)
+    let g = Gain {
+        money: -(cost as f64),
+        consumable_slots: after.consumable_slots - before.consumable_slots,
+        hand_size: after.hand_size - before.hand_size,
+        hands: after.round_hands - before.round_hands,
+        discards: after.round_discards - before.round_discards,
+        ..Default::default()
+    };
+    (g.consumable_slots != 0 || g.round() != (0, 0, 0)).then_some(g)
+}
+
+/// A run's round as it starts now: (hand size, hands, discards)
+fn round_now(run: &RunState) -> (i64, i64, i64) {
+    (run.hand_size, run.round_hands, run.round_discards)
 }
 
 /// The chance a Blue Seal card is drawn at some point in a round (then you keep it to the
 /// end): the cards you see, your hand plus about 3 per hand and discard, over the deck.
-fn seal_round_chance(run: &RunState, deck_len: usize) -> f64 {
-    let seen = run.hand_size as f64 + 3.0 * (run.round_hands + run.round_discards) as f64;
+/// `round`: hand size, hands, discards (`round_now`, or the projection's: `LongRun::round`).
+fn seal_round_chance(round: (i64, i64, i64), deck_len: usize) -> f64 {
+    let (hand_size, hands, discards) = round;
+    let seen = hand_size as f64 + 3.0 * (hands + discards) as f64;
     (seen / deck_len.max(1) as f64).min(1.0)
 }
 
@@ -2617,8 +2644,8 @@ fn seal_round_chance(run: &RunState, deck_len: usize) -> f64 {
 /// `seal_round_chance` (taken as independent) and held for its planet, at most `slots` of them
 /// (card.lua `Card:get_end_of_round_effect`: a Blue Seal makes its planet only while there's
 /// room among the consumables): the expected min(drawn, slots).
-fn seal_planets_a_round(run: &RunState, n: usize, deck_len: usize, slots: usize) -> f64 {
-    let c = seal_round_chance(run, deck_len);
+fn seal_planets_a_round(round: (i64, i64, i64), n: usize, deck_len: usize, slots: usize) -> f64 {
+    let c = seal_round_chance(round, deck_len);
     if c >= 1.0 {
         return n.min(slots) as f64;
     }
@@ -4831,11 +4858,11 @@ mod tests {
         // n Blue Seals each drawn with chance c: n·c while they always fit, E[min(drawn, slots)]
         // past that (less than min(n·c, slots): some rounds draw more than fit, some fewer)
         let r = shop_run(&[("j_joker", None, None)], &[]);
-        let c = seal_round_chance(&r, 52);
-        assert!((seal_planets_a_round(&r, 2, 52, 2) - 2.0 * c).abs() < 1e-12);
-        let three = seal_planets_a_round(&r, 3, 52, 2);
+        let c = seal_round_chance(round_now(&r), 52);
+        assert!((seal_planets_a_round(round_now(&r), 2, 52, 2) - 2.0 * c).abs() < 1e-12);
+        let three = seal_planets_a_round(round_now(&r), 3, 52, 2);
         assert!(three < (3.0 * c).min(2.0) && three > 2.0 * c, "{three} with c {c}");
-        assert_eq!(seal_planets_a_round(&r, 5, 52, 0), 0.0);
+        assert_eq!(seal_planets_a_round(round_now(&r), 5, 52, 0), 0.0);
     }
 
     #[test]
@@ -4875,12 +4902,12 @@ mod tests {
         // today's slots (`board_with` ignoring `Gain::consumable_slots`).
         let mix = [HandShare { hand: "Pair".into(), share: 1.0, played: 1.0, mean: 1.0 }];
         let (planets, slot, as_planets) = with_long_run_mix(&blue_seal_run(5), &mix, |lr| {
-            let n = lr.slot_planets(1);
+            let n = lr.seal_planets_for(&lr.board_with(&Gain::default()), (0, 0, 0), 1);
             (n, lr.value(&Gain { consumable_slots: 1, ..Default::default() }), lr.value(&Gain { planets: vec![(crate::engine::HandType::Pair, n)], ..Default::default() }))
         });
         assert!(planets > 0.5, "{planets}");
         assert!(slot > 1.0 && (slot - as_planets).abs() < 1e-12, "slot ×{slot}, its planets ×{as_planets}");
-        let (none, plain) = with_long_run_mix(&blue_seal_run(0), &mix, |lr| (lr.slot_planets(1), lr.value(&Gain { consumable_slots: 1, ..Default::default() })));
+        let (none, plain) = with_long_run_mix(&blue_seal_run(0), &mix, |lr| (lr.seal_planets_for(&lr.board_with(&Gain::default()), (0, 0, 0), 1), lr.value(&Gain { consumable_slots: 1, ..Default::default() })));
         assert_eq!(none, 0.0);
         assert!((plain - 1.0).abs() < 1e-12, "{plain}");
     }
@@ -4907,13 +4934,129 @@ mod tests {
             r.shop.as_mut().unwrap().vouchers = vec![crate::save::ItemCard { key: "v_crystal_ball".into(), name: "Crystal Ball".into(), set: "Voucher".into(), cost: 10, edition: None, card: None }];
             let a = analyze(&r, GameData::bundled(), None, &quick());
             let o = a.options.iter().find(|o| o.key.as_deref() == Some("v_crystal_ball")).unwrap();
-            (o.long_mult.expect("Crystal Ball gets a By Ante 8 value"), o.note.clone(), with_long_run(&r, |lr| lr.slot_planets(1)))
+            (o.long_mult.expect("Crystal Ball gets a By Ante 8 value"), o.note.clone(), with_long_run(&r, |lr| lr.seal_planets_for(&lr.board_with(&Gain::default()), (0, 0, 0), 1)))
         };
         let ((seals, note, planets), (none, _, _)) = (long(5), long(0));
         assert!(seals > none, "five Blue Seals ×{seals:.3}, none ×{none:.3}");
         assert!(none < 1.0, "{none}");
         // the planets it's valued on are the projection's one slot more
         assert!(planets > 1.0 && note.contains(&format!("about {planets:.1} more Blue Seal planets")), "{planets:.2}: {note}");
+    }
+
+    /// Voucher `key` offered alone in `r`'s shop at $10: its By Ante 8 value and note
+    fn voucher_option(r: &RunState, key: &str) -> (Option<f64>, String) {
+        let data = GameData::bundled();
+        let mut r = r.clone();
+        r.shop.as_mut().unwrap().vouchers = vec![crate::save::ItemCard { key: key.into(), name: data.name(key).to_string(), set: "Voucher".into(), cost: 10, edition: None, card: None }];
+        let a = analyze(&r, data, None, &quick());
+        let o = a.options.iter().find(|o| o.key.as_deref() == Some(key)).unwrap();
+        (o.long_mult, o.note.clone())
+    }
+
+    /// A round voucher (`plan::apply_voucher`: hand size, hands or discards every round) by Ante
+    /// 8: `voucher_gain` carries its change as `more` (hand size, hands, discards), the projected
+    /// round is played with it (`value` against the same board scored on a round with `more`
+    /// added by hand), and the shop gives it that value with its price. Returns the value of
+    /// `more` without a price, and the shop's.
+    fn round_voucher_by_ante_8(key: &str, more: (i64, i64, i64)) -> (f64, f64) {
+        let r = shop_run(&[("j_joker", None, None), ("j_joker", None, None)], &[]);
+        let mut after = r.clone();
+        assert!(crate::plan::apply_voucher(&mut after, key, GameData::bundled()));
+        let g = voucher_gain(&r, &after, 10).unwrap_or_else(|| panic!("{key}: a Gain"));
+        assert_eq!(g.round(), more, "{key}");
+        // a main hand, so the price buys something (its levels)
+        let mix = [HandShare { hand: "Pair".into(), share: 1.0, played: 1.0, mean: 1.0 }];
+        let (v, by_hand, price) = with_long_run_mix(&r, &mix, |lr| {
+            let b = lr.board_with(&Gain::default());
+            let mut sp = lr.long_spec_for(&b, (0, 0, 0));
+            sp.start.hand_size += more.0;
+            sp.start.hands += more.1;
+            sp.start.discards += more.2;
+            let by_hand = lr.ctx.odds_one(&b, &sp, 48).1.mean / lr.l0;
+            (lr.value(&Gain { hand_size: more.0, hands: more.1, discards: more.2, ..Default::default() }), by_hand, lr.value(&g))
+        });
+        assert!((v - by_hand).abs() < 1e-12, "{key}: ×{v} against ×{by_hand} on the round by hand");
+        assert!(price < v, "{key}: its price is paid: ×{price} against ×{v}");
+        let (long, note) = voucher_option(&r, key);
+        let long = long.unwrap_or_else(|| panic!("{key} gets a By Ante 8 value: {note}"));
+        eprintln!("{key}: ×{v:.4} without its price, ×{price:.4} with it (LongRun), shop ×{long:.4}");
+        (v, long)
+    }
+
+    #[test]
+    fn grabber_is_worth_a_hand_more_every_round_by_ante_8() {
+        // card.lua apply_to_run: Grabber +1 hand a round. Fails without `Gain::hands` read by
+        // the projection or filled by `voucher_gain` (it had only this round's odds).
+        let (v, shop) = round_voucher_by_ante_8("v_grabber", (0, 1, 0));
+        // a fifth hand on four: about a quarter more score in a round played out
+        assert!(v > 1.15 && v < 1.3, "×{v}");
+        assert!(shop > 1.0, "×{shop}");
+    }
+
+    #[test]
+    fn wasteful_is_worth_a_discard_more_every_round_by_ante_8() {
+        // Wasteful +1 discard a round: a dig more. Fails without `Gain::discards` read by the
+        // projection or filled by `voucher_gain`.
+        // What a discard more scores is the simulated player's in rounds played out with no
+        // target: on two plain Jokers about nothing (×1.00 on 400 rounds; known gap 12), so no
+        // more than that it costs nothing
+        let (v, _) = round_voucher_by_ante_8("v_wasteful", (0, 0, 1));
+        assert!(v > 0.98, "×{v}");
+    }
+
+    #[test]
+    fn paint_brush_is_worth_a_card_more_in_hand_by_ante_8() {
+        // Paint Brush +1 hand size. Fails without `Gain::hand_size` read by the projection or
+        // filled by `voucher_gain`.
+        let (v, _) = round_voucher_by_ante_8("v_paint_brush", (1, 0, 0));
+        assert!(v > 1.01, "×{v}");
+    }
+
+    #[test]
+    fn a_joker_that_grows_the_round_sees_your_blue_seals_as_a_voucher_that_does() {
+        // Juggler (+1 hand size while owned) and Paint Brush (+1 hand size) make the same round:
+        // the same Blue Seal planets by Ante 8, on whatever board is scored (`long_score`: a
+        // joker you'd buy, one you'd sell). Fails if only a `Gain`'s round counts.
+        let mix = [HandShare { hand: "Pair".into(), share: 1.0, played: 1.0, mean: 1.0 }];
+        with_long_run_mix(&blue_seal_run(5), &mix, |lr| {
+            let yours = lr.board_with(&Gain::default());
+            let mut juggler = yours.clone();
+            juggler.jokers.push(Joker::from_key("j_juggler", GameData::bundled()).unwrap());
+            let (j, brush) = (lr.seal_planets_for(&juggler, (0, 0, 0), 0), lr.seal_planets_for(&yours, (1, 0, 0), 0));
+            assert!(j > 0.1 && (j - brush).abs() < 1e-12, "Juggler {j}, Paint Brush {brush}");
+            let raw = lr.ctx.odds_one(&juggler, &lr.long_spec_for(&juggler, (0, 0, 0)), 48).1.mean.max(1.0);
+            assert!(lr.long_score(&juggler) > raw, "its planets are on the board scored");
+            assert_eq!(lr.seal_planets_for(&yours, (0, 0, 0), 0), 0.0);
+        });
+    }
+
+    #[test]
+    fn blue_seals_are_seen_in_the_projected_round() {
+        // A round with more cards seen (a hand, a discard, a card in hand more) draws your Blue
+        // Seals more often: more planets by Ante 8, none without Blue Seals. And the cards seen
+        // are the projected round's, not today's: Turtle Bean's hand size has shrunk away by
+        // then (`long_spec_for`), so a run holding it now sees its Blue Seals as one without.
+        // Fails if `seal_round_chance` reads today's round in the projection.
+        let mut seals = blue_seal_run(5);
+        for more in [(1, 0, 0), (0, 1, 0), (0, 0, 1)] {
+            let p = with_long_run(&seals, |lr| lr.seal_planets_for(&lr.board_with(&Gain::default()), more, 0));
+            assert!(p > 0.1, "{more:?}: {p}");
+            assert_eq!(with_long_run(&blue_seal_run(0), |lr| lr.seal_planets_for(&lr.board_with(&Gain::default()), more, 0)), 0.0);
+        }
+        let deck = |r: &RunState| {
+            let mut d = r.full_deck();
+            for c in d.iter_mut().filter(|c| c.rank.0 == 2).take(3) {
+                c.seal = Some(crate::model::Seal::Blue);
+            }
+            d.sort_by_key(Card::order_key);
+            d
+        };
+        let plain = with_long_run(&seals, |lr| lr.seal_planets_round(&deck(&seals)));
+        seals.jokers.push(shop_run(&[("j_turtle_bean", None, None)], &[]).jokers.remove(0));
+        seals.joker_slots += 1;
+        seals.hand_size += 5;
+        let bean = with_long_run(&seals, |lr| lr.seal_planets_round(&deck(&seals)));
+        assert!(plain > 0.0 && (bean - plain).abs() < 1e-12, "Turtle Bean now: {bean}, without: {plain}");
     }
 
     #[test]
