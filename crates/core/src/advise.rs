@@ -3386,12 +3386,29 @@ fn target_race(
     hand: &[usize],
     avoid: Option<usize>,
 ) -> Option<TargetRanking> {
-    target_race_priced(lr, outcomes, min, max, deck, hand, avoid, 1.0, value::TAROT_ROUNDS)
+    target_race_priced(lr, outcomes, min, max, deck, hand, avoid, UsePrice::default())
 }
 
-/// `target_race` where a use costs something the deck doesn't show: every set but no target
-/// is worth `use_factor` of its deck's value (DNA: the hand a copy spends); raced on rounds
-/// `from`.. (after the rounds the pick is valued on)
+/// What a target search's use costs or lasts beyond the deck it leaves (`target_race_priced`)
+#[derive(Debug, Clone, Copy)]
+struct UsePrice {
+    /// Every set but no target is worth this share of its deck's value (DNA: the hand a copy
+    /// spends that round)
+    factor: f64,
+    /// The share of the run its Blue Seal planets come for (a change made later in the run
+    /// makes them only from then on)
+    planets_share: f64,
+    /// The first round raced on (after the rounds the pick is valued on)
+    from: usize,
+}
+
+impl Default for UsePrice {
+    fn default() -> UsePrice {
+        UsePrice { factor: 1.0, planets_share: 1.0, from: value::TAROT_ROUNDS }
+    }
+}
+
+/// `target_race` where a use is priced (`UsePrice`)
 #[allow(clippy::too_many_arguments)]
 fn target_race_priced(
     lr: &value::LongRun,
@@ -3401,8 +3418,7 @@ fn target_race_priced(
     deck: &[Card],
     hand: &[usize],
     avoid: Option<usize>,
-    use_factor: f64,
-    from: usize,
+    price: UsePrice,
 ) -> Option<TargetRanking> {
     use crate::engine::consumable::{self, CardEffect};
     let hand: Vec<usize> = hand.iter().copied().filter(|&i| outcomes.iter().all(|&(_, e)| consumable::can_target(e, &deck[i]))).collect();
@@ -3432,12 +3448,12 @@ fn target_race_priced(
         return (!sets.is_empty()).then(|| TargetRanking { samples: vec![vec![]; sets.len()], sets, as_good: 1 });
     }
     let budget = |done: usize| TARGET_BUDGET.iter().find(|b| done <= b.0).map_or(TARGET_BUDGET[TARGET_BUDGET.len() - 1].1, |b| b.1);
-    let after = from;
+    let after = price.from;
     // the money a set's cards earn becomes income once, from its first batch (not again on
     // each batch's own noise)
     // (per outcome)
     let incomes: Vec<Vec<std::sync::Mutex<Option<f64>>>> = sets.iter().map(|_| outcomes.iter().map(|_| std::sync::Mutex::new(None)).collect()).collect();
-    let race = compare::race_keeping(
+    let race = compare::race(
         sets.len(),
         TARGET_FIRST,
         TARGET_MAX,
@@ -3446,20 +3462,18 @@ fn target_race_priced(
             let mut total = vec![0.0; r.len()];
             for (k, &(w, e)) in outcomes.iter().enumerate() {
                 let mut inc = incomes[i][k].lock().unwrap();
-                let (v, used) = lr.deck_rounds(&consumable::apply(e, deck, &sets[i]), 0.0, after + r.start..after + r.end, *inc);
+                let (v, used) = lr.deck_rounds(&consumable::apply(e, deck, &sets[i]), 0.0, after + r.start..after + r.end, *inc, price.planets_share);
                 *inc = Some(used);
                 total.iter_mut().zip(v).for_each(|(t, x)| *t += w * x);
             }
             if !sets[i].is_empty() {
-                total.iter_mut().for_each(|t| *t *= use_factor);
+                total.iter_mut().for_each(|t| *t *= price.factor);
             }
             total
         },
         |x| *x,
         |x| *x,
         |x, y| key(&sets[y]).cmp(&key(&sets[x])),
-        // no target (your deck as it is) leaves only on a finding, never on the budget
-        sets.iter().position(|v| v.is_empty()),
     );
     // each set's estimate: the leader's mean plus its paired difference to the leader on the
     // rounds both were sampled on (sets cut early have fewer, other rounds than the leader)
@@ -4611,12 +4625,13 @@ mod tests {
     #[test]
     fn dna_copies_what_the_search_picks_in_the_hand_you_hold() {
         // Baron (held Kings ×1.5) and four Steel Kings (held ×1.5 more), each with a Blue Seal,
-        // and a Purple Seal 2♣ (its tarot isn't simulated: a 2 to the projection). Every round
-        // whose sampled hand holds a Steel King copies one; the Purple Seal 2♣ (which the old
-        // fixed ranking, any seal above any enhancement, put first after Blue Seals) never.
+        // and a Purple Seal 2♣. Each round's copy comes from that round's hand; a round holding
+        // a Steel King nearly always copies one; a round without one mostly copies nothing (a
+        // copy spends a hand: priced in the race), where a fixed ranking (any seal, then any
+        // enhancement, then rank) copies something every round. The race's leader is taken as
+        // for a consumable, so a plain card leading on noise is copied now and then.
         // Fails if DNA's card comes from a ranking or a pick that ignores the hand, instead of
-        // `target_race` on that round's hand, or if a copy's hand isn't priced (plain cards then
-        // lead some rounds on noise).
+        // `target_race` on that round's hand, or if the planets are the last deck's all run.
         use crate::model::{Enhancement, Seal, Suit};
         let mut r = shop_run(&[("j_baron", None, None), ("j_joker", None, None)], &[]);
         for c in r.draw_pile.iter_mut() {
@@ -4638,26 +4653,57 @@ mod tests {
         assert_eq!(decks.len(), 1 + 19, "a deck after each of 3 × 6.5 antes' rounds");
         let king = |c: &Card| c.rank.0 == 13 && c.enhancement == Some(Enhancement::Steel);
         let salt = (GameData::bundled().center("j_dna").unwrap().order as u64) << 16;
-        let (mut copies, mut first_held) = (0, None);
+        let (mut with_king, mut king_copied, mut without, mut other_copied) = (0, 0, 0, 0);
         for (i, w) in decks.windows(2).enumerate() {
             let hand = sample_hands(w[0].len(), r.hand_size, 1, quick().seed, salt + i as u64).remove(0);
             let mut left = w[0].clone();
             let added: Vec<Card> = w[1].iter().filter(|c| match left.iter().position(|x| x == *c) { Some(k) => { left.remove(k); false } None => true }).copied().collect();
             let labels = added.iter().map(Card::label).collect::<Vec<_>>();
-            // one card at most, a Steel King from that round's hand, never the Purple Seal 2♣
-            assert!(added.len() <= 1 && added.iter().all(|c| king(c) && hand.iter().any(|&k| w[0][k].same_kind(c))), "round {i}: {labels:?}");
-            copies += added.len();
-            if first_held.is_none() && hand.iter().any(|&k| king(&w[0][k])) {
-                first_held = Some(added.len());
+            assert!(added.len() <= 1 && added.iter().all(|c| hand.iter().any(|&k| w[0][k].same_kind(c))), "round {i}: {labels:?} not from its hand");
+            if hand.iter().any(|&k| king(&w[0][k])) {
+                with_king += 1;
+                king_copied += added.iter().filter(|c| king(c)).count();
+            } else {
+                without += 1;
+                other_copied += added.len();
             }
         }
-        assert_eq!(first_held, Some(1), "the first round with a Steel King in hand copies one");
-        assert!(copies >= 3, "Steel Kings copied: {copies}");
+        assert!(4 * king_copied >= 3 * with_king && with_king >= 3, "Steel Kings copied in {king_copied} of {with_king} rounds holding one");
+        assert!(2 * other_copied <= without, "a card copied in {other_copied} of {without} rounds without a Steel King");
         // valued as the deck it ends with, its Blue Seal planets counted round by round as the
         // copies come: worth more than your deck, less than that deck held all run (whose
-        // planets count every round). Fails if the planets are the last deck's all run.
+        // planets count every round)
         assert!(change.value > 1.0 && change.value < end, "by Ante 8 ×{:.3}, the last deck all run ×{end:.3}", change.value);
-        assert!(change.share > 0.0 && change.share <= 1.0);
+        assert!(change.share > 0.0 && change.share <= 1.0 && change.hand < 1.0);
+    }
+
+    #[test]
+    fn a_priced_use_is_weighed_against_changing_nothing() {
+        // A copy of a plain card changes little; priced at half its deck's value (a cost the
+        // deck doesn't show), changing nothing leads. Fails if the race ignores the price.
+        let r = shop_run(&[("j_joker", None, None)], &[]);
+        let mut deck = crate::bench::standard_deck();
+        deck.sort_by_key(Card::order_key);
+        let hand: Vec<usize> = (0..8).map(|k| k * 6).collect();
+        let copy = [(1.0, crate::engine::consumable::CardEffect::Copies(1))];
+        let price = UsePrice { factor: 0.5, ..UsePrice::default() };
+        let t = with_long_run(&r, |lr| target_race_priced(lr, &copy, 1, 1, &deck, &hand, None, price)).unwrap();
+        assert!(t.sets[0].is_empty(), "{:?}", t.sets[0]);
+    }
+
+    #[test]
+    fn blue_seal_planets_come_for_the_share_of_the_run_asked() {
+        // A deck with more Blue Seals than yours, its planets for none of the run against all
+        // of it (a change made late makes them only from then on): fewer planets, a lower value
+        // on every round. Fails if `deck_rounds` ignores the share.
+        let r = shop_run(&[("j_joker", None, None)], &[]);
+        let mut deck = crate::bench::standard_deck();
+        deck.sort_by_key(Card::order_key);
+        deck.iter_mut().step_by(13).for_each(|c| c.seal = Some(crate::model::Seal::Blue));
+        let mix = [HandShare { hand: "Pair".into(), share: 1.0, played: 1.0, mean: 1.0 }];
+        let (none, all) = with_long_run_mix(&r, &mix, |lr| (lr.deck_rounds(&deck, 0.0, 0..32, None, 0.0).0, lr.deck_rounds(&deck, 0.0, 0..32, None, 1.0).0));
+        let mean = |v: &[f64]| v.iter().sum::<f64>() / v.len() as f64;
+        assert!(mean(&none) < mean(&all), "{:.3} vs {:.3}", mean(&none), mean(&all));
     }
 
     #[test]
