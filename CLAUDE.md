@@ -58,7 +58,9 @@ change to how the advice decides or values things follows these steps, in order:
    after, and judge it by how close each pick is to the best, not by which fixture flips. A
    change to the simulated player: `cargo test --release --test player -- --ignored
    --nocapture` (win rates at fixed targets, and the gap to the oracle) before and after;
-   explain every board that gets worse.
+   explain every board that gets worse. Without `tests/fixtures/private/` (a cloud session
+   has only tracked files), prove values with tests that build the state in code, and say in
+   the PR which fixture checks weren't run: they're run locally before merging.
 5. **Review.** Spawn the `advisor-reviewer` agent (`.claude/agents/`) on the change. It hasn't
    seen your reasoning, which is why it finds what you missed. Apply what holds up (check its
    claims in the code first; it can be wrong), then run it once more on the fixes. Skip only
