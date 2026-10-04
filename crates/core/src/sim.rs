@@ -847,7 +847,8 @@ struct Aim {
 /// Every hand worth digging for, from the game's own hand rules (hand.lua `get_flush`,
 /// `get_straight`, `get_X_same`, with Four Fingers, Shortcut and Smeared Joker): a flush of
 /// each suit with 2+ cards of it; each straight with all but 1 or 2 of its ranks in hand
-/// (one card of each kept); one more of a rank you hold 2+ of (Three, Four, Five of a Kind);
+/// (one card of each kept), and each straight flush (a suit's flush part with a straight,
+/// hand.lua `evaluate_poker_hand`); one more of a rank you hold 2+ of (Three, Four, Five of a Kind);
 /// a Full House from Two Pair. Hands already made aren't aims (the best play has them).
 fn aims(b: &Board, hand: &[Card], deck: &[Card]) -> Vec<Aim> {
     use HandType::*;
@@ -865,50 +866,43 @@ fn aims(b: &Board, hand: &[Card], deck: &[Card]) -> Vec<Aim> {
     }
     // a card's rank as straights see it (Stone cards have none); an Ace is also 1
     let id = |c: &Card, i: usize| hand::card_id(c, i);
-    // of two copies of a rank, the one of the suit you hold most (a straight flush stays
-    // possible), then the first
-    let suit_count = |i: usize| (0..hand.len()).filter(|&k| suited(&hand[k], hand[i].suit)).count();
-    let by_rank = |r: i32| -> Option<usize> {
-        let r = if r == 1 { 14 } else { r };
-        (0..hand.len()).filter(|&i| id(&hand[i], i) == r).max_by_key(|&i| (suit_count(i), std::cmp::Reverse(i)))
-    };
+    let ids: Vec<i32> = (0..hand.len()).map(|i| id(&hand[i], i)).collect();
+    let deck_ids: Vec<i32> = deck.iter().enumerate().map(|(i, c)| id(c, 100 + i)).collect();
     let runs = straight_runs(need, f.shortcut);
-    // runs keeping the same cards and missing one rank are one draw (open-ended: either
-    // end's rank completes it); one missing two ranks needs both
-    let rank_fits = |m: i32| -> Vec<Card> {
+    let rank_fits = |m: i32, ok: &dyn Fn(&Card) -> bool| -> Vec<Card> {
         let m = if m == 1 { 14 } else { m };
-        deck.iter().enumerate().filter(|(i, c)| id(c, 100 + i) == m).map(|(_, c)| *c).collect()
+        deck.iter().zip(&deck_ids).filter(|(c, r)| **r == m && ok(c)).map(|(c, _)| *c).collect()
     };
+    // of two copies of a rank, the one that counts as the suit you hold most (a Wild counts as
+    // every suit), so a straight flush stays possible
+    let held_of = Suit::ALL.map(|s| hand.iter().filter(|c| suited(c, s)).count());
+    let pref: Vec<usize> = hand.iter().map(|c| Suit::ALL.iter().zip(held_of).filter(|(s, _)| suited(c, **s)).map(|(_, n)| n).max().unwrap_or(0)).collect();
+    let copy_of = |r: i32, ok: &dyn Fn(&Card) -> bool| -> Option<usize> {
+        let r = if r == 1 { 14 } else { r };
+        (0..hand.len()).filter(|&i| ids[i] == r && ok(&hand[i])).max_by_key(|&i| (pref[i], std::cmp::Reverse(i)))
+    };
+    let any = |_: &Card| true;
+    // runs keeping the same cards and missing one rank are one draw (open-ended: either end's
+    // rank completes it); one missing two ranks needs both
     let mut straights: Vec<(Vec<usize>, Vec<i32>, Vec<Vec<i32>>)> = vec![];
     for run in runs.iter() {
-        let mut keep: Vec<usize> = run.iter().filter_map(|&r| by_rank(r)).collect();
+        let mut keep: Vec<usize> = run.iter().filter_map(|&r| copy_of(r, &any)).collect();
         keep.sort();
         keep.dedup();
-        let missing: Vec<i32> = run.iter().copied().filter(|&r| by_rank(r).is_none()).map(|r| if r == 1 { 14 } else { r }).collect();
-        match missing.len() {
-            1 => match straights.iter_mut().find(|s| s.0 == keep) {
-                Some(s) => {
-                    if !s.1.contains(&missing[0]) {
-                        s.1.push(missing[0]);
-                    }
-                }
-                None => straights.push((keep, missing, vec![])),
-            },
-            2 => match straights.iter_mut().find(|s| s.0 == keep) {
-                Some(s) => {
-                    if !s.2.contains(&missing) {
-                        s.2.push(missing);
-                    }
-                }
-                None => straights.push((keep, vec![], vec![missing])),
-            },
+        let missing: Vec<i32> = run.iter().copied().filter(|&r| copy_of(r, &any).is_none()).map(|r| if r == 1 { 14 } else { r }).collect();
+        let s = straights.iter().position(|s| s.0 == keep);
+        match (missing.len(), s) {
+            (1, Some(s)) if !straights[s].1.contains(&missing[0]) => straights[s].1.push(missing[0]),
+            (1, None) => straights.push((keep, missing, vec![])),
+            (2, Some(s)) if !straights[s].2.contains(&missing) => straights[s].2.push(missing),
+            (2, None) => straights.push((keep, vec![], vec![missing])),
             _ => {}
         }
     }
     let one_away: Vec<Vec<usize>> = straights.iter().filter(|s| !s.1.is_empty()).map(|s| s.0.clone()).collect();
     for (keep, one, two) in straights {
         if !one.is_empty() {
-            let g: Vec<Card> = one.iter().flat_map(|&m| rank_fits(m)).collect();
+            let g: Vec<Card> = one.iter().flat_map(|&m| rank_fits(m, &any)).collect();
             if !g.is_empty() {
                 out.push(Aim { hand: Straight, keep, groups: vec![(g, 1)] });
             }
@@ -916,16 +910,98 @@ fn aims(b: &Board, hand: &[Card], deck: &[Card]) -> Vec<Aim> {
         }
         // two ranks away: the likeliest way to fill it (the most cards that fit), unless these
         // cards are part of a straight one rank away (that draw is the likelier one)
-        if one_away.iter().any(|k: &Vec<usize>| keep.iter().all(|i| k.contains(i))) {
+        if one_away.iter().any(|k| keep.iter().all(|i| k.contains(i))) {
             continue;
         }
         let best = two
             .iter()
-            .map(|m| m.iter().map(|&r| (rank_fits(r), 1)).collect::<Vec<(Vec<Card>, usize)>>())
+            .map(|m| m.iter().map(|&r| (rank_fits(r, &any), 1)).collect::<Vec<(Vec<Card>, usize)>>())
             .filter(|g| g.iter().all(|x| !x.0.is_empty()))
             .max_by_key(|g| g.iter().map(|x| x.0.len()).product::<usize>());
         if let Some(groups) = best {
             out.push(Aim { hand: Straight, keep, groups });
+        }
+    }
+    // Straight flushes, by the game's rule: a flush part and a straight part found apart
+    // (hand.lua `evaluate_poker_hand`; with Four Fingers each is 4 of the 5 cards played), so a
+    // play holds `need` cards of the suit and at most 5 − need others. For each suit and
+    // straight: the suit's copy of each rank, another only within that allowance, else the rank
+    // is drawn; then the suit's other cards in hand, as many as there's room for (the flush
+    // part). One card away, its fits are the cards that make a straight flush with what's kept
+    // (`hand::detect`); two away, a card of each missing rank, as many of them of the suit as
+    // the flush part still lacks.
+    let off_suit = 5 - need;
+    for s in Suit::ALL {
+        let in_suit = |c: &Card| suited(c, s);
+        // the play needs `need` cards of the suit, and digs bring at most 2 of them
+        if hand.iter().filter(|c| in_suit(c)).count() + 2 < need {
+            continue;
+        }
+        let mut plans: Vec<(Vec<usize>, Vec<i32>)> = vec![];
+        for run in runs.iter() {
+            let (mut keep, mut missing, mut off) = (vec![], vec![], 0);
+            for &r in run.iter() {
+                if let Some(i) = copy_of(r, &in_suit) {
+                    keep.push(i);
+                } else if let Some(i) = copy_of(r, &any).filter(|_| off < off_suit) {
+                    keep.push(i);
+                    off += 1;
+                } else {
+                    missing.push(if r == 1 { 14 } else { r });
+                }
+            }
+            if missing.len() > 2 || keep.len() + missing.len() > 5 {
+                continue;
+            }
+            // the flush part: the suit's other cards, the highest, while there's room
+            let mut more: Vec<usize> = (0..hand.len()).filter(|i| !keep.contains(i) && in_suit(&hand[*i])).collect();
+            more.sort_by(|&a, &c| hand[c].rank.chips().total_cmp(&hand[a].rank.chips()).then(a.cmp(&c)));
+            more.truncate(5 - keep.len() - missing.len().max(1));
+            keep.extend(more);
+            keep.sort();
+            keep.dedup();
+            if !plans.iter().any(|p| p.0 == keep && p.1 == missing) {
+                plans.push((keep, missing));
+            }
+        }
+        let mut one_away: Vec<Vec<usize>> = vec![];
+        for (keep, _) in plans.iter().filter(|p| p.1.len() <= 1) {
+            // open-ended: both ends keep the same cards, one plan
+            if one_away.contains(keep) {
+                continue;
+            }
+            let kept: Vec<Card> = keep.iter().map(|&i| hand[i]).collect();
+            let makes = |c: &Card| {
+                let mut v = kept.clone();
+                v.push(*c);
+                hand::detect(&v, f).contains(StraightFlush)
+            };
+            let g: Vec<Card> = deck.iter().filter(|c| makes(c)).copied().collect();
+            // already made (no card needed) isn't a plan; a made straight short of the suit is
+            if !g.is_empty() && !hand::detect(&kept, f).contains(StraightFlush) {
+                one_away.push(keep.clone());
+                out.push(Aim { hand: StraightFlush, keep: keep.clone(), groups: vec![(g, 1)] });
+            }
+        }
+        for (keep, missing) in plans.iter().filter(|p| p.1.len() == 2) {
+            if one_away.iter().any(|k| keep.iter().all(|i| k.contains(i))) {
+                continue;
+            }
+            let suited_draws = need.saturating_sub(keep.iter().filter(|&&i| in_suit(&hand[i])).count());
+            let ways: &[[bool; 2]] = match suited_draws {
+                0 => &[[false, false]],
+                1 => &[[true, false], [false, true]],
+                2 => &[[true, true]],
+                _ => continue,
+            };
+            let best = ways
+                .iter()
+                .map(|w| missing.iter().zip(w).map(|(&r, &su)| (if su { rank_fits(r, &in_suit) } else { rank_fits(r, &any) }, 1)).collect::<Vec<(Vec<Card>, usize)>>())
+                .filter(|g| g.iter().all(|x| !x.0.is_empty()))
+                .max_by_key(|g| g.iter().map(|x| x.0.len()).product::<usize>());
+            if let Some(groups) = best {
+                out.push(Aim { hand: StraightFlush, keep: keep.clone(), groups });
+            }
         }
     }
     let rank_of = |r: i32| -> Vec<usize> { (0..hand.len()).filter(|&i| id(&hand[i], i) == r).collect() };
@@ -1012,8 +1088,10 @@ fn straight_runs(need: usize, shortcut: bool) -> std::rc::Rc<Vec<Vec<i32>>> {
 /// The chance of completing `aim` with `digs` digs, each throwing away up to 5 cards not in
 /// it. A flush: the exact draw (`flush_odds`: the suited cards you draw stay, so later digs
 /// see fewer). Others: the cards the digs would see if each refilled every slot outside the
-/// aim (up to 5), taken as one draw from the pile (`draw_odds`): a little generous, as a card
-/// that completes part of it stays in hand.
+/// aim (up to 5), taken as one draw from the pile (`draw_odds`). Generous, as if every dig
+/// went to this plan: the player decides again after each one, and a long shot that turns up
+/// a lesser hand (a straight on the way to a straight flush) is often left for it; measured in
+/// known gap 6.
 fn aim_odds(aim: &Aim, pile: usize, size: usize, digs: usize) -> f64 {
     if aim.hand == HandType::Flush {
         let (fits, n) = &aim.groups[0];
@@ -1712,6 +1790,48 @@ mod tests {
         let tossed: Vec<String> = v.iter().map(|&i| hand[i].label()).collect();
         assert!(!tossed.iter().any(|c| c.starts_with('K')), "{tossed:?}");
         assert_eq!(tossed.len(), 4, "{tossed:?}");
+    }
+
+    #[test]
+    fn a_straight_flush_is_a_plan_of_its_own() {
+        // A straight flush is its own hand (scored at its own level): the game finds its flush
+        // part and straight part apart (hand.lua `evaluate_poker_hand`)
+        let plans = |cards: &str, keys: &[&str]| -> Vec<(Vec<usize>, Vec<String>)> {
+            let hand = Card::parse_list(cards).unwrap();
+            let deck: Vec<Card> = standard_deck().into_iter().filter(|c| !hand.iter().any(|h| h.same_kind(c))).collect();
+            aims(&sample_board(keys), &hand, &deck)
+                .into_iter()
+                .filter(|a| a.hand == HandType::StraightFlush && a.groups.len() == 1)
+                .map(|a| {
+                    let mut v: Vec<String> = a.groups[0].0.iter().map(|c| c.label()).collect();
+                    v.sort();
+                    (a.keep, v)
+                })
+                .collect()
+        };
+        // four Hearts in a row: the Hearts at either end complete it
+        assert_eq!(plans("5H 6H 7H 8H KS QC 3D 2C", &[]), [(vec![0, 1, 2, 3], vec!["4♥".to_string(), "9♥".into()])]);
+        // a Wild card is every suit
+        assert_eq!(plans("5H 6H 7S:wild 8H KS QC 3D 2C", &[]), [(vec![0, 1, 2, 3], vec!["4♥".to_string(), "9♥".into()])]);
+        // Smeared Joker: Diamonds are Hearts too, each plan once (not once per suit); the 3♦
+        // makes another (3♦ 5♥ 6♥ 7♥ and a red 4)
+        let smeared = plans("5H 6H 7H 8H KS QC 3D 2C", &["j_smeared"]);
+        assert_eq!(smeared.iter().filter(|p| p.0 == [0, 1, 2, 3]).collect::<Vec<_>>(), [&(vec![0, 1, 2, 3], vec!["4♥".to_string(), "4♦".into(), "9♥".into(), "9♦".into()])]);
+        assert_eq!(smeared.len(), 2, "{smeared:?}");
+        // Four Fingers: three Hearts in a row and another Heart are the flush part, so a 4 or an
+        // 8 of any suit makes the straight part (5♥ 6♥ 7♥ 8♠ 2♥ is a straight flush)
+        // a made straight on a straight flush draw: the off-suit 8 goes, the 8♥ is drawn
+        // (without Four Fingers every card of the play is of the suit)
+        assert_eq!(plans("5H 6H 7H 8S 9H KS QC 2D", &[]), [(vec![0, 1, 2, 4], vec!["8♥".to_string()])]);
+        // with Four Fingers a made straight with three Hearts in it needs any Heart (or an 8♥
+        // for the 8♠, the same draw)
+        let made = plans("5H 6S 7H 8H KS QC JD 2C", &["j_four_fingers"]);
+        assert!(made.iter().any(|p| p.0 == [0, 1, 2, 3] && p.1.len() == 13 - 3), "{made:?}");
+        let ff = plans("5H 6H 7H 2H KS QC JD 9C", &["j_four_fingers"]);
+        let any: Vec<String> = ["4♠", "4♥", "4♣", "4♦", "8♠", "8♥", "8♣", "8♦"].iter().map(|s| s.to_string()).collect();
+        let mut any = any;
+        any.sort();
+        assert!(ff.contains(&(vec![0, 1, 2, 3], any)), "{ff:?}");
     }
 
     #[test]

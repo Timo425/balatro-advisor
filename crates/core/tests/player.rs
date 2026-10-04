@@ -66,7 +66,7 @@ fn rounds() -> Vec<(String, Board, sim::RoundStart)> {
 }
 
 /// The player's win rate on each board's round (3cfb122: 50.1% on average, by construction;
-/// with dig plans: 62.5%).
+/// with dig plans: 62.5%; with straight flush plans: 63.75%).
 #[test]
 #[ignore]
 fn player_win_rates() {
