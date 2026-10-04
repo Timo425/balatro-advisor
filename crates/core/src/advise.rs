@@ -1460,6 +1460,25 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         o.long_mult = Some(lr.value(&Gain { money: -(o.cost as f64), planets: main, other_planets: other, ..Default::default() }));
         o.note = format!("{} · about {extra:.0} more planets by Ante 8 (estimate)", o.note);
     }
+    // Vouchers by what they change in the run (`plan::apply_voucher`, card.lua
+    // `Card:apply_to_run`), as a `Gain` with their price (`voucher_gain`), as every option
+    for o in options.iter_mut().filter(|o| o.kind == "voucher" && o.long_mult.is_none()) {
+        let Some(key) = o.key.clone() else { continue };
+        let mut after = run.clone();
+        if !crate::plan::apply_voucher(&mut after, &key, data) {
+            continue;
+        }
+        let Some(g) = voucher_gain(run, &after, o.cost) else { continue };
+        o.long_mult = Some(lr.value(&g));
+        if g.consumable_slots != 0 {
+            o.note = format!(
+                "{} · about {:.1} more Blue Seal planets by Ante 8 (estimate: a consumable held at round end in {:.0}% of rounds); room to hold more tarots and planets not modelled",
+                o.note,
+                lr.slot_planets(g.consumable_slots),
+                value::HELD_AT_ROUND_END * 100.0
+            );
+        }
+    }
     // Economy vouchers: money they're worth every ante (an estimate, labelled), plus their price
     // Interest at the money you'd typically hold over the next ante: halfway between now and
     // saving one ante's income (blind rewards, interest, a hand's money), for Seed Money and
@@ -1777,6 +1796,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             "Blind odds use a simple play/discard policy, not perfect play.",
             "Card order within a play: +Mult cards first, Glass/Polychrome last.",
             "Scaling jokers keep their current value; growth isn't projected.",
+            "Blue Seal planets by Ante 8 assume a consumable held at round end in a measured share of rounds (one run).",
         ],
         save_age_secs: run.snapshot.age_secs,
         live: run.snapshot.live,
@@ -2574,6 +2594,16 @@ fn reach_draw(pool: &[Candidate], round: usize, now: f64, cards: usize, joker_sh
         total += best;
     }
     total / trials as f64
+}
+
+/// What a voucher adds to your run by Ante 8, from the run before and after it (`plan::apply_voucher`),
+/// its price paid once: the changes the projection reads (consumable slots); `None` when it
+/// changes none of them. Where a voucher's run change is meant to become a `Gain`; the economy,
+/// Hone / Glow Up and Planet Merchant vouchers are still valued by their own blocks in `analyze`,
+/// and hands, hand size, discards and joker slots aren't read yet (known gap 12).
+fn voucher_gain(before: &RunState, after: &RunState, cost: i64) -> Option<Gain> {
+    let g = Gain { money: -(cost as f64), consumable_slots: after.consumable_slots - before.consumable_slots, ..Default::default() };
+    (g.consumable_slots != 0).then_some(g)
 }
 
 /// The chance a Blue Seal card is drawn at some point in a round (then you keep it to the
@@ -4812,7 +4842,8 @@ mod tests {
     fn blue_seal_planets_stop_at_your_consumable_slots() {
         // A Blue Seal makes its planet only while a consumable slot is free (card.lua
         // get_end_of_round_effect): a deck where half the cards have one and a deck where all do
-        // both fill your 2 slots nearly every round (3 rounds an ante), and a single one is under
+        // both fill the slots your other consumables leave free at round end (2 less
+        // `HELD_AT_ROUND_END`) nearly every round (3 rounds an ante), and a single one is under
         // the cap. Fails without the cap in `seal_planets` (DNA's copies, Cryptid, Trance…).
         let r = shop_run(&[("j_joker", None, None)], &[]);
         let deck = |every: usize| -> Vec<Card> {
@@ -4822,9 +4853,67 @@ mod tests {
             d
         };
         let (one, half, all, antes) = with_long_run(&r, |lr| (lr.seal_planets(&deck(52)), lr.seal_planets(&deck(2)), lr.seal_planets(&deck(1)), lr.antes_left));
-        let cap = 2.0 * 3.0 * antes;
+        let cap = (2.0 - value::HELD_AT_ROUND_END) * 3.0 * antes;
         assert!((half - cap).abs() < 1e-3 * cap && (all - cap).abs() < 1e-3 * cap, "half {half:.2}, all {all:.2}, cap {cap:.2}");
         assert!(one > 0.0 && one < 3.0 * antes, "one Blue Seal: {one:.2}");
+    }
+
+    /// A run in the shop with `blue` Blue Seal cards in a standard deck (the 9s first)
+    fn blue_seal_run(blue: usize) -> RunState {
+        let mut r = shop_run(&[("j_joker", None, None)], &[]);
+        for c in r.draw_pile.iter_mut().filter(|c| c.rank.0 == 9 || c.rank.0 == 10).take(blue) {
+            c.seal = Some(crate::model::Seal::Blue);
+        }
+        r
+    }
+
+    #[test]
+    fn a_consumable_slot_more_is_worth_the_planets_your_blue_seals_make_with_it() {
+        // Five Blue Seals draw more than 2 slots hold in many rounds: one slot more makes some
+        // more planets by Ante 8, worth what those planets are worth on your main hand (one
+        // measure: `Gain`). Without Blue Seals it changes nothing. Fails if the projection keeps
+        // today's slots (`board_with` ignoring `Gain::consumable_slots`).
+        let mix = [HandShare { hand: "Pair".into(), share: 1.0, played: 1.0, mean: 1.0 }];
+        let (planets, slot, as_planets) = with_long_run_mix(&blue_seal_run(5), &mix, |lr| {
+            let n = lr.slot_planets(1);
+            (n, lr.value(&Gain { consumable_slots: 1, ..Default::default() }), lr.value(&Gain { planets: vec![(crate::engine::HandType::Pair, n)], ..Default::default() }))
+        });
+        assert!(planets > 0.5, "{planets}");
+        assert!(slot > 1.0 && (slot - as_planets).abs() < 1e-12, "slot ×{slot}, its planets ×{as_planets}");
+        let (none, plain) = with_long_run_mix(&blue_seal_run(0), &mix, |lr| (lr.slot_planets(1), lr.value(&Gain { consumable_slots: 1, ..Default::default() })));
+        assert_eq!(none, 0.0);
+        assert!((plain - 1.0).abs() < 1e-12, "{plain}");
+    }
+
+    #[test]
+    fn a_negative_consumables_slot_isnt_one_you_keep() {
+        // A Negative consumable adds a slot only while you hold it (card.lua set_edition /
+        // remove): the slots by Ante 8 are the others
+        let mut r = blue_seal_run(3);
+        r.consumable_slots = 3;
+        r.consumables = vec![crate::save::ItemCard { key: "c_moon".into(), name: "The Moon".into(), set: "Tarot".into(), cost: 3, edition: Some(Edition::Negative), card: None }];
+        assert_eq!(with_long_run(&r, |lr| lr.consumable_slots(0)), 2);
+        r.consumables[0].edition = None;
+        assert_eq!(with_long_run(&r, |lr| lr.consumable_slots(1)), 4);
+    }
+
+    #[test]
+    fn crystal_ball_is_worth_the_blue_seal_planets_it_makes_room_for() {
+        // Crystal Ball (+1 consumable slot, card.lua apply_to_run) goes through the projection:
+        // with five Blue Seals it's worth more than its price alone, without any it's its price
+        // (below keeping the money). Fails while it has no By Ante 8 value.
+        let long = |blue: usize| {
+            let mut r = blue_seal_run(blue);
+            r.shop.as_mut().unwrap().vouchers = vec![crate::save::ItemCard { key: "v_crystal_ball".into(), name: "Crystal Ball".into(), set: "Voucher".into(), cost: 10, edition: None, card: None }];
+            let a = analyze(&r, GameData::bundled(), None, &quick());
+            let o = a.options.iter().find(|o| o.key.as_deref() == Some("v_crystal_ball")).unwrap();
+            (o.long_mult.expect("Crystal Ball gets a By Ante 8 value"), o.note.clone(), with_long_run(&r, |lr| lr.slot_planets(1)))
+        };
+        let ((seals, note, planets), (none, _, _)) = (long(5), long(0));
+        assert!(seals > none, "five Blue Seals ×{seals:.3}, none ×{none:.3}");
+        assert!(none < 1.0, "{none}");
+        // the planets it's valued on are the projection's one slot more
+        assert!(planets > 1.0 && note.contains(&format!("about {planets:.1} more Blue Seal planets")), "{planets:.2}: {note}");
     }
 
     #[test]
