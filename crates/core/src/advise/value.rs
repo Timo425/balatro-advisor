@@ -647,12 +647,7 @@ impl<'a> LongRun<'a> {
         for r in 0..rounds {
             let d = decks.last().expect("your deck first");
             let held = sample_hands(d.len(), run.hand_size, 1, ctx.opts.seed, salt + r as u64).remove(0);
-            let price = UsePrice {
-                factor: 1.0 - (1.0 - hand) / (3.0 * self.antes_left),
-                planets_share: (rounds - r) as f64 / rounds as f64,
-                from: TAROT_ROUNDS + r * TARGET_MAX,
-            };
-            let pick = target_race_priced(self, &[(1.0, effect)], min, max, d, &held, None, price).map(|t| t.sets[0].clone()).filter(|v| !v.is_empty());
+            let pick = target_race_priced(self, &[(1.0, effect)], min, max, d, &held, None, self.round_price(r, rounds, hand)).map(|t| t.sets[0].clone()).filter(|v| !v.is_empty());
             let mut next = match pick {
                 Some(set) => {
                     changed += 1;
@@ -674,6 +669,17 @@ impl<'a> LongRun<'a> {
         let out = std::sync::Arc::new(RoundChange { decks, value, share: changed as f64 / rounds.max(1) as f64, hand });
         cache.insert(key.to_string(), out.clone());
         Some(out)
+    }
+
+    /// What a change made in round `r` of `rounds` costs and lasts (`round_decks`), each a flow:
+    /// that round's share of a hand fewer every round (`hand`: `hand_cost`), the Blue Seal
+    /// planets from that round on; raced on rounds of its own
+    pub(super) fn round_price(&self, r: usize, rounds: usize, hand: f64) -> UsePrice {
+        UsePrice {
+            factor: 1.0 - (1.0 - hand) / (3.0 * self.antes_left),
+            planets_share: (rounds - r) as f64 / rounds.max(1) as f64,
+            from: TAROT_ROUNDS + r * TARGET_MAX,
+        }
     }
 
     /// What one hand fewer a round leaves of board `b`'s projected score (a share): what a

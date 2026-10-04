@@ -3390,7 +3390,7 @@ fn target_race(
 }
 
 /// What a target search's use costs or lasts beyond the deck it leaves (`target_race_priced`)
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 struct UsePrice {
     /// Every set but no target is worth this share of its deck's value (DNA: the hand a copy
     /// spends that round)
@@ -4626,12 +4626,14 @@ mod tests {
     fn dna_copies_what_the_search_picks_in_the_hand_you_hold() {
         // Baron (held Kings ×1.5) and four Steel Kings (held ×1.5 more), each with a Blue Seal,
         // and a Purple Seal 2♣. Each round's copy comes from that round's hand; a round holding
-        // a Steel King nearly always copies one; a round without one mostly copies nothing (a
-        // copy spends a hand: priced in the race), where a fixed ranking (any seal, then any
+        // a Steel King nearly always copies one; a round without one mostly copies nothing (no
+        // card the race finds better than none), where a fixed ranking (any seal, then any
         // enhancement, then rank) copies something every round. The race's leader is taken as
-        // for a consumable, so a plain card leading on noise is copied now and then.
+        // for a consumable, so a plain card leading on noise is copied now and then. Each
+        // round's copy is that round's race, priced by `round_price`.
         // Fails if DNA's card comes from a ranking or a pick that ignores the hand, instead of
-        // `target_race` on that round's hand, or if the planets are the last deck's all run.
+        // `target_race` on that round's hand at its price, or if the planets are the last
+        // deck's all run.
         use crate::model::{Enhancement, Seal, Suit};
         let mut r = shop_run(&[("j_baron", None, None), ("j_joker", None, None)], &[]);
         for c in r.draw_pile.iter_mut() {
@@ -4644,15 +4646,32 @@ mod tests {
             }
         }
         let mix = [HandShare { hand: "Pair".into(), share: 1.0, played: 1.0, mean: 1.0 }];
-        let (change, end) = with_long_run_mix(&r, &mix, |lr| {
+        let salt = (GameData::bundled().center("j_dna").unwrap().order as u64) << 16;
+        let (change, end, races) = with_long_run_mix(&r, &mix, |lr| {
             let c = lr.round_decks("j_dna").unwrap();
             let end = lr.deck_value(c.decks.last().unwrap(), 0.0, value::TAROT_ROUNDS);
-            (c, end)
+            // each round's race again, at the price `round_price` gives that round
+            let n = c.decks.len() - 1;
+            let price = lr.round_price(3, n, c.hand);
+            assert!(price.factor < 1.0 && price.planets_share < 1.0 && price.from > value::TAROT_ROUNDS, "{price:?}");
+            let copy = [(1.0, crate::engine::consumable::CardEffect::Copies(1))];
+            let races: Vec<Vec<usize>> = (0..n)
+                .map(|i| {
+                    let hand = sample_hands(c.decks[i].len(), r.hand_size, 1, quick().seed, salt + i as u64).remove(0);
+                    target_race_priced(lr, &copy, 1, 1, &c.decks[i], &hand, None, lr.round_price(i, n, c.hand)).unwrap().sets[0].clone()
+                })
+                .collect();
+            (c, end, races)
         });
         let decks = &change.decks;
+        for (i, set) in races.iter().enumerate() {
+            let expect = crate::engine::consumable::apply(crate::engine::consumable::CardEffect::Copies(1), &decks[i], set);
+            let mut expect = expect;
+            expect.sort_by_key(Card::order_key);
+            assert_eq!(expect, decks[i + 1], "round {i}: the deck isn't that round's race");
+        }
         assert_eq!(decks.len(), 1 + 19, "a deck after each of 3 × 6.5 antes' rounds");
         let king = |c: &Card| c.rank.0 == 13 && c.enhancement == Some(Enhancement::Steel);
-        let salt = (GameData::bundled().center("j_dna").unwrap().order as u64) << 16;
         let (mut with_king, mut king_copied, mut without, mut other_copied) = (0, 0, 0, 0);
         for (i, w) in decks.windows(2).enumerate() {
             let hand = sample_hands(w[0].len(), r.hand_size, 1, quick().seed, salt + i as u64).remove(0);
@@ -4675,6 +4694,21 @@ mod tests {
         // planets count every round)
         assert!(change.value > 1.0 && change.value < end, "by Ante 8 ×{:.3}, the last deck all run ×{end:.3}", change.value);
         assert!(change.share > 0.0 && change.share <= 1.0 && change.hand < 1.0);
+    }
+
+    #[test]
+    fn dna_pays_its_hand_in_the_rounds_it_copies() {
+        // DNA's board pays a hand fewer in the share of rounds it copies: below the board as it
+        // is times its deck change. Fails if `round_effect_long` doesn't charge the hand.
+        let mut r = shop_run(&[("j_baron", None, None), ("j_joker", None, None)], &[]);
+        r.draw_pile.iter_mut().filter(|c| c.rank.0 == 13).for_each(|c| c.enhancement = Some(crate::model::Enhancement::Steel));
+        let (v, without_hand, change) = with_long_run(&r, |lr| {
+            let b = lr.fill_long(lr.project(&|_| true, r.dollars), None, 0.0);
+            let c = lr.round_decks("j_dna").unwrap();
+            (lr.round_effect_long(b.clone(), "j_dna"), lr.long_score(&b) * c.value, c)
+        });
+        assert!(change.share > 0.0 && change.hand < 1.0, "share {}, hand {}", change.share, change.hand);
+        assert!(v < without_hand, "{v:.0} vs {without_hand:.0}");
     }
 
     #[test]
