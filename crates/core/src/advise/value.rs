@@ -630,7 +630,9 @@ impl<'a> LongRun<'a> {
     /// on your projected board) and the planets its Blue Seal cards make (from the round
     /// it's made). The deck is valued as every projection is (`value.rs` header): the deck it
     /// ends with by Ante 8, as a grower's state by then (`deck_value`). Computed once per
-    /// joker. `None`: not such a joker.
+    /// joker. Offered now (in the shop or an open pack), a race every round; otherwise (the dig
+    /// list's pool) one an ante, its pick made for each of the ante's rounds: about a third of
+    /// the cost, a coarser deck. `None`: not such a joker.
     pub fn round_decks(&self, key: &str) -> Option<std::sync::Arc<RoundChange>> {
         use crate::engine::consumable;
         let (effect, min, max) = consumable::round_card_effect(key)?;
@@ -642,21 +644,29 @@ impl<'a> LongRun<'a> {
         let salt = self.data.center(key).map_or(0, |c| c.order as u64) << 16;
         let rounds = (3.0 * self.antes_left).floor() as usize;
         let hand = self.hand_cost(&self.fill_long(self.project(&|_| true, run.dollars), None, 0.0));
+        let offered = run.shop.iter().flat_map(|s| &s.jokers).any(|j| j.key == key) || run.open_pack.iter().any(|c| c.key == key);
+        let stride = if offered { 1 } else { 3 };
         let mut decks = vec![ctx.fresh_deck.clone()];
         let mut changed = 0usize;
-        for r in 0..rounds {
-            let d = decks.last().expect("your deck first");
+        for r in (0..rounds).step_by(stride) {
+            let d = decks.last().expect("your deck first").clone();
             let held = sample_hands(d.len(), run.hand_size, 1, ctx.opts.seed, salt + r as u64).remove(0);
-            let pick = target_race_priced(self, &[(1.0, effect)], min, max, d, &held, None, self.round_price(r, rounds, hand)).map(|t| t.sets[0].clone()).filter(|v| !v.is_empty());
-            let mut next = match pick {
-                Some(set) => {
-                    changed += 1;
-                    consumable::apply(effect, d, &set)
-                }
-                None => d.clone(),
-            };
-            next.sort_by_key(Card::order_key);
-            decks.push(next);
+            let pick = target_race_priced(self, &[(1.0, effect)], min, max, &d, &held, None, self.round_price(r, rounds, hand)).map(|t| t.sets[0].clone()).filter(|v| !v.is_empty());
+            // the pick made in each round this race stands for (the targets' places don't move:
+            // a change adds at the end)
+            let mut cur = d;
+            for _ in 0..stride.min(rounds - r) {
+                let mut next = match &pick {
+                    Some(set) => {
+                        changed += 1;
+                        consumable::apply(effect, &cur, set)
+                    }
+                    None => cur.clone(),
+                };
+                cur = next.clone();
+                next.sort_by_key(Card::order_key);
+                decks.push(next);
+            }
         }
         // the rounds sampled stand for the 3 an ante left (a share of the last one included)
         let scale = 3.0 * self.antes_left / rounds.max(1) as f64;
@@ -897,8 +907,9 @@ impl<'a> LongRun<'a> {
     pub(super) fn seal_planets_round(&self, d: &[Card]) -> f64 {
         let blue = |deck: &[Card]| deck.iter().filter(|c| c.seal == Some(crate::model::Seal::Blue)).count();
         let slots = self.run.consumable_slots.max(0) as usize;
-        let round = |n: usize| seal_planets_a_round(self.run, n, d.len(), slots);
-        round(blue(d)) - round(blue(&self.ctx.fresh_deck))
+        // each deck at its own size: a deck change that removes cards draws your Blue Seals more
+        let round = |deck: &[Card]| seal_planets_a_round(self.run, blue(deck), deck.len(), slots);
+        round(d) - round(&self.ctx.fresh_deck)
     }
 
     /// `deck_value` round by round, on rounds `range` (round i draws the same cards for every

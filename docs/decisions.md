@@ -222,8 +222,9 @@ fixtures stop covering the kinds of states the search gets wrong.
 deck as it is), the status quo is never cut by the budget, only by a finding (clearly worse,
 or shown equal). When it ends among the options as good as the leader (shown equal, or still
 undecided at the cap), it's kept, so the change isn't made, if not acting keeps something for
-later (a consumable stays held). A chance that's gone if unused (DNA's copy each round) takes
-the leader, as before. `compare::race_keeping`, `target_race_priced` (`UsePrice::keeps`).
+later (a consumable stays held). This is the use-now decision on the hand on screen: valued on
+sampled hands, where nothing is kept for, the best set is taken. A chance that's gone if unused
+(DNA's copy each round) takes the leader, as before. `compare::race_keeping`, `target_race_priced` (`UsePrice::keeps`).
 
 **Why.** Every target search took its leader, so a set that led on noise was used: DNA copied
 a plain card now and then, a pack card could be credited with a consumable on it, and the

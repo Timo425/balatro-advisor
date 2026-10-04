@@ -1586,7 +1586,9 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         // a Blue Seal held then makes a planet (and grows Constellation)
         let round_income: f64 = run.jokers.iter().filter(|j| !j.debuff).map(|j| income_per_ante(&j.key, &j.ability, run, 1.0) / 3.0).sum();
         let blue = run.full_deck().iter().filter(|c| c.seal == Some(crate::model::Seal::Blue)).count();
-        let free = (run.consumable_slots - run.consumables.len() as i64).max(0) as usize;
+        // the money cards counted as used either way (above) don't hold a slot at round end
+        let used = run.consumables.iter().filter(|c| tarots.iter().any(|t| t.key == c.key && t.money_gain > 0.0)).count() as i64;
+        let free = (run.consumable_slots - run.consumables.len() as i64 + used).max(0) as usize;
         let seal_planets = seal_planets_a_round(run, blue, run.full_deck().len(), free);
         let gain = held + bv.reward as f64 + interest(run.dollars + held, run.interest_amount, run.interest_cap) as f64 + run.money_per_hand - rent_now + round_income;
         let play_survive = p_blind * survive_with(run.dollars + gain, k, p_boss);
@@ -3198,7 +3200,10 @@ fn tarot_values(
         if hand_cards.len() < min {
             return Some(if (0..deck.len()).filter(|&i| ih[i]).count() >= min { TarotValue { note: format!("{what}: no card in hand it can go on"), ..base } } else { base });
         }
-        let TargetRanking { sets: mut ranked, as_good: k, .. } = target_race(lr, &outcomes, min, max, deck, &hand_cards, None)?;
+        // D8's tie rule is for the use-now decision on the hand on screen; a sampled hand has no
+        // later the consumable is kept for, so the best set is taken
+        let price = UsePrice { keeps: real, ..UsePrice::default() };
+        let TargetRanking { sets: mut ranked, as_good: k, .. } = target_race_priced(lr, &outcomes, min, max, deck, &hand_cards, None, price)?;
         ranked.truncate(k);
         // this round's odds with the cards changed (copies come into your hand), over the
         // outcomes by their chances
@@ -4495,6 +4500,28 @@ mod tests {
     }
 
     #[test]
+    fn a_smaller_deck_draws_your_blue_seals_more() {
+        // Three Blue Seal cards; destroying five plain cards (Immolate) leaves the same seals in
+        // a smaller deck, drawn more often: more of their planets a round, not none
+        let mut r = shop_run(&[("j_joker", None, None)], &[]);
+        for c in r.draw_pile.iter_mut().filter(|c| c.rank.0 == 9).take(3) {
+            c.seal = Some(crate::model::Seal::Blue);
+        }
+        let more = with_long_run(&r, |lr| {
+            let mut d: Vec<Card> = r.full_deck();
+            d.sort_by_key(Card::order_key);
+            let mut gone = 0;
+            d.retain(|c| {
+                let drop = gone < 5 && c.seal.is_none() && c.rank.0 == 2;
+                gone += drop as usize;
+                !drop
+            });
+            lr.seal_planets_round(&d)
+        });
+        assert!(more > 0.0, "{more}");
+    }
+
+    #[test]
     fn glass_counts_for_the_antes_it_lasts() {
         assert!((glass_presence(0.0) - 1.0).abs() < 1e-9);
         let (one, four) = (glass_presence(1.0), glass_presence(4.5));
@@ -4663,7 +4690,7 @@ mod tests {
         // `target_race` on that round's hand at its price, or if the planets are the last
         // deck's all run.
         use crate::model::{Enhancement, Seal, Suit};
-        let mut r = shop_run(&[("j_baron", None, None), ("j_joker", None, None)], &[]);
+        let mut r = shop_run(&[("j_baron", None, None), ("j_joker", None, None)], &["j_dna"]);
         for c in r.draw_pile.iter_mut() {
             if c.rank.0 == 13 {
                 c.enhancement = Some(Enhancement::Steel);
@@ -4728,7 +4755,7 @@ mod tests {
     fn dna_pays_its_hand_in_the_rounds_it_copies() {
         // DNA's board pays a hand fewer in the share of rounds it copies: below the board as it
         // is times its deck change. Fails if `round_effect_long` doesn't charge the hand.
-        let mut r = shop_run(&[("j_baron", None, None), ("j_joker", None, None)], &[]);
+        let mut r = shop_run(&[("j_baron", None, None), ("j_joker", None, None)], &["j_dna"]);
         r.draw_pile.iter_mut().filter(|c| c.rank.0 == 13).for_each(|c| c.enhancement = Some(crate::model::Enhancement::Steel));
         let (v, without_hand, change) = with_long_run(&r, |lr| {
             let b = lr.fill_long(lr.project(&|_| true, r.dollars), None, 0.0);
