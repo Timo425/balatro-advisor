@@ -5,7 +5,7 @@
 use serde::Serialize;
 
 use crate::data::GameData;
-use crate::engine::{BlindRules, Board, Joker};
+use crate::engine::{Board, Joker};
 use crate::model::{Card, Edition};
 use crate::save::RunState;
 use crate::sim::{self, RoundRules, RoundStart};
@@ -173,7 +173,7 @@ pub fn run(run: &RunState, data: &GameData, plan: &Plan, sims: usize, seed: u64)
                     target: cb.map_or(bl.target, |c| c.target),
                 }
             } else {
-                b.blind = BlindRules { key: bl.key.clone(), ..Default::default() };
+                b.new_round(&bl.key);
                 let mut deck = full.to_vec();
                 let f = b.rule_flags();
                 rules.apply(&mut deck, f.smeared, f.pareidolia);

@@ -539,9 +539,10 @@ fn non_scoring_note(key: &str) -> Option<&'static str> {
         "j_juggler" | "j_troubadour" | "j_turtle_bean" | "j_merry_andy" | "j_drunkard" | "j_burglar" => {
             "Changes hand size / hands / discards: simulated"
         }
-        "j_golden" | "j_rocket" | "j_cloud_9" | "j_delayed_grat" | "j_to_the_moon" | "j_satellite" => {
+        "j_golden" | "j_rocket" | "j_cloud_9" | "j_to_the_moon" | "j_satellite" => {
             "Economy: money per round, not a score (heuristic)"
         }
+        "j_delayed_grat" => "Economy: pays for discards never used, simulated in this round's play; not counted as income in the long run",
         "j_egg" | "j_gift" => "Economy: grows sell value (heuristic)",
         "j_credit_card" => "Economy: lets you go to -$20",
         "j_chaos" => "Utility: 1 free reroll per shop",
@@ -552,9 +553,10 @@ fn non_scoring_note(key: &str) -> Option<&'static str> {
             "Deck-fixing: changes your cards over time (only this hand's effect is simulated)"
         }
         "j_8_ball" | "j_superposition" | "j_seance" | "j_riff_raff" | "j_vagabond" | "j_hallucination"
-        | "j_cartomancer" | "j_astronomer" | "j_burnt" | "j_perkeo" | "j_invisible" | "j_diet_cola" => {
+        | "j_cartomancer" | "j_astronomer" | "j_perkeo" | "j_invisible" | "j_diet_cola" => {
             "Utility: makes cards/jokers, value not simulated"
         }
+        "j_burnt" => "Levels the hand of each round's first discard: simulated in this round's play; levels over the run not projected",
         "j_luchador" | "j_chicot" => "Utility: disables boss effects (not simulated)",
         _ => return None,
     })
@@ -653,10 +655,7 @@ impl Ctx<'_> {
     fn board_for(&self, b: &Board, spec: &Spec) -> Board {
         let mut b = b.clone();
         if !spec.in_progress {
-            b.blind = crate::engine::BlindRules { key: spec.blind_key.clone(), ..Default::default() };
-            for l in &mut b.levels {
-                l.played_this_round = 0;
-            }
+            b.new_round(&spec.blind_key);
         }
         b
     }

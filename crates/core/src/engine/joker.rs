@@ -213,6 +213,15 @@ pub struct Extra {
     /// Turtle Bean's current extra hand size (shrinks each round)
     #[serde(default)]
     pub h_size: f64,
+    /// Green Joker's Mult lost per discard
+    #[serde(default)]
+    pub discard_sub: f64,
+    /// Yorick: discards per ×Mult step
+    #[serde(default)]
+    pub discards: f64,
+    /// Faceless Joker: face cards a discard needs to pay
+    #[serde(default)]
+    pub faces: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -233,6 +242,9 @@ pub struct Joker {
     pub caino_xmult: f64,
     pub hands_played_at_create: f64,
     pub to_do_hand: Option<HandType>,
+    /// Yorick: discards left until its next ×Mult step (`ability.yorick_discards`)
+    #[serde(default)]
+    pub yorick_discards: f64,
 }
 
 fn f(v: &serde_json::Value, k: &str) -> f64 {
@@ -249,7 +261,8 @@ impl Joker {
                 chips: f(e, "chips"),
                 chip_mod: f(e, "chip_mod"),
                 mult: f(e, "mult"),
-                xmult: f(e, "Xmult"),
+                // Yorick's is lowercase
+                xmult: if e.get("Xmult").is_some() { f(e, "Xmult") } else { f(e, "xmult") },
                 s_mult: f(e, "s_mult"),
                 suit: e.get("suit").and_then(|s| s.as_str()).and_then(Suit::from_name),
                 odds: f(e, "odds"),
@@ -261,10 +274,15 @@ impl Joker {
                 min: f(e, "min"),
                 max: f(e, "max"),
                 h_size: f(e, "h_size"),
+                discard_sub: f(e, "discard_sub"),
+                discards: f(e, "discards"),
+                faces: f(e, "faces"),
             },
             _ => Extra::default(),
         };
         let x_mult = ability.get("x_mult").and_then(serde_json::Value::as_f64).unwrap_or(1.0);
+        // a fresh Yorick starts at `extra.discards` (card.lua `Card:set_ability`)
+        let yorick_discards = ability.get("yorick_discards").and_then(serde_json::Value::as_f64).unwrap_or(extra.discards);
         Joker {
             key: key.to_string(),
             kind: Kind::from_key(key),
@@ -281,6 +299,7 @@ impl Joker {
             caino_xmult: ability.get("caino_xmult").and_then(serde_json::Value::as_f64).unwrap_or(1.0),
             hands_played_at_create: f(ability, "hands_played_at_create"),
             to_do_hand: ability.get("to_do_poker_hand").and_then(|t| t.as_str()).and_then(HandType::from_name),
+            yorick_discards,
         }
     }
 

@@ -95,6 +95,95 @@ fn burning_discards_pays_only_when_the_board_scores_more_without_them() {
 }
 
 #[test]
+fn a_discard_changes_the_board_as_the_game_does() {
+    // state_events.lua discard_cards_from_highlighted, card.lua pre_discard / discard contexts
+    let cards = |s: &str| Card::parse_list(s).unwrap();
+    let get = |b: &engine::Board, k: &str| b.jokers.iter().find(|j| j.key == k).cloned().unwrap();
+    let mut b = sample_board(&["j_green_joker", "j_ramen", "j_castle", "j_hit_the_road", "j_yorick", "j_blueprint", "j_burnt"]);
+    b.castle_suit = Some(balatro_advisor::model::Suit::Spades);
+    b.jokers[0].mult = 5.0;
+    b.jokers[4].yorick_discards = 2.0;
+    let mut jack = cards("JS JH:stone 4S:wild 9D JC");
+    jack[4].debuff = true;
+    assert_eq!(b.discard(&jack), 0.0);
+    assert_eq!(get(&b, "j_green_joker").mult, 4.0, "Green Joker: -1 once a discard, not a card");
+    assert!((get(&b, "j_ramen").x_mult - 1.95).abs() < 1e-9, "Ramen: -0.01 a card");
+    assert_eq!(get(&b, "j_castle").extra.chips, 6.0, "Castle: a Spade and a Wild card, not the debuffed Jack");
+    assert_eq!(get(&b, "j_hit_the_road").x_mult, 1.5, "Hit the Road: a Jack, not a Stone or debuffed one");
+    let y = get(&b, "j_yorick");
+    assert_eq!((y.x_mult, y.yorick_discards), (2.0, 20.0), "Yorick: a step every 23 cards");
+    // the round's first discard: Burnt Joker and the Blueprint copying it each level the
+    // discarded cards' hand (from level 1)
+    let h = engine::hand::detect(&jack, b.rule_flags()).hand;
+    assert_eq!(b.levels[h as usize].level, 3, "Burnt Joker and its copy level {h:?} on the first discard");
+    assert_eq!((b.discards_used, b.discards_left), (1, 2));
+    b.discard(&cards("2D"));
+    assert_eq!(b.levels[h as usize].level, 3, "only the round's first discard levels a hand");
+    assert_eq!(get(&b, "j_green_joker").mult, 3.0);
+
+    // Ramen is eaten once it would reach x1; Green Joker stops at 0
+    let mut r = sample_board(&["j_ramen", "j_green_joker"]);
+    r.jokers[0].x_mult = 1.02;
+    r.discard(&cards("2S 3S 4S"));
+    assert!(r.jokers.iter().all(|j| j.key != "j_ramen"));
+    r.discard(&cards("2S"));
+    assert_eq!(get(&r, "j_green_joker").mult, 0.0);
+
+    // Trading Card: $3 for a first discard of one card, which is destroyed
+    let mut t = sample_board(&["j_trading", "j_blueprint"]);
+    let deck = t.playing_cards;
+    assert_eq!(engine::discard_money(&t, &cards("2S 3S")), 0.0);
+    assert_eq!(t.discard(&cards("2S")), 3.0, "a copy doesn't pay");
+    assert_eq!((t.playing_cards, t.dollars), (deck - 1, 3.0));
+    assert_eq!(t.discard(&cards("3S")), 0.0, "only the round's first discard");
+}
+
+#[test]
+fn a_hand_leaves_its_jokers_for_the_next() {
+    // the joker state the hand changed carries on, then the `after` context
+    let mut b = sample_board(&["j_green_joker", "j_ice_cream", "j_selzer", "j_ride_the_bus"]);
+    b.jokers[2].extra.n = 1.0;
+    let played = Card::parse_list("2S 2H").unwrap();
+    let o = engine::score(&b, &played, &[], &mut Unlucky, false);
+    b.after_hand(&o);
+    assert_eq!(b.jokers[0].mult, 1.0, "Green Joker +1 a hand");
+    assert_eq!(b.jokers[1].extra.chips, 95.0, "Ice Cream -5 a hand");
+    assert!(b.jokers.iter().all(|j| j.key != "j_selzer"), "Seltzer's last use");
+    assert_eq!(b.jokers[2].mult, 1.0, "Ride the Bus +1 without a face");
+    assert_eq!(b.levels[engine::HandType::Pair as usize].played_this_round, 1);
+    assert_eq!(b.hands_played, 1);
+}
+
+#[test]
+fn a_new_round_resets_what_lasts_a_round() {
+    // state_events.lua new_round; card.lua end_of_round: Hit the Road back to x1
+    let mut b = sample_board(&["j_hit_the_road", "j_green_joker"]);
+    b.discard(&Card::parse_list("JS").unwrap());
+    let o = engine::score(&b, &Card::parse_list("2S 2H").unwrap(), &[], &mut Unlucky, false);
+    b.after_hand(&o);
+    b.new_round("bl_small");
+    assert_eq!((b.jokers[0].x_mult, b.discards_used, b.blind.key.as_str()), (1.0, 0, "bl_small"));
+    assert!(b.levels.iter().all(|l| l.played_this_round == 0));
+    assert_eq!(b.jokers[1].mult, 1.0, "Green Joker keeps its Mult (0 after the discard, +1 a hand)");
+    // a debuffed joker doesn't take part (card.lua calculate_joker returns at once)
+    let mut d = sample_board(&["j_hit_the_road"]);
+    d.jokers[0].x_mult = 2.0;
+    d.jokers[0].debuff = true;
+    d.new_round("bl_small");
+    assert_eq!(d.jokers[0].x_mult, 2.0);
+}
+
+#[test]
+fn delayed_gratification_pays_for_discards_never_used() {
+    // card.lua calculate_dollar_bonus: discards_used == 0, extra per discard left
+    let mut b = sample_board(&["j_delayed_grat"]);
+    b.discards_left = 3;
+    assert_eq!(engine::won_round_money(&b), 6.0);
+    b.discard(&Card::parse_list("2S").unwrap());
+    assert_eq!(engine::won_round_money(&b), 0.0);
+}
+
+#[test]
 fn discard_money_follows_the_game() {
     // card.lua, discard context: Mail-In pays per card of its rank (get_id: not Stone, not
     // debuffed), Faceless Joker for 3+ faces (is_face: Pareidolia makes any card one); a

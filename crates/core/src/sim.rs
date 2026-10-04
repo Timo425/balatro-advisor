@@ -245,6 +245,7 @@ pub fn outcomes_after(b: &Board, start: &RoundStart, first: &Move, range: std::o
                     let s = score::score(&bb, &played, &held, &mut rng, false);
                     o.cash += s.dollars;
                     let total = start.scored + s.score;
+                    bb.after_hand(&s);
                     if total >= start.target || start.hands <= 1 {
                         if total >= start.target {
                             o.won = 1.0;
@@ -252,7 +253,7 @@ pub fn outcomes_after(b: &Board, start: &RoundStart, first: &Move, range: std::o
                             o.last = Some(s.hand);
                             o.seen = bb.goals.as_ref().map_or(0.0, |g| g.seen_gain(&hand).max(g.carried.iter().map(|e| e.1).fold(0.0, f64::max)));
                             o.planets = seal_planets(&bb, &held);
-                            o.cash += held_dollars(&held);
+                            o.cash += won_money(&bb, &held);
                         }
                         o.total = total;
                         return o;
@@ -260,12 +261,13 @@ pub fn outcomes_after(b: &Board, start: &RoundStart, first: &Move, range: std::o
                     RoundStart { hand: held, deck, hands: start.hands - 1, scored: total, ..start.clone() }
                 }
                 Move::Discard(idx) => {
-                    o.cash += discard_money(&bb, &hand, idx);
+                    o.cash += bb.discard(&picked(&hand, idx));
                     let kept: Vec<Card> = (0..hand.len()).filter(|k| !idx.contains(k)).map(|k| hand[k]).collect();
                     RoundStart { hand: kept, deck, discards: (start.discards - 1).max(0), ..start.clone() }
                 }
             };
-            let r = sim_round_uses(b, &next, &mut rng, uses);
+            // the rest of the round plays on the board the first move left
+            let r = sim_round_uses(&bb, &next, &mut rng, uses);
             o.won = r.won as u8 as f64;
             if r.won {
                 o.spare = r.hands_left as f64;
@@ -338,10 +340,22 @@ fn win_keeping_seals(b: &Board, hand: &[Card], need: f64) -> Option<Vec<usize>> 
     None
 }
 
+/// The cards at `idx` in `hand`, in hand order (the game discards them left to right).
+fn picked(hand: &[Card], idx: &[usize]) -> Vec<Card> {
+    let mut idx = idx.to_vec();
+    idx.sort_unstable();
+    idx.iter().filter_map(|&i| hand.get(i).copied()).collect()
+}
+
 /// Money discarding `idx` from `hand` pays (the engine's discard effects).
 pub fn discard_money(b: &Board, hand: &[Card], idx: &[usize]) -> f64 {
-    let cards: Vec<Card> = idx.iter().filter_map(|&i| hand.get(i).copied()).collect();
-    crate::engine::discard_money(b, &cards)
+    crate::engine::discard_money(b, &picked(hand, idx))
+}
+
+/// Money a won round pays at its end for how it was played: Gold cards still in hand
+/// (`held_dollars`) and the engine's `won_round_money` (Delayed Gratification).
+fn won_money(b: &Board, held: &[Card]) -> f64 {
+    held_dollars(held) + crate::engine::won_round_money(b)
 }
 
 /// How often each poker hand can be made at all from a fresh deal of your deck: deal
@@ -1389,7 +1403,7 @@ fn finish_value(b: &Board, g: &RoundGoals, hand: &[Card], win: &[usize], hands: 
     let played: Vec<Card> = win.iter().map(|&i| hand[i]).collect();
     let held: Vec<Card> = (0..hand.len()).filter(|i| !win.contains(i)).map(|i| hand[i]).collect();
     let s = score::score(b, &played, &held, &mut Unlucky, false);
-    let o = Outcome { won: 1.0, spare: (hands - 1) as f64, cash: s.dollars + held_dollars(&held), planets: seal_planets(b, &held), last: Some(s.hand), seen, ..Default::default() };
+    let o = Outcome { won: 1.0, spare: (hands - 1) as f64, cash: s.dollars + won_money(b, &held), planets: seal_planets(b, &held), last: Some(s.hand), seen, ..Default::default() };
     g.value(&o)
 }
 
@@ -1562,20 +1576,11 @@ pub fn sim_round_uses(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[
                 money += o.dollars;
                 best_hand = best_hand.max(o.score);
                 plays.push((o.hand, o.score, dig));
-                if b.blind.key == "bl_eye" {
-                    b.blind.eye_seen |= o.hand.bit();
-                }
-                if b.blind.key == "bl_mouth" && b.blind.mouth_only.is_none() {
-                    b.blind.mouth_only = Some(o.hand);
-                }
-                let lvl = &mut b.levels[o.hand as usize];
-                lvl.played += 1;
-                lvl.played_this_round += 1;
-                b.hands_played += 1;
+                b.after_hand(&o);
                 hand = held;
                 hands -= 1;
                 if total >= start.target {
-                    money += held_dollars(&hand);
+                    money += won_money(&b, &hand);
                     let seen = seen_by.iter().map(|e| e.1).fold(0.0, f64::max);
                     return RoundResult { total, won: true, saved: false, best_hand, plays, money, hands_left: hands, planets: seal_planets(&b, &hand), seen };
                 }
@@ -1583,7 +1588,7 @@ pub fn sim_round_uses(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[
                 note_seen(&b, &hand, &mut seen_by);
             }
             Action::Discard(idx) => {
-                money += discard_money(&b, &hand, &idx);
+                money += b.discard(&picked(&hand, &idx));
                 hand = (0..hand.len()).filter(|i| !idx.contains(i)).map(|i| hand[i]).collect();
                 draw(&mut hand, &mut deck, size);
                 discards -= 1;
@@ -1930,6 +1935,24 @@ mod tests {
         for o in &outs {
             assert!(o.seen == 0.0 || o.seen == 0.5);
             assert_eq!(g.value(o), o.won * (1.0 + o.seen));
+        }
+    }
+
+    #[test]
+    fn the_round_plays_on_the_board_a_discard_leaves() {
+        // Hit the Road grows ×0.5 for each Jack discarded (card.lua, discard context): the
+        // hands after that discard score with it, on the same draws
+        let hand = Card::parse_list("JS JH JD JC 2S 3H 5D 7C").unwrap();
+        let deck: Vec<Card> = standard_deck().into_iter().filter(|c| !hand.iter().any(|h| h.rank == c.rank && h.suit == c.suit)).collect();
+        let start = RoundStart { hand, deck, hand_size: 8, hands: 2, discards: 1, scored: 0.0, target: 1e12 };
+        let b = sample_board(&["j_hit_the_road"]);
+        let mut off = b.clone();
+        off.jokers[0].debuff = true;
+        let first = Move::Discard(vec![0, 1, 2, 3]);
+        let with = outcomes_after(&b, &start, &first, 0..50, 3, &[]);
+        let without = outcomes_after(&off, &start, &first, 0..50, 3, &[]);
+        for (w, o) in with.iter().zip(&without) {
+            assert!(w.total >= 3.0 * o.total - 1.0, "×3 after four Jacks: {} vs {}", w.total, o.total);
         }
     }
 

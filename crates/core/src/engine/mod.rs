@@ -10,6 +10,6 @@ pub mod score;
 pub use hand::{HandInfo, HandType, RuleFlags};
 pub use joker::{Joker, Kind, RunEvent};
 pub use rng::{Lucky, Rng, Rolls, Unlucky};
-pub use score::{discard_money, BlindRules, Board, Level, Outcome, Step, score};
+pub use score::{discard_money, won_round_money, BlindRules, Board, Level, Outcome, Step, score};
 #[cfg(test)]
 mod tests;

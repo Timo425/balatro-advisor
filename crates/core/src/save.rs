@@ -55,6 +55,10 @@ pub struct RunState {
     pub most_played_hand: String,
     pub hands_left: i64,
     pub discards_left: i64,
+    /// Discards used this round (`current_round.discards_used`: Burnt Joker, Trading Card and
+    /// Delayed Gratification look at it)
+    #[serde(default)]
+    pub discards_used: i64,
     /// Hands and discards a fresh round starts with.
     pub round_hands: i64,
     pub round_discards: i64,
@@ -569,6 +573,7 @@ pub fn from_value(g: &Value, data: &GameData, path: &Path, age_secs: Option<u64>
         most_played_hand: cr.get("most_played_poker_hand").str().unwrap_or_default().to_string(),
         hands_left: int(cr.get("hands_left")),
         discards_left: int(cr.get("discards_left")),
+        discards_used: int(cr.get("discards_used")),
         round_hands: int(rr.get("hands")),
         round_discards: int(rr.get("discards")),
         hand_size: limit("hand"),

@@ -82,6 +82,9 @@ pub struct Board {
     /// Hands left *before* this play (Dusk/Acrobat look at the count after it).
     pub hands_left: i64,
     pub discards_left: i64,
+    /// Discards used this round (`G.GAME.current_round.discards_used`).
+    #[serde(default)]
+    pub discards_used: i64,
     pub dollars: f64,
     pub skips: i64,
     /// Hands played this run before this one (Loyalty Card).
@@ -109,6 +112,9 @@ pub struct Board {
     #[serde(skip)]
     pub goals: Option<crate::sim::RoundGoals>,
     pub mail_rank: Option<u8>,
+    /// Castle's suit this round (it grows from discarded cards of it).
+    #[serde(default)]
+    pub castle_suit: Option<Suit>,
     pub plasma: bool,
 }
 
@@ -123,6 +129,7 @@ impl Board {
             observatory: false,
             hands_left: 4,
             discards_left: 3,
+            discards_used: 0,
             dollars: 0.0,
             skips: 0,
             hands_played: 0,
@@ -140,6 +147,7 @@ impl Board {
             blind: BlindRules::default(),
             plasma: false,
             mail_rank: None,
+            castle_suit: None,
             planet_slots: 2,
             goals: None,
         }
@@ -182,6 +190,15 @@ pub struct Outcome {
     pub debuffed_hand: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub trace: Vec<Step>,
+    /// What the hand leaves for the next one (`Board::after_hand`): each joker's state, the
+    /// hand's level (played once more; Space Joker's level-up, The Arm's level-down) and
+    /// your money (The Tooth and The Ox included).
+    #[serde(skip)]
+    pub jokers: Vec<JokerState>,
+    #[serde(skip)]
+    pub level: Level,
+    #[serde(skip)]
+    pub money: f64,
 }
 
 /// Effect a joker returns in one context. `x` = 1 means no ×Mult.
@@ -215,8 +232,8 @@ enum Ctx {
 }
 
 /// Values a joker can change mid-hand (the game mutates `self.ability` in place).
-#[derive(Clone, Copy)]
-struct JState {
+#[derive(Debug, Clone, Copy, Default)]
+pub struct JokerState {
     mult: f64,
     x_mult: f64,
     extra_chips: f64,
@@ -229,7 +246,7 @@ struct Pass<'a, R: Rolls + ?Sized> {
     played: Vec<Card>,
     held: Vec<Card>,
     info: HandInfo,
-    js: Vec<JState>,
+    js: Vec<JokerState>,
     hands_left: i64,
     dollars: f64,
     earned: f64,
@@ -284,22 +301,158 @@ impl Board {
     }
 }
 
-/// Money a discard pays (card.lua `Card:calculate_joker`, discard context; copies pay too):
-/// Mail-In Rebate $5 per discarded card of the round's rank (`get_id`: not debuffed, not
-/// Stone); Faceless Joker $5 when 3 or more of the discarded cards are faces (`is_face`:
-/// Pareidolia makes every card one, debuffed cards aren't).
+/// Money a discard pays (card.lua `Card:calculate_joker`, discard context; copies pay too
+/// unless noted): Mail-In Rebate `extra` per discarded card of the round's rank (`get_id`: not
+/// debuffed, not Stone); Faceless Joker `extra.dollars` when `extra.faces` or more of the
+/// discarded cards are faces (`is_face`: Pareidolia makes every card one, debuffed cards
+/// aren't); Trading Card (not a copy) `extra` for a first discard of one card.
 pub fn discard_money(b: &Board, discarded: &[Card]) -> f64 {
     let pareidolia = b.has(Kind::Pareidolia);
     let ranked = b.mail_rank.map_or(0, |r| discarded.iter().enumerate().filter(|(i, c)| !c.debuff && card_id(c, *i) == i32::from(r)).count());
     let faces = discarded.iter().enumerate().filter(|(i, c)| is_face(c, *i, pareidolia, false)).count();
-    (0..b.jokers.len())
-        .filter_map(|j| effective_joker(b, j))
-        .map(|jk| match jk.key.as_str() {
-            "j_mail" => 5.0 * ranked as f64,
-            "j_faceless" if faces >= 3 => 5.0,
-            _ => 0.0,
-        })
-        .sum()
+    let copies = (0..b.jokers.len()).filter_map(|j| effective_joker(b, j)).map(|jk| match jk.key.as_str() {
+        "j_mail" => jk.extra.n * ranked as f64,
+        "j_faceless" if faces as f64 >= jk.extra.faces => jk.extra.dollars,
+        _ => 0.0,
+    });
+    let own = b.jokers.iter().filter(|jk| !jk.debuff).map(|jk| match jk.key.as_str() {
+        "j_trading" if b.discards_used <= 0 && discarded.len() == 1 => jk.extra.n,
+        _ => 0.0,
+    });
+    copies.chain(own).sum()
+}
+
+/// Money a won round pays at its end that depends on how it was played (card.lua
+/// `Card:calculate_dollar_bonus`, not debuffed): Delayed Gratification `extra` for each
+/// discard left when none was used. Fixed payouts (Golden Joker, Rocket…) are valued per
+/// ante instead (`income_per_ante`).
+pub fn won_round_money(b: &Board) -> f64 {
+    let unused = if b.discards_used == 0 { b.discards_left.max(0) as f64 } else { 0.0 };
+    b.jokers.iter().filter(|jk| !jk.debuff && jk.key == "j_delayed_grat").map(|jk| jk.extra.n * unused).sum()
+}
+
+impl Board {
+    /// What discarding `discarded` (in hand order) does to the board, and the money it pays
+    /// (`discard_money`): state_events.lua `G.FUNCS.discard_cards_from_highlighted` runs the
+    /// `pre_discard` context once, then the `discard` context for each card (card.lua
+    /// `Card:calculate_joker`). Burnt Joker (copies too) levels the discarded cards' hand on
+    /// the round's first discard; the rest change the joker itself, not copies: Green Joker
+    /// loses `extra.discard_sub` Mult once a discard, Ramen ×`extra` a card (eaten once it
+    /// would reach ×1), Castle gains `extra.chip_mod` Chips a card of the round's suit (not
+    /// debuffed), Hit the Road ×`extra` a Jack (not debuffed), Yorick ×`extra.xmult` every
+    /// `extra.discards` cards. Then a discard is used. Not modelled: Purple Seal's Tarot, and
+    /// what destroying Trading Card's card changes beyond the deck's size (Caino, Glass Joker).
+    pub fn discard(&mut self, discarded: &[Card]) -> f64 {
+        let money = discard_money(self, discarded);
+        if self.discards_used <= 0 && !discarded.is_empty() {
+            let burnt = (0..self.jokers.len()).filter_map(|j| effective_joker(self, j)).filter(|jk| jk.key == "j_burnt").count() as i64;
+            if burnt > 0 {
+                let h = hand::detect(discarded, self.rule_flags()).hand as usize;
+                self.levels[h] = self.levels[h].with_level(self.levels[h].level + burnt);
+            }
+        }
+        if self.discards_used <= 0 && discarded.len() == 1 && self.jokers.iter().any(|jk| !jk.debuff && jk.key == "j_trading") {
+            // the card is destroyed, not discarded
+            self.playing_cards -= 1;
+        }
+        let smeared = self.has(Kind::Smeared);
+        let castle = self.castle_suit;
+        let mut eaten = vec![false; self.jokers.len()];
+        for (j, jk) in self.jokers.iter_mut().enumerate().filter(|(_, jk)| !jk.debuff) {
+            let x = jk.extra.clone();
+            for (i, c) in discarded.iter().enumerate() {
+                match jk.key.as_str() {
+                    "j_ramen" if !eaten[j] => {
+                        if jk.x_mult - x.n <= 1.0 {
+                            eaten[j] = true;
+                        } else {
+                            jk.x_mult -= x.n;
+                        }
+                    }
+                    "j_yorick" => {
+                        if jk.yorick_discards <= 1.0 {
+                            jk.yorick_discards = x.discards;
+                            jk.x_mult += x.xmult;
+                        } else {
+                            jk.yorick_discards -= 1.0;
+                        }
+                    }
+                    "j_castle" if castle.is_some_and(|s| !c.debuff && is_suit(c, s, false, false, smeared)) => {
+                        jk.extra.chips += x.chip_mod;
+                    }
+                    "j_hit_the_road" if !c.debuff && card_id(c, i) == 11 => jk.x_mult += x.n,
+                    _ => {}
+                }
+            }
+            if jk.key == "j_green_joker" && !discarded.is_empty() {
+                jk.mult = (jk.mult - jk.extra.discard_sub).max(0.0);
+            }
+        }
+        let mut k = 0;
+        self.jokers.retain(|_| {
+            k += 1;
+            !eaten[k - 1]
+        });
+        self.discards_used += 1;
+        self.discards_left = (self.discards_left - 1).max(0);
+        self.dollars += money;
+        money
+    }
+
+    /// The board as round `blind` starts: what lasts only a round reset (state_events.lua
+    /// `new_round`: the blind's own state, hands played this round, discards used; card.lua
+    /// `end_of_round` context: Hit the Road back to ×1, unless debuffed). Not modelled: the
+    /// round's targets the game draws anew (Castle's suit, Mail-In's rank, Idol, Ancient
+    /// Joker: this round's are kept) and Campfire's reset after a boss.
+    pub fn new_round(&mut self, blind: &str) {
+        self.blind = BlindRules { key: blind.to_string(), ..Default::default() };
+        for l in &mut self.levels {
+            l.played_this_round = 0;
+        }
+        self.discards_used = 0;
+        for jk in self.jokers.iter_mut().filter(|jk| !jk.debuff && jk.key == "j_hit_the_road") {
+            jk.x_mult = 1.0;
+        }
+    }
+
+    /// What a scored hand (`o`, from `score` on this board) leaves for the next one: the
+    /// jokers' state, the hand's level and your money (`Outcome`), the hand counted as played
+    /// (The Eye and The Mouth remember it), then the `after` context (card.lua
+    /// `Card:calculate_joker`, not copies): Ice Cream loses `extra.chip_mod` Chips and Seltzer
+    /// a use, each gone at 0.
+    pub fn after_hand(&mut self, o: &Outcome) {
+        for (jk, st) in self.jokers.iter_mut().zip(&o.jokers) {
+            jk.mult = st.mult;
+            jk.x_mult = st.x_mult;
+            jk.extra.chips = st.extra_chips;
+        }
+        self.levels[o.hand as usize] = o.level;
+        self.dollars = o.money;
+        self.hands_played += 1;
+        self.hands_left = (self.hands_left - 1).max(0);
+        if self.blind.key == "bl_eye" {
+            self.blind.eye_seen |= o.hand.bit();
+        }
+        if self.blind.key == "bl_mouth" && self.blind.mouth_only.is_none() {
+            self.blind.mouth_only = Some(o.hand);
+        }
+        self.jokers.retain_mut(|jk| {
+            if jk.debuff {
+                return true;
+            }
+            match jk.kind {
+                Kind::IceCream => {
+                    jk.extra.chips -= jk.extra.chip_mod;
+                    jk.extra.chips > 0.0
+                }
+                Kind::Seltzer => {
+                    jk.extra.n -= 1.0;
+                    jk.extra.n > 0.0
+                }
+                _ => true,
+            }
+        });
+    }
 }
 
 /// Scores `played` (in play order) with `held` staying in hand.
@@ -328,7 +481,7 @@ pub fn score_detected<R: Rolls + ?Sized>(
         played: played.to_vec(),
         held: held.to_vec(),
         info,
-        js: b.jokers.iter().map(|j| JState { mult: j.mult, x_mult: j.x_mult, extra_chips: j.extra.chips }).collect(),
+        js: b.jokers.iter().map(|j| JokerState { mult: j.mult, x_mult: j.x_mult, extra_chips: j.extra.chips }).collect(),
         // ease_hands_played(-1) runs before evaluate_play
         hands_left: b.hands_left - 1,
         dollars: b.dollars,
@@ -370,6 +523,9 @@ impl<R: Rolls + ?Sized> Pass<'_, R> {
             dollars: self.earned,
             debuffed_hand,
             trace: self.trace.unwrap_or_default(),
+            money: self.dollars + self.earned,
+            jokers: self.js,
+            level: self.level,
         }
     }
 
@@ -815,7 +971,7 @@ impl<R: Rolls + ?Sized> Pass<'_, R> {
     }
 
     /// `context.joker_main`: the game returns the first branch that applies.
-    fn main(&mut self, j: usize, st: JState) -> Option<Eff> {
+    fn main(&mut self, j: usize, st: JokerState) -> Option<Eff> {
         let b = self.b;
         let jk = &b.jokers[j];
         let x = &jk.extra;

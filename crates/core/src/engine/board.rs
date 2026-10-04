@@ -50,6 +50,7 @@ impl Board {
             observatory: s.vouchers.iter().any(|v| v == "v_observatory"),
             hands_left: s.hands_left,
             discards_left: s.discards_left,
+            discards_used: s.discards_used,
             dollars: s.dollars,
             skips: s.skips,
             hands_played: s.hands_played,
@@ -67,6 +68,7 @@ impl Board {
             blind,
             plasma: s.deck == "Plasma Deck",
             mail_rank: s.round_targets.mail_rank.map(|r| r.0),
+            castle_suit: s.round_targets.castle_suit,
             planet_slots: (s.consumable_slots - s.consumables.len() as i64).max(0),
             goals: None,
         }
