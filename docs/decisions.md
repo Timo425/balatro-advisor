@@ -245,7 +245,7 @@ Proposed by the cloud session in PR #2 (as `race_keeping`, 391cd2e, reverted pen
 approved by the owner 2026-10-04, then narrowed to uses where not acting keeps something (owner,
 the same day).
 
-## D9. Simulated player changes are judged by the player benchmark (proposed)
+## D9. Simulated player changes are judged by the player benchmark (accepted)
 
 **Decision.** A change to the simulated player (`sim::decide` and what it calls) runs
 `tests/player.rs` before and after: win rates on one synthetic board per play style at fixed
@@ -262,3 +262,4 @@ without any fixture noticing.
 **Revisit if** the synthetic boards stop resembling real runs (calibration of win chances
 disagrees with them), or the fixed targets drift so far that every board is won or lost.
 
+Approved by the owner 2026-10-04.
