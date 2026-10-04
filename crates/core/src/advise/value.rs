@@ -679,6 +679,8 @@ impl<'a> LongRun<'a> {
             factor: 1.0 - (1.0 - hand) / (3.0 * self.antes_left),
             planets_share: (rounds - r) as f64 / rounds.max(1) as f64,
             from: TAROT_ROUNDS + r * TARGET_MAX,
+            // a round's copy not made is gone: the leader is taken on a tie (D8)
+            keeps: false,
         }
     }
 

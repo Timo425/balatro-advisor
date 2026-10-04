@@ -215,3 +215,31 @@ which are ties, so the search can be fixed where it's wrong instead of tuned to 
 
 **Revisit if** the reference itself becomes too slow to run on every search change, or the
 fixtures stop covering the kinds of states the search gets wrong.
+
+## D8. A change the search can't tell from no change isn't made, when not acting keeps something (accepted)
+
+**Decision.** In a race with a status quo (every consumable target search: "no target", your
+deck as it is), the status quo is never cut by the budget, only by a finding (clearly worse,
+or shown equal). When it ends among the options as good as the leader (shown equal, or still
+undecided at the cap), it's kept, so the change isn't made, if not acting keeps something for
+later (a consumable stays held). A chance that's gone if unused (DNA's copy each round) takes
+the leader, as before. `compare::race_keeping`, `target_race_priced` (`UsePrice::keeps`).
+
+**Why.** Every target search took its leader, so a set that led on noise was used: DNA copied
+a plain card now and then, a pack card could be credited with a consumable on it, and the
+budget could drop "no target" before any finding, which the noise stage says a budget cut must
+not stand for. Doing nothing keeps the consumable for a later, better target, so on a tie
+it's the right default; the same rule already decides the spare money split (levels unless
+events are clearly better). Where not acting keeps nothing, the tie rule withheld real gains:
+DNA, priced for the hand a copy spends, copied a Steel King in only 7 of 13 rounds holding one
+(one card's copy is a small change that 128 rounds often can't separate from none), so DNA was
+undervalued; 256 rounds didn't fix it and cost ~1 s an analysis. It widens the noise rule ("what can't be told
+apart is never ranked by noise") to the choice between acting and not acting.
+
+**Revisit if** it withholds changes that later prove clearly better (the reference measurement
+or the replay fixtures show a target search keeping the status quo against a clear gain), or
+its cost (about a third more samples per target race) becomes a problem.
+
+Proposed by the cloud session in PR #2 (as `race_keeping`, 391cd2e, reverted pending approval);
+approved by the owner 2026-10-04, then narrowed to uses where not acting keeps something (owner,
+the same day).

@@ -3400,11 +3400,15 @@ struct UsePrice {
     planets_share: f64,
     /// The first round raced on (after the rounds the pick is valued on)
     from: usize,
+    /// Not using it keeps something for later (a consumable stays held): on a tie with no
+    /// target, the status quo is kept (D8). A chance that's gone if unused (DNA's round) takes
+    /// the leader.
+    keeps: bool,
 }
 
 impl Default for UsePrice {
     fn default() -> UsePrice {
-        UsePrice { factor: 1.0, planets_share: 1.0, from: value::TAROT_ROUNDS }
+        UsePrice { factor: 1.0, planets_share: 1.0, from: value::TAROT_ROUNDS, keeps: true }
     }
 }
 
@@ -3453,7 +3457,10 @@ fn target_race_priced(
     // each batch's own noise)
     // (per outcome)
     let incomes: Vec<Vec<std::sync::Mutex<Option<f64>>>> = sets.iter().map(|_| outcomes.iter().map(|_| std::sync::Mutex::new(None)).collect()).collect();
-    let race = compare::race(
+    // no target is the status quo: never cut by the budget, and kept when the race can't tell
+    // a change from it and not using it keeps something (D8)
+    let status_quo = sets.iter().position(|v| v.is_empty());
+    let race = compare::race_keeping(
         sets.len(),
         TARGET_FIRST,
         TARGET_MAX,
@@ -3474,6 +3481,7 @@ fn target_race_priced(
         |x| *x,
         |x| *x,
         |x, y| key(&sets[y]).cmp(&key(&sets[x])),
+        status_quo,
     );
     // each set's estimate: the leader's mean plus its paired difference to the leader on the
     // rounds both were sampled on (sets cut early have fewer, other rounds than the leader)
@@ -3491,7 +3499,14 @@ fn target_race_priced(
     let mut rest: Vec<usize> = (0..sets.len()).filter(|&i| i != race.leader && !even(i)).collect();
     rest.sort_by(by_estimate);
     let k = 1 + as_good.len();
-    let order: Vec<usize> = std::iter::once(race.leader).chain(as_good).chain(rest).collect();
+    // the status quo first when it's as good as the leader and not using it keeps something
+    // (D8): a change that can't be told from no change isn't made
+    let first = status_quo.filter(|&q| price.keeps && q != race.leader && even(q)).unwrap_or(race.leader);
+    if first != race.leader {
+        as_good.retain(|&i| i != first);
+        as_good.insert(0, race.leader);
+    }
+    let order: Vec<usize> = std::iter::once(first).chain(as_good).chain(rest).collect();
     Some(TargetRanking { sets: order.iter().map(|&i| sets[i].clone()).collect(), as_good: k, samples: order.iter().map(|&i| race.samples[i].clone()).collect() })
 }
 
@@ -4464,6 +4479,19 @@ mod tests {
         // using it on the others, so the card gets no credit for it
         let pick = pack_pick("7D:mult", ("c_empress", "The Empress", "Tarot"));
         assert!(!pick.note.contains("Empress"), "{}", pick.note);
+    }
+
+    #[test]
+    fn a_change_the_search_cant_tell_from_no_change_isnt_made() {
+        // D8: Bonus (+30 chips) on a 2♣ in a plain 52-card deck is too small to tell from no
+        // target on the race's rounds; the status quo is kept, not whichever led on noise
+        let r = shop_run(&[("j_joker", None, None)], &[]);
+        let mut deck = crate::bench::standard_deck();
+        deck.sort_by_key(Card::order_key);
+        let two = deck.iter().position(|c| c.label() == "2♣").unwrap();
+        let bonus = crate::engine::consumable::CardEffect::Enhance(crate::model::Enhancement::Bonus);
+        let ranked = with_long_run(&r, |lr| target_race(lr, &[(1.0, bonus)], 1, 1, &deck, &[two], None)).unwrap();
+        assert!(ranked.sets[0].is_empty(), "{:?}", ranked.sets);
     }
 
     #[test]
