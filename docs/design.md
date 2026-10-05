@@ -321,7 +321,11 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    already gives the next ante's boss its board (`next_boards`); the jokers the shops ahead may
    show are measured on your board, so their lift on top of a grown board is understated
    (say so). Nor does the page show it: the growth is only in the skip line's hover text
-   (`ui.html`), and the skip's ×By Ante 8 includes it unlabelled. And the projection values
+   (`ui.html`), and the skip's ×By Ante 8 includes it unlabelled; and skip-or-play is only
+   worked out at blind select (a blind in state "Select"), after the shop can't be gone back
+   to, though what you spend there and whether you'll skip go together: it belongs in the shop
+   too, for the next blind (its tag is known from the ante's start), with the money you'd leave
+   with. And the projection values
    money, rerolls and packs as if the run went on past Ante 8 (`LongRun`, `Spending`): near the
    end, on a board that already beats the bosses ahead, the shops' worth falls (the survival
    factors cap at 100%, but the long run still counts money), so skips are undervalued and
