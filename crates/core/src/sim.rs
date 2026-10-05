@@ -95,8 +95,8 @@ impl<R: crate::engine::Rolls> crate::engine::Rolls for Watched<R> {
 
 /// `best_play_with` of the cards `part` (a mask over `hand`'s first 16), without its mean: the
 /// play's cards are indices into `hand`, and whether its floor asked for a roll (`Watched`).
-/// `detected`: the hands already detected for plays of `hand` (by mask), filled in as it goes.
-fn best_play_of(b: &Board, hand: &[Card], part: u32, prefilter: bool, mut detected: Option<&mut [Option<hand::HandInfo>]>) -> Option<(Play, bool)> {
+/// `seen`: what's known of the plays of `hand` (by mask), filled in as it goes.
+fn best_play_of(b: &Board, hand: &[Card], part: u32, prefilter: bool, mut seen: Option<&mut [Option<SeenPlay>]>) -> Option<(Play, bool)> {
     let n = hand.len().min(16);
     let flags = b.rule_flags();
     let keep_kickers = kickers_matter(b);
@@ -126,32 +126,63 @@ fn best_play_of(b: &Board, hand: &[Card], part: u32, prefilter: bool, mut detect
         played.clear();
         played.extend(idx.iter().map(|&i| hand[i]));
         // the hand depends only on the cards played (and the rules), not on the cards held
-        let info = match detected.as_deref_mut() {
-            Some(d) => d[mask as usize].get_or_insert_with(|| hand::detect(&played, flags)).clone(),
-            None => hand::detect(&played, flags),
+        let mut known = seen.as_deref_mut().map(|d| d[mask as usize].get_or_insert_with(|| SeenPlay { info: hand::detect(&played, flags), floor: None }));
+        let info = match &known {
+            Some(k) => &k.info,
+            None => &hand::detect(&played, flags),
         };
         if !keep_kickers && info.scoring.len() != played.len() {
             continue;
         }
-        held.clear();
-        held.extend((0..n).filter(|i| part & !mask & (1 << i) != 0).map(|i| hand[i]));
-        let mut rolls = Watched { rolls: Unlucky, asked: false };
-        let o = score::score_detected(b, &played, &held, info, &mut rolls, false);
-        if best.as_ref().is_none_or(|(p, _)| o.score > p.floor) {
-            best = Some((Play { cards: idx.clone(), hand: o.hand, floor: o.score, mean: o.score }, rolls.asked));
+        let held_mask = part & !mask;
+        // a floor scored with these cards held or more, none of them taking part, is this one
+        let (floor, hand_type, asked) = match known.as_ref().and_then(|k| k.floor).filter(|f| held_mask & !f.held == 0) {
+            Some(f) => (f.score, f.hand, f.asked),
+            None => {
+                held.clear();
+                held.extend((0..n).filter(|i| held_mask & (1 << i) != 0).map(|i| hand[i]));
+                let mut rolls = Watched { rolls: Unlucky, asked: false };
+                let o = score::score_detected(b, &played, &held, info.clone(), &mut rolls, false);
+                if let Some(k) = known.as_mut().filter(|k| k.floor.is_none() && !o.held_used) {
+                    k.floor = Some(SeenFloor { held: held_mask, score: o.score, hand: o.hand, asked: rolls.asked });
+                }
+                (o.score, o.hand, rolls.asked)
+            }
+        };
+        if best.as_ref().is_none_or(|(p, _)| floor > p.floor) {
+            best = Some((Play { cards: idx.clone(), hand: hand_type, floor, mean: floor }, asked));
         }
     }
     best
 }
 
+/// What's known of a play of a hand (`best_play_of`): its hand, and its floor when no held card
+/// took part in it (`Outcome::held_used`)
+#[derive(Clone)]
+struct SeenPlay {
+    info: hand::HandInfo,
+    floor: Option<SeenFloor>,
+}
+
+/// A play's floor with the cards `held` (a mask) held, none of them taking part: the same with
+/// any of them held, and whether it asked for a roll (`Watched`)
+#[derive(Clone, Copy)]
+struct SeenFloor {
+    held: u32,
+    score: f64,
+    hand: HandType,
+    asked: bool,
+}
+
 /// The best plays of parts of one hand (a decision's: the hand each plan's dig leaves, the
-/// cards a junk hand is made of), each part worked out once, and each play's hand detected
-/// once for every part it's in. The same results as `best_play` of the part's cards.
+/// cards a junk hand is made of), each part worked out once, each play's hand detected once
+/// for every part it's in, and its floor scored once for every part it's in when no held card
+/// takes part. The same results as `best_play` of the part's cards.
 struct HandParts<'a> {
     b: &'a Board,
     hand: &'a [Card],
-    /// the hands detected, by mask (none for a hand of more than `PARTS_MAX` cards)
-    detected: std::cell::RefCell<Vec<Option<hand::HandInfo>>>,
+    /// what's known of the plays, by mask (nothing for a hand of more than `PARTS_MAX` cards)
+    detected: std::cell::RefCell<Vec<Option<SeenPlay>>>,
     done: std::cell::RefCell<Vec<(u32, Option<Play>)>>,
 }
 
@@ -2226,12 +2257,22 @@ mod tests {
 
     #[test]
     fn the_best_plays_of_a_hands_parts_are_best_play_of_their_cards() {
-        // `HandParts` shares hand detection between the parts of a hand and remembers each
-        // part: the same best play, average included, as `best_play` of the part's cards, on
-        // random hands and parts, Stone and Wild cards among them, and on boards where held
-        // cards and random effects score
+        // `HandParts` shares hand detection, and floors no held card takes part in, between the
+        // parts of a hand and remembers each part: the same best play, average included, as
+        // `best_play` of the part's cards, on random hands and parts (the whole hand first or
+        // not), Stone, Wild and Steel cards among them, and on boards where held cards and
+        // random effects score
         let mut rng = Rng::new(9);
-        let boards: [&[&str]; 5] = [&[], &["j_baron", "j_raised_fist"], &["j_four_fingers", "j_shortcut"], &["j_misprint", "j_blackboard"], &["j_smeared", "j_half"]];
+        let boards: [&[&str]; 8] = [
+            &[],
+            &["j_baron", "j_raised_fist"],
+            &["j_four_fingers", "j_shortcut"],
+            &["j_misprint", "j_blackboard"],
+            &["j_smeared", "j_half"],
+            &["j_reserved_parking", "j_mime"],
+            &["j_shoot_the_moon", "j_blackboard"],
+            &["j_bloodstone", "j_jolly"],
+        ];
         for keys in boards {
             let b = sample_board(keys);
             for t in 0..100 {
@@ -2244,7 +2285,14 @@ mod tests {
                 if rng.below(3) == 0 {
                     hand[rng.below(6)].enhancement = Some(Enhancement::Wild);
                 }
+                if rng.below(3) == 0 {
+                    hand[rng.below(6)].enhancement = Some(Enhancement::Steel);
+                }
                 let parts = HandParts::new(&b, &hand);
+                if t % 2 == 0 {
+                    let whole: Vec<usize> = (0..hand.len()).collect();
+                    assert_eq!(parts.best(&whole).map(|p| (p.cards, p.floor, p.mean)), best_play(&b, &hand).map(|p| (p.cards, p.floor, p.mean)));
+                }
                 for _ in 0..12 {
                     let m = rng.below(1 << hand.len()) as u32 | 1;
                     let idx: Vec<usize> = (0..hand.len()).filter(|i| m & (1 << i) != 0).collect();

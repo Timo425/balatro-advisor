@@ -199,6 +199,11 @@ pub struct Outcome {
     pub level: Level,
     #[serde(skip)]
     pub money: f64,
+    /// Whether a card held in hand took part: its own effect or a joker's on it (Steel, Baron,
+    /// Raised Fist, …), or a joker looked at the held cards (Blackboard). When none did, the
+    /// same play with fewer cards held scores the same (the held cards are read nowhere else).
+    #[serde(skip)]
+    pub held_used: bool,
 }
 
 /// Effect a joker returns in one context. `x` = 1 means no ×Mult.
@@ -255,6 +260,8 @@ struct Pass<'a, R: Rolls + ?Sized> {
     blind_triggered: bool,
     level: Level,
     trace: Option<Vec<Step>>,
+    /// `Outcome::held_used`
+    held_used: bool,
 }
 
 /// The joker whose effect joker `j` has: itself, or what a Blueprint (its right neighbour) or
@@ -491,6 +498,7 @@ pub fn score_detected<R: Rolls + ?Sized>(
         blind_triggered: false,
         level,
         trace: trace.then(Vec::new),
+        held_used: false,
     };
     p.run()
 }
@@ -527,6 +535,7 @@ impl<R: Rolls + ?Sized> Pass<'_, R> {
             money: self.dollars + self.earned,
             jokers: self.js,
             level: self.level,
+            held_used: self.held_used,
         }
     }
 
@@ -634,6 +643,9 @@ impl<R: Rolls + ?Sized> Pass<'_, R> {
                             self.rec(|p| format!("{} on held {}", p.joker_name(j), c.label()), chips, mult);
                         }
                     }
+                }
+                if own_x != 1.0 || any_joker {
+                    self.held_used = true;
                 }
                 if k == 0 {
                     let any = own_x != 1.0 || any_joker;
@@ -1039,6 +1051,7 @@ impl<R: Rolls + ?Sized> Pass<'_, R> {
             Kind::Bull if money > 0.0 => c(x.n * money.max(0.0)),
             Kind::DriversLicense if b.driver_tally >= 16 => xm(x.n),
             Kind::Blackboard => {
+                self.held_used = true;
                 let all_black = self.held.iter().all(|h| {
                     is_suit(h, Suit::Clubs, false, true, self.flags.smeared)
                         || is_suit(h, Suit::Spades, false, true, self.flags.smeared)
