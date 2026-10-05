@@ -216,7 +216,8 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    plan's dig leaves, worked out for every plan in every decision), won back by speedups that
    leave every decision identical (2026-10-05; `player_win_rates`, 2,000 rounds a board, the
    average of 3 runs on one 4-core machine: 34.3 s before the chase, 47.8 s with it, 30.5 s
-   now; the same per-board results to the last digit): the best plays of a decision's hand and
+   now; the same per-board results to the last digit; on the owner's machine 34.1 s → 20.8 s,
+   and the private fixtures' full analysis 169 s → 107 s, its snapshot identical): the best plays of a decision's hand and
    its parts share hand detection, and floors no held card takes part in (`HandParts`,
    `Outcome::held_used`); a floor that rolls nothing is its average (`Watched`); draw odds are
    cached like flush odds; 5-card plays that can't all score skip detection; no formatted card
