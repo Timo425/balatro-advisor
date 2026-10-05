@@ -187,9 +187,10 @@ pub struct PlayAdvice {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub worth_drawing: Vec<(String, String, f64)>,
     /// With `Options::reference`: every move considered ("action cards [use first]") and its
-    /// value on `compare::MAX` rounds the search didn't use, best first
+    /// value on `compare::MAX` rounds the search didn't use, and how it left the search's race
+    /// (`compare::Race::left`), best first
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub reference: Vec<(String, f64)>,
+    pub reference: Vec<(String, f64, String)>,
     /// With `Options::reference`: how far the pick is below the reference's best (as a share
     /// of the best's value) and the standard error of that, both on another `compare::MAX`
     /// rounds (the best is chosen on the first block, so its luck there doesn't count)
@@ -3558,6 +3559,8 @@ fn target_race_priced(
         |x| *x,
         |x| *x,
         |x, y| key(&sets[y]).cmp(&key(&sets[x])),
+        // a deck's score ratio: graded, no round lost outright
+        false,
         status_quo,
     );
     // each set's estimate: the leader's mean plus its paired difference to the leader on the

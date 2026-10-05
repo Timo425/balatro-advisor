@@ -170,10 +170,21 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
             utility,
             progress,
             |x, y| ck(y).cmp(&ck(x)),
+            // a lost round counts 0
+            true,
         );
         // as good as the leader: shown equal, or still undecided at the round cap (1600 rounds
         // couldn't tell them apart)
         let tied: Vec<bool> = race.tied.iter().zip(&race.undecided).map(|(t, u)| *t || *u).collect();
+        // how each move left the race, for the reference (`Options::reference`)
+        let fate: Vec<String> = (0..cands.len())
+            .map(|c| match race.left[c] {
+                _ if c == race.leader => "the race's leader".to_string(),
+                Some((n, "equal")) if !race.tied[c] => format!("equal after {n} rounds to a move later found worse"),
+                Some((n, why)) => format!("{why} after {n} rounds"),
+                None => "undecided at the cap".to_string(),
+            })
+            .collect();
         let (outs, leader) = (race.samples, race.leader);
         // the yardstick for the search itself (`Options::reference`): every move on rounds of
         // its own, as many as the race's most
@@ -243,7 +254,7 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
             (m / scale.max(1e-9), se / scale.max(1e-9))
         });
         let label = |o: &PlayOption| format!("{} {} [{}]", o.action, o.cards.join(" "), o.use_first.clone().unwrap_or_default());
-        let mut reference: Vec<(String, f64)> = reference.iter().enumerate().map(|(c, v)| (label(&opts[c]), *v)).collect();
+        let mut reference: Vec<(String, f64, String)> = reference.iter().enumerate().map(|(c, v)| (label(&opts[c]), *v, fate[c].clone())).collect();
         reference.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         let mut sorted: Vec<PlayOption> = order.into_iter().map(|c| opts[c].clone()).collect();
         sorted.dedup_by(|a, b| a.action == b.action && a.cards == b.cards && a.use_first == b.use_first);

@@ -111,12 +111,12 @@ fn search_against_reference() {
             let Some((gap, se)) = bp.reference_gap else { continue };
             let best = bp.reference[0].1;
             let pick = format!("{} {} [{}]", bp.action, bp.cards.join(" "), bp.use_first.clone().unwrap_or_default());
-            let rank = bp.reference.iter().position(|(l, _)| l == &pick);
-            let within = bp.reference.iter().take_while(|(_, x)| *x >= best * 0.99).count();
+            let rank = bp.reference.iter().position(|(l, ..)| l == &pick);
+            let within = bp.reference.iter().take_while(|(_, x, _)| *x >= best * 0.99).count();
             let verdict = if gap - 2.0 * se <= 0.01 { "ok" } else { "MISS" };
             println!("{verdict} {name} seed {seed}: pick {pick}: {:.2}% ± {:.2}% below the best, rank {:?} of {}, {within} within 1%", 100.0 * gap, 100.0 * se, rank.map(|r| r + 1), bp.reference.len());
-            for (l, x) in bp.reference.iter().take(3) {
-                println!("    {x:.4} {l}");
+            for (l, x, fate) in bp.reference.iter().take(3) {
+                println!("    {x:.4} {l} ({fate})");
             }
         }
     }
