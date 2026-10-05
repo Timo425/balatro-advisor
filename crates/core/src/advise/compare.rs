@@ -7,9 +7,11 @@
 //! close, and what can't be told apart is reported as a tie, never ranked by noise.
 //!
 //! When more options are still undecided than the budget allows (`budget`, by rounds done),
-//! the rest are dropped by their value so far, then by a secondary value (e.g. points toward
-//! the target, which still separates options in a round you almost always lose). That cut is
-//! a budget limit, not a finding: those options aren't reported as worse or as ties.
+//! those least shown worse than the leader stay (the bound "clearly worse" uses: an option
+//! whose rounds differ more from the leader's is less shown worse than a steady one just as
+//! far behind), on exact ties by value, then a secondary value (e.g. points toward the target,
+//! which still separates options in a round you almost always lose). That cut is a budget
+//! limit, not a finding: those options aren't reported as worse or as ties.
 //!
 //! A tie is with the leader of its batch. If that leader is later found clearly worse, so is
 //! what tied with it: a tie only stands when it leads, through ties, to the final leader.
@@ -38,7 +40,7 @@ pub(super) struct Race<T> {
 /// rounds of a graded measure, none lost outright: see `paired`)
 pub(super) fn clearly_better(a: &[f64], b: &[f64]) -> bool {
     let k = a.len().min(b.len());
-    k > 1 && paired(&a[..k], &b[..k], 1.0, false).0
+    k > 1 && paired(&a[..k], &b[..k], 1.0, false).0 > 0.0
 }
 
 /// The mean of `d` and its standard error
@@ -48,8 +50,8 @@ fn mean_se(d: &[f64]) -> (f64, f64) {
     (m, (d.iter().map(|x| (x - m) * (x - m)).sum::<f64>() / (k - 1.0).max(1.0) / k).sqrt())
 }
 
-/// Whether `a` is clearly better than `b` on the same draws (paired difference, 95%), and
-/// whether they're provably within `EQUAL` (as a share of `scale`) of each other. Equal always
+/// How far `a` is shown better than `b` on the same draws (`better_by`: above 0 is clearly
+/// better, paired difference, 95%), and whether they're provably within `EQUAL` (as a share of `scale`) of each other. Equal always
 /// needs enough rounds (better too, where a round can be lost outright: below): a round where
 /// the two part ways (one wins, the other loses) can be rare and worth up to the largest value
 /// seen in a round, and when none has turned up in n rounds it may still happen up to 3 in n
@@ -65,20 +67,24 @@ fn mean_se(d: &[f64]) -> (f64, f64) {
 /// (say money) isn't a finding on a few rounds; once real parting rounds are in, their spread
 /// is in the test and the extra round matters less. A graded measure (a deck's score ratio,
 /// no such jump) is tested as it is.
-fn paired(a: &[f64], b: &[f64], scale: f64, lost_outright: bool) -> (bool, bool) {
+fn paired(a: &[f64], b: &[f64], scale: f64, lost_outright: bool) -> (f64, bool) {
     let d: Vec<f64> = a.iter().zip(b).map(|(x, y)| x - y).collect();
     let k = d.len() as f64;
     let (m, se) = mean_se(&d);
     let largest = a.iter().chain(b).fold(0.0f64, |x, y| x.max(y.abs()));
-    let better = if lost_outright {
-        let mut with_one = d.clone();
-        with_one.push(-largest);
-        let (m1, se1) = mean_se(&with_one);
-        m1 - 2.0 * se1 > 0.0
-    } else {
-        m - 2.0 * se > 0.0
-    };
-    (better, 3.0 * largest <= k * EQUAL * scale && m.abs() + 2.0 * se < EQUAL * scale)
+    (better_by(a, b, lost_outright), 3.0 * largest <= k * EQUAL * scale && m.abs() + 2.0 * se < EQUAL * scale)
+}
+
+/// How far `a` is shown better than `b` (`paired`'s test: the paired difference less 2
+/// standard errors, with the round not yet seen counted in `b`'s favour where a round can be
+/// lost outright): above 0 is clearly better
+fn better_by(a: &[f64], b: &[f64], lost_outright: bool) -> f64 {
+    let mut d: Vec<f64> = a.iter().zip(b).map(|(x, y)| x - y).collect();
+    if lost_outright {
+        d.push(-a.iter().chain(b).fold(0.0f64, |x, y| x.max(y.abs())));
+    }
+    let (m, se) = mean_se(&d);
+    m - 2.0 * se
 }
 
 /// `sample(i, range)`: option i's samples for rounds `range`; `value`: a sample's value;
@@ -142,13 +148,16 @@ pub(super) fn race_keeping<T: Send + Sync>(
         leader = alive[0];
         let lead: Vec<f64> = samples[leader].iter().map(&value).collect();
         let scale = mean(&samples[leader], &value).abs().max(1e-9);
+        // how far the leader is shown better than each option (`better_by`)
+        let mut shown = vec![f64::MIN; n];
         alive.retain(|&c| {
             if c == leader {
                 return true;
             }
             let vals: Vec<f64> = samples[c].iter().map(&value).collect();
-            let (worse, equal) = paired(&lead, &vals, scale, lost_outright);
-            if worse {
+            let (by, equal) = paired(&lead, &vals, scale, lost_outright);
+            shown[c] = by;
+            if by > 0.0 {
                 left[c] = Some((done, "worse"));
                 return false;
             }
@@ -160,7 +169,13 @@ pub(super) fn race_keeping<T: Send + Sync>(
             }
             true
         });
+        // over the budget: keep the options least shown worse than the leader (`better_by`),
+        // not the best by value so far, which on few rounds is a steady edge (say money)
+        // before the rare round that separates them could show
         let room = budget(done).max(1);
+        if alive.len() > room {
+            alive.sort_by(|&x, &y| shown[x].total_cmp(&shown[y]));
+        }
         let mut k = 0;
         alive.retain(|&c| {
             k += 1;
@@ -222,6 +237,26 @@ mod tests {
             r.map(|i| if o == 1 { 0.995 } else if i % 50 == 49 { 0.0 } else if i == 7 { 0.994 } else { 1.0 }).collect()
         };
         let race = race(2, 32, MAX, |_| 2, sample, |x| *x, |x| *x, |x, y| y.cmp(&x), true);
+        assert_eq!(race.leader, 1, "{:?}", race.left);
+    }
+
+    #[test]
+    fn the_budget_keeps_what_isnt_shown_worse_over_a_steady_small_edge() {
+        // A and C earn steadily (C 0.1% less) but lose 1 round in 50, from round 49; B swings
+        // (0.895 or 1.095, 0.995 on average) and never loses: the best, by 1.5%. After 32
+        // rounds, with room for 2, B is last by value, but C's edge over it is a steady one
+        // before C's rare lost round could show, while B's rounds differ from the leader's:
+        // B is the one less shown worse, so it stays. Fails if the cut is by value
+        let sample = |o: usize, r: std::ops::Range<usize>| -> Vec<f64> {
+            r.map(|i| match o {
+                1 => if i % 2 == 0 { 0.895 } else { 1.095 },
+                _ if i % 50 == 49 => 0.0,
+                0 => 1.0,
+                _ => 0.999,
+            })
+            .collect()
+        };
+        let race = race(3, 32, MAX, |_| 2, sample, |x| *x, |x| *x, |x, y| y.cmp(&x), true);
         assert_eq!(race.leader, 1, "{:?}", race.left);
     }
 
