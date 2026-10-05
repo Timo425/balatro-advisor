@@ -362,7 +362,12 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    the round can make, which lifts it: Best play races which joker to sell (and that it's the
    first move), and the outlook and the shops before the boss measure the board left after
    that sale (a cheap joker bought to sell is then worth its keep). Raised in play, 2026-10-05
-   (Ante 8, Verdant Leaf, Arrowhead kept for its Gold sticker).
+   (Ante 8, Verdant Leaf, Arrowhead kept for its Gold sticker). Seen in Best play the same day:
+   on Ante 8's Small blind every move wins, and the Blue Seal planets a line keeps are valued
+   only by their gain in a long run past the run's end ("Ante 10 boss", gap 13) on a final boss
+   at 100%, so lines making 0.64–0.71 planets tie, where after the sale at Verdant Leaf each
+   Flush planet is worth about a tenth more points. Closing it needs both: the long run
+   measured to the final boss (gap 13), with its rule (this gap).
 16. **What isn't valued ranks as worth nothing, and an empty slot counts as filled.** Effects
    the valuation doesn't cover (Ectoplasm, room in the consumable slots, some tags and
    vouchers) say "not valued" and add nothing to the ranking: a person reads the label, a
