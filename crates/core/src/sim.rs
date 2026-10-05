@@ -104,29 +104,44 @@ fn best_play_with(b: &Board, hand: &[Card], prefilter: bool) -> Option<Play> {
 /// Whether every card of the play `mask` (of `hand`'s first `n`) could score, before running
 /// hand detection: Stone cards always do (hand.lua `evaluate_play`); of the rest, 2 or 3 can
 /// only all score as one rank (a Pair, Three of a Kind: no flush or straight is that short),
-/// and 4 without Four Fingers only as Two Pair or Four of a Kind. Splash isn't checked here
-/// (`best_play` doesn't call this with it). A shortcut: `hand::detect` decides.
+/// and 4 without Four Fingers only as Two Pair or Four of a Kind; 5 without Four Fingers only
+/// as a flush (hand.rs `flush`: one suit, a Wild card or Smeared Joker's colours aside), a
+/// straight (5 ranks) or two ranks at most (Full House, Five of a Kind). Splash isn't checked
+/// here (`best_play` doesn't call this with it). A shortcut: `hand::detect` decides.
 fn could_all_score(hand: &[Card], mask: u32, n: usize, flags: hand::RuleFlags) -> bool {
     if flags.splash {
         return true;
     }
-    let mut ranks = [0u8; 4];
+    let mut cards = [0usize; 5];
     let mut k = 0;
     for i in 0..n {
         if mask & (1 << i) != 0 && hand[i].enhancement != Some(Enhancement::Stone) {
-            if k == 4 {
+            if k == 5 {
                 return true;
             }
-            ranks[k] = hand[i].rank.0;
+            cards[k] = i;
             k += 1;
         }
+    }
+    let mut ranks = [0u8; 5];
+    for j in 0..k {
+        ranks[j] = hand[cards[j]].rank.0;
     }
     match k {
         2 | 3 => ranks[1..k].iter().all(|&r| r == ranks[0]),
         4 if !flags.four_fingers => {
-            let mut r = ranks;
+            let mut r = [ranks[0], ranks[1], ranks[2], ranks[3]];
             r.sort_unstable();
             r[0] == r[1] && r[2] == r[3]
+        }
+        5 if !flags.four_fingers => {
+            let mut r = ranks;
+            r.sort_unstable();
+            let distinct = 1 + r.windows(2).filter(|w| w[0] != w[1]).count();
+            let c = |j: usize| &hand[cards[j]];
+            let wild = (0..5).any(|j| c(j).enhancement == Some(Enhancement::Wild));
+            let one_suit = (1..5).all(|j| if flags.smeared { c(j).suit.is_red() == c(0).suit.is_red() } else { c(j).suit == c(0).suit });
+            distinct <= 2 || distinct == 5 || wild || one_suit
         }
         _ => true,
     }
@@ -1875,18 +1890,28 @@ mod tests {
     #[test]
     fn the_best_play_shortcut_changes_nothing() {
         // `could_all_score` only skips plays hand detection would rule out: the same best
-        // play with it and without, on random hands (Stone cards among them) and boards
-        // with the rules that change hands
+        // play with it and without, on random hands (Stone and Wild cards among them, some
+        // debuffed; every other hand from two suits, so flushes are common) and boards with
+        // the rules that change hands
         let mut rng = Rng::new(5);
-        let boards: [&[&str]; 6] = [&[], &["j_four_fingers"], &["j_shortcut", "j_smeared"], &["j_jolly", "j_droll"], &["j_four_fingers", "j_shortcut"], &["j_pareidolia", "j_four_fingers", "j_smeared"]];
+        let boards: [&[&str]; 7] = [&[], &["j_four_fingers"], &["j_shortcut", "j_smeared"], &["j_jolly", "j_droll"], &["j_four_fingers", "j_shortcut"], &["j_pareidolia", "j_four_fingers", "j_smeared"], &["j_smeared", "j_droll"]];
         for keys in boards {
             let b = sample_board(keys);
-            for _ in 0..300 {
+            for t in 0..600 {
                 let mut deck = standard_deck();
+                if t % 2 == 1 {
+                    deck.retain(|c| matches!(c.suit, Suit::Hearts | Suit::Spades) || (t % 4 == 1 && c.suit == Suit::Diamonds));
+                }
                 shuffle(&mut deck, &mut rng);
                 let mut hand: Vec<Card> = deck[..8].to_vec();
                 if rng.below(3) == 0 {
                     hand[rng.below(8)].enhancement = Some(Enhancement::Stone);
+                }
+                if rng.below(3) == 0 {
+                    hand[rng.below(8)].enhancement = Some(Enhancement::Wild);
+                }
+                if rng.below(4) == 0 {
+                    hand[rng.below(8)].debuff = true;
                 }
                 let fast = best_play_with(&b, &hand, true).map(|p| (p.cards, p.floor));
                 let full = best_play_with(&b, &hand, false).map(|p| (p.cards, p.floor));
