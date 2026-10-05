@@ -1334,6 +1334,52 @@ fn chase(aim: &Aim, score: f64, left: f64, lesser: &[(&Aim, f64)], r: &ChaseRoun
 /// The chance that `seen` cards drawn from a pile of `pile` hold at least `need` of each
 /// (disjoint) group of `size` cards: the multivariate hypergeometric, exactly.
 fn draw_odds(groups: &[(usize, usize)], pile: usize, seen: usize) -> f64 {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    // The same draws recur constantly across plans and simulations (as `flush_odds`), so cache
+    // per thread, by the groups in order (the sum's order), the pile and the cards seen packed
+    // in one number: up to 3 groups of up to 255 cards needing up to 15, piles up to 1023
+    thread_local! {
+        static CACHE: RefCell<HashMap<u64, f64, std::hash::BuildHasherDefault<OneWord>>> = RefCell::new(HashMap::default());
+    }
+    if groups.len() > 3 || pile > 1023 || seen > 1023 || groups.iter().any(|&(size, need)| size > 255 || need > 15) {
+        return draw_odds_uncached(groups, pile, seen);
+    }
+    let key = groups.iter().fold(((groups.len() as u64) << 20) | ((pile as u64) << 10) | seen as u64, |k, &(size, need)| (k << 12) | ((size as u64) << 4) | need as u64);
+    if let Some(v) = CACHE.with(|c| c.borrow().get(&key).copied()) {
+        return v;
+    }
+    let v = draw_odds_uncached(groups, pile, seen);
+    CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.len() > 200_000 {
+            c.clear();
+        }
+        c.insert(key, v);
+    });
+    v
+}
+
+/// A hasher for keys that are one number (`draw_odds`): a multiply, no more
+#[derive(Default)]
+struct OneWord(u64);
+
+impl std::hash::Hasher for OneWord {
+    fn finish(&self) -> u64 {
+        // the product's high bits mix every bit of the key; fold them into the low ones
+        self.0 ^ (self.0 >> 29)
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for &x in bytes {
+            self.0 = (self.0.rotate_left(8) ^ x as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        }
+    }
+    fn write_u64(&mut self, x: u64) {
+        self.0 = (self.0 ^ x).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    }
+}
+
+fn draw_odds_uncached(groups: &[(usize, usize)], pile: usize, seen: usize) -> f64 {
     fn comb(n: usize, k: usize) -> f64 {
         if k > n {
             return 0.0;
