@@ -430,7 +430,8 @@ pub struct BlindView {
     /// Cash for beating it, before unused-hand money and interest.
     pub reward: i64,
     pub skip_tag: Option<TagView>,
-    /// For the blind you're choosing now: skipping it for its tag against playing it.
+    /// For the blind you're choosing now (in the shop: the next blind, with the money you have
+    /// now): skipping it for its tag against playing it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skip: Option<SkipCompare>,
 }
@@ -1599,9 +1600,12 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         }
     }
     rank_options(&mut options, base_reach, next_rounds(&ctx));
-    // Skip or play the blind you're choosing now
+    // Skip or play the blind you're choosing now; in the shop (no pack open), the next blind
+    // still to come, whose tag is known from the ante's start: what you spend there and whether
+    // you'll skip go together, so it's worked out with the money you have now
     let mut blind_views = blind_views;
-    if let Some(bi) = blind_views.iter().position(|b| b.state == "Select" && b.slot != "Boss") {
+    let in_shop = run.screen == crate::save::Screen::Shop && run.open_pack.is_empty();
+    if let Some(bi) = blind_views.iter().position(|b| b.slot != "Boss" && (b.state == "Select" || (in_shop && b.state == "Upcoming"))) {
         let bv = blind_views[bi].clone();
         let p_blind = bv.p_win.unwrap_or(1.0);
         let p_boss = base_odds.get(key_round).map_or(0.0, |o| o.0);
@@ -4598,6 +4602,23 @@ mod tests {
         assert!(grows.skip_survive > twin.skip_survive, "this ante's boss: {} vs {}", grows.skip_survive, twin.skip_survive);
         assert!(grows.skip_next > twin.skip_next, "the next ante's boss: {} vs {}", grows.skip_next, twin.skip_next);
         assert!(!grows.tag.contains("not modelled"), "{}", grows.tag);
+    }
+
+    #[test]
+    fn the_shop_shows_skip_or_play_for_the_next_blind() {
+        // In the shop, the next blind still to come (Small, Upcoming) gets its skip-or-play;
+        // with a pack open, none
+        let mut r = shop_run(&[("j_joker", None, None)], &[]);
+        r.blinds[0].skip_tag = Some("tag_economy".into());
+        r.blinds[1].skip_tag = Some("tag_boss".into());
+        let a = analyze(&r, GameData::bundled(), None, &quick());
+        let with: Vec<&str> = a.blinds.iter().filter(|b| b.skip.is_some()).map(|b| b.slot.as_str()).collect();
+        assert_eq!(with, ["Small"]);
+        let skip = a.blinds[0].skip.as_ref().unwrap();
+        assert!(skip.tag.contains("+$30 now"), "with the money you have now: {}", skip.tag);
+        r.open_pack = vec![crate::save::ItemCard { key: "c_pluto".into(), name: "Pluto".into(), set: "Planet".into(), cost: 0, edition: None, card: None }];
+        let a = analyze(&r, GameData::bundled(), None, &quick());
+        assert!(a.blinds.iter().all(|b| b.skip.is_none()), "a pack is open");
     }
 
     #[test]
