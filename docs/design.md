@@ -354,9 +354,11 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
 15. **Bosses whose rule isn't in the simulated round are played as plain blinds.** The
    simulated round knows the suit and face debuffs, The Manacle, The Needle, The Water and the
    scoring bosses (`sim::RoundRules`, `engine/score.rs`); the rest only change their target.
-   Verdant Leaf (Ante 8: every card debuffed until a joker is sold) is simulated with nothing
-   debuffed and nothing sold, so the boss's chance, Best play in it and the outlook before it
-   measure the whole board, when one joker must go first (with eternals and a joker kept for
+   Verdant Leaf (Ante 8: every card debuffed until a joker is sold) is simulated before it
+   with nothing debuffed and nothing sold, so the boss's chance and the outlook before it
+   measure the whole board, when one joker must go first; in it, the save's debuffs are
+   played (Best play and the boss's chance: 84% on a Flush of 129k debuffed, seen in play
+   2026-10-05) but selling isn't a move, where one sale lifts it (that Flush 484k) (with eternals and a joker kept for
    a Gold sticker, gap 14, the choice can be down to two). The general fix: the boss's rule in
    the simulated round (every card debuffed while it's active), and selling a joker as a move
    the round can make, which lifts it: Best play races which joker to sell (and that it's the
