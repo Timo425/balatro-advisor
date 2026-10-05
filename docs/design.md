@@ -201,9 +201,16 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    plans cover five kinds of hand (not Two Pair from a Pair, a Full House from Three of a
    Kind); a straight two ranks away is dropped when a straight one rank away keeps the same
    cards (an odds judgement the chase now makes itself); face-down cards are planned with as if
-   seen. It costs time: a simulated round takes about 30% longer (1,000 rounds a board: 17 s →
-   22.5 s), mostly the best play of the hand each plan's dig leaves (what a failed chase is left with),
-   worked out for every plan in every decision. Already tried and rejected (paired against the version before on 6,000 fresh rounds a
+   seen. It cost time (a simulated round about 40% longer, mostly the best play of the hand each
+   plan's dig leaves, worked out for every plan in every decision), won back by speedups that
+   leave every decision identical (2026-10-05; `player_win_rates`, 2,000 rounds a board, the
+   average of 3 runs on one 4-core machine: 34.3 s before the chase, 47.8 s with it, 30.5 s
+   now; the same per-board results to the last digit): the best plays of a decision's hand and
+   its parts share hand detection, and floors no held card takes part in (`HandParts`,
+   `Outcome::held_used`); a floor that rolls nothing is its average (`Watched`); draw odds are
+   cached like flush odds; 5-card plays that can't all score skip detection; no formatted card
+   keys in `aims`. What's left is mostly the best play of each decision's own hand (the
+   scoring engine, about 40%) and `aims` (about 12%). Already tried and rejected (paired against the version before on 6,000 fresh rounds a
    board, seed 1234, 2026-10-05; the oracle (fixed hand rules) judged the moves where the third
    one differed on Four Fingers + Shortcut and Smeared, 3 discards: the old moves won 101 to 23
    and 120 to 31, −6.6 and −6.4 points a move): the old rule (odds × score × (hands − 1, 1 to
