@@ -1646,6 +1646,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             let n = xs.len().max(1) as f64;
             (xs.iter().map(|c| value(c).max(p_boss)).sum::<f64>() / n, xs.iter().map(|c| c.long_mult.unwrap_or(1.0).max(1.0)).sum::<f64>() / n)
         };
+        let per_count = money_per_run_count(data, &key, run);
         let what = match key.as_str() {
             "tag_charm" | "tag_ethereal" => {
                 let spectral = key == "tag_ethereal";
@@ -1677,6 +1678,15 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             "tag_skip" => {
                 money = 5.0 * (run.skips + 1) as f64;
                 format!("+${money:.0} now")
+            }
+            // A tag that pays $ per hand played or per discard left unused this run (Handy,
+            // Garbage): its config's rate (data/game.json `dollars_per_hand` /
+            // `dollars_per_discard`) times the run's count as the save has it now, before the
+            // skip. When the game reads the counts (tag.lua): not checked.
+            _ if per_count.is_some() => {
+                let (rate, count, per) = per_count.unwrap_or_default();
+                money = rate * count.max(0) as f64;
+                format!("+${money:.0} now (${rate:.0} a {per} this run: {count})")
             }
             "tag_investment" => {
                 long = money_long(25.0);
@@ -2880,6 +2890,15 @@ fn rank_options(out: &mut [ShopOption], base_reach: f64, next_rounds: usize) {
     for i in 0..out.len() {
         out[i].tied = !trouble && i > 0 && tier(&out[i]) == tier(&out[i - 1]);
     }
+}
+
+/// A tag that pays money for a count the run keeps: its rate from the tag's config (data/
+/// game.json: `dollars_per_hand`, Handy; `dollars_per_discard`, Garbage), the count, and what
+/// it counts.
+fn money_per_run_count(data: &GameData, key: &str, run: &RunState) -> Option<(f64, i64, &'static str)> {
+    let config = &data.tag(key)?.config;
+    let rate = |field: &str| config.get(field).and_then(|v| v.as_f64());
+    rate("dollars_per_hand").map(|r| (r, run.hands_played, "hand played")).or_else(|| rate("dollars_per_discard").map(|r| (r, run.unused_discards, "unused discard")))
 }
 
 /// A booster pack from what each card in it is worth (`vals`; `k` cards shown, each a draw
@@ -4516,6 +4535,30 @@ mod tests {
         assert!((pack_value(&worse, 3, Some(1.0), 1.1) - 1.1).abs() < 1e-12);
         assert!((pack_value(&[1.3, 0.9], 2, Some(1.2), 1.1) - 1.3 * 1.2).abs() < 1e-12);
         assert!((pack_value(&[1.3, 1.3], 2, Some(1.0), 1.1) - 1.3 * 1.1).abs() < 1e-12);
+    }
+
+    #[test]
+    fn money_skip_tags_pay_for_the_run_counts() {
+        // Handy ($1 a hand played this run) and Garbage ($1 a discard left unused) on the Small
+        // blind: $30 now, the same skip side as an Economy tag paying $30 (your $30 doubled)
+        let blind_select = |tag: &str| {
+            let mut r = shop_run(&[("j_joker", None, None)], &[]);
+            r.screen = crate::save::Screen::BlindSelect;
+            r.shop = None;
+            r.blinds[0].state = "Select".into();
+            r.blinds[0].skip_tag = Some(tag.into());
+            r.hands_played = 30;
+            r.unused_discards = 30;
+            let a = analyze(&r, GameData::bundled(), None, &quick());
+            a.blinds.iter().find_map(|b| b.skip.clone()).expect("skip or play")
+        };
+        let economy = blind_select("tag_economy");
+        assert!(economy.tag.contains("+$30 now"), "{}", economy.tag);
+        for tag in ["tag_handy", "tag_garbage"] {
+            let s = blind_select(tag);
+            assert!(s.valued && s.tag.starts_with("+$30 now"), "{tag}: {}", s.tag);
+            assert_eq!((s.skip_survive, s.skip_next, s.skip_long), (economy.skip_survive, economy.skip_next, economy.skip_long), "{tag}");
+        }
     }
 
     #[test]
