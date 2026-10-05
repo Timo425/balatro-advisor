@@ -44,6 +44,10 @@ pub struct RunState {
     pub skips: i64,
     /// Hands played this run (`GAME.hands_played`, Loyalty Card).
     pub hands_played: i64,
+    /// Discards left unused at the end of the rounds played this run (`GAME.unused_discards`,
+    /// Garbage Tag). The key is from memory of the game: not checked against the game.
+    #[serde(default)]
+    pub unused_discards: i64,
     /// Tarots used this run (Fortune Teller).
     pub tarots_used: i64,
     /// What The Fool would copy (`GAME.last_tarot_planet`).
@@ -567,6 +571,7 @@ pub fn from_value(g: &Value, data: &GameData, path: &Path, age_secs: Option<u64>
         base_reroll_cost: game.get("base_reroll_cost").int().unwrap_or(5),
         skips: int(game.get("skips")),
         hands_played: int(game.get("hands_played")),
+        unused_discards: int(game.get("unused_discards")),
         tarots_used: int(game.at("consumeable_usage_total.tarot")),
         last_tarot_planet: game.get("last_tarot_planet").str().filter(|k| *k != "c_fool").map(str::to_string),
         starting_deck_size: game.get("starting_deck_size").int().unwrap_or(52),
