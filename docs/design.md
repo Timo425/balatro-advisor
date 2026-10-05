@@ -351,3 +351,15 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    choice on the page, kept with the run, that every sell choice respects as it does eternal
    (a pack joker then counts only into a free slot or by selling another). Raised in play,
    2026-10-05 (Ante 7, Arrowhead without its Gold sticker).
+15. **Bosses whose rule isn't in the simulated round are played as plain blinds.** The
+   simulated round knows the suit and face debuffs, The Manacle, The Needle, The Water and the
+   scoring bosses (`sim::RoundRules`, `engine/score.rs`); the rest only change their target.
+   Verdant Leaf (Ante 8: every card debuffed until a joker is sold) is simulated with nothing
+   debuffed and nothing sold, so the boss's chance, Best play in it and the outlook before it
+   measure the whole board, when one joker must go first (with eternals and a joker kept for
+   a Gold sticker, gap 14, the choice can be down to two). The general fix: the boss's rule in
+   the simulated round (every card debuffed while it's active), and selling a joker as a move
+   the round can make, which lifts it: Best play races which joker to sell (and that it's the
+   first move), and the outlook and the shops before the boss measure the board left after
+   that sale (a cheap joker bought to sell is then worth its keep). Raised in play, 2026-10-05
+   (Ante 8, Verdant Leaf, Arrowhead kept for its Gold sticker).
