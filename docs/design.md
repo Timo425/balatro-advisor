@@ -363,3 +363,14 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    first move), and the outlook and the shops before the boss measure the board left after
    that sale (a cheap joker bought to sell is then worth its keep). Raised in play, 2026-10-05
    (Ante 8, Verdant Leaf, Arrowhead kept for its Gold sticker).
+16. **What isn't valued ranks as worth nothing, and an empty slot counts as filled.** Effects
+   the valuation doesn't cover (Ectoplasm, room in the consumable slots, some tags and
+   vouchers) say "not valued" and add nothing to the ranking: a person reads the label, a
+   player that takes the top option never picks them. And a choice is valued by the board it
+   leaves (simulated rounds and the long-run projection), where empty joker slots are filled
+   with stand-ins for the jokers the shops ahead would sell, even when no shop is left before
+   the boss: a slot is worth a stand-in after a skip that leaves no shop, and nothing for what
+   it would actually hold (a cheap joker to sell at Verdant Leaf, gap 15). The general fix: each
+   "not valued" effect through the one measure, and stand-ins only for the shops still ahead
+   (with gap 13's run end). Raised 2026-10-05, thinking of the advice playing on its own
+   (balatro-agent).
