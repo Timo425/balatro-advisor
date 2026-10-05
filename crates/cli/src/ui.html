@@ -242,12 +242,11 @@ function tagInfo(tag, a, o) {
 
 // Said on the skip line, not only in its hover: a tag whose effect isn't valued (the skip side
 // then counts only what skipping costs), and a joker that grows from the skip (its part of the
-// skip's By Ante 8 factor, from the tag text).
+// skip's By Ante 8 factor, `SkipCompare::grows`).
 function skipNotes(s) {
-  const grows = s.tag.split(" · ").find((x) => x.startsWith("skipping grows "));
   const notes = [];
   if (!s.valued) notes.push(`<span style="color:var(--warn)">tag not valued: skip counts only its cost</span>`);
-  if (grows) notes.push(esc(grows));
+  if (s.grows) notes.push(esc(s.grows));
   return notes.length ? "<br>" + notes.join(" · ") : "";
 }
 

@@ -45,7 +45,7 @@ pub struct RunState {
     /// Hands played this run (`GAME.hands_played`, Loyalty Card).
     pub hands_played: i64,
     /// Discards left unused at the end of the rounds played this run (`GAME.unused_discards`,
-    /// Garbage Tag). The key is from memory of the game: not checked against the game.
+    /// Garbage Tag; added in state_events.lua `end_round`, paid in tag.lua `Tag:apply_to_run`).
     #[serde(default)]
     pub unused_discards: i64,
     /// Tarots used this run (Fortune Teller).

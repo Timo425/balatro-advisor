@@ -453,6 +453,8 @@ pub struct SkipCompare {
     pub tag: String,
     /// False when the tag's effect isn't valued (then skipping only shows its cost)
     pub valued: bool,
+    /// What a joker that grows from skipping gains, said on the skip line
+    pub grows: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1647,7 +1649,8 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         // (the skip side's chance at this ante's boss from here on: `p_boss` stays the play
         // side's in `value` and `play_survive`, both above)
         let p_boss = match ctx.specs.get(key_round) {
-            Some(sp) if skip_grows => ctx.odds_one(&skip_base, sp, spec_rounds(sp, opts.sims)).0,
+            // (at least the board as it is, as for every skip-side board below)
+            Some(sp) if skip_grows => ctx.odds_one(&skip_base, sp, spec_rounds(sp, opts.sims)).0.max(p_boss),
             _ => p_boss,
         };
         let key = bv.skip_tag.as_ref().map_or("", |t| t.key.as_str()).to_string();
@@ -1698,8 +1701,8 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             }
             // A tag that pays $ per hand played or per discard left unused this run (Handy,
             // Garbage): its config's rate (data/game.json `dollars_per_hand` /
-            // `dollars_per_discard`) times the run's count as the save has it now, before the
-            // skip. When the game reads the counts (tag.lua): not checked.
+            // `dollars_per_discard`) times the run's count as the save has it now: an
+            // immediate tag, paid when it's given (tag.lua `Tag:apply_to_run`)
             _ if per_count.is_some() => {
                 let (rate, count, per) = per_count.unwrap_or_default();
                 money = rate * count.max(0) as f64;
@@ -1761,7 +1764,11 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         };
         // The skip itself is an event the board can grow from (`G.GAME.skips`: Throwback)
         let skipped = lr.event(RunEvent::SkipBlind);
-        let what = if skipped > 1.0 { format!("{what} · skipping grows {} (×{skipped:.2} by Ante 8; this ante's boss and the next ante's on the grown board, the jokers ahead measured on your board as it is: their lift on top understated)", lr.event_note(RunEvent::SkipBlind)) } else { what };
+        let grows = (skipped > 1.0).then(|| format!("skipping grows {} (×{skipped:.2} by Ante 8)", lr.event_note(RunEvent::SkipBlind)));
+        let what = match &grows {
+            Some(g) => format!("{what} · {g}; this ante's boss and the next ante's on the grown board, the jokers ahead measured on your board as it is: their lift on top understated"),
+            None => what,
+        };
         let skip_survive = survive_with(run.dollars + held + money, k.saturating_sub(1), boss_p);
         let skip_long = long * gain_long(&Gain::money(held + money).with_event(RunEvent::SkipBlind, 1.0));
         // The next ante's boss: the board's chance there plus the shops before it (one fewer
@@ -1783,7 +1790,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         };
         let (pv, sv) = (play_survive * play_next * play_long, skip_survive * skip_next * skip_long);
         let verdict = if (pv - sv).abs() <= 0.03 * pv.max(sv) { "close" } else if sv > pv { "skip" } else { "play" };
-        blind_views[bi].skip = Some(SkipCompare { play_survive, play_next, play_long, skip_survive, skip_next, skip_long, verdict: verdict.into(), tag: what, valued });
+        blind_views[bi].skip = Some(SkipCompare { play_survive, play_next, play_long, skip_survive, skip_next, skip_long, verdict: verdict.into(), tag: what, valued, grows });
     }
     let flow_now = lr.owned_income(&|_| true) - lr.owned_rent(&|_| true);
     let (levels_per_ante, planet_levels) = lr.levels_for(run.dollars + flow_now, flow_now);
