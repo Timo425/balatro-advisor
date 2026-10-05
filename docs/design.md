@@ -378,4 +378,8 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    it would actually hold (a cheap joker to sell at Verdant Leaf, gap 15). The general fix: each
    "not valued" effect through the one measure, and stand-ins only for the shops still ahead
    (with gap 13's run end). Raised 2026-10-05, thinking of the advice playing on its own
-   (balatro-agent).
+   (balatro-agent). Likewise what a reroll may find is the pool's jokers without editions
+   (`shop_pool`, `money_value_with`): a Negative one (0.3% a joker card, poll_edition, not
+   raised by Hone; not checked against the game here) is a joker and a slot, worth little on
+   average but much where a slot is (a joker to sell at Verdant Leaf, with a joker kept: seen
+   in play the same day, a Negative joker and an Ectoplasm both in Ante 8's shops).
