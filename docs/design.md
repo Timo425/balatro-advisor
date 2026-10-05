@@ -189,12 +189,17 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    also cut by a better plan after a dig and by hands that aren't plans (a Full House from
    Three of a Kind); a lesser plan's progress across digs isn't counted (only its cards in one
    dig); a plan's score counts only the cards that complete it, not what else the chase leaves
-   in hand; on pace, a chase is weighed by score (1.5×), not by what the round is
+   in hand; the oracle (200 rounds a board) wins 4.0 points more on average (4.1 before the
+   dig-by-dig chase), most with held cards and 3 discards (12 ± 2.4), pairs (9.5 ± 2.4), Smeared
+   with 1 discard (9.5 ± 2.4), high cards (8.5 ± 3.7) and faces (8.0 ± 2.4); on pace, a chase is
+   weighed by score (1.5×), not by what the round is
    worth (`RoundGoals`: spare hands, discard money), though the round is likely won either way;
    plans cover five kinds of hand (not Two Pair from a Pair, a Full House from Three of a
    Kind); a straight two ranks away is dropped when a straight one rank away keeps the same
    cards (an odds judgement the chase now makes itself); face-down cards are planned with as if
-   seen. Already tried and rejected (paired against the version before on 6,000 fresh rounds a
+   seen. It costs time: a simulated round takes about 30% longer (1,000 rounds a board: 16.8 s →
+   21–22 s), mostly the best play of the cards each plan keeps (the hand a failed chase leaves),
+   worked out for every plan in every decision. Already tried and rejected (paired against the version before on 6,000 fresh rounds a
    board, seed 1234, 2026-10-05; the oracle (fixed hand rules) judged the moves where the third
    one differed on Four Fingers + Shortcut and Smeared, 3 discards: the old moves won 101 to 23
    and 120 to 31, −6.6 and −6.4 points a move): the old rule (odds × score × (hands − 1, 1 to
