@@ -389,3 +389,17 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    raised by Hone; not checked against the game here) is a joker and a slot, worth little on
    average but much where a slot is (a joker to sell at Verdant Leaf, with a joker kept: seen
    in play the same day, a Negative joker and an Ectoplasm both in Ante 8's shops).
+17. **An option's survival adds what its money left buys, measured from your board as it is.**
+   `survive` = the option's own chance + (`survival_with`(money after) − the chance now): the
+   money's finds are valued on the board without the option, as if the option's gain and the
+   jokers that money buys later added up. They don't: both reach for the same boss with the
+   same free slots, and the best of two sets of finds is less than the sum of their gains. So a
+   reroll (its best find bought: one draw) plus its money left counts more than the same money
+   kept, which buys that draw and more later: Ante 2, $15, one free slot, The Mouth at 78%:
+   reroll 88% + $10's later finds = 100% (capped) against keeping the $15, 97%, and its
+   next-ante strength ×1.09 against ×1.00 for keeping the money (kept money's finds count only
+   in survival, not in next-ante strength), so it ranks first where keeping the money and its
+   interest is at least as good (raised in play, 2026-10-05). The same sum on a joker bought
+   counts the money's later finds into a slot the joker took. The general fix: the money's
+   finds measured from the board the option leaves (its chance as the floor a find must beat,
+   and its slots), for next-ante strength as for survival.
