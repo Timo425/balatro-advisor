@@ -672,17 +672,21 @@ fn decide_cards(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i
     let full: Vec<std::cell::OnceCell<f64>> = all.iter().map(|_| std::cell::OnceCell::new()).collect();
     let full_of = |k: usize| *full[k].get_or_init(|| aim_score(b, &all[k], hand, held_keep()));
     let round = ChaseRound { pile: deck.len(), size, hands, discards, need, best: best.mean, on_pace };
-    // each plan's chase (`chase`): with the lesser plans it keeps alive (a lesser hand whose
-    // cards it keeps), always on their full estimate (a middle completion can be far off: a
-    // flush draw's may be a straight flush), and the hand it leaves (the best play of the cards
-    // it keeps)
+    // the first dig for each plan (`dig_for`), and the hand it leaves (its best play: what a
+    // failed chase is left with)
+    let digs: Vec<std::cell::OnceCell<Option<(Vec<usize>, bool)>>> = all.iter().map(|_| std::cell::OnceCell::new()).collect();
+    let dig_of = |k: usize| digs[k].get_or_init(|| dig_for(b, hand, &all[k].keep, held_keep(), discards));
     let left: Vec<std::cell::OnceCell<f64>> = all.iter().map(|_| std::cell::OnceCell::new()).collect();
     let left_of = |k: usize| {
         *left[k].get_or_init(|| {
-            let kept: Vec<Card> = all[k].keep.iter().map(|&i| hand[i]).collect();
-            best_play(b, &kept).map_or(0.0, |p| p.mean)
+            let thrown = dig_of(k).as_ref().map_or(&[][..], |d| &d.0[..]);
+            let rest: Vec<Card> = (0..hand.len()).filter(|i| !thrown.contains(i)).map(|i| hand[i]).collect();
+            best_play(b, &rest).map_or(0.0, |p| p.mean)
         })
     };
+    // each plan's chase (`chase`): with the lesser plans it keeps alive (a lesser hand whose
+    // cards it keeps), always on their full estimate (a middle completion can be far off: a
+    // flush draw's may be a straight flush), and the hand it leaves
     let run = |k: usize, score: &dyn Fn(usize) -> f64| {
         let lesser: Vec<(&Aim, f64)> = (0..all.len())
             .filter(|&j| (all[j].hand as usize) > (all[k].hand as usize) && all[j].keep.iter().all(|i| all[k].keep.contains(i)))
@@ -691,7 +695,8 @@ fn decide_cards(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i
         chase(&all[k], score(k), left_of(k), &lesser, &round)
     };
     // screened on one completion each; the best few get the full estimate
-    let mut plan = (0..all.len()).filter(|&k| eligible(&all[k])).map(|k| (k, run(k, &quick_of))).collect::<Vec<_>>();
+    // (a plan with nothing to throw can't be chased)
+    let mut plan = (0..all.len()).filter(|&k| eligible(&all[k]) && dig_of(k).is_some()).map(|k| (k, run(k, &quick_of))).collect::<Vec<_>>();
     plan.sort_by(|a, c| c.1.value.total_cmp(&a.1.value));
     plan.truncate(AIM_FINALISTS);
     let plan = plan
@@ -700,28 +705,8 @@ fn decide_cards(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i
         .filter(|(_, c)| c.go)
         .max_by(|a, c| a.1.value.total_cmp(&c.1.value));
     if let Some((k, _)) = plan {
-        let off: Vec<usize> = (0..hand.len()).filter(|i| !all[k].keep.contains(i)).collect();
-        let mut toss: Vec<usize> = off.iter().copied().filter(|i| !held_keep().contains(i)).collect();
-        toss.sort_by(|&a, &c| hand[a].rank.chips().total_cmp(&hand[c].rank.chips()));
-        toss.truncate(5);
-        if !toss.is_empty() {
-            if discards > 0 {
-                return Action::Discard(toss);
-            }
-            // No discards: dig with the best hand the other cards make (so it still scores),
-            // topped up with the other kickers to throw away 5 cards.
-            let free: Vec<usize> = off.iter().copied().filter(|i| !held_keep().contains(i)).collect();
-            let cards: Vec<Card> = free.iter().map(|&i| hand[i]).collect();
-            let mut dig: Vec<usize> = best_play(b, &cards).map(|p| p.cards.iter().map(|&k| free[k]).collect()).unwrap_or_default();
-            for i in toss {
-                if dig.len() >= 5 {
-                    break;
-                }
-                if !dig.contains(&i) {
-                    dig.push(i);
-                }
-            }
-            return Action::Play(dig, true);
+        if let Some((v, junk)) = dig_of(k).clone() {
+            return if junk { Action::Play(v, true) } else { Action::Discard(v) };
         }
     }
     if on_pace {
@@ -736,6 +721,35 @@ fn decide_cards(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i
         }
     }
     play_best
+}
+
+/// The first dig for a plan keeping `keep`: up to 5 of the lowest cards outside it, never
+/// those worth holding (`held`), thrown with a discard; once discards are gone, played as a
+/// junk hand: the best hand the cards it may throw make (so it still scores), topped up with
+/// the lowest of them to 5. The cards it removes from the hand, and whether it's a junk hand;
+/// none when there's nothing to throw.
+fn dig_for(b: &Board, hand: &[Card], keep: &[usize], held: &[usize], discards: i64) -> Option<(Vec<usize>, bool)> {
+    let free: Vec<usize> = (0..hand.len()).filter(|i| !keep.contains(i) && !held.contains(i)).collect();
+    let mut toss = free.clone();
+    toss.sort_by(|&a, &c| hand[a].rank.chips().total_cmp(&hand[c].rank.chips()));
+    toss.truncate(5);
+    if toss.is_empty() {
+        return None;
+    }
+    if discards > 0 {
+        return Some((toss, false));
+    }
+    let cards: Vec<Card> = free.iter().map(|&i| hand[i]).collect();
+    let mut dig: Vec<usize> = best_play(b, &cards).map(|p| p.cards.iter().map(|&k| free[k]).collect()).unwrap_or_default();
+    for i in toss {
+        if dig.len() >= 5 {
+            break;
+        }
+        if !dig.contains(&i) {
+            dig.push(i);
+        }
+    }
+    Some((dig, true))
 }
 
 thread_local! {
@@ -1148,25 +1162,27 @@ struct Chase {
     go: bool,
 }
 
-/// On pace, a chase is made only when it's worth this share of the best play more than
-/// playing on (heuristic, in the register: "1.5×").
+/// On pace, a chase is made only when it's worth more than playing on by this share of the
+/// best play (heuristic, in the register; 0.25 and 0.5 measured within noise of each other,
+/// before the hand a chase leaves counted the cards worth holding).
 const ON_PACE_MARGIN: f64 = 0.5;
 
-/// Chasing `aim` (scoring `score`) dig by dig, as the policy plays it, against playing on: the
-/// points the rest of the round is expected to score either way. After each dig the policy
-/// decides again, by the same comparison, so the chase is worked out from the last dig back
-/// (discards first, then junk hands, each one hand fewer): a dig is spent only while the chase
-/// from there is worth more than playing what you have then. At each dig, the plan is made
-/// with its chance given the digs before failed (`aim_odds` between them); else a lesser plan
-/// it keeps alive (`lesser`: every card it keeps, the chase keeps) can be made first, and ends
-/// it when it puts the round on pace (its score × the hands left after the dig); else the
-/// chase goes on, or stops with the hand it leaves (`left`: the best play of the cards it
-/// keeps). A hand made is played once, the hands after it at the best play's average; playing
-/// on is the best play every hand now, or after a dig the hand left and then the best play's
-/// average. A lesser plan's chance per dig: its cards among the dig's new ones (other than
-/// the plan's own fits; cards drawn toward it in earlier digs aren't counted, the chase throws
-/// them away), the best of them when several turn up. On pace, the chase must beat playing on
-/// by `ON_PACE_MARGIN` of the best play.
+/// Chasing `aim` (scoring `score`) dig by dig, against playing on: the points the rest of the
+/// round is expected to score either way. The chase is worked out from the last dig back
+/// (discards first, then junk hands, each one hand fewer): a later dig is spent only while the
+/// chase from there is worth more than playing the hand the first dig leaves (`left`, the same
+/// at every dig), then the best play's average: a simpler test than the policy's own at its
+/// next decision, which sees the new cards and, on pace, its margin and rules. At each dig, the plan is made with its
+/// chance given the digs before failed (`aim_odds` between them); else a lesser plan it keeps
+/// alive (`lesser`: every card it keeps, the chase keeps) can be made first, and ends it when
+/// it puts the round on pace (its score × the hands left after the dig); else the chase goes
+/// on, or stops with the hand it leaves (`left`: the best play of the hand the first dig leaves). A
+/// hand made is played once, the hands after it at the best play's average, and a junk hand
+/// scores nothing; playing on now is the best play every hand. A lesser plan's chance per
+/// dig: its cards among the dig's new ones (other than the plan's own fits; cards drawn
+/// toward it in earlier digs aren't counted, the chase throws them away), the best of them
+/// when several turn up. On pace, the chase must beat playing on by `ON_PACE_MARGIN` of the
+/// best play.
 fn chase(aim: &Aim, score: f64, left: f64, lesser: &[(&Aim, f64)], r: &ChaseRound) -> Chase {
     let t = r.size.saturating_sub(aim.keep.len()).min(5);
     let digs = (r.discards + r.hands - 1).max(0) as usize;
@@ -1966,6 +1982,24 @@ mod tests {
         let flush = Aim { hand: HandType::Flush, keep: vec![0, 1, 2, 3], groups: vec![(standard_deck()[10..19].to_vec(), 1)] };
         let with = chase(&two, 1000.0, 20.0, &[(&flush, 300.0)], &round(180.0, 876.0, 1));
         assert!(with.value > c.value, "{} {}", with.value, c.value);
+    }
+
+    #[test]
+    fn a_dig_leaves_the_cards_worth_holding() {
+        // Baron: the Kings score while held, so a dig for the Hearts never throws them, with a
+        // discard or as a junk hand, and the hand a failed chase is left with still has them
+        let b = sample_board(&["j_baron"]);
+        let hand = Card::parse_list("KS KC 2H 5H 9H 3C 4D 8S").unwrap();
+        let hearts = [2, 4, 5];
+        let held = held_value(&b, &hand, &[]);
+        assert!(held.contains(&0) && held.contains(&1), "{held:?}");
+        for discards in [1, 0] {
+            let (dig, junk) = dig_for(&b, &hand, &hearts, &held, discards).unwrap();
+            assert_eq!(junk, discards == 0);
+            assert!(!dig.contains(&0) && !dig.contains(&1) && dig.iter().all(|i| !hearts.contains(i)), "{dig:?}");
+        }
+        // with nothing but cards worth holding outside it, there's no dig
+        assert!(dig_for(&b, &hand[..2], &[], &[0, 1], 1).is_none());
     }
 
     #[test]
