@@ -193,7 +193,10 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    also cut by a better plan after a dig and by hands that aren't plans (a Full House from
    Three of a Kind); a lesser plan's progress across digs isn't counted (only its cards in one
    dig); a plan's score counts only the cards that complete it, not what else the chase leaves
-   in hand; on pace, a chase is weighed by score (`ON_PACE_MARGIN`), not by what the round is
+   in hand; the oracle (200 rounds a board) wins 3.6 points more on average (4.1 before the
+   dig-by-dig chase), most with pairs and 3 discards (9.5 ± 2.4), Smeared with 1 (9.5 ± 2.4), held
+   cards with 3 (9.5 ± 2.4), faces with 3 (7.0 ± 2.4) and high cards with 3 (7.0 ± 3.8); on pace, a
+   chase is weighed by score (`ON_PACE_MARGIN`), not by what the round is
    worth (`RoundGoals`: spare hands, discard money), though the round is likely won either way;
    plans cover five kinds of hand (not Two Pair from a Pair, a Full House from Three of a
    Kind); a straight two ranks away is dropped when a straight one rank away keeps the same
