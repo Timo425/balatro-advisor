@@ -193,6 +193,19 @@ impl Card {
         )
     }
 
+    /// `order_key`'s order without building the key: rank and suit first, the rest (formatted)
+    /// only when both are equal. For hot loops.
+    pub fn order_cmp(&self, other: &Card) -> std::cmp::Ordering {
+        other.rank.0.cmp(&self.rank.0).then((self.suit as u8).cmp(&(other.suit as u8))).then_with(|| self.order_key().2.cmp(&other.order_key().2))
+    }
+
+    /// Whether the two cards have the same `order_key`, without building it (every field equal;
+    /// `perma_bonus` as it prints: by its bits, every NaN alike).
+    pub fn order_eq(&self, other: &Card) -> bool {
+        let bonus = self.perma_bonus.to_bits() == other.perma_bonus.to_bits() || (self.perma_bonus.is_nan() && other.perma_bonus.is_nan());
+        self.same_kind(other) && bonus && self.debuff == other.debuff && self.face_down == other.face_down
+    }
+
     /// `K♠ [glass] (foil) <Red>`
     pub fn label(&self) -> String {
         // A face-down card (The House, Wheel, Mark, Fish) stays unknown: the save knows it,

@@ -1076,17 +1076,23 @@ fn aims(b: &Board, hand: &[Card], deck: &[Card]) -> Vec<Aim> {
         }
     }
     // the same plan twice (Smeared Joker: Hearts and Diamonds are one suit) counts once
-    let mut seen = vec![];
+    // (each group's fits in `Card::order_cmp` order, compared by `order_eq`: the same as
+    // comparing their sorted `order_key`s)
+    type Key = (HandType, Vec<usize>, Vec<(Vec<Card>, usize)>);
+    let same = |x: &Key, y: &Key| {
+        x.0 == y.0 && x.1 == y.1 && x.2.len() == y.2.len() && x.2.iter().zip(&y.2).all(|(g, h)| g.1 == h.1 && g.0.len() == h.0.len() && g.0.iter().zip(&h.0).all(|(c, d)| c.order_eq(d)))
+    };
+    let mut seen: Vec<Key> = vec![];
     out.retain(|a| {
         let mut k = a.keep.clone();
         k.sort();
         let fits = |g: &(Vec<Card>, usize)| {
-            let mut v: Vec<_> = g.0.iter().map(Card::order_key).collect();
-            v.sort();
+            let mut v = g.0.clone();
+            v.sort_by(Card::order_cmp);
             (v, g.1)
         };
         let key = (a.hand, k, a.groups.iter().map(fits).collect::<Vec<_>>());
-        let new = !seen.contains(&key);
+        let new = !seen.iter().any(|s| same(s, &key));
         seen.push(key);
         new
     });
@@ -1293,7 +1299,7 @@ fn aim_completions(aim: &Aim, hand: &[Card]) -> Vec<(Vec<Card>, f64)> {
                 None => v.push((*c, 1.0)),
             }
         }
-        v.sort_by_key(|x| x.0.order_key());
+        v.sort_by(|x, y| x.0.order_cmp(&y.0));
         v
     };
     let mut out = vec![];
