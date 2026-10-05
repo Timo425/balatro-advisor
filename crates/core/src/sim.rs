@@ -30,11 +30,13 @@ const MEAN_ROLLS: usize = 8;
 fn mean_score(b: &Board, hand: &[Card], play: &[usize], floor: f64) -> f64 {
     let played: Vec<Card> = play.iter().map(|&i| hand[i]).collect();
     let held: Vec<Card> = (0..hand.len()).filter(|i| !play.contains(i)).map(|i| hand[i]).collect();
-    if score::score(b, &played, &held, &mut crate::engine::Lucky, false).score <= floor {
+    // the hand detected once for every roll
+    let info = hand::detect(&played, b.rule_flags());
+    if score::score_detected(b, &played, &held, info.clone(), &mut crate::engine::Lucky, false).score <= floor {
         return floor;
     }
     let mut rolls = Rng::new(0x6d65616e);
-    (0..MEAN_ROLLS).map(|_| score::score(b, &played, &held, &mut rolls, false).score).sum::<f64>() / MEAN_ROLLS as f64
+    (0..MEAN_ROLLS).map(|_| score::score_detected(b, &played, &held, info.clone(), &mut rolls, false).score).sum::<f64>() / MEAN_ROLLS as f64
 }
 
 /// Whether the board has jokers that care about unscored kickers (so kicker choices matter).
@@ -576,8 +578,9 @@ fn burn_pays(b: &Board, hand: &[Card], play: &[usize]) -> bool {
     none.discards_left = 0;
     let played: Vec<Card> = play.iter().map(|&i| hand[i]).collect();
     let held: Vec<Card> = (0..hand.len()).filter(|i| !play.contains(i)).map(|i| hand[i]).collect();
-    let now = score::score(b, &played, &held, &mut Unlucky, false).score;
-    score::score(&none, &played, &held, &mut Unlucky, false).score > now * 1.001
+    let info = hand::detect(&played, b.rule_flags());
+    let now = score::score_detected(b, &played, &held, info.clone(), &mut Unlucky, false).score;
+    score::score_detected(&none, &played, &held, info, &mut Unlucky, false).score > now * 1.001
 }
 
 /// The heuristic play/discard policy (labelled as a heuristic everywhere it shows):
@@ -1341,17 +1344,20 @@ fn aim_completions(aim: &Aim, hand: &[Card]) -> Vec<(Vec<Card>, f64)> {
 fn aim_score(b: &Board, aim: &Aim, hand: &[Card], held: &[usize]) -> f64 {
     let kept: Vec<Card> = held.iter().filter(|i| !aim.keep.contains(i)).map(|&i| hand[i]).collect();
     let all = aim_completions(aim, hand);
-    let mid = &all[all.len() / 2].0;
+    // each completion's hand detected once
+    let flags = b.rule_flags();
+    let infos: Vec<hand::HandInfo> = all.iter().map(|x| hand::detect(&x.0, flags)).collect();
+    let (mid, mid_info) = (&all[all.len() / 2].0, &infos[all.len() / 2]);
     let lucky = |c: &Card| c.enhancement == Some(Enhancement::Lucky);
     let random = all.iter().any(|x| x.0.iter().any(lucky))
         || kept.iter().any(lucky)
-        || score::score(b, mid, &kept, &mut crate::engine::Lucky, false).score > score::score(b, mid, &kept, &mut Unlucky, false).score;
+        || score::score_detected(b, mid, &kept, mid_info.clone(), &mut crate::engine::Lucky, false).score > score::score_detected(b, mid, &kept, mid_info.clone(), &mut Unlucky, false).score;
     let mut rolls = Rng::new(0x1d1e);
     let per = if random { MEAN_ROLLS.div_ceil(all.len()) } else { 1 };
     let (mut total, mut weight) = (0.0, 0.0);
-    for (cards, w) in &all {
+    for ((cards, w), info) in all.iter().zip(&infos) {
         for _ in 0..per {
-            total += w * if random { score::score(b, cards, &kept, &mut rolls, false).score } else { score::score(b, cards, &kept, &mut Unlucky, false).score };
+            total += w * if random { score::score_detected(b, cards, &kept, info.clone(), &mut rolls, false).score } else { score::score_detected(b, cards, &kept, info.clone(), &mut Unlucky, false).score };
             weight += w;
         }
     }
@@ -1365,8 +1371,9 @@ fn held_value(b: &Board, hand: &[Card], play: &[usize]) -> Vec<usize> {
     let played: Vec<Card> = play.iter().map(|&i| hand[i]).collect();
     let rest: Vec<usize> = (0..hand.len()).filter(|i| !play.contains(i)).collect();
     let held = |skip: Option<usize>| -> Vec<Card> { rest.iter().filter(|&&i| Some(i) != skip).map(|&i| hand[i]).collect() };
-    let all = score::score(b, &played, &held(None), &mut Unlucky, false).score;
-    rest.iter().copied().filter(|&i| score::score(b, &played, &held(Some(i)), &mut Unlucky, false).score < all).collect()
+    let info = hand::detect(&played, b.rule_flags());
+    let all = score::score_detected(b, &played, &held(None), info.clone(), &mut Unlucky, false).score;
+    rest.iter().copied().filter(|&i| score::score_detected(b, &played, &held(Some(i)), info.clone(), &mut Unlucky, false).score < all).collect()
 }
 
 /// Simulates the rest of a round with the `decide` policy.
