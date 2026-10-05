@@ -136,7 +136,7 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    budget cuts moves on few rounds (losing is rare, so early rounds rank moves on money). With
    the dig plans in the simulated player (2026-10-04) every pick passes (wall_cryptid seed 44,
    1.64% ± 0.51% below the best before, the Cryptid-first Flush cut at 64 rounds, now picks a line
-   1.5% ± 0.6% above the reference's best), but nothing in the budget changed, so the risk stays.
+   1.5% ± 0.6% above the reference's best), but nothing in the budget changed, so the risk stays: with chases worked out dig by dig (2026-10-05) wall_cryptid seed 42 picks a plain Two Pair 1.01% ± 0.47% below the reference's best, the Cryptid-first Flush (passes, barely).
    The general fix is a cut that can't drop a move a rare lost round would separate; check
    each change against the reference on several seeds.
 2. **Best play and the simulated round try one target per consumable** (a simulated round
@@ -229,7 +229,10 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    play after a dig estimated rather than kept.
 7. **Shop ranking and skip-or-play aren't confidence-based.** They tie within 3% instead of
    using `compare.rs`, because their options are valued by separate simulations, not round by
-   round on the same draws.
+   round on the same draws. The next-ante factor has a cliff: when the best option's chance at the next ante's boss
+   reaches 1% (`next_hopeless` in `rank_options`) and the others' stay at 0, every other option's
+   value becomes 0 and they're ordered by the tie-breaks, keeping your money first
+   (shop_gros_michel_for_mail_in, 2026-10-05: "next round" second, above Golden Joker).
 8. **The policy doesn't weigh what a discard does to the jokers.** The simulated round plays on
    the board each discard leaves (`Board::discard`), so Best play's moves are valued with it,
    but the policy's own choices aren't: burning discards (`burn_pays`) looks only at jokers
