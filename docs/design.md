@@ -399,3 +399,20 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    counts the money's later finds into a slot the joker took. The general fix: the money's
    finds measured from the board the option leaves (its chance as the floor a find must beat,
    and its slots), for next-ante strength as for survival.
+18. **Best play doesn't play for a joker's growth.** A move is valued by what the round leaves
+   (`RoundGoals::value`: the win, Blue Seal planets, money, hands left, cards seen), not by the
+   jokers' state at its end, so a hand played to grow a joker counts only for its points this
+   round. With Square Joker (+4 Chips for each hand of exactly 4 cards played, kept for the
+   run) a 4-card hand is picked only when it scores the most now: a fifth card that adds a
+   few points, or a 5-card hand with the same chance to win, wins the pick, and the simulated
+   player plays the same way. The projection meanwhile grows Square by a table (`grow_antes`:
+   3 four-card hands an ante, whatever is played), so the long run counts growth that Best play
+   never plays for. It matters most for a joker that stays: an Eternal Square can't be sold
+   (`value.rs` keeps it), so its slot is only ever worth what it grows to (raised in play,
+   2026-10-05). The same holds for every joker that grows from how a hand is played (Runner,
+   Wee, Trousers, Green Joker, Ride the Bus, Hiker's cards; discards are gap 8). The general
+   fix: the jokers' state at a round's end in the round's value, through the one measure (the
+   end board's long-run value against the start's: what the growth is worth by Ante 8, an
+   Eternal one for the whole run), and each joker's growth an ante measured from the simulated
+   player's rounds on the projected board instead of a table, so the projection counts what the
+   advice plays for.
