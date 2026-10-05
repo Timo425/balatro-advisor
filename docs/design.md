@@ -113,7 +113,7 @@ vs actual blind results and every shop seen).
 | Vouchers: Overstock half a reroll a shop, Reroll Surplus $2 a shop, Clearance 25% of ~$8, Hone one buy an ante, a voucher shows 1 in 16, Planet Merchant 1 in 12 on your main hand; one that changes your consumable slots (Crystal Ball) or what a round starts with (Grabber, Wasteful, Paint Brush: hands, discards, hand size) by what it changes in the run (`plan::apply_voucher`, card.lua `Card:apply_to_run`), through `Gain::consumable_slots` / `hand_size` / `hands` / `discards` with its price (`voucher_gain`; a slot's only by its Blue Seal planets: room to hold more tarots and planets isn't modelled, and says so; a hand's money left at cash-out isn't, and says so); this round's odds with it from the same change, the blind's rules on top (`blind_from_start`: The Needle, The Water) | `advise.rs` economy and voucher values | what each voucher saves | logged shops |
 | Tags: Meteor's main-hand planet 5 in 12, best 1 of the pick 2; Investment not discounted for arriving later; a Mega Buffoon pack's second pick $2.50 (shop and tag); Emperor average². Any pack can be skipped once while a pick is left: a one-pick pack is worth at least the skip, a Mega pack's second pick at least the skip (`pack_value`); a skipped blind's Throwback growth counted by Ante 8, not for this ante's boss | `advise.rs` skip-or-play, packs, tarots, `pack_value` | — | logged tags and packs |
 | Skip-or-play "close": within 3% | `advise.rs` skip-or-play | noise | (should become `compare.rs`) |
-| Shop ranking: ties within 3%; under 20% this round, score reach decides; next-ante survival dropped when under 1% for every option; a sell choice may cost at most 5 points this ante | `advise.rs` `rank_options`, `NOW_SLACK` | noise and hopeless rounds | (should become `compare.rs`) |
+| Shop ranking: ties within 3%; under 20% this round, score reach decides; a win chance told from none at 3 wins in its rounds (`three_wins`: with none, up to 3 in n can't be ruled out, the rule of three; with 1 or 2 more): next-ante survival counted at least that (its rounds: a third of the simulations, at least 20, `spec_rounds`; a hopeless next ante is then the same factor for every option, and a lucky round doesn't zero the others; a cut at 1% for every option did, shop_gros_michel_for_mail_in 2026-10-05), and a joker the shops or packs ahead may show adds to a survival or expected-buy estimate only from 3 wins in its own rounds (`measured_p`: 100 at the next ante, 20 for a screened joker); a sell choice may cost at most 5 points this ante | `advise.rs` `rank_options`, `NOW_SLACK` | noise and hopeless rounds | (should become `compare.rs`) |
 | Perishable gone by Ante 8 if its rounds < 3 × antes left; Gros Michel breaks 1 in 6 a round | `value.rs` `lasts`, `advise.rs` | — | game source (exact) |
 
 ## Retire list
@@ -229,10 +229,8 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    play after a dig estimated rather than kept.
 7. **Shop ranking and skip-or-play aren't confidence-based.** They tie within 3% instead of
    using `compare.rs`, because their options are valued by separate simulations, not round by
-   round on the same draws. The next-ante factor has a cliff: when the best option's chance at the next ante's boss
-   reaches 1% (`next_hopeless` in `rank_options`) and the others' stay at 0, every other option's
-   value becomes 0 and they're ordered by the tie-breaks, keeping your money first
-   (shop_gros_michel_for_mail_in, 2026-10-05: "next round" second, above Golden Joker).
+   round on the same draws. Near zero, a chance at the next ante's boss moves by whole simulated rounds
+   (4 of 100 against 3 is ×1.33, far past the 3% ties), so count noise can still decide there.
 8. **The policy doesn't weigh what a discard does to the jokers.** The simulated round plays on
    the board each discard leaves (`Board::discard`), so Best play's moves are valued with it,
    but the policy's own choices aren't: burning discards (`burn_pays`) looks only at jokers

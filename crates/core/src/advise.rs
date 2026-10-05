@@ -122,6 +122,9 @@ pub struct Candidate {
     pub rarity_n: u8,
     /// Odds from the full number of simulations (the top of the ranking) rather than the quick screen.
     pub precise: bool,
+    /// The simulations its odds come from (each round's count: `spec_rounds`)
+    #[serde(skip)]
+    pub sims: usize,
     /// Chance a given shop shows it (all card slots, before rerolls).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub per_shop: Option<f64>,
@@ -676,8 +679,7 @@ impl Ctx<'_> {
             .map(|spec| {
                 let bb = self.board_for(b, spec);
                 let start = apply_mods(&self.start_for(spec, &bb), added, removed, !spec.in_progress);
-                let n = if spec.horizon { (sims / 3).max(20) } else { sims };
-                sim::round_odds(&bb, &start, n, self.opts.seed)
+                sim::round_odds(&bb, &start, spec_rounds(spec, sims), self.opts.seed)
             })
             .collect()
     }
@@ -1551,7 +1553,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     let (_, shops_left) = shops_ahead(run, false);
     if shops_left > 0 || run.screen == crate::save::Screen::Shop || run.screen.in_pack() {
         let p_now = base_odds.get(key_round).map_or(0.0, |o| o.0);
-        let value = |c: &Candidate| c.p_win.get(key_round).copied().unwrap_or(p_now);
+        let value = |c: &Candidate| measured_p(&ctx, c, key_round, p_now);
         let mut cache: std::collections::HashMap<i64, f64> = std::collections::HashMap::new();
         for o in options.iter_mut() {
             let money = o.money_after.max(0.0);
@@ -1562,7 +1564,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     // And the next ante's boss, with all the shops before it
     if let Some(hz) = ctx.specs.iter().position(|x| x.horizon) {
         let p_next = base_odds.get(hz).map_or(0.0, |o| o.0);
-        let value = |c: &Candidate| c.p_win.get(hz).copied().unwrap_or(p_next);
+        let value = |c: &Candidate| measured_p(&ctx, c, hz, p_next);
         let mut cache: std::collections::HashMap<i64, f64> = std::collections::HashMap::new();
         for o in options.iter_mut() {
             let money = o.money_after.max(0.0);
@@ -1591,14 +1593,14 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             }
         }
     }
-    rank_options(&mut options, base_reach);
+    rank_options(&mut options, base_reach, next_rounds(&ctx));
     // Skip or play the blind you're choosing now
     let mut blind_views = blind_views;
     if let Some(bi) = blind_views.iter().position(|b| b.state == "Select" && b.slot != "Boss") {
         let bv = blind_views[bi].clone();
         let p_blind = bv.p_win.unwrap_or(1.0);
         let p_boss = base_odds.get(key_round).map_or(0.0, |o| o.0);
-        let value = |c: &Candidate| c.p_win.get(key_round).copied().unwrap_or(p_boss);
+        let value = |c: &Candidate| measured_p(&ctx, c, key_round, p_boss);
         let (_, k) = shops_ahead(run, false);
         let survive_with = |money: f64, shops: usize, p0: f64| money_value_with(&ctx, &pool_entries, &value, p0, money, false, shops, true).max(p0).min(1.0);
         // money spent once, and held (rerolls and packs), as for every option
@@ -1650,7 +1652,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                 format!("{}{skip_note}", if spectral { "a Spectral pack (2 cards, pick 1)" } else { "a Mega Arcana pack (5 tarots, pick 2; counted as your best 1)" })
             }
             "tag_buffoon" => {
-                boss_p = expected_best(&pool_entries, key_round, p_boss, 4, 1.0, f64::INFINITY, per_rarity, &mut rng).max(p_boss);
+                boss_p = expected_best(&ctx, &pool_entries, key_round, p_boss, 4, 1.0, f64::INFINITY, per_rarity, &mut rng).max(p_boss);
                 // the second pick: its sell value (about $2.50), or skipping instead, as in the shop
                 long = long_draw(&pool_entries, 4, 1.0, 1.0, &mut rng) * lr.value(&Gain::money(2.5)).max(skip);
                 format!("a Mega Buffoon pack (4 jokers, pick 2: your best 1, plus the other's sell value){skip_note}")
@@ -1735,7 +1737,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         let (play_next, skip_next) = match ctx.specs.iter().position(|x| x.horizon) {
             Some(hz) => {
                 let p_next = base_odds.get(hz).map_or(0.0, |o| o.0);
-                let value_next = |c: &Candidate| c.p_win.get(hz).copied().unwrap_or(p_next);
+                let value_next = |c: &Candidate| measured_p(&ctx, c, hz, p_next);
                 let shops_next = k + 3;
                 let next_with = |money: f64, shops: usize, p0: f64| money_value_with(&ctx, &pool_entries, &value_next, p0, money, false, shops, true).max(p0).min(1.0);
                 let skip_p0 = if next_boards.is_empty() {
@@ -1959,6 +1961,7 @@ fn evaluate_candidate(ctx: &Ctx, j: Joker, cost: i64, base_odds: &[(f64, Stats)]
             missing_gold: false,
             rarity_n: data.center(&j.key).and_then(|c| c.rarity).unwrap_or(0),
             precise: full,
+            sims: 0,
             per_shop: None,
             roles: roles(&j),
             note: None,
@@ -1990,6 +1993,7 @@ fn evaluate_candidate(ctx: &Ctx, j: Joker, cost: i64, base_odds: &[(f64, Stats)]
         missing_gold: false,
         rarity_n: data.center(&j.key).and_then(|c| c.rarity).unwrap_or(0),
         precise: sims >= ctx.opts.sims,
+        sims,
         per_shop: None,
         roles: roles(&j),
         note: non_scoring_note(&j.key).map(str::to_string),
@@ -2245,7 +2249,7 @@ fn shop_options(
             });
         } else if pk.key.starts_with("p_buffoon") {
             // Jokers picked from a pack are free: no budget limit on what's inside.
-            let e = expected_best(pool, round, now, extra, 1.0, f64::INFINITY, per_rarity, &mut rng);
+            let e = expected_best(ctx, pool, round, now, extra, 1.0, f64::INFINITY, per_rarity, &mut rng);
             out.push(ShopOption { survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None, label: pk.name.clone(), kind: "pack".into(), cost: pk.cost, p_win: e, note: format!("{extra} jokers{pick_note}"), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: Some(pk.key.clone()), desc: None });
         }
     }
@@ -2261,7 +2265,7 @@ fn shop_options(
                 break;
             }
             let budget = run.dollars - spent as f64;
-            let e = expected_best(pool, round, now, slots * k, joker_share, budget, per_rarity, &mut rng);
+            let e = expected_best(ctx, pool, round, now, slots * k, joker_share, budget, per_rarity, &mut rng);
             out.push(ShopOption { survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None,
                 money_after: 0.0,
                 interest_now: 0,
@@ -2542,7 +2546,7 @@ fn shop_options(
         o.interest_now = interest(run.dollars, run.interest_amount, run.interest_cap);
         o.interest_after = interest(o.money_after, run.interest_amount, run.interest_cap);
     }
-    rank_options(&mut out, base_reach);
+    rank_options(&mut out, base_reach, next_rounds(ctx));
     (out, tarots)
 }
 
@@ -2834,17 +2838,19 @@ fn boss_reroll_option(ctx: &Ctx, run: &RunState, data: &GameData, spec: &Spec, n
 /// are a tie (simulation noise), broken by the score reached this round, then the raw
 /// numbers; keeping your money wins a tie. With no real chance at all (under 20%), the score
 /// reached comes first.
-fn rank_options(out: &mut [ShopOption], base_reach: f64) {
+fn rank_options(out: &mut [ShopOption], base_reach: f64, next_rounds: usize) {
     let top_p = out.iter().map(|o| o.p_win).fold(0.0, f64::max);
     let trouble = top_p < 0.2;
-    // No real chance at the next ante's boss whatever you pick: that factor is 0 for every
-    // option and would erase the ranking, so it's left out (next-ante strength still counts)
-    let next_hopeless = out.iter().filter_map(|o| o.survive_next).fold(0.0, f64::max) < 0.01;
+    // A chance at the next ante's boss under 3 wins in its rounds (`next_rounds`) can't be
+    // told from none (`three_wins`), so every option counts at least that: a next ante that's
+    // hopeless whatever you pick is the same factor for all and drops out of the ranking
+    // (next-ante strength still counts), and a lucky round or two doesn't zero the rest
+    let next_floor = three_wins(next_rounds);
     // The long run as the average (geometric) of the next ante and Ante 8: a card bought now
     // helps in every blind from here, money only once it's spent on something.
     let value = |o: &ShopOption| {
         let long = (o.long_mult.unwrap_or(1.0).max(1e-9) * o.next_strength.unwrap_or(1.0).max(1e-9)).sqrt();
-        let next = if next_hopeless { 1.0 } else { o.survive_next.unwrap_or(1.0) };
+        let next = o.survive_next.unwrap_or(1.0).max(next_floor);
         o.survive.unwrap_or(o.p_win) * next * long
     };
     let top = out.iter().map(value).fold(0.0, f64::max).max(1e-9);
@@ -3188,7 +3194,7 @@ fn tarot_values(
                 "c_judgement" => {
                     let mut rng = crate::engine::Rng::new(ctx.opts.seed ^ 0x7a70);
                     let reach = pool_reach(pool, 1, &mut rng).unwrap_or(reach_now).max(reach_now);
-                    return TarotValue { use_effect: None, long_mult: None, decks: vec![], spectral: false, deck: None, key: t.key.clone(), name: t.name.clone(), p_win: expected_best(pool, round, now, 1, 1.0, f64::INFINITY, per_rarity, &mut rng).max(now), note, simulated: true, per_shop, reach, reach_now, money_gain: 0.0 };
+                    return TarotValue { use_effect: None, long_mult: None, decks: vec![], spectral: false, deck: None, key: t.key.clone(), name: t.name.clone(), p_win: expected_best(ctx, pool, round, now, 1, 1.0, f64::INFINITY, per_rarity, &mut rng).max(now), note, simulated: true, per_shop, reach, reach_now, money_gain: 0.0 };
                 }
                 "c_wheel_of_fortune" => {
                     // card.lua: 1 in 4 hits a random joker without an edition; the edition is
@@ -3342,7 +3348,7 @@ fn tarot_values(
                 (after - before) * 100.0, run.dollars, before * 100.0, run.dollars + g, after * 100.0
             );
         }
-        let pv = |c: &Candidate| c.p_win.get(round).copied().unwrap_or(0.0);
+        let pv = |c: &Candidate| measured_p(ctx, c, round, 0.0);
         t.p_win = now + (money_value(ctx, pool, &pv, now, run.dollars + g, false) - money_value(ctx, pool, &pv, now, run.dollars, false)).max(0.0);
         t.simulated = true;
         t.note = if how.is_empty() { t.note.clone() } else { format!("{} · {how}", t.note) };
@@ -3647,6 +3653,7 @@ fn pool_reach(pool: &[Candidate], cards: usize, rng: &mut crate::engine::Rng) ->
 /// probability `joker_share`), buying the best affordable joker if it beats `now`.
 #[allow(clippy::too_many_arguments)]
 fn expected_best(
+    ctx: &Ctx,
     pool: &[Candidate],
     round: usize,
     now: f64,
@@ -3674,7 +3681,7 @@ fn expected_best(
             }
             let c = list[rng.below(list.len())];
             if (c.cost as f64) <= budget {
-                best = best.max(c.p_win.get(round).copied().unwrap_or(0.0));
+                best = best.max(measured_p(ctx, c, round, 0.0));
             }
         }
         total += best;
@@ -3698,6 +3705,34 @@ fn shops_ahead(run: &RunState, next_ante: bool) -> (bool, usize) {
 fn money_value(ctx: &Ctx, pool: &[Candidate], value: &dyn Fn(&Candidate) -> f64, now: f64, money: f64, next_ante: bool) -> f64 {
     let (in_shop, future) = shops_ahead(ctx.run, next_ante);
     money_value_with(ctx, pool, value, now, money, in_shop, future, false)
+}
+
+
+/// The rounds a spec's odds are simulated on, from `sims`: the next ante's boss on a third
+/// (at least 20), its chances are only compared
+fn spec_rounds(spec: &Spec, sims: usize) -> usize {
+    if spec.horizon { (sims / 3).max(20) } else { sims }
+}
+
+/// The rounds your board's chance at the next ante's boss is simulated on
+fn next_rounds(ctx: &Ctx) -> usize {
+    ctx.specs.iter().find(|x| x.horizon).map_or(ctx.opts.sims, |sp| spec_rounds(sp, ctx.opts.sims))
+}
+
+/// The smallest win chance told from none on `n` simulated rounds (heuristic, in the register):
+/// 3 wins. With none, a chance up to 3 in n can't be ruled out (the rule of three, as
+/// `compare.rs` ties); with 1 or 2 even more.
+fn three_wins(n: usize) -> f64 {
+    3.0 / n.max(1) as f64
+}
+
+/// A candidate's win chance in round `i` as a gain over `none` (your board's): only when it's
+/// at least 3 wins in the rounds it was simulated on there (`spec_rounds` of its count), so
+/// a joker's lucky round or two isn't a joker worth buying. Every survival and expected-buy
+/// estimate reads the pool through this.
+fn measured_p(ctx: &Ctx, c: &Candidate, i: usize, none: f64) -> f64 {
+    let n = ctx.specs.get(i).map_or(c.sims, |sp| spec_rounds(sp, c.sims));
+    c.p_win.get(i).copied().filter(|&p| p >= three_wins(n)).unwrap_or(none)
 }
 
 /// The chance of getting through a round with the shops before it: the money buys
@@ -4200,16 +4235,40 @@ mod tests {
         };
         // safe round: the long run decides (0.79 × 1.75 beats 0.92 × 0.99)
         let mut v = vec![opt("pack", 0.92, Some(0.99)), opt("immolate", 0.79, Some(1.75))];
-        rank_options(&mut v, 0.5);
+        rank_options(&mut v, 0.5, 300);
         assert_eq!(v[0].label, "immolate");
         // a round at real risk: the win chance decides (0.9 × 1.0 beats 0.3 × 1.5)
         let mut v = vec![opt("greedy", 0.3, Some(1.5)), opt("safe", 0.9, None)];
-        rank_options(&mut v, 0.5);
+        rank_options(&mut v, 0.5, 300);
         assert_eq!(v[0].label, "safe");
         // within noise: 0.984 × 1.09 vs 0.993 × 1.00 isn't a tie, but 0.99 vs 0.985 is
         let mut v = vec![opt("noise", 0.993, None), opt("keeper", 0.984, Some(1.09))];
-        rank_options(&mut v, 0.5);
+        rank_options(&mut v, 0.5, 300);
         assert_eq!(v[0].label, "keeper");
+        // the next ante's boss out of reach (100 rounds): one option winning 2 there (no more
+        // than chance) doesn't rank the rest by tie-breaks, keeping your money first
+        let next = |label: &str, kind: &str, p: f64, next: f64, long: f64| ShopOption { kind: kind.into(), survive_next: Some(next), ..opt(label, p, Some(long)) };
+        let mut v = vec![
+            next("next round", "leave", 0.90, 0.0, 1.0),
+            next("golden", "joker", 0.987, 0.0, 1.0),
+            next("gros michel", "joker", 0.987, 0.02, 1.12),
+        ];
+        rank_options(&mut v, 0.5, 100);
+        let labels: Vec<&str> = v.iter().map(|o| o.label.as_str()).collect();
+        assert_eq!(labels, ["gros michel", "golden", "next round"]);
+        // above that (6 of 100) it counts, and the rest still rank by this ante and the long run
+        v[0].survive_next = Some(0.06);
+        rank_options(&mut v, 0.5, 100);
+        let labels: Vec<&str> = v.iter().map(|o| o.label.as_str()).collect();
+        assert_eq!(labels, ["gros michel", "golden", "next round"]);
+        // hopeless for every option: the same order as without the factor
+        for o in v.iter_mut() {
+            o.survive_next = Some(0.01);
+        }
+        v.push(next("long shot", "joker", 0.95, 0.0, 1.3));
+        rank_options(&mut v, 0.5, 100);
+        let labels: Vec<&str> = v.iter().map(|o| o.label.as_str()).collect();
+        assert_eq!(labels, ["long shot", "gros michel", "golden", "next round"]);
     }
 
     #[test]
@@ -4217,7 +4276,7 @@ mod tests {
         let c = |r: u8, m: f64| Candidate {
             key: String::new(), name: String::new(), rarity: String::new(), cost: 4, edition: None, action: "add".into(),
             p_win: vec![], p_win_delta: vec![], reach: vec![], reach_delta: vec![], score_gain: 0.0, missing_gold: false,
-            rarity_n: r, precise: false, per_shop: None, roles: vec![], note: None, desc: None, growth: None, long_mult: Some(m), sell_note: None,
+            rarity_n: r, precise: false, sims: 0, per_shop: None, roles: vec![], note: None, desc: None, growth: None, long_mult: Some(m), sell_note: None,
         };
         let mut rng = crate::engine::Rng::new(1);
         let weak = long_draw(&[c(1, 0.5), c(2, 0.7), c(3, 0.9)], 2, 1.0, 1.0, &mut rng);
