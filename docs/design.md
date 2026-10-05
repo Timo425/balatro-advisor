@@ -338,4 +338,15 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    factors cap at 100%, but the long run still counts money), so skips are undervalued and
    spending overvalued. The general fix: the projection's horizon is the run's end (the win
    ante), and what's left past it counts nothing (or what endless play is worth, if that's
-   ever the goal). Raised in play, 2026-10-05 (Ante 7, Throwback).
+   ever the goal). Skip tags that are plain money aren't valued at all: Handy ($1 a hand played
+   this run: $30 at Ante 7, more than playing the Small blind paid) and Garbage ($1 a discard
+   left unused) fall through to "not valued", and that is said only in the hover text; the
+   save has both counts. Raised in play, 2026-10-05 (Ante 7, Throwback, Handy Tag).
+14. **You can't keep a joker out of the sell choices.** Every choice that makes room (a shop
+   joker replacing one, a pack's joker, the rescue list, skip-or-play's Buffoon pack) may sell
+   any joker that isn't eternal; a joker you're finishing for a reason the advice doesn't
+   weigh (a Gold sticker: `missing_gold` is shown, never weighed) can be the one it sells, and
+   a pack's joker counts as if you'd make room for it. The general fix: a per-joker "keep"
+   choice on the page, kept with the run, that every sell choice respects as it does eternal
+   (a pack joker then counts only into a free slot or by selling another). Raised in play,
+   2026-10-05 (Ante 7, Arrowhead without its Gold sticker).
