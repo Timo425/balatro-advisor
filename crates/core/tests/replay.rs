@@ -53,6 +53,7 @@ fn replayed_states_give_the_expected_advice() {
 /// For refactoring: writes the full analysis of every fixture (timing fields dropped) to
 /// `$BAV_SNAPSHOT_DIR`, so the output before and after a change can be compared with
 /// `diff -r`. Run: `BAV_SNAPSHOT_DIR=/tmp/before cargo test --release --test replay -- --ignored snapshot`
+/// (`BAV_ONLY=name` for some fixtures; `BAV_SEED` for another seed than 42: what noise alone changes)
 #[test]
 #[ignore]
 fn snapshot() {
@@ -63,10 +64,16 @@ fn snapshot() {
     let Ok(entries) = std::fs::read_dir(&dir) else { return };
     let mut files: Vec<_> = entries.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")).collect();
     files.sort();
+    let only = std::env::var("BAV_ONLY").ok();
+    let seed: u64 = std::env::var("BAV_SEED").ok().and_then(|s| s.trim().parse().ok()).unwrap_or(42);
     for f in &files {
+        let name = f.file_stem().unwrap().to_string_lossy().to_string();
+        if only.as_ref().is_some_and(|o| !name.contains(o.as_str())) {
+            continue;
+        }
         let v: Value = serde_json::from_str(&std::fs::read_to_string(f).unwrap()).unwrap();
         let run: RunState = serde_json::from_value(v["state"].clone()).unwrap();
-        let mut a = serde_json::to_value(advise::analyze(&run, GameData::bundled(), None, &advise::Options { sims: 300, seed: 42, ..Default::default() })).unwrap();
+        let mut a = serde_json::to_value(advise::analyze(&run, GameData::bundled(), None, &advise::Options { sims: 300, seed, ..Default::default() })).unwrap();
         for k in ["elapsed_ms", "save_age_secs", "live"] {
             a.as_object_mut().unwrap().remove(k);
         }
