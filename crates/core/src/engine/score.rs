@@ -243,8 +243,9 @@ struct Pass<'a, R: Rolls + ?Sized> {
     b: &'a Board,
     rolls: &'a mut R,
     flags: RuleFlags,
-    played: Vec<Card>,
-    held: Vec<Card>,
+    /// copied only when a joker changes a played card (Hiker, Midas Mask, Vampire)
+    played: std::borrow::Cow<'a, [Card]>,
+    held: &'a [Card],
     info: HandInfo,
     js: Vec<JokerState>,
     hands_left: i64,
@@ -478,8 +479,8 @@ pub fn score_detected<R: Rolls + ?Sized>(
         b,
         rolls,
         flags,
-        played: played.to_vec(),
-        held: held.to_vec(),
+        played: std::borrow::Cow::Borrowed(played),
+        held,
         info,
         js: b.jokers.iter().map(|j| JokerState { mult: j.mult, x_mult: j.x_mult, extra_chips: j.extra.chips }).collect(),
         // ease_hands_played(-1) runs before evaluate_play
@@ -516,7 +517,7 @@ impl<R: Rolls + ?Sized> Pass<'_, R> {
     fn outcome(self, chips: f64, mult: f64, debuffed_hand: bool) -> Outcome {
         Outcome {
             hand: self.info.hand,
-            scoring: self.info.scoring.clone(),
+            scoring: self.info.scoring,
             chips,
             mult,
             score: (chips * mult).floor(),
@@ -805,7 +806,7 @@ impl<R: Rolls + ?Sized> Pass<'_, R> {
                 let id = card_id(&c, ci);
                 match jk.kind {
                     Kind::Hiker => {
-                        self.played[ci].perma_bonus += x.n;
+                        self.played.to_mut()[ci].perma_bonus += x.n;
                         eff()
                     }
                     Kind::LuckyCat if self.lucky_trigger && !blueprint => {
@@ -918,7 +919,7 @@ impl<R: Rolls + ?Sized> Pass<'_, R> {
                 let mut any = false;
                 for i in self.info.scoring.clone() {
                     if self.face(&self.played[i], i) {
-                        self.played[i].enhancement = Some(Enhancement::Gold);
+                        self.played.to_mut()[i].enhancement = Some(Enhancement::Gold);
                         any = true;
                     }
                 }
@@ -927,7 +928,7 @@ impl<R: Rolls + ?Sized> Pass<'_, R> {
             Kind::Vampire if !blueprint => {
                 let mut count = 0.0;
                 for i in self.info.scoring.clone() {
-                    let c = &mut self.played[i];
+                    let c = &mut self.played.to_mut()[i];
                     if c.enhancement.is_some() && !c.debuff {
                         c.enhancement = None;
                         count += 1.0;
