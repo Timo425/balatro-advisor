@@ -63,6 +63,17 @@ pub fn best_play(b: &Board, hand: &[Card]) -> Option<Play> {
 /// `best_play`; `prefilter`: skip the plays `could_all_score` rules out before detecting them
 fn best_play_with(b: &Board, hand: &[Card], prefilter: bool) -> Option<Play> {
     let n = hand.len().min(16);
+    best_play_of(b, hand, (1 << n) - 1, prefilter, None).map(|mut p| {
+        p.mean = mean_score(b, hand, &p.cards, p.floor);
+        p
+    })
+}
+
+/// `best_play_with` of the cards `part` (a mask over `hand`'s first 16), without its mean: the
+/// play's cards are indices into `hand`. `detected`: the hands already detected for plays of
+/// `hand` (by mask), filled in as it goes.
+fn best_play_of(b: &Board, hand: &[Card], part: u32, prefilter: bool, mut detected: Option<&mut [Option<hand::HandInfo>]>) -> Option<Play> {
+    let n = hand.len().min(16);
     let flags = b.rule_flags();
     let keep_kickers = kickers_matter(b);
     let mut best: Option<Play> = None;
@@ -71,7 +82,13 @@ fn best_play_with(b: &Board, hand: &[Card], prefilter: bool) -> Option<Play> {
     let mut idx: Vec<usize> = Vec::with_capacity(5);
     // Face-down cards can't be planned around (you don't know them): only as filler
     let hidden: u32 = (0..n).filter(|&i| hand[i].face_down).fold(0, |m, i| m | (1 << i));
-    for mask in 1u32..(1 << n) {
+    // every play within the part, in increasing order of its mask
+    let mut mask = 0u32;
+    loop {
+        mask = mask.wrapping_sub(part) & part;
+        if mask == 0 {
+            break;
+        }
         let k = mask.count_ones();
         if k > 5 || mask & hidden != 0 {
             continue;
@@ -84,21 +101,67 @@ fn best_play_with(b: &Board, hand: &[Card], prefilter: bool) -> Option<Play> {
         arrange(hand, &mut idx);
         played.clear();
         played.extend(idx.iter().map(|&i| hand[i]));
-        let info = hand::detect(&played, flags);
+        // the hand depends only on the cards played (and the rules), not on the cards held
+        let info = match detected.as_deref_mut() {
+            Some(d) => d[mask as usize].get_or_insert_with(|| hand::detect(&played, flags)).clone(),
+            None => hand::detect(&played, flags),
+        };
         if !keep_kickers && info.scoring.len() != played.len() {
             continue;
         }
         held.clear();
-        held.extend((0..n).filter(|i| mask & (1 << i) == 0).map(|i| hand[i]));
+        held.extend((0..n).filter(|i| part & !mask & (1 << i) != 0).map(|i| hand[i]));
         let o = score::score_detected(b, &played, &held, info, &mut Unlucky, false);
         if best.as_ref().is_none_or(|p| o.score > p.floor) {
             best = Some(Play { cards: idx.clone(), hand: o.hand, floor: o.score, mean: o.score });
         }
     }
-    best.map(|mut p| {
-        p.mean = mean_score(b, hand, &p.cards, p.floor);
+    best
+}
+
+/// The best plays of parts of one hand (a decision's: the hand each plan's dig leaves, the
+/// cards a junk hand is made of), each part worked out once, and each play's hand detected
+/// once for every part it's in. The same results as `best_play` of the part's cards.
+struct HandParts<'a> {
+    b: &'a Board,
+    hand: &'a [Card],
+    /// the hands detected, by mask (none for a hand of more than `PARTS_MAX` cards)
+    detected: std::cell::RefCell<Vec<Option<hand::HandInfo>>>,
+    done: std::cell::RefCell<Vec<(u32, Option<Play>)>>,
+}
+
+/// The largest hand `HandParts` shares detections for (2^n of them)
+const PARTS_MAX: usize = 12;
+
+impl<'a> HandParts<'a> {
+    fn new(b: &'a Board, hand: &'a [Card]) -> Self {
+        let size = if hand.len() <= PARTS_MAX { 1 << hand.len() } else { 0 };
+        HandParts { b, hand, detected: std::cell::RefCell::new(vec![None; size]), done: std::cell::RefCell::new(vec![]) }
+    }
+
+    /// `best_play` of the cards at `idx` (indices into the hand, in order): the play's cards
+    /// as indices into the hand
+    fn best(&self, idx: &[usize]) -> Option<Play> {
+        let (b, hand) = (self.b, self.hand);
+        let rest: Vec<Card> = idx.iter().map(|&i| hand[i]).collect();
+        if hand.len() > PARTS_MAX {
+            return best_play(b, &rest).map(|mut p| {
+                p.cards = p.cards.iter().map(|&k| idx[k]).collect();
+                p
+            });
+        }
+        let part: u32 = idx.iter().fold(0, |m, &i| m | 1 << i);
+        if let Some((_, p)) = self.done.borrow().iter().find(|e| e.0 == part) {
+            return p.clone();
+        }
+        let p = best_play_of(b, hand, part, true, Some(&mut self.detected.borrow_mut())).map(|mut p| {
+            let rel: Vec<usize> = p.cards.iter().map(|c| idx.iter().position(|i| i == c).unwrap()).collect();
+            p.mean = mean_score(b, &rest, &rel, p.floor);
+            p
+        });
+        self.done.borrow_mut().push((part, p.clone()));
         p
-    })
+    }
 }
 
 /// Whether every card of the play `mask` (of `hand`'s first `n`) could score, before running
@@ -613,7 +676,10 @@ fn burn_pays(b: &Board, hand: &[Card], play: &[usize]) -> bool {
 /// `burn`: whether to check if burning discards pays (off inside that check itself).
 #[allow(clippy::too_many_arguments)]
 fn decide_cards(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i64, need: f64, size: usize, burn: bool) -> Action {
-    let Some(best) = best_play(b, hand) else { return Action::Play(vec![], false) };
+    // the best plays of this hand and of its parts (`HandParts`)
+    let parts = HandParts::new(b, hand);
+    let whole: Vec<usize> = (0..hand.len()).collect();
+    let Some(best) = parts.best(&whole) else { return Action::Play(vec![], false) };
     let play_best = Action::Play(with_fillers(b, hand, &best.cards), false);
     // Discards that pay money (`discard_money`, the engine's discard effects): while the
     // round is safe (on pace with this hand), cash the discard that pays most among those
@@ -693,13 +759,13 @@ fn decide_cards(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i
     // the first dig for each plan (`dig_for`), and the hand it leaves (its best play: what a
     // failed chase is left with)
     let digs: Vec<std::cell::OnceCell<Option<(Vec<usize>, bool)>>> = all.iter().map(|_| std::cell::OnceCell::new()).collect();
-    let dig_of = |k: usize| digs[k].get_or_init(|| dig_for(b, hand, &all[k].keep, held_keep(), discards));
+    let dig_of = |k: usize| digs[k].get_or_init(|| dig_for(&parts, &all[k].keep, held_keep(), discards));
     let left: Vec<std::cell::OnceCell<f64>> = all.iter().map(|_| std::cell::OnceCell::new()).collect();
     let left_of = |k: usize| {
         *left[k].get_or_init(|| {
             let thrown = dig_of(k).as_ref().map_or(&[][..], |d| &d.0[..]);
-            let rest: Vec<Card> = (0..hand.len()).filter(|i| !thrown.contains(i)).map(|i| hand[i]).collect();
-            best_play(b, &rest).map_or(0.0, |p| p.mean)
+            let rest: Vec<usize> = (0..hand.len()).filter(|i| !thrown.contains(i)).collect();
+            parts.best(&rest).map_or(0.0, |p| p.mean)
         })
     };
     // each plan's chase (`chase`): with the lesser plans it keeps alive (a lesser hand whose
@@ -746,7 +812,8 @@ fn decide_cards(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i
 /// junk hand: the best hand the cards it may throw make (so it still scores), topped up with
 /// the lowest of them to 5. The cards it removes from the hand, and whether it's a junk hand;
 /// none when there's nothing to throw.
-fn dig_for(b: &Board, hand: &[Card], keep: &[usize], held: &[usize], discards: i64) -> Option<(Vec<usize>, bool)> {
+fn dig_for(parts: &HandParts, keep: &[usize], held: &[usize], discards: i64) -> Option<(Vec<usize>, bool)> {
+    let hand = parts.hand;
     let free: Vec<usize> = (0..hand.len()).filter(|i| !keep.contains(i) && !held.contains(i)).collect();
     let mut toss = free.clone();
     toss.sort_by(|&a, &c| hand[a].rank.chips().total_cmp(&hand[c].rank.chips()));
@@ -757,8 +824,7 @@ fn dig_for(b: &Board, hand: &[Card], keep: &[usize], held: &[usize], discards: i
     if discards > 0 {
         return Some((toss, false));
     }
-    let cards: Vec<Card> = free.iter().map(|&i| hand[i]).collect();
-    let mut dig: Vec<usize> = best_play(b, &cards).map(|p| p.cards.iter().map(|&k| free[k]).collect()).unwrap_or_default();
+    let mut dig: Vec<usize> = parts.best(&free).map(|p| p.cards).unwrap_or_default();
     for i in toss {
         if dig.len() >= 5 {
             break;
@@ -2032,12 +2098,45 @@ mod tests {
         let held = held_value(&b, &hand, &[]);
         assert!(held.contains(&0) && held.contains(&1), "{held:?}");
         for discards in [1, 0] {
-            let (dig, junk) = dig_for(&b, &hand, &hearts, &held, discards).unwrap();
+            let (dig, junk) = dig_for(&HandParts::new(&b, &hand), &hearts, &held, discards).unwrap();
             assert_eq!(junk, discards == 0);
             assert!(!dig.contains(&0) && !dig.contains(&1) && dig.iter().all(|i| !hearts.contains(i)), "{dig:?}");
         }
         // with nothing but cards worth holding outside it, there's no dig
-        assert!(dig_for(&b, &hand[..2], &[], &[0, 1], 1).is_none());
+        assert!(dig_for(&HandParts::new(&b, &hand[..2]), &[], &[0, 1], 1).is_none());
+    }
+
+    #[test]
+    fn the_best_plays_of_a_hands_parts_are_best_play_of_their_cards() {
+        // `HandParts` shares hand detection between the parts of a hand and remembers each
+        // part: the same best play, average included, as `best_play` of the part's cards, on
+        // random hands and parts, Stone and Wild cards among them, and on boards where held
+        // cards and random effects score
+        let mut rng = Rng::new(9);
+        let boards: [&[&str]; 5] = [&[], &["j_baron", "j_raised_fist"], &["j_four_fingers", "j_shortcut"], &["j_misprint", "j_blackboard"], &["j_smeared", "j_half"]];
+        for keys in boards {
+            let b = sample_board(keys);
+            for t in 0..100 {
+                let mut deck = standard_deck();
+                shuffle(&mut deck, &mut rng);
+                let mut hand: Vec<Card> = deck[..6 + t % 5].to_vec();
+                if rng.below(3) == 0 {
+                    hand[rng.below(6)].enhancement = Some(Enhancement::Stone);
+                }
+                if rng.below(3) == 0 {
+                    hand[rng.below(6)].enhancement = Some(Enhancement::Wild);
+                }
+                let parts = HandParts::new(&b, &hand);
+                for _ in 0..12 {
+                    let m = rng.below(1 << hand.len()) as u32 | 1;
+                    let idx: Vec<usize> = (0..hand.len()).filter(|i| m & (1 << i) != 0).collect();
+                    let cards: Vec<Card> = idx.iter().map(|&i| hand[i]).collect();
+                    let want = best_play(&b, &cards).map(|p| (p.cards.iter().map(|&k| idx[k]).collect::<Vec<_>>(), p.hand, p.floor, p.mean));
+                    let got = parts.best(&idx).map(|p| (p.cards, p.hand, p.floor, p.mean));
+                    assert_eq!(got, want, "{keys:?} {hand:?} {idx:?}");
+                }
+            }
+        }
     }
 
     #[test]
