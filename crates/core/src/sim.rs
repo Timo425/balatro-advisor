@@ -662,14 +662,19 @@ fn decide_cards(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i
     // cards it keeps), always on their full estimate (a middle completion can be far off: a
     // flush draw's may be a straight flush), and the hand it leaves (the best play of the cards
     // it keeps)
+    let left: Vec<std::cell::OnceCell<f64>> = all.iter().map(|_| std::cell::OnceCell::new()).collect();
+    let left_of = |k: usize| {
+        *left[k].get_or_init(|| {
+            let kept: Vec<Card> = all[k].keep.iter().map(|&i| hand[i]).collect();
+            best_play(b, &kept).map_or(0.0, |p| p.mean)
+        })
+    };
     let run = |k: usize, score: &dyn Fn(usize) -> f64| {
         let lesser: Vec<(&Aim, f64)> = (0..all.len())
             .filter(|&j| (all[j].hand as usize) > (all[k].hand as usize) && all[j].keep.iter().all(|i| all[k].keep.contains(i)))
             .map(|j| (&all[j], full_of(j)))
             .collect();
-        let kept: Vec<Card> = all[k].keep.iter().map(|&i| hand[i]).collect();
-        let left = best_play(b, &kept).map_or(0.0, |p| p.mean);
-        chase(&all[k], score(k), left, &lesser, &round)
+        chase(&all[k], score(k), left_of(k), &lesser, &round)
     };
     // screened on one completion each; the best few get the full estimate
     let mut plan = (0..all.len()).filter(|&k| eligible(&all[k])).map(|k| (k, run(k, &quick_of))).collect::<Vec<_>>();
@@ -1151,9 +1156,14 @@ const ON_PACE_MARGIN: f64 = 0.5;
 fn chase(aim: &Aim, score: f64, left: f64, lesser: &[(&Aim, f64)], r: &ChaseRound) -> Chase {
     let t = r.size.saturating_sub(aim.keep.len()).min(5);
     let digs = (r.discards + r.hands - 1).max(0) as usize;
-    let made = |j: usize| aim_odds(aim, r.pile, r.size, j);
+    // made within j digs, for j up to every dig
+    let made: Vec<f64> = (0..=digs).map(|j| aim_odds(aim, r.pile, r.size, j)).collect();
     let fits: Vec<&Card> = aim.groups.iter().flat_map(|g| g.0.iter()).collect();
-    let mut lesser: Vec<&(&Aim, f64)> = lesser.iter().collect();
+    // each lesser plan's groups without the plan's own fits, the best first
+    let mut lesser: Vec<(Vec<(usize, usize)>, f64)> = lesser
+        .iter()
+        .map(|(l, sc)| (l.groups.iter().map(|g| (g.0.iter().filter(|c| !fits.contains(c)).count(), g.1)).collect(), *sc))
+        .collect();
     lesser.sort_by(|a, c| c.1.total_cmp(&a.1));
     // the hands left at dig s (a junk hand once the discards are gone)
     let hands_at = |s: usize| if s as i64 >= r.discards { r.hands - (s as i64 - r.discards) } else { r.hands };
@@ -1166,19 +1176,18 @@ fn chase(aim: &Aim, score: f64, left: f64, lesser: &[(&Aim, f64)], r: &ChaseRoun
     // the chase from the next dig on, when the policy goes on with it
     let mut next: Option<f64> = None;
     for s in (0..digs).rev() {
-        let (f0, f1) = (made(s), made(s + 1));
+        let (f0, f1) = (made[s], made[s + 1]);
         let hit = if f0 < 1.0 { ((f1 - f0) / (1.0 - f0)).clamp(0.0, 1.0) } else { 1.0 };
         let hands = hands_at(s);
         let after = if s as i64 >= r.discards { hands - 1 } else { hands };
         let ends = |x: f64| x + (after - 1).max(0) as f64 * r.best;
         let pile = r.pile.saturating_sub(t * s).saturating_sub(fits.len());
         let (mut miss, mut stop) = (1.0, 0.0);
-        for (l, sc) in &lesser {
+        for (groups, sc) in &lesser {
             if sc * (after as f64) < r.need {
                 continue;
             }
-            let groups: Vec<(usize, usize)> = l.groups.iter().map(|g| (g.0.iter().filter(|c| !fits.contains(c)).count(), g.1)).collect();
-            let q = draw_odds(&groups, pile, t.min(pile));
+            let q = draw_odds(groups, pile, t.min(pile));
             stop += miss * q * ends(*sc);
             miss *= 1.0 - q;
         }
