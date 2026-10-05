@@ -1007,14 +1007,17 @@ fn aims(b: &Board, hand: &[Card], deck: &[Card]) -> Vec<Aim> {
         (0..hand.len()).filter(|&i| ids[i] == r && ok(&hand[i])).max_by_key(|&i| (pref[i], std::cmp::Reverse(i)))
     };
     let any = |_: &Card| true;
+    // `copy_of` for every rank a run can have (1 to 14), worked out once
+    let copies = |ok: &dyn Fn(&Card) -> bool| -> [Option<usize>; 15] { std::array::from_fn(|r| if r == 0 { None } else { copy_of(r as i32, ok) }) };
+    let any_copy = copies(&any);
     // runs keeping the same cards and missing one rank are one draw (open-ended: either end's
     // rank completes it); one missing two ranks needs both
     let mut straights: Vec<(Vec<usize>, Vec<i32>, Vec<Vec<i32>>)> = vec![];
     for run in runs.iter() {
-        let mut keep: Vec<usize> = run.iter().filter_map(|&r| copy_of(r, &any)).collect();
+        let mut keep: Vec<usize> = run.iter().filter_map(|&r| any_copy[r as usize]).collect();
         keep.sort();
         keep.dedup();
-        let missing: Vec<i32> = run.iter().copied().filter(|&r| copy_of(r, &any).is_none()).map(|r| if r == 1 { 14 } else { r }).collect();
+        let missing: Vec<i32> = run.iter().copied().filter(|&r| any_copy[r as usize].is_none()).map(|r| if r == 1 { 14 } else { r }).collect();
         let s = straights.iter().position(|s| s.0 == keep);
         match (missing.len(), s) {
             (1, Some(s)) if !straights[s].1.contains(&missing[0]) => straights[s].1.push(missing[0]),
@@ -1062,13 +1065,14 @@ fn aims(b: &Board, hand: &[Card], deck: &[Card]) -> Vec<Aim> {
         if hand.iter().filter(|c| in_suit(c)).count() + 2 < need {
             continue;
         }
+        let suit_copy = copies(&in_suit);
         let mut plans: Vec<(Vec<usize>, Vec<i32>)> = vec![];
         for run in runs.iter() {
             let (mut keep, mut missing, mut off) = (vec![], vec![], 0);
             for &r in run.iter() {
-                if let Some(i) = copy_of(r, &in_suit) {
+                if let Some(i) = suit_copy[r as usize] {
                     keep.push(i);
-                } else if let Some(i) = copy_of(r, &any).filter(|_| off < off_suit) {
+                } else if let Some(i) = any_copy[r as usize].filter(|_| off < off_suit) {
                     keep.push(i);
                     off += 1;
                 } else {
@@ -1096,7 +1100,15 @@ fn aims(b: &Board, hand: &[Card], deck: &[Card]) -> Vec<Aim> {
                 continue;
             }
             let kept: Vec<Card> = keep.iter().map(|&i| hand[i]).collect();
+            // a card can only make a straight flush with them if it makes a flush (hand.rs
+            // `flush`: `need` cards of one suit, as `hand::is_suit` counts them): checked first,
+            // detection decides
+            let flush_suit = |c: &Card, s: Suit| hand::is_suit(c, s, false, true, f.smeared);
+            let kept_of = Suit::ALL.map(|s| kept.iter().filter(|k| flush_suit(k, s)).count());
             let makes = |c: &Card| {
+                if !Suit::ALL.iter().zip(kept_of).any(|(&s, n)| n + flush_suit(c, s) as usize >= need) {
+                    return false;
+                }
                 let mut v = kept.clone();
                 v.push(*c);
                 hand::detect(&v, f).contains(StraightFlush)
