@@ -144,8 +144,8 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    round in the move's favour not yet seen (rule of three, where a round can be lost
    outright: Best play); with it no move near the best is called worse early, and every pick
    still passes (seeds 42–44 every fixture, 45–46 wall_cryptid; seed 42 0.98% ± 0.44% below the
-   best, seed 44 0.31% ± 0.54%). What's left is the budget: near-best moves now leave there
-   (seed 42's best after 32 rounds), cut by their value on few rounds, a cost limit, with the
+   best, seed 44 0.31% ± 0.54%, seed 46 0.53% ± 0.49%, was on the best). What's left is the
+   budget: near-best moves now leave there (seed 42's best after 32 rounds, seed 46's after 128), cut by their value on few rounds, a cost limit, with the
    same blind spot. The general fix is a cut that can't drop a move a rare lost round would
    separate: rank the budget's cut by the same bound as "clearly worse" (each move's paired
    difference to the leader with the unseen round counted, less 2 standard errors) instead of
@@ -312,3 +312,19 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    projected round read wherever the projection reads a round. The economy, Hone / Glow Up and
    Planet Merchant vouchers are still valued by their own blocks (Planet Merchant with its own
    planet rate beside `apply_voucher`'s).
+13. **Skip-or-play counts a joker that grows from skipping only by Ante 8, and the long run
+   doesn't know the run ends.** The skip is an event the board grows from (`Board::after`
+   `SkipBlind`: Throwback), but only the skip's By Ante 8 factor sees it (`advise.rs`
+   skip-or-play, `skip_long`); this ante's boss and the next ante's are simulated on your board
+   as it is, though late in a run (Ante 7, this boss at 99%) the next boss is what decides.
+   The general fix: the skip side's bosses on the board after the event, as Meteor's tag
+   already gives the next ante's boss its board (`next_boards`); the jokers the shops ahead may
+   show are measured on your board, so their lift on top of a grown board is understated
+   (say so). Nor does the page show it: the growth is only in the skip line's hover text
+   (`ui.html`), and the skip's ×By Ante 8 includes it unlabelled. And the projection values
+   money, rerolls and packs as if the run went on past Ante 8 (`LongRun`, `Spending`): near the
+   end, on a board that already beats the bosses ahead, the shops' worth falls (the survival
+   factors cap at 100%, but the long run still counts money), so skips are undervalued and
+   spending overvalued. The general fix: the projection's horizon is the run's end (the win
+   ante), and what's left past it counts nothing (or what endless play is worth, if that's
+   ever the goal). Raised in play, 2026-10-05 (Ante 7, Throwback).
