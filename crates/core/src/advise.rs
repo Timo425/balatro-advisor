@@ -1633,12 +1633,25 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             let main: Vec<(crate::engine::HandType, f64)> = top_hand.map(|t| vec![(t, seal_planets)]).unwrap_or_default();
             play_long = lr.value(&Gain { money: gain, planets: main, ..Default::default() });
         }
-        // Skipping: one shop fewer before the boss, plus the tag
+        // Skipping: one shop fewer before the boss, plus the tag, on the board the skip
+        // leaves (`Board::after`: a joker that grows from a skipped blind, Throwback), for this
+        // ante's boss and the next ante's. The jokers the shops and packs ahead may show are
+        // measured on your board as it is: their lift on top of a grown board is understated.
+        let skip_grows = ctx.base.changes_with(RunEvent::SkipBlind);
+        let mut skip_base = ctx.base.clone();
+        skip_base.after(RunEvent::SkipBlind, 1.0);
+        // (the skip side's chance at this ante's boss from here on: `p_boss` stays the play
+        // side's in `value` and `play_survive`, both above)
+        let p_boss = match ctx.specs.get(key_round) {
+            Some(sp) if skip_grows => ctx.odds_one(&skip_base, sp, spec_rounds(sp, opts.sims)).0,
+            _ => p_boss,
+        };
         let key = bv.skip_tag.as_ref().map_or("", |t| t.key.as_str()).to_string();
         let name = bv.skip_tag.as_ref().map_or(String::new(), |t| t.name.clone());
         let (mut money, mut boss_p, mut long, mut valued) = (0.0, p_boss, 1.0, true);
-        // The tag's lasting change to your board, for the next ante's boss (Meteor's planets)
-        let mut next_boards: Vec<(f64, Board)> = vec![];
+        // The tag's lasting change to your board, for the next ante's boss (Meteor's planets),
+        // on the board the skip leaves
+        let mut next_boards: Vec<(f64, Board)> = if skip_grows { vec![(1.0, skip_base.clone())] } else { vec![] };
         let mut rng = crate::engine::Rng::new(opts.seed ^ 0x5e1b);
         let shop_before_boss = k > 1;
         let rarity_avg = |r: u8| {
@@ -1704,9 +1717,9 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                         b.levels[top as usize] = value::add_levels(b.levels[top as usize], 1.0);
                     }
                 };
-                let mut with_now = ctx.base.clone();
+                let mut with_now = skip_base.clone();
                 grow(&mut with_now, true);
-                let mut without_now = ctx.base.clone();
+                let mut without_now = skip_base.clone();
                 grow(&mut without_now, false);
                 if let Some(sp) = ctx.specs.get(key_round) {
                     boss_p = (hit * ctx.odds_one(&with_now, sp, opts.sims).0 + (1.0 - hit) * ctx.odds_one(&without_now, sp, opts.sims).0).max(p_boss);
@@ -1733,7 +1746,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                 if let Some(sp) = ctx.specs.get(key_round) {
                     let mut sp = sp.clone();
                     sp.start.hand_size += 3;
-                    boss_p = ctx.odds_one(&ctx.base, &sp, opts.sims).0.max(p_boss);
+                    boss_p = ctx.odds_one(&skip_base, &sp, opts.sims).0.max(p_boss);
                 }
                 "+3 hand size for the boss".to_string()
             }
@@ -1744,7 +1757,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         };
         // The skip itself is an event the board can grow from (`G.GAME.skips`: Throwback)
         let skipped = lr.event(RunEvent::SkipBlind);
-        let what = if skipped > 1.0 { format!("{what} · skipping grows {} (×{skipped:.2} by Ante 8; for this ante's boss and the next ante's: not modelled)", lr.event_note(RunEvent::SkipBlind)) } else { what };
+        let what = if skipped > 1.0 { format!("{what} · skipping grows {} (×{skipped:.2} by Ante 8; this ante's boss and the next ante's on the grown board, the jokers ahead measured on your board as it is: their lift on top understated)", lr.event_note(RunEvent::SkipBlind)) } else { what };
         let skip_survive = survive_with(run.dollars + held + money, k.saturating_sub(1), boss_p);
         let skip_long = long * gain_long(&Gain::money(held + money).with_event(RunEvent::SkipBlind, 1.0));
         // The next ante's boss: the board's chance there plus the shops before it (one fewer
@@ -1758,7 +1771,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                 let skip_p0 = if next_boards.is_empty() {
                     p_next
                 } else {
-                    next_boards.iter().map(|(w, b)| w * ctx.odds_one(b, &ctx.specs[hz], opts.sims).0).sum::<f64>().max(p_next)
+                    next_boards.iter().map(|(w, b)| w * ctx.odds_one(b, &ctx.specs[hz], spec_rounds(&ctx.specs[hz], opts.sims)).0).sum::<f64>().max(p_next)
                 };
                 (next_with(run.dollars + gain, shops_next, p_next), next_with(run.dollars + held + money, shops_next - 1, skip_p0))
             }
@@ -4559,6 +4572,32 @@ mod tests {
             assert!(s.valued && s.tag.starts_with("+$30 now"), "{tag}: {}", s.tag);
             assert_eq!((s.skip_survive, s.skip_next, s.skip_long), (economy.skip_survive, economy.skip_next, economy.skip_long), "{tag}");
         }
+    }
+
+    #[test]
+    fn a_skip_grows_the_board_for_the_bosses_ahead() {
+        // Throwback at ×2 (4 blinds skipped) against a twin that scores the same now and doesn't
+        // grow from a skip (Constellation at ×2); no joker in the pool and no money on the
+        // skip side, so the skip side's chances are the board's own. Skipping makes Throwback
+        // ×2.25 for this ante's boss and the next ante's.
+        let skip = |twin: &str| {
+            let mut r = shop_run(&[(twin, None, None), ("j_joker", None, None), ("j_joker", None, None)], &[]);
+            r.screen = crate::save::Screen::BlindSelect;
+            r.shop = None;
+            r.blinds[0].state = "Select".into();
+            r.blinds[0].skip_tag = Some("tag_boss".into());
+            r.skips = 4;
+            r.jokers[0].ability["x_mult"] = 2.0.into();
+            r.dollars = 0.0;
+            r.banned_keys = GameData::bundled().centers.iter().filter(|c| c.key.starts_with("j_")).map(|c| c.key.clone()).collect();
+            let a = analyze(&r, GameData::bundled(), None, &Options { sims: 300, ..quick() });
+            a.blinds.iter().find_map(|b| b.skip.clone()).expect("skip or play")
+        };
+        let (grows, twin) = (skip("j_throwback"), skip("j_constellation"));
+        assert_eq!((grows.play_survive, grows.play_next), (twin.play_survive, twin.play_next), "the twins play the same");
+        assert!(grows.skip_survive > twin.skip_survive, "this ante's boss: {} vs {}", grows.skip_survive, twin.skip_survive);
+        assert!(grows.skip_next > twin.skip_next, "the next ante's boss: {} vs {}", grows.skip_next, twin.skip_next);
+        assert!(!grows.tag.contains("not modelled"), "{}", grows.tag);
     }
 
     #[test]
