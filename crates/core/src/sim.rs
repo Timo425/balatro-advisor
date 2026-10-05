@@ -802,9 +802,12 @@ fn oracle_decide(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: 
 
 /// The oracle's alternatives, kept simple and apart from the policy's own plans: playing the
 /// best hand, and (with a discard) throwing away up to 5 of the lowest cards outside each set
-/// worth keeping: each suit you hold 2+ of, each run of 5 ranks you hold 3+ of, the cards that
-/// pair, the biggest rank group, the best play; each also with the cards that pay at round
-/// end kept.
+/// worth keeping: each suit you hold 2+ of, each straight's run of ranks (`straight_runs`) you
+/// hold all but 1 or 2 of (one card a rank), the cards that pair, the biggest rank group, the
+/// best play; each also with the cards that pay at round end kept. By the game's hand rules
+/// as `aims` reads them (hand.lua): suits as flushes count them (`hand::is_suit`: Wild cards,
+/// Smeared Joker), runs of 4 with Four Fingers and with Shortcut's gaps, ranks as straights
+/// and sets see them (`hand::card_id`: Stone cards have none).
 fn oracle_moves(b: &Board, hand: &[Card], deck: &[Card], discards: i64) -> Vec<Move> {
     let mut out = vec![];
     let Some(best) = best_play(b, hand) else { return out };
@@ -812,23 +815,26 @@ fn oracle_moves(b: &Board, hand: &[Card], deck: &[Card], discards: i64) -> Vec<M
     if discards <= 0 || deck.is_empty() {
         return out;
     }
+    let f = b.rule_flags();
+    let need = if f.four_fingers { 4 } else { 5 };
     let mut sets: Vec<Vec<usize>> = vec![];
     for s in Suit::ALL {
-        let g: Vec<usize> = (0..hand.len()).filter(|&i| hand[i].suit == s).collect();
-        if g.len() >= 2 {
+        let g: Vec<usize> = (0..hand.len()).filter(|&i| hand::is_suit(&hand[i], s, false, true, f.smeared)).collect();
+        if g.len() >= 2 && !sets.contains(&g) {
             sets.push(g);
         }
     }
-    for lo in 1u8..=10 {
-        let g: Vec<usize> = (lo..lo + 5).filter_map(|r| (0..hand.len()).find(|&i| hand[i].rank.0 == if r == 1 { 14 } else { r })).collect();
-        if g.len() >= 3 {
+    let ids: Vec<i32> = (0..hand.len()).map(|i| hand::card_id(&hand[i], i)).collect();
+    for run in straight_runs(need, f.shortcut).iter() {
+        let g: Vec<usize> = run.iter().filter_map(|&r| (0..hand.len()).find(|&i| ids[i] == if r == 1 { 14 } else { r })).collect();
+        if g.len() + 2 >= need && !sets.contains(&g) {
             sets.push(g);
         }
     }
-    let count = |r: u8| hand.iter().filter(|c| c.rank.0 == r).count();
-    let paired: Vec<usize> = (0..hand.len()).filter(|&i| count(hand[i].rank.0) >= 2).collect();
-    if let Some(&top) = paired.iter().max_by_key(|&&i| (count(hand[i].rank.0), hand[i].rank.0)) {
-        sets.push((0..hand.len()).filter(|&i| hand[i].rank.0 == hand[top].rank.0).collect());
+    let count = |r: i32| ids.iter().filter(|&&x| x == r).count();
+    let paired: Vec<usize> = (0..hand.len()).filter(|&i| count(ids[i]) >= 2).collect();
+    if let Some(&top) = paired.iter().max_by_key(|&&i| (count(ids[i]), ids[i])) {
+        sets.push((0..hand.len()).filter(|&i| ids[i] == ids[top]).collect());
         sets.push(paired);
     }
     sets.push(best.cards);
@@ -1837,6 +1843,33 @@ mod tests {
         let mut any = any;
         any.sort();
         assert!(ff.contains(&(vec![0, 1, 2, 3], any)), "{ff:?}");
+    }
+
+    #[test]
+    fn the_oracle_keeps_sets_by_the_games_hand_rules() {
+        // the cards each oracle discard keeps
+        let kept = |cards: &str, keys: &[&str]| -> Vec<Vec<String>> {
+            let hand = Card::parse_list(cards).unwrap();
+            let deck: Vec<Card> = standard_deck().into_iter().filter(|c| !hand.iter().any(|h| h.same_kind(c))).collect();
+            oracle_moves(&sample_board(keys), &hand, &deck, 3)
+                .into_iter()
+                .filter_map(|m| match m {
+                    Move::Discard(v) => Some((0..hand.len()).filter(|i| !v.contains(i)).map(|i| hand[i].label()).collect()),
+                    Move::Play(_) => None,
+                })
+                .collect()
+        };
+        let has = |v: &[Vec<String>], want: &[&str]| v.iter().any(|k| k.len() == want.len() && want.iter().all(|w| k.contains(&w.to_string())));
+        // Smeared Joker: Hearts and Diamonds are one suit; a Wild card is every suit
+        let smeared = kept("5H 9D KH 2S 7C JC 4S 8S:wild", &["j_smeared"]);
+        assert!(has(&smeared, &["5♥", "9♦", "K♥", "8♠ [wild]"]), "{smeared:?}");
+        assert!(!has(&kept("5H 9D KH 2S 7C JC 4S 8S:wild", &[]), &["5♥", "9♦", "K♥", "8♠ [wild]"]));
+        // Four Fingers: a run of 4 you hold 2 of; Shortcut: a run with a gap
+        let ff = kept("5H 6S KD QC 2C 9D 9S 3H", &["j_four_fingers"]);
+        assert!(has(&ff, &["2♣", "3♥", "5♥", "6♠"]) || has(&ff, &["3♥", "5♥", "6♠"]), "{ff:?}");
+        let sc = kept("2H 5S 8D KC KD QS QC 3C", &["j_shortcut"]);
+        assert!(has(&sc, &["2♥", "5♠", "8♦"]), "{sc:?}");
+        assert!(!has(&kept("2H 5S 8D KC KD QS QC 3C", &[]), &["2♥", "5♠", "8♦"]));
     }
 
     #[test]
