@@ -63,20 +63,44 @@ pub fn best_play(b: &Board, hand: &[Card]) -> Option<Play> {
 /// `best_play`; `prefilter`: skip the plays `could_all_score` rules out before detecting them
 fn best_play_with(b: &Board, hand: &[Card], prefilter: bool) -> Option<Play> {
     let n = hand.len().min(16);
-    best_play_of(b, hand, (1 << n) - 1, prefilter, None).map(|mut p| {
-        p.mean = mean_score(b, hand, &p.cards, p.floor);
+    best_play_of(b, hand, (1 << n) - 1, prefilter, None).map(|(mut p, rolled)| {
+        // a floor that rolled nothing is every roll's score (with the same cards held: the
+        // whole hand, unless it's more than 16 cards)
+        p.mean = if rolled || n < hand.len() { mean_score(b, hand, &p.cards, p.floor) } else { p.floor };
         p
     })
 }
 
+/// A source of rolls that notes whether it was asked for one: a score that asked for none is
+/// the same whatever the rolls (the engine's randomness is all `Rolls`)
+struct Watched<R> {
+    rolls: R,
+    asked: bool,
+}
+
+impl<R: crate::engine::Rolls> crate::engine::Rolls for Watched<R> {
+    fn chance(&mut self, p: f64) -> bool {
+        self.asked = true;
+        self.rolls.chance(p)
+    }
+    fn range(&mut self, min: i64, max: i64) -> i64 {
+        self.asked = true;
+        self.rolls.range(min, max)
+    }
+    fn unit(&mut self) -> f64 {
+        self.asked = true;
+        self.rolls.unit()
+    }
+}
+
 /// `best_play_with` of the cards `part` (a mask over `hand`'s first 16), without its mean: the
-/// play's cards are indices into `hand`. `detected`: the hands already detected for plays of
-/// `hand` (by mask), filled in as it goes.
-fn best_play_of(b: &Board, hand: &[Card], part: u32, prefilter: bool, mut detected: Option<&mut [Option<hand::HandInfo>]>) -> Option<Play> {
+/// play's cards are indices into `hand`, and whether its floor asked for a roll (`Watched`).
+/// `detected`: the hands already detected for plays of `hand` (by mask), filled in as it goes.
+fn best_play_of(b: &Board, hand: &[Card], part: u32, prefilter: bool, mut detected: Option<&mut [Option<hand::HandInfo>]>) -> Option<(Play, bool)> {
     let n = hand.len().min(16);
     let flags = b.rule_flags();
     let keep_kickers = kickers_matter(b);
-    let mut best: Option<Play> = None;
+    let mut best: Option<(Play, bool)> = None;
     let mut played: Vec<Card> = Vec::with_capacity(5);
     let mut held: Vec<Card> = Vec::with_capacity(n);
     let mut idx: Vec<usize> = Vec::with_capacity(5);
@@ -111,9 +135,10 @@ fn best_play_of(b: &Board, hand: &[Card], part: u32, prefilter: bool, mut detect
         }
         held.clear();
         held.extend((0..n).filter(|i| part & !mask & (1 << i) != 0).map(|i| hand[i]));
-        let o = score::score_detected(b, &played, &held, info, &mut Unlucky, false);
-        if best.as_ref().is_none_or(|p| o.score > p.floor) {
-            best = Some(Play { cards: idx.clone(), hand: o.hand, floor: o.score, mean: o.score });
+        let mut rolls = Watched { rolls: Unlucky, asked: false };
+        let o = score::score_detected(b, &played, &held, info, &mut rolls, false);
+        if best.as_ref().is_none_or(|(p, _)| o.score > p.floor) {
+            best = Some((Play { cards: idx.clone(), hand: o.hand, floor: o.score, mean: o.score }, rolls.asked));
         }
     }
     best
@@ -154,9 +179,13 @@ impl<'a> HandParts<'a> {
         if let Some((_, p)) = self.done.borrow().iter().find(|e| e.0 == part) {
             return p.clone();
         }
-        let p = best_play_of(b, hand, part, true, Some(&mut self.detected.borrow_mut())).map(|mut p| {
-            let rel: Vec<usize> = p.cards.iter().map(|c| idx.iter().position(|i| i == c).unwrap()).collect();
-            p.mean = mean_score(b, &rest, &rel, p.floor);
+        let p = best_play_of(b, hand, part, true, Some(&mut self.detected.borrow_mut())).map(|(mut p, rolled)| {
+            // as `best_play_with`: a floor that rolled nothing (the part's other cards held) is
+            // its average
+            if rolled {
+                let rel: Vec<usize> = p.cards.iter().map(|c| idx.iter().position(|i| i == c).unwrap()).collect();
+                p.mean = mean_score(b, &rest, &rel, p.floor);
+            }
             p
         });
         self.done.borrow_mut().push((part, p.clone()));
@@ -1488,15 +1517,25 @@ fn aim_score(b: &Board, aim: &Aim, hand: &[Card], held: &[usize]) -> f64 {
     let infos: Vec<hand::HandInfo> = all.iter().map(|x| hand::detect(&x.0, flags)).collect();
     let (mid, mid_info) = (&all[all.len() / 2].0, &infos[all.len() / 2]);
     let lucky = |c: &Card| c.enhancement == Some(Enhancement::Lucky);
-    let random = all.iter().any(|x| x.0.iter().any(lucky))
-        || kept.iter().any(lucky)
-        || score::score_detected(b, mid, &kept, mid_info.clone(), &mut crate::engine::Lucky, false).score > score::score_detected(b, mid, &kept, mid_info.clone(), &mut Unlucky, false).score;
+    // the middle completion's floor, when worked out for the check (it's its score when nothing
+    // is random); a floor that asked for no roll (`Watched`) is its ceiling too
+    let mut mid_floor = None;
+    let random = all.iter().any(|x| x.0.iter().any(lucky)) || kept.iter().any(lucky) || {
+        let mut w = Watched { rolls: Unlucky, asked: false };
+        let floor = score::score_detected(b, mid, &kept, mid_info.clone(), &mut w, false).score;
+        mid_floor = Some(floor);
+        w.asked && score::score_detected(b, mid, &kept, mid_info.clone(), &mut crate::engine::Lucky, false).score > floor
+    };
     let mut rolls = Rng::new(0x1d1e);
     let per = if random { MEAN_ROLLS.div_ceil(all.len()) } else { 1 };
     let (mut total, mut weight) = (0.0, 0.0);
-    for ((cards, w), info) in all.iter().zip(&infos) {
+    for (k, ((cards, w), info)) in all.iter().zip(&infos).enumerate() {
         for _ in 0..per {
-            total += w * if random { score::score_detected(b, cards, &kept, info.clone(), &mut rolls, false).score } else { score::score_detected(b, cards, &kept, info.clone(), &mut Unlucky, false).score };
+            total += w * match (random, mid_floor) {
+                (true, _) => score::score_detected(b, cards, &kept, info.clone(), &mut rolls, false).score,
+                (false, Some(f)) if k == all.len() / 2 => f,
+                (false, _) => score::score_detected(b, cards, &kept, info.clone(), &mut Unlucky, false).score,
+            };
             weight += w;
         }
     }
@@ -2162,6 +2201,27 @@ mod tests {
         }
         // with nothing but cards worth holding outside it, there's no dig
         assert!(dig_for(&HandParts::new(&b, &hand[..2]), &[], &[0, 1], 1).is_none());
+    }
+
+    #[test]
+    fn a_floor_that_rolls_nothing_is_the_average() {
+        // `best_play` takes a floor that asked for no roll as its average: the same as
+        // `mean_score`, on boards with random jokers and hands with Lucky cards, and without
+        let mut rng = Rng::new(11);
+        let boards: [&[&str]; 4] = [&[], &["j_misprint"], &["j_bloodstone", "j_jolly"], &["j_baron", "j_joker"]];
+        for keys in boards {
+            let b = sample_board(keys);
+            for _ in 0..150 {
+                let mut deck = standard_deck();
+                shuffle(&mut deck, &mut rng);
+                let mut hand: Vec<Card> = deck[..8].to_vec();
+                if rng.below(2) == 0 {
+                    hand[rng.below(8)].enhancement = Some(Enhancement::Lucky);
+                }
+                let p = best_play(&b, &hand).unwrap();
+                assert_eq!(p.mean, mean_score(&b, &hand, &p.cards, p.floor), "{keys:?} {hand:?}");
+            }
+        }
     }
 
     #[test]
