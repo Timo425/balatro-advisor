@@ -113,6 +113,21 @@ pub fn run(run: &RunState, data: &GameData, plan: &Plan, sims: usize, seed: u64)
         }
         js
     };
+    // The jokers the plan adds and takes away (by key; an owned one kept is neither): their hand
+    // size, hands and discards change every round not yet started (`advise::apply_mods`)
+    let (added, removed): (Vec<&Joker>, Vec<&Joker>) = {
+        let mut left: Vec<&Joker> = jokers.iter().collect();
+        let mut removed = vec![];
+        for o in &owned {
+            match left.iter().position(|j| j.key == o.key) {
+                Some(i) => {
+                    left.remove(i);
+                }
+                None => removed.push(o),
+            }
+        }
+        (left, removed)
+    };
     let negatives = jokers.iter().filter(|j| j.edition == Some(Edition::Negative)).count() as i64;
     if jokers.len() as i64 > run.joker_slots + negatives {
         notes.push(format!("{} jokers but only {} slots", jokers.len(), run.joker_slots + negatives));
@@ -153,7 +168,7 @@ pub fn run(run: &RunState, data: &GameData, plan: &Plan, sims: usize, seed: u64)
         b.playing_cards = deck.len() as i64;
         b
     };
-    let odds = |js: &[Joker], hand: &[Card], pile: &[Card], full: &[Card]| -> Vec<BlindOdds> {
+    let odds = |js: &[Joker], hand: &[Card], pile: &[Card], full: &[Card], added: &[&Joker], removed: &[&Joker]| -> Vec<BlindOdds> {
         let mut out = Vec::new();
         let upcoming = run.blinds.iter().filter(|bl| matches!(bl.state.as_str(), "Select" | "Upcoming" | "Current"));
         for bl in upcoming {
@@ -177,15 +192,24 @@ pub fn run(run: &RunState, data: &GameData, plan: &Plan, sims: usize, seed: u64)
                 let mut deck = full.to_vec();
                 let f = b.rule_flags();
                 rules.apply(&mut deck, f.smeared, f.pareidolia);
-                RoundStart {
+                let start = RoundStart {
                     hand: vec![],
                     deck,
                     hand_size: run.hand_size + rules.hand_size_delta,
-                    hands: if bl.key == "bl_needle" { 1 } else { run.round_hands },
-                    discards: if bl.key == "bl_water" { 0 } else { run.round_discards },
+                    hands: run.round_hands,
+                    discards: run.round_discards,
                     scored: 0.0,
                     target: bl.target,
+                };
+                // the plan's jokers, then the blind's own rule on hands and discards
+                let mut start = crate::advise::apply_mods(&start, added, removed, true);
+                if bl.key == "bl_needle" {
+                    start.hands = 1;
                 }
+                if bl.key == "bl_water" {
+                    start.discards = 0;
+                }
+                start
             };
             let (p, st) = sim::round_odds(&b, &start, sims, seed);
             let bones = js.iter().any(|j| j.key == "j_mr_bones" && !j.debuff);
@@ -203,6 +227,7 @@ pub fn run(run: &RunState, data: &GameData, plan: &Plan, sims: usize, seed: u64)
         let target = crate::save::blind_amount(ante, run.blind_scaling) * 2.0 * run.ante_scaling;
         let b = board_with(js, full);
         let start = RoundStart { hand: vec![], deck: full.to_vec(), hand_size: run.hand_size, hands: run.round_hands, discards: run.round_discards, scored: 0.0, target };
+        let start = crate::advise::apply_mods(&start, added, removed, true);
         let (p, st) = sim::round_odds(&b, &start, sims, seed);
         out.push(BlindOdds { label: format!("Ante {ante} plain boss"), target, p_win: p, p_with_bones: None, reach: st.mean / target.max(1.0) });
         out
@@ -211,7 +236,7 @@ pub fn run(run: &RunState, data: &GameData, plan: &Plan, sims: usize, seed: u64)
     Ok(Outcome {
         jokers: jokers.iter().map(|j| format!("{}{}", data.name(&j.key), j.edition.map_or(String::new(), |e| format!(" ({e:?})").to_lowercase()))).collect(),
         notes,
-        now: odds(&base.jokers, &run.hand, &run.draw_pile, &full_now),
-        plan: odds(&jokers, &hand, &pile, &full_after),
+        now: odds(&base.jokers, &run.hand, &run.draw_pile, &full_now, &[], &[]),
+        plan: odds(&jokers, &hand, &pile, &full_after, &added, &removed),
     })
 }

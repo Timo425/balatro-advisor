@@ -467,3 +467,11 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    8 Juggles (+24 hand size for the next round, with Steel cards held a large ×Mult), valued
    as one or none. The general fix: a tag's effect as a `Gain` for the round it acts on
    (through the one measure, gap 16), and held Double Tags counted on the tag a skip takes.
+22. **A joker bought or sold during a blind doesn't change that blind's hand size or discards.**
+   The game changes them at once (card.lua `add_to_deck` / `remove_from_deck`:
+   `G.hand:change_size`, `ease_discard`; hands only from the next round, through
+   `round_resets.hands`), but `advise::apply_mods` applies a joker's hand size, hands and
+   discards only to rounds not yet started, so selling Juggler, Troubadour or Turtle Bean (or
+   Stuntman, Merry Andy, Drunkard) mid-blind is valued as if the round in play kept them. Rare
+   (most joker moves are in the shop). The general fix: `apply_mods` on the round in progress
+   too, with hand size and discards, not hands.

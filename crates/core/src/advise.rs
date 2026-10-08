@@ -625,7 +625,10 @@ struct Spec {
     horizon: bool,
 }
 
-fn apply_mods(start: &RoundStart, added: &[&Joker], removed: &[&Joker], fresh: bool) -> RoundStart {
+/// `start` with the hand size, hands and discards that `added` jokers bring and `removed`
+/// ones take away (`round_mods`), for a round not yet started (`fresh`; the round in progress
+/// keeps its own: a gap, see design.md)
+pub(crate) fn apply_mods(start: &RoundStart, added: &[&Joker], removed: &[&Joker], fresh: bool) -> RoundStart {
     let mut s = start.clone();
     if !fresh {
         return s;
@@ -4246,6 +4249,22 @@ mod tests {
 
     /// A synthetic run in the shop: a standard deck, the given jokers (key, edition,
     /// perishable rounds left), full slots, and the given jokers for sale.
+    #[test]
+    fn a_whatif_plan_plays_later_rounds_with_the_hand_size_its_jokers_leave() {
+        // Juggler (+1 hand size) sold: every round ahead with 7 cards, not 8; the same rounds
+        // (seeds), so each blind's reach is lower. Added back as a copy: no change.
+        let r = shop_run(&[("j_juggler", None, None), ("j_joker", None, None)], &[]);
+        let sold = crate::whatif::run(&r, GameData::bundled(), &crate::whatif::Plan { sell: vec!["juggler".into()], ..Default::default() }, 200, 3).unwrap();
+        for (now, plan) in sold.now.iter().zip(&sold.plan) {
+            assert!(plan.reach < now.reach, "{}: {} vs {}", now.label, plan.reach, now.reach);
+        }
+        let kept = crate::whatif::Plan { jokers: Some(vec!["juggler".into(), "joker".into()]), ..Default::default() };
+        let same = crate::whatif::run(&r, GameData::bundled(), &kept, 200, 3).unwrap();
+        for (now, plan) in same.now.iter().zip(&same.plan) {
+            assert_eq!(plan.reach, now.reach, "{}", now.label);
+        }
+    }
+
     fn shop_run(owned: &[(&str, Option<Edition>, Option<i64>)], for_sale: &[&str]) -> RunState {
         let data = GameData::bundled();
         let card = |key: &str, edition: Option<Edition>, perishable: Option<i64>| crate::save::JokerCard {
