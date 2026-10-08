@@ -75,9 +75,10 @@ fn player_win_rates() {
     let mut sum = 0.0;
     let all = rounds();
     for (key, b, start) in &all {
+        let t = std::time::Instant::now();
         let w = sim::round_results(b, start, 0..n, 42).iter().filter(|r| r.won).count() as f64 / n as f64;
         sum += w;
-        println!("{key}: {:.1}%", 100.0 * w);
+        println!("{key}: {:.1}% ({:.2?})", 100.0 * w, t.elapsed());
     }
     println!("mean {:.2}% ({:.2?})", 100.0 * sum / all.len() as f64, t0.elapsed());
 }

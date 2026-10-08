@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use super::hand::{self, HandInfo, HandType, RuleFlags, card_id, is_face, is_suit};
 use super::joker::{Joker, Kind};
-use super::rng::Rolls;
+use super::rng::{Rolls, Unlucky};
 use crate::model::{Card, Edition, Enhancement, Seal, Suit};
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -204,6 +204,107 @@ pub struct Outcome {
     /// same play with fewer cards held scores the same (the held cards are read nowhere else).
     #[serde(skip)]
     pub held_used: bool,
+    /// The order to play the cards in (indices into the played cards: the scoring ones
+    /// arranged, the rest after them), when it scores more than the order given. `None`: the
+    /// order given is as good.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub played_order: Option<Vec<usize>>,
+    /// The order to hold the cards kept in hand in, left to right (indices into the held
+    /// cards), when it scores more than the order given. `None`: the order given is as good.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub held_order: Option<Vec<usize>>,
+    /// Orders proposed for the parts whose cards' maps aren't exact (`Pass::arrangement`)
+    #[serde(skip)]
+    pub(crate) proposed: (Option<Vec<usize>>, Option<Vec<usize>>),
+}
+
+/// One step of a card's effect on the score: chips added, Mult added, then ×Mult (the order
+/// `evaluate_play` applies an effect's fields in).
+#[derive(Clone, Copy)]
+struct Op {
+    chips: f64,
+    mult: f64,
+    x: f64,
+}
+
+/// The steps of every card in one part of the pass (the played cards or the held ones), in
+/// the order they were worked out. `labels` (a trace step after the op, or none) only when
+/// tracing.
+#[derive(Default)]
+struct Ops {
+    ops: Vec<Op>,
+    /// where each card's steps end in `ops`
+    ends: Vec<usize>,
+    labels: Vec<Option<String>>,
+}
+
+thread_local! {
+    /// `Ops` buffers reused from one scoring pass to the next (a pass runs millions of times in
+    /// simulated rounds; allocating them each time cost about a sixth of the time)
+    static SPARE_OPS: std::cell::RefCell<Vec<Ops>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+impl Ops {
+    fn take() -> Ops {
+        SPARE_OPS.with(|v| v.borrow_mut().pop()).unwrap_or_default()
+    }
+
+    fn give_back(mut self) {
+        self.ops.clear();
+        self.ends.clear();
+        self.labels.clear();
+        SPARE_OPS.with(|v| v.borrow_mut().push(self));
+    }
+
+    fn card(&self, i: usize) -> std::ops::Range<usize> {
+        if i == 0 { 0..self.ends[0] } else { self.ends[i - 1]..self.ends[i] }
+    }
+
+    /// The card's steps as one map of Mult: `mult → x·mult + b` (chips only add, so their
+    /// order never matters).
+    fn map(&self, i: usize) -> (f64, f64) {
+        self.ops[self.card(i)].iter().fold((1.0, 0.0), |(x, b), o| (x * o.x, (b + o.mult) * o.x))
+    }
+
+    /// Mult after applying every card's steps in `order`, from `mult`.
+    fn mult_after(&self, order: &[usize], mut mult: f64) -> f64 {
+        for &i in order {
+            for o in &self.ops[self.card(i)] {
+                mult += o.mult;
+                mult *= o.x;
+            }
+        }
+        mult
+    }
+
+    /// The order of the cards that leaves the most Mult, when it's more than the order they
+    /// came in. Each card's steps are a map `mult → x·mult + b` (x ≥ 1, b ≥ 0 for every card
+    /// effect in the game), and swapping two neighbours helps exactly when the later one has
+    /// the larger b / (x − 1): sorted by that, no swap helps (pure +Mult first, pure ×Mult
+    /// last; the exchange argument).
+    fn best_order(&self, mult: f64) -> Option<Vec<usize>> {
+        let n = self.ends.len();
+        let key = |i: usize| {
+            let (x, b) = self.map(i);
+            if x == 1.0 { f64::INFINITY } else { b / (x - 1.0) }
+        };
+        // already in that order (the usual case): nothing to arrange
+        let mut prev = f64::INFINITY;
+        if (0..n).all(|i| {
+            let k = key(i);
+            let sorted = prev >= k;
+            prev = k;
+            sorted
+        }) {
+            return None;
+        }
+        let keys: Vec<f64> = (0..n).map(key).collect();
+        let key = |i: usize| keys[i];
+        let mut order: Vec<usize> = (0..n).collect();
+        order.sort_by(|&a, &c| key(c).total_cmp(&key(a)));
+        let given: Vec<usize> = (0..n).collect();
+        (order != given && self.mult_after(&order, mult) > self.mult_after(&given, mult)).then_some(order)
+    }
 }
 
 /// Effect a joker returns in one context. `x` = 1 means no ×Mult.
@@ -237,7 +338,7 @@ enum Ctx {
 }
 
 /// Values a joker can change mid-hand (the game mutates `self.ability` in place).
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct JokerState {
     mult: f64,
     x_mult: f64,
@@ -260,6 +361,18 @@ struct Pass<'a, R: Rolls + ?Sized> {
     blind_triggered: bool,
     level: Level,
     trace: Option<Vec<Step>>,
+    /// Whether to propose an order of the cards (`Outcome::played_order`, `held_order`)
+    arrange: bool,
+    /// inside the played or held cards' part, and whether a roll was asked for there
+    in_cards: bool,
+    card_rolls: bool,
+    /// whether an effect read where a card sits (Photograph, Hanging Chad, Raised Fist):
+    /// cards' maps then hold only for the order given
+    reads_place: bool,
+    /// orders to check as played (`score`): parts of the pass whose maps aren't exact
+    proposed: (Option<Vec<usize>>, Option<Vec<usize>>),
+    played_order: Option<Vec<usize>>,
+    held_order: Option<Vec<usize>>,
     /// `Outcome::held_used`
     held_used: bool,
 }
@@ -463,10 +576,18 @@ impl Board {
     }
 }
 
-/// Scores `played` (in play order) with `held` staying in hand.
+/// Scores `played` with `held` staying in hand, both in the order that scores most (the
+/// player arranges them: `Outcome::played_order`, `Outcome::held_order`).
 pub fn score<R: Rolls + ?Sized>(b: &Board, played: &[Card], held: &[Card], rolls: &mut R, trace: bool) -> Outcome {
     let info = hand::detect(played, b.rule_flags());
     score_detected(b, played, held, info, rolls, trace)
+}
+
+/// Scores `played` (in play order) with `held` staying in hand (in hand order), as the game
+/// scores a hand that was played in that arrangement: for checking against real scores.
+pub fn score_as_played<R: Rolls + ?Sized>(b: &Board, played: &[Card], held: &[Card], rolls: &mut R, trace: bool) -> Outcome {
+    let info = hand::detect(played, b.rule_flags());
+    pass(b, played, held, info, rolls, trace, false)
 }
 
 /// `score` with the hand already detected (`hand::detect(played, b.rule_flags())`).
@@ -478,6 +599,74 @@ pub fn score_detected<R: Rolls + ?Sized>(
     rolls: &mut R,
     trace: bool,
 ) -> Outcome {
+    // The order given (each part arranged where its cards' maps are exact), noting whether
+    // any roll was asked for
+    let mut watched = Asked { inner: rolls, asked: false };
+    let mut given = pass(b, played, held, info, &mut watched, trace, true);
+    let asked = watched.asked;
+    let proposed = std::mem::take(&mut given.proposed);
+    if proposed == (None, None) {
+        return given;
+    }
+    // The rest is checked as played: the order is chosen before any roll, as a player
+    // arranges, so on passes with every roll failing (the one just made when it asked for none)
+    let mut base = if asked { pass(b, played, held, hand::detect(played, b.rule_flags()), &mut Unlucky, false, true) } else { Outcome { trace: vec![], ..given.clone() } };
+    let (pp, ph) = if asked { std::mem::take(&mut base.proposed) } else { proposed };
+    let (fp, fh) = (base.played_order.clone(), base.held_order.clone());
+    // the proposal, and each half of it alone (the other part as it's arranged anyway): kept
+    // when the whole hand scores more with no less money and the jokers left the same (what a
+    // hand earns or grows isn't traded for points here)
+    let mut tries = vec![(pp.clone(), ph.clone())];
+    if pp.is_some() && ph.is_some() {
+        tries.push((pp, None));
+        tries.push((None, ph));
+    }
+    let arrange = |order: &Option<Vec<usize>>, cards: &[Card]| order.as_ref().map_or(cards.to_vec(), |o| o.iter().map(|&i| cards[i]).collect::<Vec<_>>());
+    type Order = Option<Vec<usize>>;
+    let mut best: Option<(Outcome, Order, Order)> = None;
+    for (p, h) in tries {
+        let (p, h) = (p.or_else(|| fp.clone()), h.or_else(|| fh.clone()));
+        let (pl, hl) = (arrange(&p, played), arrange(&h, held));
+        let o = pass(b, &pl, &hl, hand::detect(&pl, b.rule_flags()), &mut Unlucky, false, false);
+        let bar = best.as_ref().map_or(base.score, |x| x.0.score);
+        if o.score > bar * (1.0 + 1e-9) && o.dollars >= base.dollars && o.jokers == base.jokers {
+            best = Some((o, p, h));
+        }
+    }
+    let Some((no_luck, p, h)) = best else { return given };
+    // the order chosen, with the real rolls (the same pass when no roll is asked for)
+    let (pl, hl) = (arrange(&p, played), arrange(&h, held));
+    let mut o = if asked || trace { pass(b, &pl, &hl, hand::detect(&pl, b.rule_flags()), rolls, trace, false) } else { no_luck };
+    if let Some(p) = &p {
+        o.scoring = o.scoring.iter().map(|&k| p[k]).collect();
+    }
+    o.played_order = p;
+    o.held_order = h;
+    o
+}
+
+/// Rolls that note whether any was asked for.
+struct Asked<'r, R: Rolls + ?Sized> {
+    inner: &'r mut R,
+    asked: bool,
+}
+
+impl<R: Rolls + ?Sized> Rolls for Asked<'_, R> {
+    fn chance(&mut self, p: f64) -> bool {
+        self.asked = true;
+        self.inner.chance(p)
+    }
+    fn range(&mut self, min: i64, max: i64) -> i64 {
+        self.asked = true;
+        self.inner.range(min, max)
+    }
+    fn unit(&mut self) -> f64 {
+        self.asked = true;
+        self.inner.unit()
+    }
+}
+
+fn pass<R: Rolls + ?Sized>(b: &Board, played: &[Card], held: &[Card], info: HandInfo, rolls: &mut R, trace: bool, arrange: bool) -> Outcome {
     let flags = b.rule_flags();
     let mut level = b.levels[info.hand as usize];
     level.played += 1;
@@ -499,6 +688,13 @@ pub fn score_detected<R: Rolls + ?Sized>(
         level,
         trace: trace.then(Vec::new),
         held_used: false,
+        arrange,
+        played_order: None,
+        held_order: None,
+        in_cards: false,
+        card_rolls: false,
+        reads_place: false,
+        proposed: (None, None),
     };
     p.run()
 }
@@ -510,6 +706,110 @@ impl<R: Rolls + ?Sized> Pass<'_, R> {
             let s = source(self);
             if let Some(t) = &mut self.trace {
                 t.push(Step { source: s, chips, mult });
+            }
+        }
+    }
+
+    /// The played cards' steps, worked out in the order of `info.scoring`.
+    fn played_ops(&mut self, ops: &mut Ops) {
+        for si in 0..self.info.scoring.len() {
+            let ci = self.info.scoring[si];
+            if self.played[ci].debuff {
+                self.blind_triggered = true;
+            } else {
+                let mut reps = 1u32;
+                if self.played[ci].seal == Some(Seal::Red) {
+                    reps += 1;
+                }
+                for j in 0..self.b.jokers.len() {
+                    if let Some(e) = self.calc(j, Ctx::PlayRepetition(ci), 0) {
+                        reps += e.reps;
+                    }
+                }
+                for r in 0..reps {
+                    self.played_card_ops(ci, r > 0, ops);
+                }
+            }
+            ops.ends.push(ops.ops.len());
+        }
+    }
+
+    /// The held cards' steps, worked out in the order of `held`.
+    fn held_ops(&mut self, ops: &mut Ops) {
+        for hi in 0..self.held.len() {
+            let mut reps = 1u32;
+            let mut k = 0;
+            while k < reps {
+                let c = self.held[hi];
+                let mut own_x = 1.0;
+                if !c.debuff && c.enhancement == Some(Enhancement::Steel) {
+                    own_x = 1.5;
+                }
+                // The card's own effect, then each joker's, in order (same as building the
+                // game's effects list first and applying it after).
+                if own_x != 1.0 {
+                    self.push_op(ops, Op { chips: 0.0, mult: 0.0, x: own_x }, |_| Some(format!("{} held (steel)", c.label())));
+                }
+                let mut any_joker = false;
+                for j in 0..self.b.jokers.len() {
+                    if let Some(e) = self.calc(j, Ctx::HeldIndividual(hi), 0) {
+                        any_joker = true;
+                        self.earned += e.dollars;
+                        if e.h_mult != 0.0 || e.x != 1.0 {
+                            self.push_op(ops, Op { chips: 0.0, mult: e.h_mult, x: e.x }, |p| Some(format!("{} on held {}", p.joker_name(j), c.label())));
+                        }
+                    }
+                }
+                if own_x != 1.0 || any_joker {
+                    self.held_used = true;
+                }
+                if k == 0 {
+                    let any = own_x != 1.0 || any_joker;
+                    if any && !c.debuff && c.seal == Some(Seal::Red) {
+                        reps += 1;
+                    }
+                    for j in 0..self.b.jokers.len() {
+                        if let Some(e) = self.calc(j, Ctx::HeldRepetition(any), 0) {
+                            reps += e.reps;
+                        }
+                    }
+                }
+                k += 1;
+            }
+            ops.ends.push(ops.ops.len());
+        }
+    }
+
+    /// The order a part's cards' maps say scores most (when `arrange`), and whether the maps
+    /// are exact for it: no effect read where a card sits and no card asked for a roll (an
+    /// order is chosen before any roll), so moving them changes only how their Mult adds up
+    /// and the order can be applied here. Otherwise it's a proposal `score` checks as played.
+    fn arrangement(&self, ops: &Ops, mult: f64, rolls_before: bool) -> (Option<Vec<usize>>, bool) {
+        let order = if self.arrange { ops.best_order(mult) } else { None };
+        let exact = !self.reads_place && self.card_rolls == rolls_before;
+        (order, exact)
+    }
+
+    /// Adds a step to `ops`; `label` (the trace step after it) only runs when tracing.
+    fn push_op(&self, ops: &mut Ops, op: Op, label: impl FnOnce(&Self) -> Option<String>) {
+        ops.ops.push(op);
+        if self.trace.is_some() {
+            ops.labels.push(label(self));
+        }
+    }
+
+    /// Applies every card's steps, in `order` (the order they were worked out in when `None`).
+    fn apply(&mut self, ops: &Ops, order: Option<&[usize]>, chips: &mut f64, mult: &mut f64) {
+        for k in 0..ops.ends.len() {
+            for oi in ops.card(order.map_or(k, |o| o[k])) {
+                let o = ops.ops[oi];
+                *chips += o.chips;
+                *mult += o.mult;
+                *mult *= o.x;
+                if let Some(Some(l)) = ops.labels.get(oi) {
+                    let l = l.clone();
+                    self.rec(|_| l, *chips, *mult);
+                }
             }
         }
     }
@@ -536,6 +836,9 @@ impl<R: Rolls + ?Sized> Pass<'_, R> {
             jokers: self.js,
             level: self.level,
             held_used: self.held_used,
+            played_order: self.played_order,
+            held_order: self.held_order,
+            proposed: self.proposed,
         }
     }
 
@@ -595,72 +898,37 @@ impl<R: Rolls + ?Sized> Pass<'_, R> {
         let hand_name = self.info.hand.name();
         self.rec(|p| format!("{hand_name} L{}", p.level.level), chips, mult);
 
-        // Played cards, in position order
-        for si in 0..self.info.scoring.len() {
-            let ci = self.info.scoring[si];
-            if self.played[ci].debuff {
-                self.blind_triggered = true;
-                continue;
-            }
-            let mut reps = 1u32;
-            if self.played[ci].seal == Some(Seal::Red) {
-                reps += 1;
-            }
-            for j in 0..self.b.jokers.len() {
-                if let Some(e) = self.calc(j, Ctx::PlayRepetition(ci), 0) {
-                    reps += e.reps;
-                }
-            }
-            for r in 0..reps {
-                self.score_played_card(ci, r > 0, &mut chips, &mut mult);
-            }
-        }
+        // The player arranges the cards (state_events.lua `G.FUNCS.evaluate_play`: the played
+        // cards score in the order they sit in hand when played, the held ones in the order of
+        // `G.hand.cards`, both as the player dragged them). Each card's effect, worked out in
+        // the order given, is one map of Mult; the order those maps say scores most is the
+        // proposal `score` checks as played (`Outcome::played_order`, `held_order`).
+
+        // Played cards
+        self.in_cards = true;
+        let mut ops = Ops::take();
+        let rolls_before = self.card_rolls;
+        self.played_ops(&mut ops);
+        let (order, exact) = self.arrangement(&ops, mult, rolls_before);
+        self.apply(&ops, order.as_deref().filter(|_| exact), &mut chips, &mut mult);
+        let order = order.map(|o| {
+            let mut v: Vec<usize> = o.iter().map(|&si| self.info.scoring[si]).collect();
+            v.extend((0..self.played.len()).filter(|i| !self.info.scoring.contains(i)));
+            v
+        });
+        if exact { self.played_order = order } else { self.proposed.0 = order }
+        ops.give_back();
 
         // Held in hand
-        for hi in 0..self.held.len() {
-            let mut reps = 1u32;
-            let mut k = 0;
-            while k < reps {
-                let c = self.held[hi];
-                let mut own_x = 1.0;
-                if !c.debuff && c.enhancement == Some(Enhancement::Steel) {
-                    own_x = 1.5;
-                }
-                // The card's own effect, then each joker's, in order (same as building the
-                // game's effects list first and applying it after).
-                if own_x != 1.0 {
-                    mult *= own_x;
-                    self.rec(|_| format!("{} held (steel)", c.label()), chips, mult);
-                }
-                let mut any_joker = false;
-                for j in 0..self.b.jokers.len() {
-                    if let Some(e) = self.calc(j, Ctx::HeldIndividual(hi), 0) {
-                        any_joker = true;
-                        self.earned += e.dollars;
-                        mult += e.h_mult;
-                        mult *= e.x;
-                        if e.h_mult != 0.0 || e.x != 1.0 {
-                            self.rec(|p| format!("{} on held {}", p.joker_name(j), c.label()), chips, mult);
-                        }
-                    }
-                }
-                if own_x != 1.0 || any_joker {
-                    self.held_used = true;
-                }
-                if k == 0 {
-                    let any = own_x != 1.0 || any_joker;
-                    if any && !c.debuff && c.seal == Some(Seal::Red) {
-                        reps += 1;
-                    }
-                    for j in 0..self.b.jokers.len() {
-                        if let Some(e) = self.calc(j, Ctx::HeldRepetition(any), 0) {
-                            reps += e.reps;
-                        }
-                    }
-                }
-                k += 1;
-            }
-        }
+        let mut ops = Ops::take();
+        let rolls_before = self.card_rolls;
+        self.reads_place = false;
+        self.held_ops(&mut ops);
+        let (order, exact) = self.arrangement(&ops, mult, rolls_before);
+        self.apply(&ops, order.as_deref().filter(|_| exact), &mut chips, &mut mult);
+        if exact { self.held_order = order } else { self.proposed.1 = order }
+        ops.give_back();
+        self.in_cards = false;
 
         // Jokers left to right, then consumables (Observatory)
         for j in 0..self.b.jokers.len() {
@@ -714,7 +982,7 @@ impl<R: Rolls + ?Sized> Pass<'_, R> {
 
     /// One trigger of a played card: `eval_card` for the card, then every joker's
     /// individual effect, applied chips → mult → dollars → ×mult → edition.
-    fn score_played_card(&mut self, ci: usize, retrigger: bool, chips: &mut f64, mult: &mut f64) {
+    fn played_card_ops(&mut self, ci: usize, retrigger: bool, ops: &mut Ops) {
         let c = self.played[ci];
         let p = self.b.probability;
         // Card:get_chip_bonus / get_chip_mult / get_chip_x_mult / get_p_dollars
@@ -724,6 +992,7 @@ impl<R: Rolls + ?Sized> Pass<'_, R> {
             Some(Enhancement::Mult) => (c.rank.chips() + c.perma_bonus, 4.0, 0.0),
             Some(Enhancement::Glass) => (c.rank.chips() + c.perma_bonus, 0.0, 2.0),
             Some(Enhancement::Lucky) => {
+                self.card_rolls = true;
                 let m = if self.rolls.chance(p / 5.0) {
                     self.lucky_trigger = true;
                     20.0
@@ -746,27 +1015,27 @@ impl<R: Rolls + ?Sized> Pass<'_, R> {
 
         // The card's own effect table, then each joker's individual effect as it comes
         // (the game collects them first, but none depends on the running chips/mult).
-        *chips += bonus;
-        *mult += enh_mult;
-        if enh_x > 0.0 {
-            *mult *= enh_x;
-        }
-        match c.edition {
-            Some(Edition::Foil) => *chips += 50.0,
-            Some(Edition::Holo) => *mult += 10.0,
-            Some(Edition::Polychrome) => *mult *= 1.5,
-            _ => {}
-        }
         let tag = if retrigger { " (retrigger)" } else { "" };
-        self.rec(|_| format!("{}{tag}", c.label()), *chips, *mult);
+        let label = |_: &Self| Some(format!("{}{tag}", c.label()));
+        let own = Op { chips: bonus, mult: enh_mult, x: if enh_x > 0.0 { enh_x } else { 1.0 } };
+        let edition = match c.edition {
+            Some(Edition::Foil) => Some(Op { chips: 50.0, mult: 0.0, x: 1.0 }),
+            Some(Edition::Holo) => Some(Op { chips: 0.0, mult: 10.0, x: 1.0 }),
+            Some(Edition::Polychrome) => Some(Op { chips: 0.0, mult: 0.0, x: 1.5 }),
+            _ => None,
+        };
+        match edition {
+            Some(e) => {
+                self.push_op(ops, own, |_| None);
+                self.push_op(ops, e, label);
+            }
+            None => self.push_op(ops, own, label),
+        }
         for j in 0..self.b.jokers.len() {
             if let Some(e) = self.calc(j, Ctx::PlayIndividual(ci), 0) {
-                *chips += e.chips;
-                *mult += e.mult;
                 self.earned += e.dollars;
-                *mult *= e.x;
                 if e.chips != 0.0 || e.mult != 0.0 || e.x != 1.0 {
-                    self.rec(|p| format!("{} on {}", p.joker_name(j), c.label()), *chips, *mult);
+                    self.push_op(ops, Op { chips: e.chips, mult: e.mult, x: e.x }, |p| Some(format!("{} on {}", p.joker_name(j), c.label())));
                 }
             }
         }
@@ -782,6 +1051,7 @@ impl<R: Rolls + ?Sized> Pass<'_, R> {
     }
 
     fn chance(&mut self, odds: f64) -> bool {
+        self.card_rolls |= self.in_cards && odds > 0.0;
         odds > 0.0 && self.rolls.chance(self.b.probability / odds)
     }
 
@@ -830,7 +1100,10 @@ impl<R: Rolls + ?Sized> Pass<'_, R> {
                         eff()
                     }
                     Kind::Photograph => {
-                        let first_face = self.info.scoring.iter().copied().find(|&i| self.face(&self.played[i], i));
+                        let mut faces = self.info.scoring.iter().copied().filter(|&i| self.face(&self.played[i], i));
+                        let first_face = faces.next();
+                        // which face card is first depends on the order only when there are two
+                        self.reads_place |= faces.next().is_some();
                         (first_face == Some(ci)).then_some(Eff { x: x.n, ..NONE })
                     }
                     Kind::Idol => {
@@ -872,11 +1145,15 @@ impl<R: Rolls + ?Sized> Pass<'_, R> {
                     Kind::RaisedFist => {
                         // lowest base id among non-Stone held cards; ties go to the last one (>=)
                         let mut best: Option<(usize, u8)> = None;
+                        let mut tied = false;
                         for (i, h) in self.held.iter().enumerate() {
                             if h.enhancement != Some(Enhancement::Stone) && best.is_none_or(|(_, bid)| bid >= h.rank.0) {
+                                tied = best.is_some_and(|(_, bid)| bid == h.rank.0);
                                 best = Some((i, h.rank.0));
                             }
                         }
+                        // which card it goes on depends on the order only when the lowest rank is tied
+                        self.reads_place |= tied;
                         let (bi, _) = best?;
                         (bi == hi).then(|| {
                             if c.debuff { NONE } else { Eff { h_mult: 2.0 * self.held[bi].rank.chips(), ..NONE } }
@@ -890,7 +1167,13 @@ impl<R: Rolls + ?Sized> Pass<'_, R> {
                 let id = card_id(&c, ci);
                 let reps = match jk.kind {
                     Kind::SockAndBuskin if self.face(&c, ci) => x.n,
-                    Kind::HangingChad if self.info.scoring.first() == Some(&ci) => x.n,
+                    Kind::HangingChad => {
+                        self.reads_place = true;
+                        if self.info.scoring.first() != Some(&ci) {
+                            return None;
+                        }
+                        x.n
+                    }
                     Kind::Dusk if self.hands_left == 0 => x.n,
                     Kind::Seltzer => 1.0,
                     Kind::Hack if (2..=5).contains(&id) => x.n,

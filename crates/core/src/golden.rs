@@ -42,9 +42,10 @@ impl Case {
         Ok(p)
     }
 
-    /// Engine score with every random roll failing (golden hands should avoid luck).
+    /// Engine score with every random roll failing (golden hands should avoid luck), with the
+    /// cards in the order they were played and held.
     pub fn rescore(&self) -> f64 {
-        engine::score(&self.board, &self.played, &self.held, &mut Unlucky, false).score
+        engine::score_as_played(&self.board, &self.played, &self.held, &mut Unlucky, false).score
     }
 }
 

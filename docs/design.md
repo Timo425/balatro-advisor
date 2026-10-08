@@ -24,8 +24,20 @@ failed: fix that stage for every case, not the case.
 | **Noise** | Which differences are real? | `advise/compare.rs` `race`: the same draws for every option, in batches on fresh rounds until the best is clear; options clearly worse drop (where a round can be lost outright, a steady small deficit isn't clearly worse until a rare round in its favour could have shown: the rule of three), options shown within 1% of the leader's value are ties, reported as ties (showing it takes enough shared rounds for a rare round where they part ways to have turned up: 3 × the largest round value / n ≤ 1% of the leader's value; a tie stands only through ties to the final leader; tied moves are ordered by their paired difference to the leader); a race with a status quo (a target search's "no target") never cuts it by the budget, only by a finding, and keeps it when it ends as good as the leader and not acting keeps something (D8: a held consumable isn't spent on a change that can't be told from none; DNA's round, gone if unused, takes the leader); options still in at the round cap are "undecided" and every caller reports them as ties too (as good as far as those rounds can tell; at a low cap, such as the target search's 128 rounds, that's all a tie can be, since showing one needs about 300); past that, an explicit budget limits how many stay in, keeping those least shown worse than the leader (`compare::better_by`, the bound "clearly worse" uses: a move a rare round could still separate isn't cut for a steady edge on few rounds; an option whose rounds differ more from the leader's stays before a steady one as far behind, so in a graded race (the target search) what is still in at the cap leans to the noisier sets; since 2026-10-05, before by value), on exact ties by value, then a secondary value such as how close lost rounds came to the target, and is named as a budget, not a finding. The search is measured against a reference (every move on `compare::MAX` rounds of its own: `search_against_reference` in tests/replay.rs). Same seeds (common random numbers) everywhere; cards are put in one fixed order (`Card::order_key`) before anything random touches them, so card order never changes the advice (tested). |
 
 Layers underneath: `save` (reads the game's files), `engine` (the scoring pass, checked
-against real in-game scores in the golden tests), `sim` (rounds), `advise` (the four stages
-above, and the output).
+against real in-game scores in the golden tests; the cards played and held are scored in the
+order a player would arrange them, `engine::score`, since the game scores them in the order
+they sit and the player drags them: each card's effect, worked out in the order given, is a
+map of Mult, `mult → x·mult + b`, and sorting by b / (x − 1) leaves the most. Where no effect
+read where a card sits and no card asked for a roll, the maps are exact and the order is
+applied in the same pass; otherwise (an effect says when it reads a place: Photograph with two
+face cards scoring, Hanging Chad, Raised Fist on a tied lowest rank) the order (and each half
+of it alone) is scored as played, with every roll failing as a player arranges before any
+roll, and kept when the whole hand scores more with no less money and the jokers left the
+same; the order kept is then scored with the real rolls. So a score is always what the order shown
+scores in the game, effects that read where a card sits included (Photograph, Hanging Chad,
+Raised Fist); `score_as_played` keeps the order given, for the golden checks; Best play shows
+the hand's order when the hand as it sits scores less), `sim` (rounds), `advise` (the four
+stages above, and the output).
 
 ## Patterns
 
@@ -124,6 +136,7 @@ add to this list's kind; remove from it.
 | Rule | Where | General replacement |
 |---|---|---|
 | Suit-joker map, `kickers_matter` list, `income_per_ante` per joker | `sim.rs` `keep_suit`, `advise.rs` | game facts: move to `data/` or the engine; or work out what to keep by scoring with and without a card |
+| Played cards ordered with Glass and Polychrome last (`sim::arrange`), the order the engine's arrangement starts from and falls back to | `sim.rs` `arrange` | the engine's arrangement from the cards in a fixed order (the fallback then matters only where an effect reads a card's place: gap 19) |
 | Constellation grows from planets in several places | `value.rs` `add_planets`, `spend_once`; `advise.rs` Meteor tag, `grow_constellation` | a planet used as an event in `engine::RunEvent`, applied by `Board::after` (`xmult_from`), counted through `Gain::planets`; `bought_event` then compares what money buys by measured value, not Mult per dollar |
 | A short perishable's price dropped from its value | `advise.rs` (`long_mult = 1 + unlock`) | `LongRun::value` with its price |
 | What a joker adds to a round (hand size, hands, discards) as a table, and Turtle Bean's shrink by name; Burglar counted as if it changed the round you start with (it acts when the blind is set: from memory of card.lua, not checked) | `advise.rs` `round_mods`, `value.rs` `long_spec_for` | the center's config in `data/` (`h_size`, `d_size`, `extra`) as game facts; a fading joker's state projected as growth is (`grow_antes`); "set to N" effects (Burglar's discards, The Needle, The Water) applied after the additive ones |
@@ -416,3 +429,18 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    Eternal one for the whole run), and each joker's growth an ante measured from the simulated
    player's rounds on the projected board instead of a table, so the projection counts what the
    advice plays for.
+19. **The card order tried is one proposal, checked, not a search.** The engine proposes the
+   order its cards' maps say scores most (worked out in the order given; Mult only), and keeps
+   it, or either half of it, only when the whole hand scores more as played (`engine::score`).
+   Where an effect reads a card's place (Photograph: the first face card; Hanging Chad: the
+   first card; Raised Fist: the last held card of the lowest rank) the maps were worked out
+   for the order given, so the proposal can miss a better order (which face card leads, which
+   card Hanging Chad doubles, which tied card takes Raised Fist), never claim one that
+   doesn't score; a gain in chips alone (Hanging Chad on a Foil card) is never proposed; maps
+   already in order propose nothing. An order that would earn less money or leave the jokers
+   in another state (a Gold Seal or Lucky Cat on the card Hanging Chad doubles) isn't taken,
+   though it might be worth more: the trade isn't weighed (it would need both outcomes for
+   `RoundGoals`). The order is chosen with every roll failing, not on the rolls' odds. The
+   general fix: for each effect that reads a place, each candidate for it (at most 5 played
+   cards, or the tied held cards), the rest arranged by their maps with it fixed, all scored as
+   played; and an order that changes money or the jokers handed to the caller's valuation.

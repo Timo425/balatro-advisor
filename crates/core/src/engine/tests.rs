@@ -57,7 +57,12 @@ fn card_enhancements_editions_seals() {
     let b = Board::empty();
     assert_eq!(sc(&b, "KS:glass KH", ""), 120.0); // 30 × (2 × 2)
     assert_eq!(sc(&b, "KS:mult KH:glass", ""), 360.0); // 30 × ((2 + 4) × 2)
-    assert_eq!(sc(&b, "KS:glass KH:mult", ""), 240.0); // 30 × (2 × 2 + 4)
+    // as played, Glass first: 30 × (2 × 2 + 4); arranged, the Mult card goes first
+    let (glass_first, mult_first) = (cards("KS:glass KH:mult"), cards("KS:mult KH:glass"));
+    assert_eq!(score_as_played(&b, &glass_first, &[], &mut Unlucky, false).score, 240.0);
+    let o = score(&b, &glass_first, &[], &mut Unlucky, false);
+    assert_eq!((o.score, o.played_order), (360.0, Some(vec![1, 0])));
+    assert_eq!(score(&b, &mult_first, &[], &mut Unlucky, false).played_order, None);
     assert_eq!(sc(&b, "KS:bonus KH", ""), 120.0); // 60 × 2
     assert_eq!(sc(&b, "KS:red KH", ""), 80.0); // (10 + 20 + 10) × 2
     assert_eq!(sc(&b, "KS:foil KH:holo", ""), 80.0 * 12.0); // (30 + 50) × (2 + 10)
@@ -77,6 +82,54 @@ fn held_cards() {
     assert_eq!(sc(&board(&["j_baron"]), "KS KH", "KD:debuff"), 60.0);
     assert_eq!(sc(&board(&["j_raised_fist"]), "KS KH", "7D 3C 9S"), 240.0); // +2×3 → 30 × 8
     assert_eq!(sc(&board(&["j_shoot_the_moon"]), "KS KH", "QD QC"), 30.0 * 28.0);
+}
+
+#[test]
+fn cards_are_arranged_as_the_player_would() {
+    // Shoot the Moon (+13 Mult a held Queen) and Baron (×1.5 a held King) score held cards
+    // in hand order (state_events.lua `evaluate_play`, `G.hand.cards`): Queens first.
+    // High Card A: 16 chips; Queens first (1 + 13 + 13) × 1.5 × 1.5 = 60.75 → 972;
+    // Kings first 1 × 1.5 × 1.5 + 26 = 28.25 → 452
+    let b = board(&["j_shoot_the_moon", "j_baron"]);
+    let (play, kings_first, queens_first) = (cards("AS"), cards("KD KC QD QH"), cards("QD QH KD KC"));
+    assert_eq!(score_as_played(&b, &play, &kings_first, &mut Unlucky, false).score, 452.0);
+    assert_eq!(score_as_played(&b, &play, &queens_first, &mut Unlucky, false).score, 972.0);
+    let o = score(&b, &play, &kings_first, &mut Unlucky, false);
+    assert_eq!((o.score, o.held_order), (972.0, Some(vec![2, 3, 0, 1])));
+    let o = score(&b, &play, &queens_first, &mut Unlucky, false);
+    assert_eq!((o.score, o.held_order), (972.0, None));
+    // A card's whole effect moves as one: a Red Seal Steel Queen with Shoot the Moon is
+    // (m × 1.5 + 13) twice (its own ×1.5 first, then the joker's), m → 2.25m + 32.5, which
+    // goes before a plain Steel card (×1.5 alone):
+    // 2.25 + 32.5 = 34.75 → × 1.5 = 52.125 → 16 × 52.125 = 834 (the other way: 1.5 → 35.875 → 574)
+    let b = board(&["j_shoot_the_moon"]);
+    let held = cards("5C:steel QD:steel:red");
+    assert_eq!(score_as_played(&b, &play, &held, &mut Unlucky, false).score, 574.0);
+    let o = score(&b, &play, &held, &mut Unlucky, true);
+    assert_eq!((o.score, o.held_order), (834.0, Some(vec![1, 0])));
+    // the trace follows the order applied
+    assert_eq!(o.trace.last().map(|s| s.mult), Some(52.125));
+    // Photograph reads which face card comes first: the Mult card first takes its ×2 and the
+    // Glass card's ×2 after it: (2 + 4) × 2 × 2 = 24 → 720 (as given, Glass first: 360)
+    let b = board(&["j_photograph"]);
+    let glass_first = cards("KS:glass KH:mult");
+    assert_eq!(score_as_played(&b, &glass_first, &[], &mut Unlucky, false).score, 360.0);
+    let o = score(&b, &glass_first, &[], &mut Unlucky, false);
+    assert_eq!((o.score, o.played_order), (720.0, Some(vec![1, 0])));
+    // Raised Fist goes on the last held card of the lowest rank, wherever it ends up: with
+    // Baron, K K held, the +20 is always on the second King: 1 × 1.5 × 1.5 + 20 = 22.25 → 356
+    // (counted on the King it was worked out on and moved first: 516, which no order gives)
+    let b = board(&["j_baron", "j_raised_fist"]);
+    let o = score(&b, &play, &cards("KD KC"), &mut Unlucky, false);
+    assert_eq!((o.score, o.held_order), (356.0, None));
+    // An order is judged on the whole hand: Hanging Chad retriggers the first card, so its
+    // chips move with the order, and Jolly (+8) and Gros Michel (+15) come after the cards.
+    // Glass Foil King first: 200 chips × (2 × 2 × 2 × 2 + 10 = 26 → + 23) = 9,800; the Holo
+    // King first leads after the cards (100 × 64) but loses after the jokers (100 × 87 = 8,700)
+    let b = board(&["j_hanging_chad", "j_jolly", "j_gros_michel"]);
+    let given = cards("KS:glass:foil KH:holo");
+    let o = score(&b, &given, &[], &mut Unlucky, false);
+    assert_eq!((o.score, o.played_order), (9800.0, None));
 }
 
 #[test]

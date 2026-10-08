@@ -207,14 +207,17 @@ fn main() -> Result<()> {
                 // Cards typed by hand: the draw pile the save shows is still the best guess for Blue Joker.
                 board.deck_remaining = board.deck_remaining.max(0);
             }
-            let floor = engine::score(&board, &played, &held, &mut Unlucky, *trace);
-            let ceil = engine::score(&board, &played, &held, &mut Lucky, false);
+            // A golden case is checked against the game's score for the cards as you played and
+            // held them; otherwise they're scored in the order that scores most (and it's shown)
+            let score_fn = if golden_name.is_some() { engine::score_as_played::<dyn engine::Rolls> } else { engine::score::<dyn engine::Rolls> };
+            let floor = score_fn(&board, &played, &held, &mut Unlucky, *trace);
+            let ceil = score_fn(&board, &played, &held, &mut Lucky, false);
             let mut rng = Rng::new(42);
             let n = 2000;
             let mean = if floor.score == ceil.score {
                 floor.score
             } else {
-                (0..n).map(|_| engine::score(&board, &played, &held, &mut rng, false).score).sum::<f64>() / n as f64
+                (0..n).map(|_| score_fn(&board, &played, &held, &mut rng, false).score).sum::<f64>() / n as f64
             };
             if cli.json {
                 println!("{}", serde_json::to_string_pretty(&serde_json::json!({
@@ -342,7 +345,7 @@ fn main() -> Result<()> {
                 }
                 GoldenCmd::Show { name } => {
                     let c = golden::Case::load(&golden::Case::path(dir, name)).map_err(anyhow::Error::msg)?;
-                    let o = engine::score(&c.board, &c.played, &c.held, &mut Unlucky, true);
+                    let o = engine::score_as_played(&c.board, &c.played, &c.held, &mut Unlucky, true);
                     print_score(&c.board, &c.played, &c.held, &o, o.score, o.score);
                     println!("Game showed: {}", c.expected.map_or("not recorded".into(), |e| e.to_string()));
                 }
@@ -413,6 +416,12 @@ fn print_score(board: &Board, played: &[Card], held: &[Card], o: &engine::Outcom
         println!("  {:<34} {:>10} × {}", s.source, fmt_num(s.chips), fmt_num(s.mult));
     }
     println!("Score: {} ({} × {})", fmt_num(o.score), fmt_num(o.chips), fmt_num(o.mult));
+    if let Some(v) = &o.played_order {
+        println!("  play them in this order: {}", label(&v.iter().map(|&i| played[i]).collect::<Vec<_>>()));
+    }
+    if let Some(v) = &o.held_order {
+        println!("  hold them in this order, left to right: {}", label(&v.iter().map(|&i| held[i]).collect::<Vec<_>>()));
+    }
     if ceil != o.score {
         println!("  random effects: {} if every roll fails, {} if all hit, mean ≈ {}", fmt_num(o.score), fmt_num(ceil), fmt_num(mean.round()));
     }

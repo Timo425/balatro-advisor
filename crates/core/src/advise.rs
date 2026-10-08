@@ -164,6 +164,14 @@ pub struct PlayAdvice {
     /// "play" or "discard"
     pub action: String,
     pub cards: Vec<String>,
+    /// Your hand left to right as it should sit (the cards to play first, in order, then the
+    /// cards kept), when the hand as it sits scores less: the game plays and holds cards in
+    /// the order they sit (the engine arranges them: `engine::score`). Empty: as it sits
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub arrange: Vec<String>,
+    /// The same cards as their places in your hand now (0 = leftmost), for bots
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub arrange_indices: Vec<usize>,
     /// Cards in the play that don't score, sent along to dig (a free discard)
     pub dig: usize,
     /// The same cards as positions in your hand (0 = leftmost), for bots
@@ -215,6 +223,14 @@ pub struct PlayOption {
     pub round_money: f64,
     pub action: String,
     pub cards: Vec<String>,
+    /// Your hand left to right as it should sit (the cards to play first, in order, then the
+    /// cards kept), when the hand as it sits scores less: the game plays and holds cards in
+    /// the order they sit (the engine arranges them: `engine::score`). Empty: as it sits
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub arrange: Vec<String>,
+    /// The same cards as their places in your hand now (0 = leftmost), for bots
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub arrange_indices: Vec<usize>,
     pub indices: Vec<usize>,
     /// Cards in the play that don't score, sent along to dig (a free discard)
     pub dig: usize,
@@ -5419,6 +5435,35 @@ mod tests {
         let by_suit = in_blind("AH 9H 5H KS 7S 3D QC 2C");
         let by_rank = in_blind("AH KS QC 9H 7S 5H 3D 2C");
         assert_eq!(by_suit, by_rank);
+    }
+
+    #[test]
+    fn best_play_says_how_to_arrange_the_cards_kept() {
+        // Shoot the Moon (+13 a held Queen) and Baron (×1.5 a held King): the Queens are held
+        // left of the Kings, as a player drags them, whichever way the hand is sorted
+        let in_blind = |hand: &str| {
+            let mut r = shop_run(&[("j_shoot_the_moon", None, None), ("j_baron", None, None)], &[]);
+            r.screen = crate::save::Screen::SelectingHand;
+            r.shop = None;
+            r.hand = Card::parse_list(hand).unwrap();
+            r.draw_pile = crate::bench::standard_deck().into_iter().filter(|c| !r.hand.contains(c)).collect();
+            r.blinds[0].state = "Current".into();
+            r.current_blind = Some(crate::save::CurrentBlind {
+                key: "bl_small".into(), name: "Small Blind".into(), target: 800.0, scored: 0.0, disabled: false, hands_seen: vec![], only_hand: None,
+            });
+            analyze(&r, GameData::bundled(), None, &quick()).best_play.unwrap()
+        };
+        let kings_first = in_blind("KS KH KD QS QH QD 7C 2C");
+        // among the cards kept, every Queen left of every King
+        let kept: String = kings_first.arrange.iter().skip(kings_first.cards.len()).map(|c| &c[..1]).filter(|c| *c == "K" || *c == "Q").collect();
+        assert!(kept.contains('Q') && kept.contains('K') && !kept.contains("KQ"), "{:?} then {:?}", kings_first.cards, kings_first.arrange);
+        // the positions point at the same cards
+        let hand = Card::parse_list("KS KH KD QS QH QD 7C 2C").unwrap();
+        assert_eq!(kings_first.arrange_indices.iter().map(|&i| hand[i].label()).collect::<Vec<_>>(), kings_first.arrange);
+        // already sitting that way: nothing to arrange, and the same play and score
+        let queens_first = in_blind("QS QH QD KS KH KD 7C 2C");
+        assert!(queens_first.arrange.is_empty(), "{:?}", queens_first.arrange);
+        assert_eq!((kings_first.score, &kings_first.cards), (queens_first.score, &queens_first.cards));
     }
 
     #[test]

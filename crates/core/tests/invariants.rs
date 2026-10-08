@@ -204,3 +204,50 @@ fn discard_money_follows_the_game() {
     assert_eq!(engine::discard_money(&f, &cards("KS QH JD:stone")), 0.0, "a Stone card isn't a face");
     assert_eq!(engine::discard_money(&sample_board(&["j_faceless", "j_pareidolia"]), &cards("2S 3H 4D")), 5.0);
 }
+
+#[test]
+fn an_arranged_score_is_what_its_order_scores_as_played() {
+    // The engine scores the cards in the order a player would arrange them; that score must
+    // be the game's for the order it reports (as played), and never below the order given,
+    // with jokers that read where a card sits (Photograph, Hanging Chad, Raised Fist) too.
+    use balatro_advisor::model::{Edition, Enhancement, Seal};
+    let mut rng = Rng::new(23);
+    let mut decorate = |cs: Vec<Card>| -> Vec<Card> {
+        cs.into_iter()
+            .map(|mut c| {
+                c.enhancement = [None, None, Some(Enhancement::Steel), Some(Enhancement::Glass), Some(Enhancement::Mult), Some(Enhancement::Lucky)][rng.below(6)];
+                c.edition = [None, None, Some(Edition::Holo), Some(Edition::Polychrome)][rng.below(4)];
+                c.seal = [None, None, Some(Seal::Red), Some(Seal::Gold)][rng.below(4)];
+                c
+            })
+            .collect()
+    };
+    let boards: [&[&str]; 6] = [
+        &["j_baron", "j_shoot_the_moon", "j_raised_fist"],
+        &["j_photograph", "j_smiley", "j_bloodstone"],
+        &["j_hanging_chad", "j_triboulet", "j_mime"],
+        &["j_blueprint", "j_photograph", "j_raised_fist"],
+        // chips that change with the order (a retrigger), then +Chips/+Mult after the cards
+        &["j_hanging_chad", "j_jolly", "j_gros_michel"],
+        &["j_hanging_chad", "j_lucky_cat", "j_golden_ticket"],
+    ];
+    let pick = |cs: &[Card], order: &Option<Vec<usize>>| order.as_ref().map_or(cs.to_vec(), |v| v.iter().map(|&i| cs[i]).collect::<Vec<_>>());
+    let labels = |cs: &[Card]| cs.iter().map(Card::label).collect::<Vec<_>>();
+    for keys in boards {
+        let b = sample_board(keys);
+        for (played, held) in random_plays(300, 29) {
+            let (played, held) = (decorate(played), decorate(held));
+            let o = engine::score(&b, &played, &held, &mut Unlucky, false);
+            let (pl, hl) = (pick(&played, &o.played_order), pick(&held, &o.held_order));
+            let shown = engine::score_as_played(&b, &pl, &hl, &mut Unlucky, false);
+            let given = engine::score_as_played(&b, &played, &held, &mut Unlucky, false);
+            let at = format!("{keys:?}: {:?} held {:?}", labels(&played), labels(&held));
+            assert_eq!(o.score, shown.score, "{at}");
+            assert!(o.score >= given.score && shown.dollars >= given.dollars, "{at}");
+            // with every roll hitting, the score is still the order's as played
+            let lucky = engine::score(&b, &played, &held, &mut engine::Lucky, false);
+            let (pl, hl) = (pick(&played, &lucky.played_order), pick(&held, &lucky.held_order));
+            assert_eq!(lucky.score, engine::score_as_played(&b, &pl, &hl, &mut engine::Lucky, false).score, "{at} (lucky)");
+        }
+    }
+}

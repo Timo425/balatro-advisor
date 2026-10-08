@@ -48,7 +48,9 @@ fn kickers_matter(b: &Board) -> bool {
 }
 
 /// Order a play the way a player would: +Chips/+Mult cards first, ×Mult cards (Glass,
-/// Polychrome) last, so multipliers apply to everything before them. Heuristic.
+/// Polychrome) last, so multipliers apply to everything before them. Heuristic, on the retire
+/// list: the engine arranges the cards itself (`engine::score`) and keeps this order only when
+/// its arrangement doesn't score more as played.
 fn arrange(hand: &[Card], idx: &mut [usize]) {
     let xmult = |c: &Card| c.enhancement == Some(Enhancement::Glass) || c.edition == Some(Edition::Polychrome);
     idx.sort_by_key(|&i| (xmult(&hand[i]), i));

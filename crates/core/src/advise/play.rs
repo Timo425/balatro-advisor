@@ -102,18 +102,19 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
                     ("discard", &sorted_discard)
                 }
             };
-            let cards: Vec<Card> = idx.iter().map(|&i| hand[i]).collect();
-            let (name, score, dig) = if action == "play" {
-                let held: Vec<Card> = (0..hand.len()).filter(|i| !idx.contains(i)).map(|i| hand[i]).collect();
-                let o = crate::engine::score(board, &cards, &held, &mut crate::engine::Unlucky, false);
-                let scoring = crate::engine::hand::detect(&cards, board.rule_flags()).scoring.len();
-                (o.hand.name().to_string(), o.score, cards.len().saturating_sub(scoring))
+            let mut idx = idx.clone();
+            let (name, score, dig, arrange) = if action == "play" {
+                let (order, arrange, o) = arranged(board, hand, &idx, hand_order);
+                let dig = idx.len().saturating_sub(o.scoring.len());
+                idx = order;
+                (o.hand.name().to_string(), o.score, dig, arrange)
             } else {
-                (String::new(), 0.0, 0)
+                (String::new(), 0.0, 0, (vec![], vec![]))
             };
+            let cards: Vec<Card> = idx.iter().map(|&i| hand[i]).collect();
             // cards a consumable added aren't in your hand yet: no position
             let indices = idx.iter().filter(|&&i| i < hand_order.len()).map(|&i| hand_order[i]).collect();
-            PlayOption { spare_hands: spare, round_money: cash, action: action.into(), cards: cards.iter().map(Card::label).collect(), indices, dig, hand: name, score, p_win: p, mean_total: mean, use_first, planets, tie: false, then: None }
+            PlayOption { spare_hands: spare, round_money: cash, action: action.into(), cards: cards.iter().map(Card::label).collect(), indices, dig, hand: name, score, p_win: p, mean_total: mean, use_first, planets, tie: false, then: None, arrange: arrange.0, arrange_indices: arrange.1 }
         };
         // Exact ties are broken by the cards themselves, so the order your hand is sorted in
         // never changes the advice
@@ -279,9 +280,13 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
                 let m = format!("Not used in this look-ahead (no modelled effect on this hand): {}", missing.join(", "));
                 Some(m)
             };
-            Some(PlayAdvice { reference, reference_gap, worth_drawing: worth_drawing.clone(), then: best.then.clone(), ties: opts.iter().filter(|o| o.tie).count(), planets: Some(best.planets), use_first: best.use_first, spare_hands: Some(best.spare_hands), round_money: Some(best.round_money), action: best.action, cards: best.cards, dig: best.dig, indices: best.indices, hand: best.hand, score: best.score, p_win: Some(best.p_win), alternatives: opts, tip })
+            Some(PlayAdvice { reference, reference_gap, worth_drawing: worth_drawing.clone(), then: best.then.clone(), ties: opts.iter().filter(|o| o.tie).count(), planets: Some(best.planets), use_first: best.use_first, spare_hands: Some(best.spare_hands), round_money: Some(best.round_money), action: best.action, cards: best.cards, arrange: best.arrange, arrange_indices: best.arrange_indices, dig: best.dig, indices: best.indices, hand: best.hand, score: best.score, p_win: Some(best.p_win), alternatives: opts, tip })
         }
-        None => sim::best_play(&b, &hand_order.iter().map(|&i| run.hand[i]).collect::<Vec<_>>()).map(|p| PlayAdvice {
+        None => {
+            let hand: Vec<Card> = hand_order.iter().map(|&i| run.hand[i]).collect();
+            sim::best_play(&b, &hand).map(|p| {
+            let (order, (arrange, arrange_indices), _) = arranged(&b, &hand, &p.cards, hand_order);
+            PlayAdvice {
             use_first: None,
             reference: vec![],
             reference_gap: None,
@@ -292,14 +297,48 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
             spare_hands: None,
             round_money: None,
             action: "play".into(),
-            cards: p.cards.iter().map(|&i| run.hand[hand_order[i]].label()).collect(),
+            cards: order.iter().map(|&i| hand[i].label()).collect(),
+            arrange,
+            arrange_indices,
             dig: 0,
-            indices: p.cards.iter().map(|&i| hand_order[i]).collect(),
+            indices: order.iter().map(|&i| hand_order[i]).collect(),
             hand: p.hand.name().to_string(),
             score: p.floor,
             p_win: None,
             alternatives: vec![],
             tip: None,
-        }),
+            }
+            })
+        }
     }
+}
+
+/// The play `idx` from `hand` (in `Card::order_key` order; `hand_order`: each card's place in
+/// your hand, cards a consumable added have none) in the order to play it; your hand left to
+/// right as it should sit (the cards played in that order, then the cards kept), as labels and
+/// as the places they're in now, when the hand as it sits scores less (the game plays the
+/// selected cards in the order they sit: state_events.lua `G.FUNCS.play_cards_from_highlighted`),
+/// else none; and the play's outcome. The engine arranges the cards (`engine::score`), from the
+/// cards in a fixed order, so how your hand is sorted never changes the score.
+#[allow(clippy::type_complexity)]
+fn arranged(board: &Board, hand: &[Card], idx: &[usize], hand_order: &[usize]) -> (Vec<usize>, (Vec<String>, Vec<usize>), crate::engine::Outcome) {
+    use crate::engine::{score, score_as_played, Unlucky};
+    let rest: Vec<usize> = (0..hand.len()).filter(|i| !idx.contains(i)).collect();
+    let cards = |v: &[usize]| v.iter().map(|&i| hand[i]).collect::<Vec<Card>>();
+    let o = score(board, &cards(idx), &cards(&rest), &mut Unlucky, false);
+    let pick = |v: &[usize], order: &Option<Vec<usize>>| order.as_ref().map_or(v.to_vec(), |o| o.iter().map(|&k| v[k]).collect());
+    let (play, keep) = (pick(idx, &o.played_order), pick(&rest, &o.held_order));
+    let on_screen = |v: &[usize]| {
+        let mut v = v.to_vec();
+        v.sort_by_key(|&i| hand_order.get(i).copied().unwrap_or(usize::MAX));
+        v
+    };
+    let as_they_sit = score_as_played(board, &cards(&on_screen(idx)), &cards(&on_screen(&rest)), &mut Unlucky, false).score;
+    let arrange = if as_they_sit < o.score {
+        let all: Vec<usize> = play.iter().chain(&keep).copied().collect();
+        (all.iter().map(|&i| hand[i].label()).collect(), all.iter().filter_map(|&i| hand_order.get(i).copied()).collect())
+    } else {
+        (vec![], vec![])
+    };
+    (play, arrange, o)
 }
