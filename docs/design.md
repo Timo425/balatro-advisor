@@ -444,3 +444,23 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    general fix: for each effect that reads a place, each candidate for it (at most 5 played
    cards, or the tied held cards), the rest arranged by their maps with it fixed, all scored as
    played; and an order that changes money or the jokers handed to the caller's valuation.
+20. **Big hands: most moves are never tried, and an analysis can't be stopped.** The moves
+   tried see the first 12 cards of the hand (`sim::all_plays`, `all_discards`; the simulated
+   player's best play 16; card masks are `u32`), in `Card::order_key` order (highest ranks
+   first), so with a big hand (Juggle Tags: 32 cards, raised in play 2026-10-07) most plays
+   and discards are never considered, and what each costs grows with the hand: that analysis
+   ran about two days. The UI analyses one save at a time with no time limit, and a newer
+   save can't replace the analysis running, so the window stayed on it. The state is kept
+   outside the repo (`~/.local/share/balatro-advisor/hand32-stuck.jkr`) as the fixture for
+   this. The general fix: the moves tried from the cards that can matter (cards that can score
+   in some hand, and cards whose held effect counts, found by the engine), with no fixed cap;
+   and the UI drops a running analysis when the game writes a newer state (and shows how far
+   it got).
+21. **Tags you hold aren't read, and a tag's effect on a later blind is valued only in one
+   case.** Skip-or-play values a Juggle Tag (+3 hand size, tag.lua `round_start_bonus`: the
+   next round played) only when skipping the Big blind; on a Small blind skip it's "not
+   valued". The tags you already hold (`save` reads them: `RunState::tags`) aren't used: a
+   Double Tag copies the next tag taken (tag.lua), so with 7 Double Tags a Juggle Tag skip is
+   8 Juggles (+24 hand size for the next round, with Steel cards held a large ×Mult), valued
+   as one or none. The general fix: a tag's effect as a `Gain` for the round it acts on
+   (through the one measure, gap 16), and held Double Tags counted on the tag a skip takes.
