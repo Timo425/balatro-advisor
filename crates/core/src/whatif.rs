@@ -166,7 +166,7 @@ pub fn run(run: &RunState, data: &GameData, plan: &Plan, sims: usize, seed: u64)
                 RoundStart {
                     hand: hand.to_vec(),
                     deck: pile.to_vec(),
-                    hand_size: run.hand_size,
+                    hand_size: run.round_hand_size(),
                     hands: run.hands_left,
                     discards: run.discards_left,
                     scored: cb.map_or(0.0, |c| c.scored),

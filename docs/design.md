@@ -450,7 +450,11 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    32 cards, raised in play 2026-10-07) most plays and discards are never considered, and what
    each costs grows with the hand: that analysis ran about two days. Since 2026-10-08 the live
    page stops an analysis when the game writes another state (`progress`: every simulated
-   decision is a checkpoint), shows how far it got, and runs at a lower CPU priority. The state
+   decision is a checkpoint), shows how far it got, and runs at a lower CPU priority; and the
+   hand size a Juggle Tag or The Manacle adds lasts only the round in play
+   (`RunState::round_hand_size`; every later round, the projection included, was played with
+   32 cards), which took the rest of that analysis from days to ~15 minutes, nearly all of it
+   Best play's moves on the round's 32-card hands. The state
    is kept outside the repo (`~/.local/share/balatro-advisor/hand32-stuck.jkr`) as the fixture
    for this. The general fix: the moves tried from the cards that can matter (cards that can
    score in some hand, and cards whose held effect counts, found by the engine), with no fixed

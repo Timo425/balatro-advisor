@@ -80,4 +80,10 @@ impl RunState {
     pub fn full_deck(&self) -> Vec<Card> {
         self.draw_pile.iter().chain(&self.hand).chain(&self.discard_pile).copied().collect()
     }
+
+    /// The hand size the round in play is played with (`hand_size` is a fresh round's): what
+    /// every simulation of the round in progress starts from
+    pub fn round_hand_size(&self) -> i64 {
+        self.hand_size + self.round_hand_size_delta
+    }
 }

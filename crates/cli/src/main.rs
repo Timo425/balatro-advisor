@@ -474,8 +474,12 @@ fn print_state(s: &save::RunState) {
     for c in &s.snapshot.caveats {
         println!("⚠ {c}");
     }
+    let this_round = match s.round_hand_size_delta {
+        0 => String::new(),
+        d => format!(" ({:+} until the round ends)", d),
+    };
     println!(
-        "${} | hands {} discards {} | hand size {} | jokers {}/{}",
+        "${} | hands {} discards {} | hand size {}{this_round} | jokers {}/{}",
         s.dollars,
         s.hands_left,
         s.discards_left,

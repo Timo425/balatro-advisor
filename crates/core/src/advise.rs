@@ -887,7 +887,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             start: RoundStart {
                 hand: live_hand.clone(),
                 deck: live_pile.clone(),
-                hand_size: run.hand_size,
+                hand_size: run.round_hand_size(),
                 hands: run.hands_left,
                 discards: run.discards_left,
                 scored: cb.scored,

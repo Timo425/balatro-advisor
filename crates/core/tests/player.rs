@@ -102,7 +102,7 @@ fn player_against_oracle() {
         let run: RunState = serde_json::from_value(v["state"].clone()).unwrap();
         let b = Board::from_run(&run, GameData::bundled());
         if let (true, Some(cb)) = (run.screen.in_blind(), &run.current_blind) {
-            cases.push((format!("{name} live"), b.clone(), sim::RoundStart { hand: run.hand.clone(), deck: run.draw_pile.clone(), hand_size: run.hand_size, hands: run.hands_left, discards: run.discards_left, scored: cb.scored, target: cb.target }));
+            cases.push((format!("{name} live"), b.clone(), sim::RoundStart { hand: run.hand.clone(), deck: run.draw_pile.clone(), hand_size: run.round_hand_size(), hands: run.hands_left, discards: run.discards_left, scored: cb.scored, target: cb.target }));
         }
         let mut fresh = b.clone();
         fresh.blind = Default::default();

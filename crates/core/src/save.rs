@@ -66,7 +66,18 @@ pub struct RunState {
     /// Hands and discards a fresh round starts with.
     pub round_hands: i64,
     pub round_discards: i64,
+    /// A fresh round's hand size: the hand size now without what only the round in play has
+    /// (`round_hand_size_delta`). Not modelled: Turtle Bean's -1 at each round's end (card.lua
+    /// `calculate_joker`, `end_of_round`), and a hand-size joker debuffed by Crimson Heart (its
+    /// size is out of the limit until the round ends).
     pub hand_size: i64,
+    /// What the round in play adds to `hand_size` (it's played with both: `round_hand_size`),
+    /// gone when it ends: a Juggle Tag's +3 each (`round_resets.temp_handsize`, taken back in
+    /// state_events.lua `end_round`) and The Manacle's -1 (blind.lua `set_blind`, given back on
+    /// `defeat` or `disable`; the vanilla save on the round's cash-out screen is written before
+    /// `defeat`, so it still has it there).
+    #[serde(default)]
+    pub round_hand_size_delta: i64,
     pub joker_slots: i64,
     pub consumable_slots: i64,
     /// `G.GAME.probabilities.normal` (2 with Oops! All 6s).
@@ -552,6 +563,9 @@ pub fn from_value(g: &Value, data: &GameData, path: &Path, age_secs: Option<u64>
         let c = areas.get(name).get("config");
         c.get("card_limit").int().or_else(|| c.at("card_limits.total_slots").int()).unwrap_or(0)
     };
+    // on every screen: outside a round `temp_handsize` is nil and BLIND has no name
+    let manacle = current_blind.as_ref().is_some_and(|b| b.key == "bl_manacle" && !b.disabled);
+    let round_hand_size_delta = int(rr.get("temp_handsize")) - manacle as i64;
     let state = RunState {
         seed: game.at("pseudorandom.seed").str().unwrap_or_default().to_string(),
         won: game.get("won").truthy(),
@@ -581,7 +595,8 @@ pub fn from_value(g: &Value, data: &GameData, path: &Path, age_secs: Option<u64>
         discards_used: int(cr.get("discards_used")),
         round_hands: int(rr.get("hands")),
         round_discards: int(rr.get("discards")),
-        hand_size: limit("hand"),
+        hand_size: limit("hand") - round_hand_size_delta,
+        round_hand_size_delta,
         joker_slots: limit("jokers"),
         consumable_slots: limit("consumeables"),
         probability_normal: game.at("probabilities.normal").num().unwrap_or(1.0),
@@ -696,8 +711,10 @@ mod tests {
     }
 
     fn synthetic_save() -> Value {
-        crate::lua::parse(
-            r#"return {["STATE"]=5,["VERSION"]="1.0.1o-FULL",["BACK"]={["name"]="Red Deck",},
+        crate::lua::parse(SYNTHETIC).unwrap()
+    }
+
+    const SYNTHETIC: &str = r#"return {["STATE"]=5,["VERSION"]="1.0.1o-FULL",["BACK"]={["name"]="Red Deck",},
             ["tags"]={[1]={["key"]="tag_foil",},[2]={["key"]="tag_double",},},
             ["BLIND"]={["name"]="",["chips"]=0,},
             ["GAME"]={["stake"]=8,["dollars"]=12,["win_ante"]=8,["round"]=3,["chips"]=0,
@@ -714,10 +731,7 @@ mod tests {
               ["consumeables"]={["cards"]={},["config"]={["card_limit"]=2,},},
               ["deck"]={["cards"]={[1]={["save_fields"]={["center"]="m_glass",["card"]="H_K",},["base"]={["value"]="King",["suit"]="Hearts",},["ability"]={["perma_bonus"]=5,["set"]="Enhanced",},["seal"]="Red",},},},
               ["shop_jokers"]={["cards"]={[1]={["save_fields"]={["center"]="j_jolly",},["ability"]={["name"]="Jolly Joker",["set"]="Joker",},["cost"]=3,},},},
-            },}"#,
-        )
-        .unwrap()
-    }
+            },}"#;
 
     #[test]
     fn reads_synthetic_save() {
@@ -741,5 +755,28 @@ mod tests {
         assert_eq!(shop.jokers[0].pending_tag_edition, Some(Edition::Foil));
         assert_eq!(shop.jokers[0].cost, 0);
         assert_eq!(s.tags, vec!["tag_double"]);
+        assert_eq!((s.hand_size, s.round_hand_size_delta), (8, 0));
+    }
+
+    #[test]
+    fn a_hand_size_change_that_lasts_the_round_isnt_a_fresh_rounds() {
+        // in a blind: `limit` cards in hand now, a Juggle Tag's `temp`, the blind
+        let read = |limit: i64, temp: Option<i64>, blind: &str, disabled: bool, state: i64| {
+            let text = SYNTHETIC
+                .replace(r#"["STATE"]=5"#, &format!(r#"["STATE"]={state}"#))
+                .replace(r#"["card_limit"]=8"#, &format!(r#"["card_limit"]={limit}"#))
+                .replace(r#"["round_resets"]={"#, &temp.map_or(r#"["round_resets"]={"#.to_string(), |t| format!(r#"["round_resets"]={{["temp_handsize"]={t},"#)))
+                .replace(r#"["BLIND"]={["name"]="","#, &format!(r#"["BLIND"]={{["name"]="B",["config_blind"]="{blind}",["disabled"]={disabled},"#));
+            let s = from_value(&crate::lua::parse(&text).unwrap(), GameData::bundled(), Path::new("x"), None).unwrap();
+            (s.hand_size, s.round_hand_size_delta)
+        };
+        // two Juggle Tags: 14 cards this round, 8 the next
+        assert_eq!(read(14, Some(6), "bl_small", false, 1), (8, 6));
+        // The Manacle: one card less while it's on
+        assert_eq!(read(7, None, "bl_manacle", false, 1), (8, -1));
+        assert_eq!(read(8, None, "bl_manacle", true, 1), (8, 0));
+        assert_eq!(read(13, Some(6), "bl_manacle", false, 2), (8, 5));
+        // the vanilla save on the cash-out screen is written before The Manacle is defeated
+        assert_eq!(read(7, None, "bl_manacle", false, 8), (8, -1));
     }
 }
