@@ -489,7 +489,9 @@ async function poll() {
     const seen = j.game_seen_secs;
     const gameUp = seen != null && seen < 6;
     $("#dot").className = "dot" + (j.busy ? " busy" : gameUp ? "" : " off");
-    $("#status").textContent = j.busy ? "analysing…"
+    const run = j.running;
+    const took = run ? (run.secs < 60 ? `${run.secs} s` : `${Math.floor(run.secs / 60)} min`) : "";
+    $("#status").textContent = j.busy ? (run && run.secs >= 5 ? `analysing… step ${Math.min(run.steps + 1, run.of)} of ${run.of}, ${took} (a newer state from the game stops it)` : "analysing…")
       : gameUp ? "live from the game"
       : seen != null ? `game not running (last seen ${seen < 120 ? seen + " s" : Math.round(seen / 60) + " min"} ago)`
       : "reading checkpoint saves (live mod not active)";

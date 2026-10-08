@@ -38,11 +38,14 @@ pub struct Options {
     /// Best play also plays every move it considered for `compare::MAX` rounds of its own
     /// (`PlayAdvice::reference`): what the search's pick is measured against. Slow; for tests.
     pub reference: bool,
+    /// Steps done, and a stop to ask for (`progress`): the live page stops an analysis when the
+    /// game writes a newer state
+    pub progress: Option<crate::progress::Progress>,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Options { sims: 300, screen_sims: 60, hand_samples: 300, seed: 42, rescue_top: 12, quick: false, reference: false }
+        Options { sims: 300, screen_sims: 60, hand_samples: 300, seed: 42, rescue_top: 12, quick: false, reference: false, progress: None }
     }
 }
 
@@ -770,16 +773,34 @@ fn without(b: &Board, i: usize) -> Board {
 fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).min(items.len().max(1));
     let chunk = items.len().div_ceil(threads.max(1)).max(1);
+    // the workers work for this thread's analysis (`progress`): a stop reaches them
+    let p = crate::progress::current();
     std::thread::scope(|s| {
-        let handles: Vec<_> = items.chunks(chunk).map(|c| s.spawn(|| c.iter().map(&f).collect::<Vec<R>>())).collect();
-        handles.into_iter().flat_map(|h| h.join().expect("worker panicked")).collect()
+        let handles: Vec<_> = items
+            .chunks(chunk)
+            .map(|c| {
+                let (p, f) = (p.clone(), &f);
+                s.spawn(move || {
+                    let _p = crate::progress::enter(p);
+                    c.iter()
+                        .map(|x| {
+                            crate::progress::checkpoint();
+                            f(x)
+                        })
+                        .collect::<Vec<R>>()
+                })
+            })
+            .collect();
+        handles.into_iter().flat_map(|h| crate::progress::joined(h.join())).collect()
     })
 }
 
 pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts: &Options) -> Analysis {
     let t0 = Instant::now();
     let timing = std::env::var_os("BAV_TIMING").is_some();
+    let _p = crate::progress::enter(opts.progress.clone().or_else(crate::progress::current));
     let lap = |what: &str| {
+        crate::progress::step();
         if timing {
             eprintln!("{:>6} ms  {what}", t0.elapsed().as_millis());
         }
@@ -4273,7 +4294,7 @@ mod tests {
     }
 
     fn quick() -> Options {
-        Options { sims: 60, screen_sims: 20, hand_samples: 80, seed: 7, rescue_top: 2, quick: false, reference: false }
+        Options { sims: 60, screen_sims: 20, hand_samples: 80, seed: 7, rescue_top: 2, quick: false, reference: false, progress: None }
     }
 
     fn shop_action(owned: &[(&str, Option<Edition>, Option<i64>)], buy: &str) -> String {

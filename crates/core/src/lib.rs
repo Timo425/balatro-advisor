@@ -16,6 +16,7 @@ pub mod paths;
 pub mod save;
 pub mod sim;
 pub mod plan;
+pub mod progress;
 pub mod whatif;
 
 use std::path::PathBuf;

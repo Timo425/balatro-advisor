@@ -16,3 +16,6 @@ serde_json.workspace = true
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 tiny_http = "0.12"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

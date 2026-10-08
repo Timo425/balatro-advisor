@@ -687,6 +687,8 @@ enum Action {
 /// as the rest of the hand keeps you on pace for the target; then the usual policy decides
 /// with the rest.
 fn decide(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i64, need: f64, size: usize) -> Action {
+    // every simulated decision: where an analysis asked to stop does (`progress`)
+    crate::progress::checkpoint();
     let keep = pays_at_end(b, hand);
     if !keep.is_empty() && hands > 1 {
         let free: Vec<usize> = (0..hand.len()).filter(|i| !keep.contains(i)).collect();
@@ -2011,11 +2013,19 @@ pub fn round_odds(b: &Board, start: &RoundStart, sims: usize, seed: u64) -> (f64
         (0..sims).map(run_one).collect()
     } else {
         let chunk = sims.div_ceil(threads);
+        // the threads work for this thread's analysis (`progress`): a stop reaches them
+        let p = crate::progress::current();
         std::thread::scope(|sc| {
             let hs: Vec<_> = (0..threads)
-                .map(|t| sc.spawn(move || (t * chunk..((t + 1) * chunk).min(sims)).map(run_one).collect::<Vec<_>>()))
+                .map(|t| {
+                    let p = p.clone();
+                    sc.spawn(move || {
+                        let _p = crate::progress::enter(p);
+                        (t * chunk..((t + 1) * chunk).min(sims)).map(run_one).collect::<Vec<_>>()
+                    })
+                })
                 .collect();
-            hs.into_iter().flat_map(|h| h.join().expect("sim thread")).collect()
+            hs.into_iter().flat_map(|h| crate::progress::joined(h.join())).collect()
         })
     };
     // Win chance on score alone: Mr. Bones' one-off save is reported separately (p_saved),

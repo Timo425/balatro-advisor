@@ -2,11 +2,12 @@
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::Result;
 use balatro_advisor::advise::{self, Options};
 use balatro_advisor::data::GameData;
+use balatro_advisor::progress::{self, Progress};
 use balatro_advisor::{gold, save};
 
 const PAGE: &str = include_str!("ui.html");
@@ -17,12 +18,15 @@ struct Shared {
     /// JSON body served at /api/analysis
     body: String,
     busy: bool,
+    /// The analysis running, and since when
+    running: Option<(Progress, Instant)>,
     /// Shop options ticked "as if bought" (labels), and a counter that changes with them
     plan: Vec<String>,
     plan_version: u64,
 }
 
 pub fn run(save_dir: PathBuf, profile: u8, port: u16, open: bool) -> Result<()> {
+    lower_priority();
     let shared = Arc::new(Mutex::new(Shared { body: r#"{"status":"starting"}"#.into(), ..Default::default() }));
 
     let beat_dir = save_dir.clone();
@@ -43,6 +47,26 @@ pub fn run(save_dir: PathBuf, profile: u8, port: u16, open: bool) -> Result<()> 
                 let m = std::fs::metadata(&p).and_then(|m| m.modified()).ok();
                 (p, m)
             };
+            // Whether the game has written a state other than `fp` since `seen` (settled; a
+            // reordered hand is the same state): what makes an analysis running stale
+            let newer = |mut seen: Option<SystemTime>, fp: String| {
+                move || {
+                    let (p, m) = stamp();
+                    if m == seen {
+                        return false;
+                    }
+                    std::thread::sleep(Duration::from_millis(150));
+                    if stamp().1 != m {
+                        return false;
+                    }
+                    seen = m;
+                    save::load(&p, data).map_or(true, |r| fingerprint(&r) != fp)
+                }
+            };
+            let plan_changed_from = |v: u64| {
+                let shared = shared.clone();
+                move || shared.lock().unwrap().plan_version != v
+            };
             loop {
                 let m = Some(stamp());
                 let (plan, plan_v) = {
@@ -53,10 +77,13 @@ pub fn run(save_dir: PathBuf, profile: u8, port: u16, open: bool) -> Result<()> 
                     last_plan = plan_v;
                     if let Some((r, a, g)) = &real {
                         shared.lock().unwrap().busy = true;
-                        let body = planned_body(r, a, g.as_ref(), data, &plan);
+                        let mut stale = (newer(m.as_ref().and_then(|x| x.1), last_fp.clone().unwrap_or_default()), plan_changed_from(plan_v));
+                        let body = planned_body(r, a, g.as_ref(), data, &plan, &shared, move || stale.0() || stale.1());
                         let mut s = shared.lock().unwrap();
-                        s.body = body;
-                        s.version += 1;
+                        if let Some(body) = body {
+                            s.body = body;
+                            s.version += 1;
+                        }
                         s.busy = false;
                     }
                     continue;
@@ -67,7 +94,7 @@ pub fn run(save_dir: PathBuf, profile: u8, port: u16, open: bool) -> Result<()> 
                     if settled != m {
                         continue;
                     }
-                    last = m;
+                    last = m.clone();
                     let plan_changed = plan_v != last_plan;
                     last_plan = plan_v;
                     shared.lock().unwrap().busy = true;
@@ -82,14 +109,7 @@ pub fn run(save_dir: PathBuf, profile: u8, port: u16, open: bool) -> Result<()> 
                     // Reordering your hand changes the file but not the run: skip those.
                     let loaded = save::load(&save_path, data);
                     if let Ok(r) = &loaded {
-                        let mut same = r.clone();
-                        // (unless a card is face down: then the order tells you something)
-                        if !same.hand.iter().any(|c| c.face_down) {
-                            same.hand.sort_by_key(|c| c.label());
-                        }
-                        same.snapshot.age_secs = None;
-                        same.snapshot.live = false;
-                        let fp = serde_json::to_string(&same).unwrap_or_default();
+                        let fp = fingerprint(r);
                         if last_fp.as_deref() == Some(fp.as_str()) && !plan_changed {
                             shared.lock().unwrap().busy = false;
                             std::thread::sleep(Duration::from_millis(400));
@@ -100,11 +120,10 @@ pub fn run(save_dir: PathBuf, profile: u8, port: u16, open: bool) -> Result<()> 
                     let body = match loaded {
                         Ok(r) => {
                             let g = gold::load(&save_dir, profile, data).ok();
-                            let analysed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                advise::analyze(&r, data, g.as_ref(), &Options::default())
-                            }));
+                            let stale = newer(m.as_ref().and_then(|x| x.1), last_fp.clone().unwrap_or_default());
+                            let analysed = stoppable(&shared, stale, |p| advise::analyze(&r, data, g.as_ref(), &Options { progress: Some(p), ..Default::default() }));
                             match analysed {
-                                Ok(a) => {
+                                Ok(Some(a)) => {
                                     if let Some(k) = &keep {
                                         let _ = std::fs::remove_file(k);
                                     }
@@ -120,9 +139,22 @@ pub fn run(save_dir: PathBuf, profile: u8, port: u16, open: bool) -> Result<()> 
                                             s.plan = plan.clone();
                                         }
                                     }
-                                    let body = planned_body(&r, &a, g.as_ref(), data, &plan);
+                                    let mut stale = (newer(m.as_ref().and_then(|x| x.1), last_fp.clone().unwrap_or_default()), plan_changed_from(plan_v));
+                                    let body = planned_body(&r, &a, g.as_ref(), data, &plan, &shared, move || stale.0() || stale.1());
                                     real = Some((r.clone(), a, g));
+                                    // a plan stopped by a newer state or plan: the next turn of the
+                                    // loop works that one out
+                                    let Some(body) = body else { continue };
                                     body
+                                }
+                                // The game wrote a newer state: analyse that one (the page
+                                // keeps the last analysis until then)
+                                Ok(None) => {
+                                    if let Some(k) = &keep {
+                                        let _ = std::fs::remove_file(k);
+                                    }
+                                    last_fp = None;
+                                    continue;
                                 }
                                 Err(_) => serde_json::json!({
                                     "status": "error",
@@ -190,8 +222,12 @@ pub fn run(save_dir: PathBuf, profile: u8, port: u16, open: bool) -> Result<()> 
                 let high_contrast = balatro_advisor::jkr::read(&beat_dir.join("settings.jkr"))
                     .ok()
                     .is_some_and(|v| v.get("colourblind_option").truthy());
+                // How far the analysis running has got: steps done of all, seconds so far
+                let running = s.running.as_ref().map_or("null".to_string(), |(p, t)| {
+                    format!(r#"{{"steps":{},"of":{},"secs":{}}}"#, p.steps_done(), progress::STEPS, t.elapsed().as_secs())
+                });
                 let body = format!(
-                    r#"{{"boot":"{boot}","version":{},"busy":{},"game_seen_secs":{seen},"high_contrast":{high_contrast},"data":{}}}"#,
+                    r#"{{"boot":"{boot}","version":{},"busy":{},"running":{running},"game_seen_secs":{seen},"high_contrast":{high_contrast},"data":{}}}"#,
                     s.version, s.busy, s.body
                 );
                 tiny_http::Response::from_string(body).with_header(header("Content-Type", "application/json"))
@@ -204,16 +240,79 @@ pub fn run(save_dir: PathBuf, profile: u8, port: u16, open: bool) -> Result<()> 
 }
 
 /// The page's JSON for a state: the analysis as it is, or with the ticked options already
-/// bought (the plan's notes say what was applied).
-fn planned_body(r: &save::RunState, a: &advise::Analysis, g: Option<&gold::GoldReport>, data: &GameData, plan: &[String]) -> String {
+/// bought (the plan's notes say what was applied). None when that analysis went stale
+/// (`stale`) and was stopped.
+fn planned_body(
+    r: &save::RunState,
+    a: &advise::Analysis,
+    g: Option<&gold::GoldReport>,
+    data: &GameData,
+    plan: &[String],
+    shared: &Mutex<Shared>,
+    stale: impl FnMut() -> bool + Send,
+) -> Option<String> {
     if plan.is_empty() {
-        return serde_json::json!({ "status": "ok", "analysis": a, "gold": g }).to_string();
+        return Some(serde_json::json!({ "status": "ok", "analysis": a, "gold": g }).to_string());
     }
     let (state, notes) = balatro_advisor::plan::apply(r, a, data, plan);
-    let planned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| advise::analyze(&state, data, g, &Options::default())));
-    match planned {
-        Ok(p) => serde_json::json!({ "status": "ok", "analysis": p, "gold": g, "plan": { "items": plan, "notes": notes } }).to_string(),
+    let planned = stoppable(shared, stale, |p| advise::analyze(&state, data, g, &Options { progress: Some(p), ..Default::default() }));
+    Some(match planned {
+        Ok(Some(p)) => serde_json::json!({ "status": "ok", "analysis": p, "gold": g, "plan": { "items": plan, "notes": notes } }).to_string(),
+        Ok(None) => return None,
         Err(_) => serde_json::json!({ "status": "ok", "analysis": a, "gold": g, "plan": { "items": plan, "notes": ["the planned state crashed the analysis; showing the real one"] } }).to_string(),
+    })
+}
+
+/// Runs an analysis (`analyse`, given its `Progress`) while a watcher thread checks every
+/// 400 ms whether it went stale (`stale`: the game wrote another state, the plan changed) and
+/// then stops it. `Ok(None)` when it was stopped, `Err` when it crashed. The page shows how
+/// far it got (`Shared::running`).
+fn stoppable<T>(shared: &Mutex<Shared>, mut stale: impl FnMut() -> bool + Send, analyse: impl FnOnce(Progress) -> T) -> std::thread::Result<Option<T>> {
+    let p = Progress::new();
+    shared.lock().unwrap().running = Some((p.clone(), Instant::now()));
+    let done = std::sync::atomic::AtomicBool::new(false);
+    let out = std::thread::scope(|s| {
+        s.spawn(|| {
+            while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(400));
+                if !done.load(std::sync::atomic::Ordering::Relaxed) && stale() {
+                    p.stop();
+                    return;
+                }
+            }
+        });
+        let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| analyse(p.clone())));
+        done.store(true, std::sync::atomic::Ordering::Relaxed);
+        out
+    });
+    shared.lock().unwrap().running = None;
+    match out {
+        Ok(a) => Ok(Some(a)),
+        Err(e) if progress::is_stopped(&*e) => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// What the run is, as far as the advice goes: reordering your hand changes the file but not
+/// this (unless a card is face down: then the order tells you something)
+fn fingerprint(r: &save::RunState) -> String {
+    let mut same = r.clone();
+    if !same.hand.iter().any(|c| c.face_down) {
+        same.hand.sort_by_key(|c| c.label());
+    }
+    same.snapshot.age_secs = None;
+    same.snapshot.live = false;
+    serde_json::to_string(&same).unwrap_or_default()
+}
+
+/// The analysis runs at a lower CPU priority (nice 10), so a long one doesn't slow the game or
+/// anything else on the machine: it gets what they leave. Threads started after this inherit
+/// it (Linux sets it per thread).
+fn lower_priority() {
+    #[cfg(unix)]
+    // SAFETY: setpriority only reads its arguments
+    unsafe {
+        libc::setpriority(libc::PRIO_PROCESS, 0, 10);
     }
 }
 
