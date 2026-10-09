@@ -128,14 +128,19 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
             (kind, k)
         };
         // Every move: every play and every discard, for your hand as it is and after each
-        // held consumable (used first). No move needs a rule to be considered.
+        // held consumable (used first). No move needs a rule to be considered. A hand of
+        // more than `sim::ALL_MOVES_MAX` cards gives far more than a race can take: its moves
+        // come from its structure, over every card (`sim::big_hand_moves`).
         type Cand = (sim::Move, Board, RoundStart, Vec<sim::Use>, Option<String>);
-        let moves_of = |st: &RoundStart| {
+        let moves_of = |st: &RoundStart, b: &Board| {
+            if st.hand.len() > sim::ALL_MOVES_MAX {
+                return sim::big_hand_moves(b, &st.hand, &st.deck, st.discards);
+            }
             let mut v = sim::all_plays(&st.hand);
             v.extend(sim::all_discards(&st.hand, st.discards));
             v
         };
-        let mut cands: Vec<Cand> = moves_of(&start).into_iter().map(|m| (m, bb.clone(), start.clone(), uses.clone(), None)).collect();
+        let mut cands: Vec<Cand> = moves_of(&start, &bb).into_iter().map(|m| (m, bb.clone(), start.clone(), uses.clone(), None)).collect();
         for (k, u) in uses.iter().enumerate() {
             if uses[..k].iter().any(|x| x.name == u.name) {
                 continue;
@@ -143,7 +148,7 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
             let Some((b2, h2)) = u.apply(&bb, &start.hand) else { continue };
             let rest: Vec<sim::Use> = uses.iter().enumerate().filter(|(j, _)| *j != k).map(|(_, x)| x.clone()).collect();
             let s2 = RoundStart { hand: h2, ..start.clone() };
-            for m in moves_of(&s2) {
+            for m in moves_of(&s2, &b2) {
                 cands.push((m, b2.clone(), s2.clone(), rest.clone(), Some(u.name.clone())));
             }
         }

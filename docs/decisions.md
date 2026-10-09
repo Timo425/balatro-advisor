@@ -263,3 +263,36 @@ without any fixture noticing.
 disagrees with them), or the fixed targets drift so far that every board is won or lost.
 
 Approved by the owner 2026-10-04.
+
+## D10. Moves tried: every move while the search can take them; a bigger hand's from its structure (accepted)
+
+**Decision.** "Moves tried: all of them" is replaced by: every move while a hand gives no
+more than a race can take (every play and every discard of up to `sim::ALL_MOVES_MAX` = 12
+cards, as before); a bigger hand's moves come from its structure, over every card, with no cut
+by the cards' order (`sim::big_hand_moves`): the plays whose cards can all score
+(`sim::scoring_plays`, a superset checked against every subset), each also topped up with
+the lowest cards outside it (kickers, or junk played to dig), the best 8 of each kind (its
+hand and how many cards it plays) and then the best by score now, `BIG_HAND_PLAYS` (256) in
+all, a budget; and the discards the hand's structure gives (the oracle's:
+`structure_discards`, keeping the best of those plays first). The output says when this
+applies (`heuristics`). Rule 2 and "Search, then narrow" in design.md are widened to say
+so: where candidates are more than a race can take, a generator over every card by the
+game's rules (a superset of a defined class, checked against every candidate on small
+cases), and any cut beyond it a budget named in the register and the output. The simulated player's best play keeps its cut (every subset of the
+first 16 cards by rank): over every card it cost ~10x on a 32-card hand, where it's chosen
+hundreds of thousands of times an analysis (gap 20).
+
+**Why.** Raised in play (gap 20): 8 Juggle Tags gave a 32-card hand, which has 242,824 plays
+and as many discards, each needing simulated rounds, so "every move" can't be run; the
+code had quietly taken the first 12 cards by rank instead, which can hide the plays that
+matter (five 8s, a flush low in rank), and the analysis still took ~14 minutes. The owner
+asked for the tool to be reasonably fast and reasonably accurate rather than exhaustive in
+name only. Most big-hand moves are the same move with other junk: the structure gives the
+plays that can score, the budget keeps the best few of each kind so it isn't all one hand,
+and the noise stage then decides as usual.
+
+**Revisit if** a big hand's pick is shown worse than a move this leaves out (a play outside
+the best `BIG_HAND_PLAYS` by score now, or a discard outside the structure's), or hands over
+12 cards become common enough for the budget to matter.
+
+Approved by the owner 2026-10-08.

@@ -1888,7 +1888,12 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             "Card order within a play: +Mult cards first, Glass/Polychrome last.",
             "Scaling jokers keep their current value; growth isn't projected.",
             "Blue Seal planets by Ante 8 assume a consumable held at round end in a measured share of rounds (one run).",
-        ],
+        ]
+        .into_iter()
+        .chain((run.hand.len() > sim::ALL_MOVES_MAX).then_some(
+            "A big hand: Best play's moves come from the hand's structure (its plays whose cards can all score, the best few of each kind and then by score now; its structure's discards), not every move; the simulated player's best play looks only at its 16 highest cards.",
+        ))
+        .collect(),
         save_age_secs: run.snapshot.age_secs,
         live: run.snapshot.live,
         order_tips: tips,

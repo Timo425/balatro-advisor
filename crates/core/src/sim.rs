@@ -64,13 +64,175 @@ pub fn best_play(b: &Board, hand: &[Card]) -> Option<Play> {
 
 /// `best_play`; `prefilter`: skip the plays `could_all_score` rules out before detecting them
 fn best_play_with(b: &Board, hand: &[Card], prefilter: bool) -> Option<Play> {
-    let n = hand.len().min(16);
+    let n = hand.len().min(SUBSETS_MAX);
     best_play_of(b, hand, (1 << n) - 1, prefilter, None).map(|(mut p, rolled)| {
         // a floor that rolled nothing is every roll's score (with the same cards held: the
-        // whole hand, unless it's more than 16 cards)
+        // whole hand, unless it's more than `SUBSETS_MAX` cards)
         p.mean = if rolled || n < hand.len() { mean_score(b, hand, &p.cards, p.floor) } else { p.floor };
         p
     })
+}
+
+/// The most cards the simulated player's best play tries every subset of (`best_play_of`): a
+/// bigger hand's best play is among its first 16 (`Card::order_key`, highest ranks first). A
+/// cut, not a finding (gap 20): the plays a hand's structure gives (`scoring_plays`) cover
+/// every card but cost ~10x on a 32-card hand, where it's chosen hundreds of thousands of
+/// times an analysis.
+const SUBSETS_MAX: usize = 16;
+
+/// The most cards Best play tries every play and every discard of (`all_plays`,
+/// `all_discards`); a bigger hand's moves come from its structure (`big_hand_moves`)
+pub const ALL_MOVES_MAX: usize = 12;
+
+/// The plays of a hand of more than `ALL_MOVES_MAX` cards that Best play races: the best by
+/// their score now (`big_hand_moves`). A budget, not a finding: an 8-card hand has 218 plays.
+const BIG_HAND_PLAYS: usize = 256;
+
+/// Every play of `hand` (bit masks, ascending) whose cards could all score: Stone cards with
+/// any play (they always score: hand.lua `evaluate_play`), the rest only as poker hands make
+/// them, where every part of a play that could all score could too: one rank or two, one
+/// suit as flushes count it (`hand::is_suit`: Wild cards, Smeared Joker), distinct ranks
+/// within one straight's run (`straight_runs`, Shortcut's gaps, the Ace low or high); with
+/// Four Fingers one card may fall outside the suit or repeat a rank in the run. Built card by
+/// card: a set that can't be part of such a play is dropped with every set containing it, so a
+/// 32-card hand gives thousands, not every 5-card subset. A superset (`hand::detect` decides),
+/// except with Splash, where every card scores: then only the plays a poker hand makes, and
+/// the extra cards are `with_kickers`' (the highest few: a heuristic). Face-down
+/// cards are left out (you can't plan around them); the first 64 cards, the first 10 Stone
+/// cards.
+pub fn scoring_plays(hand: &[Card], f: hand::RuleFlags) -> Vec<u64> {
+    let n = hand.len().min(64);
+    let stone = |i: usize| hand[i].enhancement == Some(Enhancement::Stone);
+    let stones: Vec<usize> = (0..n).filter(|&i| stone(i) && !hand[i].face_down).take(10).collect();
+    let rest: Vec<usize> = (0..n).filter(|&i| !stone(i) && !hand[i].face_down).collect();
+    let runs = straight_runs(5, f.shortcut);
+    let slack = usize::from(f.four_fingers);
+    let could = |q: &[usize]| {
+        if q.len() <= 1 {
+            return true;
+        }
+        let mut ids: Vec<i32> = q.iter().map(|&i| i32::from(hand[i].rank.0)).collect();
+        ids.sort_unstable();
+        let mut distinct = ids.clone();
+        distinct.dedup();
+        if distinct.len() <= 2 {
+            return true;
+        }
+        let off_suit = |s: Suit| q.iter().filter(|&&i| !hand::is_suit(&hand[i], s, false, true, f.smeared)).count();
+        if Suit::ALL.into_iter().any(|s| off_suit(s) <= slack) {
+            return true;
+        }
+        ids.len() - distinct.len() <= slack && runs.iter().any(|run| distinct.iter().all(|&r| run.contains(&r) || (r == 14 && run.contains(&1))))
+    };
+    fn grow(rest: &[usize], from: usize, q: &mut Vec<usize>, could: &dyn Fn(&[usize]) -> bool, out: &mut Vec<Vec<usize>>) {
+        out.push(q.clone());
+        if q.len() == 5 {
+            return;
+        }
+        for k in from..rest.len() {
+            q.push(rest[k]);
+            if could(q) {
+                grow(rest, k + 1, q, could, out);
+            }
+            q.pop();
+        }
+    }
+    let mut cores = vec![];
+    grow(&rest, 0, &mut vec![], &could, &mut cores);
+    // each with every set of Stone cards that fits
+    let mut out = vec![];
+    for core in cores {
+        let m: u64 = core.iter().fold(0, |m, &i| m | 1 << i);
+        let room = 5 - core.len();
+        for s in 0u64..(1 << stones.len()) {
+            if s.count_ones() as usize <= room && (m != 0 || s != 0) {
+                out.push((0..stones.len()).filter(|k| s & (1 << k) != 0).fold(m, |m, k| m | 1 << stones[k]));
+            }
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// The cards of a play's mask
+fn mask_cards(m: u64) -> Vec<usize> {
+    (0..64).filter(|i| m & (1 << i) != 0).collect()
+}
+
+/// A play's cards topped up from the cards outside it (up to 5 of the lowest, `junk_order`;
+/// with Splash, where every card scores, the 5 highest): every set of them that fits. Unscored cards count only through what they leave
+/// in hand (Raised Fist, Blackboard, Baron…), how many cards are played (Square, Half Joker,
+/// The Psychic) and the cards a play cycles out (a dig): the lowest are what a player plays
+/// away. A heuristic, for hands too big for every subset.
+fn with_kickers(hand: &[Card], m: u64, splash: bool) -> Vec<u64> {
+    let mut low: Vec<usize> = (0..hand.len().min(64)).filter(|&i| m & (1 << i) == 0 && !hand[i].face_down).collect();
+    junk_order(hand, &mut low);
+    if splash {
+        low.reverse();
+    }
+    low.truncate(5);
+    let room = 5usize.saturating_sub(m.count_ones() as usize);
+    (1u32..(1 << low.len())).filter(|s| s.count_ones() as usize <= room).map(|s| (0..low.len()).filter(|k| s & (1 << k) != 0).fold(m, |m, k| m | 1 << low[k])).collect()
+}
+
+/// Cards least worth keeping first: plain or debuffed ones (no enhancement, edition or seal
+/// that counts) before the rest, then by chips, then position
+fn junk_order(hand: &[Card], idx: &mut [usize]) {
+    let plain = |c: &Card| c.debuff || (c.enhancement.is_none() && c.edition.is_none() && c.seal.is_none());
+    idx.sort_by(|&a, &c| plain(&hand[c]).cmp(&plain(&hand[a])).then(hand[a].rank.chips().total_cmp(&hand[c].rank.chips())).then(a.cmp(&c)));
+}
+
+/// Of each kind of play (its hand and how many cards it plays), the best this many by score
+/// now go into a big hand's race first (`big_hand_moves`), so the budget isn't all one hand
+const BIG_HAND_PER_KIND: usize = 8;
+
+/// Best play's moves for a hand of more than `ALL_MOVES_MAX` cards, where every play and
+/// discard would be far more than a race can take (32 cards: 242,824 plays): the plays the
+/// hand's structure gives over every card (`scoring_plays`), each also topped up with the
+/// lowest cards outside it (`with_kickers`: as kickers, or junk played to dig), the best
+/// `BIG_HAND_PLAYS` by their score now (with every roll failing); and the discards the
+/// hand's structure gives (`structure_discards`). Each play in the order to play it.
+pub fn big_hand_moves(b: &Board, hand: &[Card], deck: &[Card], discards: i64) -> Vec<Move> {
+    let flags = b.rule_flags();
+    let mut masks = scoring_plays(hand, flags);
+    let more: Vec<u64> = masks.iter().flat_map(|&m| with_kickers(hand, m, flags.splash)).collect();
+    masks.extend(more);
+    masks.sort_unstable();
+    masks.dedup();
+    let mut scored: Vec<(f64, u64, Vec<usize>, HandType)> = masks
+        .into_iter()
+        .map(|m| {
+            let mut idx = mask_cards(m);
+            arrange(hand, &mut idx);
+            let played: Vec<Card> = idx.iter().map(|&i| hand[i]).collect();
+            let held: Vec<Card> = (0..hand.len()).filter(|i| !idx.contains(i)).map(|i| hand[i]).collect();
+            let o = score::score(b, &played, &held, &mut Unlucky, false);
+            (o.score, m, idx, o.hand)
+        })
+        .collect();
+    // the best first; on a tie, fewer cards (a play topped up scores the same), then the mask
+    scored.sort_by(|x, y| y.0.total_cmp(&x.0).then(x.1.count_ones().cmp(&y.1.count_ones())).then(x.1.cmp(&y.1)));
+    // the best few of each kind (hand, cards played: a dig with junk is a kind of its own),
+    // then the best of the rest, up to the budget
+    let mut per_kind: std::collections::HashMap<(HandType, u32), usize> = std::collections::HashMap::new();
+    let (mut first, mut rest): (Vec<usize>, Vec<usize>) = (vec![], vec![]);
+    for (k, x) in scored.iter().enumerate() {
+        let n = per_kind.entry((x.3, x.1.count_ones())).or_insert(0);
+        *n += 1;
+        if *n <= BIG_HAND_PER_KIND { first.push(k) } else { rest.push(k) }
+    }
+    first.truncate(BIG_HAND_PLAYS);
+    let room = BIG_HAND_PLAYS - first.len();
+    first.extend(rest.into_iter().take(room));
+    first.sort_unstable();
+    // the best play over every card: what the structure's discards keep first
+    let best = first.first().map(|&k| scored[k].2.clone());
+    let mut out: Vec<Move> = first.iter().map(|&k| Move::Play(scored[k].2.clone())).collect();
+    if let Some(best) = best {
+        out.extend(structure_discards(b, hand, deck, discards, best));
+    }
+    out
 }
 
 /// A source of rolls that notes whether it was asked for one: a score that asked for none is
@@ -322,9 +484,10 @@ pub enum Move {
 }
 
 /// Every play of 1 to 5 cards, each in the order to play it. Face-down cards are left out:
-/// you can't plan around a card you can't see.
+/// you can't plan around a card you can't see. Of the first `ALL_MOVES_MAX` cards: a bigger
+/// hand's moves are `big_hand_moves`.
 pub fn all_plays(hand: &[Card]) -> Vec<Move> {
-    let n = hand.len().min(12);
+    let n = hand.len().min(ALL_MOVES_MAX);
     let hidden: u32 = (0..n).filter(|&i| hand[i].face_down).fold(0, |m, i| m | (1 << i));
     (1u32..(1 << n))
         .filter(|m| m.count_ones() <= 5 && m & hidden == 0)
@@ -337,12 +500,13 @@ pub fn all_plays(hand: &[Card]) -> Vec<Move> {
 }
 
 /// Every discard of 1 to 5 cards from the hand (none without a discard left), for screening
-/// all of them instead of guessing which are worth simulating.
+/// all of them instead of guessing which are worth simulating. Of the first `ALL_MOVES_MAX`
+/// cards, as `all_plays`.
 pub fn all_discards(hand: &[Card], discards: i64) -> Vec<Move> {
     if discards <= 0 {
         return vec![];
     }
-    let n = hand.len().min(12);
+    let n = hand.len().min(ALL_MOVES_MAX);
     (1u32..(1 << n)).filter(|m| m.count_ones() <= 5).map(|m| Move::Discard((0..n).filter(|i| m & (1 << i) != 0).collect())).collect()
 }
 
@@ -981,6 +1145,17 @@ fn oracle_moves(b: &Board, hand: &[Card], deck: &[Card], discards: i64) -> Vec<M
     let mut out = vec![];
     let Some(best) = best_play(b, hand) else { return out };
     out.push(Move::Play(with_fillers(b, hand, &best.cards)));
+    out.extend(structure_discards(b, hand, deck, discards, best.cards));
+    out
+}
+
+/// The discards a hand's structure gives (`oracle_moves`, `big_hand_moves`): up to 5 of the
+/// lowest cards outside each set worth keeping (each suit you hold 2+ of, each straight's run
+/// you hold all but 1 or 2 of, the cards that pair, the biggest rank group, the best play
+/// `best`), each also with the cards that pay at round end kept. None without a discard or a
+/// card to draw.
+fn structure_discards(b: &Board, hand: &[Card], deck: &[Card], discards: i64, best: Vec<usize>) -> Vec<Move> {
+    let mut out = vec![];
     if discards <= 0 || deck.is_empty() {
         return out;
     }
@@ -1006,7 +1181,7 @@ fn oracle_moves(b: &Board, hand: &[Card], deck: &[Card], discards: i64) -> Vec<M
         sets.push((0..hand.len()).filter(|&i| ids[i] == ids[top]).collect());
         sets.push(paired);
     }
-    sets.push(best.cards);
+    sets.push(best);
     let pay = pays_at_end(b, hand);
     for keep in sets {
         for with_pay in [false, true] {
@@ -2074,6 +2249,83 @@ pub fn rng(seed: u64) -> Rng {
 mod tests {
     use super::*;
     use crate::bench::{sample_board, standard_deck};
+
+    fn labels(cards: &[Card]) -> String {
+        cards.iter().map(Card::label).collect::<Vec<_>>().join(" ")
+    }
+
+    /// A random hand of `n` cards (ranks and suits may repeat, as a changed deck's do), some
+    /// Stone, Wild or Steel
+    fn random_hand(rng: &mut Rng, n: usize) -> Vec<Card> {
+        let ranks = ["2", "3", "4", "5", "6", "7", "8", "9", "T", "J", "Q", "K", "A"];
+        let text: Vec<String> = (0..n)
+            .map(|_| {
+                let mods = ["", "", "", "", "", "", ":stone", ":wild", ":steel"];
+                format!("{}{}{}", ranks[rng.below(13)], ["S", "H", "D", "C"][rng.below(4)], mods[rng.below(mods.len())])
+            })
+            .collect();
+        Card::parse_list(&text.join(" ")).unwrap()
+    }
+
+    const RULE_BOARDS: &[&[&str]] = &[&["j_joker"], &["j_four_fingers"], &["j_shortcut"], &["j_smeared"], &["j_four_fingers", "j_shortcut", "j_smeared"]];
+
+    #[test]
+    fn the_plays_a_hands_structure_gives_are_every_play_whose_cards_all_score() {
+        // against every subset, on hands small enough to try them all, with the rules that
+        // change what scores
+        let mut rng = Rng::new(20);
+        let mut checked = 0;
+        for keys in RULE_BOARDS {
+            let f = sample_board(keys).rule_flags();
+            for _ in 0..60 {
+                let n = 5 + rng.below(8);
+                let hand = random_hand(&mut rng, n);
+                let given: std::collections::HashSet<u64> = scoring_plays(&hand, f).into_iter().collect();
+                for m in 1u64..(1 << n) {
+                    if m.count_ones() > 5 {
+                        continue;
+                    }
+                    let played: Vec<Card> = mask_cards(m).iter().map(|&i| hand[i]).collect();
+                    if hand::detect(&played, f).scoring.len() == played.len() {
+                        assert!(given.contains(&m), "{keys:?}: {} missing from {}", labels(&played), labels(&hand));
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert!(checked > 10_000, "{checked}");
+    }
+
+    #[test]
+    fn a_big_hands_moves_come_from_every_card() {
+        // 40 cards, the five 8s (two 8♠: Five of a Kind, the best play) last, at bits 34-38,
+        // behind 24 higher cards and 9 Stone cards, where the first-12 cut never looked: it leads the plays, the best few of
+        // each kind are in, and a discard keeps it, throwing the lowest cards outside it
+        let mut text = vec![];
+        for r in ["A", "K", "Q", "J", "T", "9"] {
+            for s in ["S", "H", "D", "C"] {
+                text.push(format!("{r}{s}"));
+            }
+        }
+        text.extend(std::iter::repeat_n("AS:stone".to_string(), 9));
+        text.extend(["7S", "8S", "8H", "8C", "8D", "8S", "3H"].map(String::from));
+        let hand = Card::parse_list(&text.join(" ")).unwrap();
+        assert_eq!(hand.len(), 40);
+        let b = sample_board(&["j_joker"]);
+        let moves = big_hand_moves(&b, &hand, &standard_deck(), 3);
+        let plays: Vec<&Vec<usize>> = moves.iter().filter_map(|m| if let Move::Play(v) = m { Some(v) } else { None }).collect();
+        assert!(plays.len() <= BIG_HAND_PLAYS);
+        let mut eights: Vec<usize> = (0..hand.len()).filter(|&i| hand[i].rank.0 == 8).collect();
+        let mut best = plays[0].clone();
+        best.sort();
+        assert_eq!(best, eights, "the best play");
+        let kinds: std::collections::HashSet<HandType> = plays.iter().map(|v| hand::detect(&v.iter().map(|&i| hand[i]).collect::<Vec<_>>(), b.rule_flags()).hand).collect();
+        assert!(kinds.len() >= 6, "{kinds:?}");
+        // keeping the five 8s, the 5 lowest outside them: 3♥ 7♠ and three 9s
+        eights.sort();
+        let lowest = |v: &Vec<usize>| v.len() == 5 && v.iter().all(|i| !eights.contains(i)) && v.iter().filter(|&&i| hand[i].rank.0 < 8).count() == 2;
+        assert!(moves.iter().any(|m| matches!(m, Move::Discard(v) if lowest(v))), "{moves:?}");
+    }
 
     #[test]
     fn the_simulated_player_burns_discards_only_when_the_board_scores_more_without_them() {
