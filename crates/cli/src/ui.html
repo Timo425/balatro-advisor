@@ -407,7 +407,10 @@ function render(d) {
   let tab = "jokers";
   try { tab = localStorage.getItem("digTab") || "jokers"; } catch (e) {}
   const tabs = `<span class="tabs">${["jokers", "tarots"].map((t) => `<a href="#" class="${t === tab ? "on" : ""}" onclick="try{localStorage.setItem('digTab','${t}')}catch(e){};render(last);return false">${t === "jokers" ? "Jokers" : "Tarots"}</a>`).join("")}</span>`;
-  if (tab === "tarots") {
+  if (d.partial) {
+    // the blind's quick pass: the dig list and the outlook come with the full analysis
+    right += `<section><h2>Worth digging for</h2><div class="empty">Coming with the full analysis (the shop pool, every tarot and the style outlook), shown when it finishes. Best play seldom changes then, and only between moves about equal.</div></section>`;
+  } else if (tab === "tarots") {
     const hz = a.rounds.find((r) => r.horizon);
     const tr = [...(a.tarots || [])].sort((x, y) => y.reach - x.reach);
     right += `<section><h2>Worth digging for ${tabs} <small>every tarot, used the way you sensibly would · ranked by share of the ${esc(hz ? hz.label + " boss" : "next ante boss")} reached</small></h2>

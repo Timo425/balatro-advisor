@@ -123,8 +123,31 @@ pub fn run(save_dir: PathBuf, profile: u8, port: u16, open: bool) -> Result<()> 
                     let body = match loaded {
                         Ok(r) => {
                             let g = gold::load(&save_dir, profile, data).ok();
+                            // In a blind, the quick pass first: what the play needs, in a second or
+                            // two (`Options::quick`), shown while the full analysis works out the rest
+                            // (the dig list, the outlook), which takes far longer and is often
+                            // overtaken by your next play
+                            if r.screen.in_blind() && plan.is_empty() {
+                                let stale = newer(m.as_ref().and_then(|x| x.1), last_fp.clone().unwrap_or_default());
+                                match stoppable(&shared, &r, "quick", stale, |p| advise::analyze(&r, data, g.as_ref(), &Options { progress: Some(p), quick: true, ..Default::default() })) {
+                                    Ok(Some(a)) => {
+                                        let mut s = shared.lock().unwrap();
+                                        s.body = serde_json::json!({ "status": "ok", "analysis": a, "gold": g, "partial": true }).to_string();
+                                        s.version += 1;
+                                    }
+                                    Ok(None) => {
+                                        if let Some(k) = &keep {
+                                            let _ = std::fs::remove_file(k);
+                                        }
+                                        last_fp = None;
+                                        continue;
+                                    }
+                                    // the full analysis tries again, and says so if it crashes too
+                                    Err(_) => {}
+                                }
+                            }
                             let stale = newer(m.as_ref().and_then(|x| x.1), last_fp.clone().unwrap_or_default());
-                            let analysed = stoppable(&shared, &r, false, stale, |p| advise::analyze(&r, data, g.as_ref(), &Options { progress: Some(p), ..Default::default() }));
+                            let analysed = stoppable(&shared, &r, "full", stale, |p| advise::analyze(&r, data, g.as_ref(), &Options { progress: Some(p), ..Default::default() }));
                             match analysed {
                                 Ok(Some(a)) => {
                                     if let Some(k) = &keep {
@@ -258,7 +281,7 @@ fn planned_body(
         return Some(serde_json::json!({ "status": "ok", "analysis": a, "gold": g }).to_string());
     }
     let (state, notes) = balatro_advisor::plan::apply(r, a, data, plan);
-    let planned = stoppable(shared, &state, true, stale, |p| advise::analyze(&state, data, g, &Options { progress: Some(p), ..Default::default() }));
+    let planned = stoppable(shared, &state, "planned", stale, |p| advise::analyze(&state, data, g, &Options { progress: Some(p), ..Default::default() }));
     Some(match planned {
         Ok(Some(p)) => serde_json::json!({ "status": "ok", "analysis": p, "gold": g, "plan": { "items": plan, "notes": notes } }).to_string(),
         Ok(None) => return None,
@@ -268,12 +291,12 @@ fn planned_body(
 
 /// Runs an analysis of `run` (`analyse`, given its `Progress`) while a watcher thread checks
 /// every 400 ms whether it went stale (`stale`: the game wrote another state, the plan
-/// changed) and then stops it. `Ok(None)` when it was stopped, `Err` when it crashed. The page
+/// changed) and then stops it. `pass` names it in the log. `Ok(None)` when it was stopped, `Err` when it crashed. The page
 /// shows how far it got (`Shared::running`); each one is logged (`log_timing`).
 fn stoppable(
     shared: &Mutex<Shared>,
     run: &save::RunState,
-    planned: bool,
+    pass: &str,
     mut stale: impl FnMut() -> bool + Send,
     analyse: impl FnOnce(Progress) -> advise::Analysis,
 ) -> std::thread::Result<Option<advise::Analysis>> {
@@ -301,7 +324,7 @@ fn stoppable(
         Err(e) if progress::is_stopped(&**e) => Err("stopped"),
         Err(_) => Err("crashed"),
     };
-    log_timing(run, planned, how, p.steps_done(), started.elapsed());
+    log_timing(run, pass, how, p.steps_done(), started.elapsed());
     match out {
         Ok(a) => Ok(Some(a)),
         Err(e) if progress::is_stopped(&*e) => Ok(None),
@@ -355,10 +378,11 @@ fn keep_history(save: &std::path::Path, r: &save::RunState) {
 }
 
 /// One line per analysis in `timings.jsonl` (next to the calibration log): when, which state
-/// (ante, round, screen, cards in hand, jokers, consumables), whether it was a planned one,
+/// (ante, round, screen, cards in hand, jokers, consumables), which pass (`quick`: a blind's
+/// first look; `full`; `planned`: with the ticked options bought),
 /// how it ended, its total and each step's time (ms). For finding where real analyses spend
 /// their time; nothing reads it back.
-fn log_timing(run: &save::RunState, planned: bool, how: Result<&advise::Analysis, &str>, steps_done: usize, took: Duration) {
+fn log_timing(run: &save::RunState, pass: &str, how: Result<&advise::Analysis, &str>, steps_done: usize, took: Duration) {
     let Some(dir) = balatro_advisor::calibration::default_dir() else { return };
     let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_secs());
     let line = serde_json::json!({
@@ -370,7 +394,8 @@ fn log_timing(run: &save::RunState, planned: bool, how: Result<&advise::Analysis
         "hand": run.hand.len(),
         "jokers": run.jokers.len(),
         "consumables": run.consumables.len(),
-        "planned": planned,
+        "planned": pass == "planned",
+        "pass": pass,
         "ended": how.as_ref().map_or_else(|e| e.to_string(), |_| "done".to_string()),
         "steps_done": steps_done,
         "total_ms": took.as_millis(),
