@@ -547,7 +547,8 @@ pub fn outcomes_after(b: &Board, start: &RoundStart, first: &Move, range: std::o
             let next = match first {
                 Move::Play(idx) => {
                     let played: Vec<Card> = idx.iter().filter_map(|&k| hand.get(k).copied()).collect();
-                    let held: Vec<Card> = (0..hand.len()).filter(|k| !idx.contains(k)).map(|k| hand[k]).collect();
+                    let mut held: Vec<Card> = (0..hand.len()).filter(|k| !idx.contains(k)).map(|k| hand[k]).collect();
+                    o.cash += boss_takes_held(&mut bb, &mut held, &rng);
                     let s = score::score(&bb, &played, &held, &mut rng, false);
                     o.cash += s.dollars;
                     let total = start.scored + s.score;
@@ -587,6 +588,45 @@ pub fn outcomes_after(b: &Board, start: &RoundStart, first: &Move, range: std::o
             o
         })
         .collect()
+}
+
+/// What the boss does to the cards held once the played ones have left your hand, before the
+/// hand scores: The Hook discards 2 of them at random (blind.lua `Blind:press_play`: one
+/// when only one is held), through the board's discard step, using no discard
+/// (`Board::discard_by`). The money that discard pays.
+///
+/// Each held card gets a random key from a seed of its own (the round's stream, not drawn from,
+/// and the hands left, so each play picks anew) and the card itself; the 2 lowest go. Any two of
+/// n are as likely as the game's two picks, the round's draws are left as a discard leaves them,
+/// and moves compared on the same round that hold the same cards keep or lose them alike, however
+/// the cards sit.
+fn boss_takes_held(b: &mut Board, held: &mut Vec<Card>, rng: &Rng) -> f64 {
+    if !b.blind.active("bl_hook") {
+        return 0.0;
+    }
+    let seed = rng.clone().next_u64() ^ 0x484f_4f4b ^ (b.hands_left as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    // a card's key: the seed, the card (`order_key`: every field) and which copy of it this is
+    let mut keyed: Vec<(u64, usize)> = held
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            let copy = held[..i].iter().filter(|x| *x == c).count();
+            let (r, s, rest) = c.order_key();
+            let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+            for byte in [r.0, s].into_iter().chain(rest.bytes()).chain((copy as u64).to_le_bytes()) {
+                h = (h ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+            }
+            (Rng::new(seed ^ h).next_u64(), i)
+        })
+        .collect();
+    keyed.sort_unstable();
+    let mut gone: Vec<usize> = keyed.iter().take(2).map(|k| k.1).collect();
+    if gone.is_empty() {
+        return 0.0;
+    }
+    gone.sort_unstable();
+    let out: Vec<Card> = gone.iter().rev().map(|&i| held.remove(i)).collect();
+    b.discard_by(&out, true)
 }
 
 /// The suit worth keeping: the one a suit joker rewards (Wrathful, Greedy, Lusty,
@@ -2090,7 +2130,8 @@ pub fn sim_round_uses(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[
                 }
                 idx.truncate(5);
                 let played: Vec<Card> = idx.iter().map(|&i| hand[i]).collect();
-                let held: Vec<Card> = (0..hand.len()).filter(|i| !idx.contains(i)).map(|i| hand[i]).collect();
+                let mut held: Vec<Card> = (0..hand.len()).filter(|i| !idx.contains(i)).map(|i| hand[i]).collect();
+                money += boss_takes_held(&mut b, &mut held, rng);
                 let o = score::score(&b, &played, &held, rng, false);
                 total += o.score;
                 money += o.dollars;
@@ -2271,6 +2312,78 @@ mod tests {
             })
             .collect();
         Card::parse_list(&text.join(" ")).unwrap()
+    }
+
+    #[test]
+    fn the_hook_takes_two_held_cards_before_the_hand_scores() {
+        // blind.lua `Blind:press_play`: once the played cards leave the hand, 2 held cards are
+        // discarded, before scoring, so held Steel cards count two fewer
+        let hand = Card::parse_list("AS KH:steel KD:steel KC:steel KS:steel QH:steel QD:steel QC:steel").unwrap();
+        let start = RoundStart { hand: hand.clone(), deck: standard_deck(), hand_size: 8, hands: 1, discards: 0, scored: 0.0, target: 1e12 };
+        let first = |key: &str| {
+            let mut b = Board::empty();
+            b.blind.key = key.into();
+            outcomes_after(&b, &start, &Move::Play(vec![0]), 0..8, 3, &[]).iter().map(|o| o.total).collect::<Vec<_>>()
+        };
+        // High Card: 5 + 11 Chips, ×1.5 a held Steel card, floored
+        let plain = first("bl_small");
+        assert!(plain.iter().all(|&s| s == (16.0 * 1.5f64.powi(7)).floor()), "{plain:?}");
+        let hook = first("bl_hook");
+        assert!(hook.iter().all(|&s| s == (16.0 * 1.5f64.powi(5)).floor()), "{hook:?}");
+        // disabled (Chicot, Luchador): held as they are
+        let mut b = Board::empty();
+        b.blind.key = "bl_hook".into();
+        b.blind.disabled = true;
+        assert_eq!(outcomes_after(&b, &start, &Move::Play(vec![0]), 0..8, 3, &[]).iter().map(|o| o.total).collect::<Vec<_>>(), plain);
+    }
+
+    #[test]
+    fn the_hook_plays_in_every_hand_of_the_round_and_leaves_its_draws_alone() {
+        let hook = |b: &mut Board| b.blind.key = "bl_hook".into();
+        // the rest of the round (`sim_round`) too: Four of a Kind played, the Queens held are
+        // Steel, and the Hook takes at least one of them every time (2 of AS QH QD QC)
+        let hand = Card::parse_list("KH KD KC KS AS QH:steel QD:steel QC:steel").unwrap();
+        let start = RoundStart { hand, deck: vec![], hand_size: 8, hands: 1, discards: 0, scored: 0.0, target: 1e12 };
+        for seed in 0..8 {
+            let plain = sim_round(&Board::empty(), &start, &mut Rng::new(seed));
+            let mut b = Board::empty();
+            hook(&mut b);
+            let hooked = sim_round(&b, &start, &mut Rng::new(seed));
+            assert_eq!(plain.plays[0].0, hooked.plays[0].0, "the same hand played");
+            assert!(hooked.total < plain.total, "seed {seed}: {} vs {}", hooked.total, plain.total);
+        }
+        // Burnt Joker doesn't level the Hook's discard on the way (a High Card of 16, not 42)
+        let mut b = crate::bench::sample_board(&["j_burnt"]);
+        hook(&mut b);
+        let start = RoundStart { hand: Card::parse_list("AS KH QD JC 9S 7H 5D 3C").unwrap(), deck: standard_deck(), hand_size: 8, hands: 1, discards: 0, scored: 0.0, target: 1e12 };
+        assert!(outcomes_after(&b, &start, &Move::Play(vec![0]), 0..8, 3, &[]).iter().all(|o| o.total == 16.0));
+        // what goes depends on the cards, not on how they sit; a move holding one more card that
+        // stays loses the same two; and over many rounds every card goes about as often
+        let mut b = Board::empty();
+        hook(&mut b);
+        let held = Card::parse_list("AS KH QD JC 9S 7H 5D").unwrap();
+        let taken = |cards: &[Card], seed: u64| {
+            let mut left = cards.to_vec();
+            boss_takes_held(&mut b.clone(), &mut left, &Rng::new(seed));
+            let mut gone: Vec<String> = cards.iter().filter(|c| !left.contains(c)).map(Card::label).collect();
+            gone.sort();
+            gone
+        };
+        let mut count = std::collections::HashMap::new();
+        for seed in 0..2000 {
+            let gone = taken(&held, seed);
+            assert_eq!(gone.len(), 2);
+            assert_eq!(gone, taken(&held.iter().rev().copied().collect::<Vec<_>>(), seed));
+            let fewer: Vec<Card> = held.iter().filter(|c| gone.contains(&c.label()) || c.label() != held[6].label()).copied().collect();
+            if fewer.len() == 6 {
+                assert_eq!(taken(&fewer, seed), gone, "seed {seed}");
+            }
+            for g in gone {
+                *count.entry(g).or_insert(0) += 1;
+            }
+        }
+        // 2 of 7: each card about 571 times in 2000
+        assert!(count.values().all(|&n| (480..=660).contains(&n)), "{count:?}");
     }
 
     const RULE_BOARDS: &[&[&str]] = &[&["j_joker"], &["j_four_fingers"], &["j_shortcut"], &["j_smeared"], &["j_four_fingers", "j_shortcut", "j_smeared"]];

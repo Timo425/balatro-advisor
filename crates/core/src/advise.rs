@@ -1951,11 +1951,13 @@ fn cost(data: &GameData, key: &str) -> i64 {
 
 fn unmodelled_boss(key: &str) -> Option<String> {
     let s = match key {
-        "bl_hook" => "The Hook's random discards",
+        // in the round's outcome, not in the simulated player's choices (nor, The Hook, in the
+        // scores shown): gap 15
+        "bl_hook" => "The Hook in the simulated player's choices and the scores shown (its discards are in the outcome)",
+        "bl_tooth" => "The Tooth in the simulated player's choices (its money is in the outcome)",
         "bl_serpent" => "The Serpent's 3-card draws",
         "bl_pillar" => "The Pillar's debuffs",
         "bl_house" | "bl_wheel" | "bl_fish" | "bl_mark" => "face-down cards",
-        "bl_tooth" => "The Tooth's money loss",
         "bl_final_leaf" => "Verdant Leaf (all cards debuffed until a joker is sold)",
         "bl_final_heart" => "Crimson Heart's disabled joker",
         "bl_final_bell" => "Cerulean Bell's forced card",
@@ -4932,6 +4934,15 @@ mod tests {
         assert!(o.survive_next > keep.survive_next, "next-ante survival: joker {:?} vs keeping the money {:?}", o.survive_next, keep.survive_next);
         assert!(keep.survive_next.unwrap() < 1.0, "survival with shops ahead must not saturate");
         assert!(pos("joker") < pos("leave"), "joker {:?} next {:?}", (o.p_win, o.survive, o.survive_next, o.long_mult), keep.survive_next);
+    }
+
+    #[test]
+    fn a_boss_in_the_outcome_only_says_what_isnt_simulated() {
+        // The Tooth's money (engine `score`) and The Hook's discards are in the round's outcome,
+        // not in the simulated player's choices (nor, The Hook, in the scores shown): said so
+        assert!(unmodelled_boss("bl_tooth").is_some_and(|s| s.contains("choices") && s.contains("outcome")));
+        assert!(unmodelled_boss("bl_hook").is_some_and(|s| s.contains("choices") && s.contains("scores shown")));
+        assert!(unmodelled_boss("bl_serpent").is_some());
     }
 
     #[test]

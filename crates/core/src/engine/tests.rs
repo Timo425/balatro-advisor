@@ -294,3 +294,21 @@ fn a_skipped_blind_is_counted_where_throwback_scores_from_it() {
     r.after(RunEvent::SkipPack, 1.0);
     assert!(r.jokers.iter().all(|x| x.mult == 3.0) && r.changes_with(RunEvent::SkipPack));
 }
+
+#[test]
+fn the_hooks_discard_uses_no_discard_and_burnt_joker_skips_it() {
+    // state_events.lua `G.FUNCS.discard_cards_from_highlighted` with `hook`: no discard used;
+    // card.lua Burnt Joker checks `not context.hook`; the rest react as to any discard
+    let mut b = board(&["j_burnt", "j_green_joker"]);
+    b.jokers[1].mult = 5.0;
+    b.discards_left = 3;
+    let before = b.levels[HandType::Pair as usize].level;
+    b.discard_by(&cards("KS KH"), true);
+    assert_eq!((b.discards_used, b.discards_left), (0, 3));
+    assert_eq!(b.levels[HandType::Pair as usize].level, before, "Burnt Joker levelled the Hook's discard");
+    assert_eq!(b.jokers[1].mult, 4.0, "Green Joker loses Mult on the Hook's discard too");
+    // the first discard of your own then still levels with Burnt Joker
+    b.discard(&cards("QS QH"));
+    assert_eq!((b.discards_used, b.discards_left), (1, 2));
+    assert_eq!(b.levels[HandType::Pair as usize].level, before + 1);
+}

@@ -225,7 +225,9 @@ pub fn run(run: &RunState, data: &GameData, plan: &Plan, sims: usize, seed: u64)
         // Next ante: a plain boss, to see how far the board carries
         let ante = run.ante + 1;
         let target = crate::save::blind_amount(ante, run.blind_scaling) * 2.0 * run.ante_scaling;
-        let b = board_with(js, full);
+        let mut b = board_with(js, full);
+        // a round of its own: not the blind in progress (the board from the save has its rules)
+        b.new_round("");
         let start = RoundStart { hand: vec![], deck: full.to_vec(), hand_size: run.hand_size, hands: run.round_hands, discards: run.round_discards, scored: 0.0, target };
         let start = crate::advise::apply_mods(&start, added, removed, true);
         let (p, st) = sim::round_odds(&b, &start, sims, seed);

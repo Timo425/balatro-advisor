@@ -65,7 +65,7 @@ pub struct BlindRules {
 }
 
 impl BlindRules {
-    fn active(&self, key: &str) -> bool {
+    pub fn active(&self, key: &str) -> bool {
         !self.disabled && self.key == key
     }
 }
@@ -464,8 +464,15 @@ impl Board {
     /// `extra.discards` cards. Then a discard is used. Not modelled: Purple Seal's Tarot, and
     /// what destroying Trading Card's card changes beyond the deck's size (Caino, Glass Joker).
     pub fn discard(&mut self, discarded: &[Card]) -> f64 {
+        self.discard_by(discarded, false)
+    }
+
+    /// The Hook's discard (`by_hook`): the same steps, but Burnt Joker skips it (card.lua checks
+    /// `not context.hook`) and no discard is used (state_events.lua
+    /// `G.FUNCS.discard_cards_from_highlighted` with `hook`).
+    pub fn discard_by(&mut self, discarded: &[Card], by_hook: bool) -> f64 {
         let money = discard_money(self, discarded);
-        if self.discards_used <= 0 && !discarded.is_empty() {
+        if self.discards_used <= 0 && !discarded.is_empty() && !by_hook {
             let burnt = (0..self.jokers.len()).filter_map(|j| effective_joker(self, j)).filter(|jk| jk.key == "j_burnt").count() as i64;
             if burnt > 0 {
                 let h = hand::detect(discarded, self.rule_flags()).hand as usize;
@@ -514,8 +521,10 @@ impl Board {
             k += 1;
             !eaten[k - 1]
         });
-        self.discards_used += 1;
-        self.discards_left = (self.discards_left - 1).max(0);
+        if !by_hook {
+            self.discards_used += 1;
+            self.discards_left = (self.discards_left - 1).max(0);
+        }
         self.dollars += money;
         money
     }
