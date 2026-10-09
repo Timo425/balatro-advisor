@@ -49,7 +49,8 @@ change to how the advice decides or values things follows these steps, in order:
    the simulation) already defines that group. If the fix only makes sense for one joker,
    suit, hand or card, it's the wrong fix. New hand-set numbers go in the register.
 4. **Prove it.** `cargo test --release` must exit 0 (check the exit status, not the printed
-   output), the replay fixtures included. A pure restructuring must leave the full analysis
+   output), the replay fixtures included, and `cargo clippy --release --all-targets` must
+   report no warnings (fix the ones your change brings). A pure restructuring must leave the full analysis
    of every fixture unchanged: `BAV_SNAPSHOT_DIR=/tmp/before cargo test --release --test
    replay -- --ignored snapshot` before and `/tmp/after` after, then `diff -r`. A behaviour
    change: diff the snapshots and explain every difference. A change to Best play's search
