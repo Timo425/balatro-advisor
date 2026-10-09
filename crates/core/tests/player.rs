@@ -2,28 +2,54 @@
 //! by). Both tests are slow and print; they assert nothing. Run:
 //! `cargo test --release --test player -- --ignored --nocapture` (`BAV_N`: rounds per board).
 
-use balatro_advisor::{bench, data::GameData, engine::score::Board, save::RunState, sim};
+use balatro_advisor::{bench, data::GameData, engine::score::Board, model::Card, save::RunState, sim};
 use serde_json::Value;
 
-/// One board per play style, on a standard deck, 8 cards in hand.
-const BOARDS: &[(&str, &[&str])] = &[
-    ("plain", &[]),
-    ("pairs", &["j_jolly", "j_duo", "j_sly"]),
-    ("trips", &["j_zany", "j_trio", "j_wily"]),
-    ("straight", &["j_crazy", "j_order", "j_devious"]),
-    ("straight_easy", &["j_crazy", "j_order", "j_shortcut", "j_four_fingers"]),
-    ("flush", &["j_droll", "j_tribe", "j_crafty"]),
-    ("flush_smeared", &["j_droll", "j_tribe", "j_smeared"]),
-    ("faces", &["j_scary_face", "j_smiley", "j_photograph"]),
-    ("high_card", &["j_joker", "j_cavendish", "j_misprint"]),
-    ("held", &["j_baron", "j_shoot_the_moon", "j_raised_fist"]),
-    ("discards", &["j_banner", "j_mystic_summit", "j_joker"]),
-    ("ranks", &["j_fibonacci", "j_odd_todd", "j_even_steven"]),
+/// One board per play style, 8 cards in hand: its jokers, whether its deck is `ENHANCED` (else
+/// the standard 52) and its boss ("" for none). The first twelve are plain play styles; the
+/// rest have what those lack and real runs have: jokers that grow during the round, a few
+/// strong cards among plain ones, and a boss that debuffs cards.
+const BOARDS: &[(&str, &[&str], bool, &str)] = &[
+    ("plain", &[], false, ""),
+    ("pairs", &["j_jolly", "j_duo", "j_sly"], false, ""),
+    ("trips", &["j_zany", "j_trio", "j_wily"], false, ""),
+    ("straight", &["j_crazy", "j_order", "j_devious"], false, ""),
+    ("straight_easy", &["j_crazy", "j_order", "j_shortcut", "j_four_fingers"], false, ""),
+    ("flush", &["j_droll", "j_tribe", "j_crafty"], false, ""),
+    ("flush_smeared", &["j_droll", "j_tribe", "j_smeared"], false, ""),
+    ("faces", &["j_scary_face", "j_smiley", "j_photograph"], false, ""),
+    ("high_card", &["j_joker", "j_cavendish", "j_misprint"], false, ""),
+    ("held", &["j_baron", "j_shoot_the_moon", "j_raised_fist"], false, ""),
+    ("discards", &["j_banner", "j_mystic_summit", "j_joker"], false, ""),
+    ("ranks", &["j_fibonacci", "j_odd_todd", "j_even_steven"], false, ""),
+    ("trousers", &["j_trousers", "j_trousers", "j_mad"], false, ""),
+    ("growers", &["j_green_joker", "j_ride_the_bus", "j_runner"], false, ""),
+    ("enhanced", &["j_jolly", "j_duo", "j_joker"], true, ""),
+    ("trousers_goad", &["j_trousers", "j_trousers", "j_joker"], true, "bl_goad"),
+    ("flush_club", &["j_droll", "j_tribe", "j_crafty"], false, "bl_club"),
 ];
 
+/// A deck as a run has it by Ante 3 or 4: the standard 52 with these cards changed (Bonus 3s,
+/// a few Glass, Steel and Mult cards, seals) and two more 3s.
+const ENHANCED: &[&str] = &[
+    "3S:bonus", "3H:bonus:goldseal", "3C:bonus", "3D:bonus", "KH:glass", "7C:glass", "9D:glass", "QS:steel", "JD:steel",
+    "5H:mult", "TC:mult", "8D:goldseal", "AS:blue",
+];
+const ENHANCED_EXTRA: &[&str] = &["3H", "3C"];
+
+fn enhanced_deck() -> Vec<Card> {
+    let mut deck = bench::standard_deck();
+    for t in ENHANCED {
+        let c = Card::parse(t).unwrap();
+        *deck.iter_mut().find(|d| d.rank == c.rank && d.suit == c.suit).unwrap() = c;
+    }
+    deck.extend(ENHANCED_EXTRA.iter().map(|t| Card::parse(t).unwrap()));
+    deck
+}
+
 /// Each board's round (4 hands, 3 or 1 discards) at the score the player of 3cfb122 (the
-/// rulebook before dig plans) won half the time: fixed, so later players compare on the same
-/// rounds.
+/// rulebook before dig plans) won half the time (the boards added later: the player of their
+/// day): fixed, so later players compare on the same rounds.
 const TARGETS: &[(&str, f64)] = &[
     ("plain_4h3d", 876.0),
     ("plain_4h1d", 676.0),
@@ -49,20 +75,65 @@ const TARGETS: &[(&str, f64)] = &[
     ("discards_4h1d", 4563.0),
     ("ranks_4h3d", 12213.0),
     ("ranks_4h1d", 9091.0),
+    // the boards added 2026-10-09: the half points of the player at d4195a0 (`player_targets`)
+    ("trousers_4h3d", 3672.0),
+    ("trousers_4h1d", 2884.0),
+    ("growers_4h3d", 1726.0),
+    ("growers_4h1d", 1474.0),
+    ("enhanced_4h3d", 7450.0),
+    ("enhanced_4h1d", 5991.0),
+    ("trousers_goad_4h3d", 3600.0),
+    ("trousers_goad_4h1d", 2918.0),
+    ("flush_club_4h3d", 8808.0),
+    ("flush_club_4h1d", 4788.0),
 ];
 
+/// Each board's rounds; a board without a target yet gets 0 (`player_targets` finds it).
 fn rounds() -> Vec<(String, Board, sim::RoundStart)> {
     let mut out = vec![];
-    for (name, keys) in BOARDS {
-        let b = bench::sample_board(keys);
+    for (name, keys, enhanced, boss) in BOARDS {
+        let mut b = bench::sample_board(keys);
         assert_eq!(b.jokers.len(), keys.len(), "{name}: unknown joker key");
+        b.new_round(boss);
+        // the boss's debuffs and hand size, as advise's blind_from_start sets them
+        let rules = sim::RoundRules::for_blind(boss);
+        let mut deck = if *enhanced { enhanced_deck() } else { bench::standard_deck() };
+        let f = b.rule_flags();
+        rules.apply(&mut deck, f.smeared, f.pareidolia);
         for (hands, discards) in [(4, 3), (4, 1)] {
             let key = format!("{name}_{hands}h{discards}d");
-            let target = TARGETS.iter().find(|t| t.0 == key).unwrap().1;
-            out.push((key, b.clone(), sim::RoundStart { hand: vec![], deck: bench::standard_deck(), hand_size: 8, hands, discards, scored: 0.0, target }));
+            let target = TARGETS.iter().find(|t| t.0 == key).map_or(0.0, |t| t.1);
+            out.push((key, b.clone(), sim::RoundStart { hand: vec![], deck: deck.clone(), hand_size: 8 + rules.hand_size_delta, hands, discards, scored: 0.0, target }));
         }
     }
     out
+}
+
+/// The score the player wins about half the time at, over rounds `0..n` from `seed`.
+fn half_point(b: &Board, start: &sim::RoundStart, n: usize, seed: u64) -> f64 {
+    let mut start = start.clone();
+    let (mut lo, mut hi) = (1.0f64, 1e12f64);
+    for _ in 0..30 {
+        start.target = (lo * hi).sqrt();
+        let w = sim::round_results(b, &start, 0..n, seed).iter().filter(|r| r.won).count();
+        if 2 * w > n { lo = start.target } else { hi = start.target }
+    }
+    (lo * hi).sqrt()
+}
+
+/// Prints each board's half point by the player now (`BAV_N` rounds, default 2000;
+/// `BAV_ONLY`): how a new board's `TARGETS` are set.
+#[test]
+#[ignore]
+fn player_targets() {
+    let n: usize = std::env::var("BAV_N").ok().and_then(|s| s.parse().ok()).unwrap_or(2000);
+    let only = std::env::var("BAV_ONLY").ok();
+    for (key, b, start) in rounds() {
+        if only.as_ref().is_some_and(|o| !key.contains(o.as_str())) {
+            continue;
+        }
+        println!("(\"{key}\", {:.0}.0),", half_point(&b, &start, n, 42));
+    }
 }
 
 /// The player's win rate on each board's round (3cfb122: 50.1% on average, by construction;
@@ -72,15 +143,17 @@ fn rounds() -> Vec<(String, Board, sim::RoundStart)> {
 fn player_win_rates() {
     let n: usize = std::env::var("BAV_N").ok().and_then(|s| s.parse().ok()).unwrap_or(2000);
     let t0 = std::time::Instant::now();
-    let mut sum = 0.0;
     let all = rounds();
+    let mut wins = vec![];
     for (key, b, start) in &all {
         let t = std::time::Instant::now();
         let w = sim::round_results(b, start, 0..n, 42).iter().filter(|r| r.won).count() as f64 / n as f64;
-        sum += w;
+        wins.push(w);
         println!("{key}: {:.1}% ({:.2?})", 100.0 * w, t.elapsed());
     }
-    println!("mean {:.2}% ({:.2?})", 100.0 * sum / all.len() as f64, t0.elapsed());
+    let mean = |w: &[f64]| 100.0 * w.iter().sum::<f64>() / w.len() as f64;
+    // the plain play styles' mean stays comparable with the history above
+    println!("mean {:.2}% (plain styles {:.2}%, the rest {:.2}%) ({:.2?})", mean(&wins), mean(&wins[..24]), mean(&wins[24..]), t0.elapsed());
 }
 
 /// The player against the oracle (`sim::set_oracle`, `BAV_R` futures per alternative, default
@@ -113,13 +186,7 @@ fn player_against_oracle() {
         }
         deck.sort_by_key(|c| c.order_key());
         let mut start = sim::RoundStart { hand: vec![], deck, hand_size: run.hand_size, hands: run.round_hands, discards: run.round_discards, scored: 0.0, target: 1.0 };
-        let (mut lo, mut hi) = (1.0f64, 1e12f64);
-        for _ in 0..30 {
-            start.target = (lo * hi).sqrt();
-            let w = sim::round_results(&fresh, &start, 0..200, 7).iter().filter(|r| r.won).count();
-            if w > 100 { lo = start.target } else { hi = start.target }
-        }
-        start.target = (lo * hi).sqrt();
+        start.target = half_point(&fresh, &start, 200, 7);
         cases.push((format!("{name} fresh"), fresh, start));
     }
     let only = std::env::var("BAV_ONLY").ok();

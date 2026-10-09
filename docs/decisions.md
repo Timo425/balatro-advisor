@@ -264,6 +264,18 @@ disagrees with them), or the fixed targets drift so far that every board is won 
 
 Approved by the owner 2026-10-04.
 
+**Widened 2026-10-09 (owner's go-ahead).** Five boards with what the first twelve lack and real
+runs have: jokers that grow during the round (Spare Trousers, Green Joker, Ride the Bus, Runner),
+a deck with a few strong cards (Bonus, Glass, Steel, Mult, seals) and debuffing bosses (The Goad,
+The Club), at the half points of the player at d4195a0. Found by a regression they didn't see:
+after 7374df9 (the round plays on the board each play leaves) the pace rule took a grown Spare
+Trousers pair as on pace and Best play threw a Bonus Gold Seal 3 (gap 6). The win rates alone
+wouldn't have flagged it: at 7374df9 they rose from 8-27% to 45-54% on the grower boards, since
+before it the simulation didn't grow those jokers at all. A change to the simulated game moves
+win rates whatever the player does; the gap to the oracle is what judges the player: +9.8 ± 1.4
+(trousers, 3 discards), +13.3 ± 1.4 (trousers_goad, 3 discards) and +14.4 ± 1.4 on the Goad
+state's fresh round, against +1.6 to +5.8 on the others.
+
 ## D10. Moves tried: every move while the search can take them; a bigger hand's from its structure (accepted)
 
 **Decision.** "Moves tried: all of them" is replaced by: every move while a hand gives no
