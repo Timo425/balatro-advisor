@@ -89,6 +89,9 @@ because the simulated rest of the round spent the 3♠ Blue Seal in a Flush.
   (card.lua `get_end_of_round_effect`: Blue Seal, Gold card), so the policy keeps whatever is
   in it, and Gold cards were covered without anyone noticing them.
 
-Other local data (never in the repo): `~/.local/share/balatro-advisor/calibration.jsonl`
-(predicted vs actual blind results, every shop seen): the evidence for replacing a register
-entry with a measurement.
+Other local data (never in the repo), in `~/.local/share/balatro-advisor/`, written by the live
+page: `calibration.jsonl` (predicted vs actual blind results, every shop seen): the evidence for
+replacing a register entry with a measurement; `timings.jsonl` (each analysis' step times);
+`history/<seed>/` (every state analysed, `<ms>-a<ante>-r<round>-<screen>.jkr`, newest runs up
+to 500 MB / 90 days): when the owner reports advice from earlier, find that state there and
+capture it as a fixture (`balatro-advisor analyze --file <jkr>` replays it).

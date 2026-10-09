@@ -115,6 +115,9 @@ pub fn run(save_dir: PathBuf, profile: u8, port: u16, open: bool) -> Result<()> 
                             std::thread::sleep(Duration::from_millis(400));
                             continue;
                         }
+                        if last_fp.as_deref() != Some(fp.as_str()) {
+                            keep_history(&save_path, r);
+                        }
                         last_fp = Some(fp);
                     }
                     let body = match loaded {
@@ -303,6 +306,51 @@ fn stoppable(
         Ok(a) => Ok(Some(a)),
         Err(e) if progress::is_stopped(&*e) => Ok(None),
         Err(e) => Err(e),
+    }
+}
+
+/// How much `keep_history` keeps: the newest runs up to this many bytes in all (a run is a
+/// few MB; a run restarted on Ante 1 a few KB, so restarts don't push real runs out), none
+/// whose newest state is older than this many days (notes on a run can come weeks later)
+const HISTORY_BYTES: u64 = 500 << 20;
+const HISTORY_DAYS: u64 = 90;
+
+/// A copy of every state the page analyses (`history/<seed>/`, next to the calibration log,
+/// never in the repo), named by time, ante, round and screen, so a moment can be found again
+/// and replayed as a fixture after the game has moved on. The newest runs (by their newest
+/// state) are kept up to `HISTORY_BYTES` and `HISTORY_DAYS`; older ones are deleted.
+fn keep_history(save: &std::path::Path, r: &save::RunState) {
+    let Some(dir) = balatro_advisor::calibration::default_dir().map(|d| d.join("history")) else { return };
+    let seed: String = r.seed.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+    let run_dir = dir.join(if seed.is_empty() { "unknown".to_string() } else { seed });
+    let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_millis());
+    let name = format!("{now}-a{}-r{}-{:?}.jkr", r.ante, r.round, r.screen);
+    if std::fs::create_dir_all(&run_dir).is_err() || std::fs::copy(save, run_dir.join(name)).is_err() {
+        return;
+    }
+    // the runs, newest first by their latest state (with their size); past the limits, the rest go
+    let files = |p: &std::path::Path| std::fs::read_dir(p).ok().into_iter().flatten().filter_map(|e| e.ok()?.metadata().ok()).collect::<Vec<_>>();
+    let mut runs: Vec<(Option<SystemTime>, u64, std::path::PathBuf)> = std::fs::read_dir(&dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .map(|p| {
+            let f = files(&p);
+            (f.iter().filter_map(|m| m.modified().ok()).max(), f.iter().map(|m| m.len()).sum(), p)
+        })
+        .collect();
+    runs.sort_by_key(|r| std::cmp::Reverse(r.0));
+    let too_old = SystemTime::now() - Duration::from_secs(HISTORY_DAYS * 24 * 3600);
+    let mut total = 0;
+    for (newest, size, run) in runs {
+        total += size;
+        // the run just written is always kept
+        if run != run_dir && (total > HISTORY_BYTES || newest.is_none_or(|t| t < too_old)) {
+            let _ = std::fs::remove_dir_all(run);
+        }
     }
 }
 
