@@ -62,10 +62,10 @@ pub fn game_exe() -> Option<PathBuf> {
         if let Ok(t) = std::fs::read_to_string(r.join("steamapps/libraryfolders.vdf")) {
             for l in t.lines() {
                 let mut parts = l.split('"').filter(|s| !s.trim().is_empty());
-                if parts.next() == Some("path") {
-                    if let Some(p) = parts.next() {
-                        libs.push(PathBuf::from(p));
-                    }
+                if parts.next() == Some("path")
+                    && let Some(p) = parts.next()
+                {
+                    libs.push(PathBuf::from(p));
                 }
             }
         }
@@ -414,7 +414,7 @@ impl<'a> Eval<'a> {
     fn path(&self, p: &str) -> V {
         let c = self.ctx;
         if let Some(rest) = p.strip_prefix("self.ability.") {
-            let v = rest.split('.').fold(Some(self.ability), |v, k| v.and_then(|v| v.get(k)));
+            let v = rest.split('.').try_fold(self.ability, |v, k| v.get(k));
             return match v {
                 Some(serde_json::Value::Number(n)) => V::Num(n.as_f64().unwrap_or(0.0)),
                 Some(serde_json::Value::String(s)) => V::Str(s.clone()),

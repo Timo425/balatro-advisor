@@ -147,7 +147,7 @@ impl Tracker {
             }
             if let Some(e) = shop_entry(r) {
                 let same = |a: &Entry, b: &Entry| match (a, b) {
-                    (Entry::Shop { time: _, .. }, Entry::Shop { .. }) => {
+                    (Entry::Shop { .. }, Entry::Shop { .. }) => {
                         let strip = |e: &Entry| match e {
                             Entry::Shop { seed, ante, round, screen, dollars, jokers, consumables, offers, pack, .. } => {
                                 (seed.clone(), *ante, *round, screen.clone(), *dollars, jokers.clone(), consumables.clone(), offers.clone(), pack.clone())

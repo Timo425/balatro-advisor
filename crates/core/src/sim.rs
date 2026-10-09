@@ -401,8 +401,8 @@ fn could_all_score(hand: &[Card], mask: u32, n: usize, flags: hand::RuleFlags) -
     }
     let mut cards = [0usize; 5];
     let mut k = 0;
-    for i in 0..n {
-        if mask & (1 << i) != 0 && hand[i].enhancement != Some(Enhancement::Stone) {
+    for (i, c) in hand.iter().enumerate().take(n) {
+        if mask & (1 << i) != 0 && c.enhancement != Some(Enhancement::Stone) {
             if k == 5 {
                 return true;
             }
@@ -789,8 +789,9 @@ pub fn flush_odds(hold: usize, deck_suit: usize, deck_size: usize, hand_size: us
     use std::cell::RefCell;
     use std::collections::HashMap;
     // The same situations recur constantly across simulations, so cache per thread.
+    type Key = (usize, usize, usize, usize, usize, usize);
     thread_local! {
-        static CACHE: RefCell<HashMap<(usize, usize, usize, usize, usize, usize), f64>> = RefCell::new(HashMap::new());
+        static CACHE: RefCell<HashMap<Key, f64>> = RefCell::new(HashMap::new());
     }
     let key = (hold, deck_suit, deck_size, hand_size, need, draws);
     if let Some(p) = CACHE.with(|c| c.borrow().get(&key).copied()) {
@@ -900,6 +901,7 @@ fn burn_pays(b: &Board, hand: &[Card], play: &[usize]) -> bool {
 ///   expected points, dig by dig as this policy plays it), throw away the cards outside it:
 ///   with a discard, or by playing them as a junk hand once discards are gone;
 /// - otherwise discard the cards outside the best play and hope to improve it.
+///
 /// Cards that add to the best play while held (`held_value`) are never thrown away.
 /// `burn`: whether to check if burning discards pays (off inside that check itself).
 #[allow(clippy::too_many_arguments)]
@@ -986,7 +988,8 @@ fn decide_cards(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i
     let round = ChaseRound { pile: deck.len(), size, hands, discards, need, best: best.mean, on_pace };
     // the first dig for each plan (`dig_for`), and the hand it leaves (its best play: what a
     // failed chase is left with)
-    let digs: Vec<std::cell::OnceCell<Option<(Vec<usize>, bool)>>> = all.iter().map(|_| std::cell::OnceCell::new()).collect();
+    type Dig = Option<(Vec<usize>, bool)>;
+    let digs: Vec<std::cell::OnceCell<Dig>> = all.iter().map(|_| std::cell::OnceCell::new()).collect();
     let dig_of = |k: usize| digs[k].get_or_init(|| dig_for(&parts, &all[k].keep, held_keep(), discards));
     let left: Vec<std::cell::OnceCell<f64>> = all.iter().map(|_| std::cell::OnceCell::new()).collect();
     let left_of = |k: usize| {
@@ -1016,10 +1019,10 @@ fn decide_cards(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i
         .map(|(k, _)| (k, run(k, &full_of)))
         .filter(|(_, c)| c.go)
         .max_by(|a, c| a.1.value.total_cmp(&c.1.value));
-    if let Some((k, _)) = plan {
-        if let Some((v, junk)) = dig_of(k).clone() {
-            return if junk { Action::Play(v, true) } else { Action::Discard(v) };
-        }
+    if let Some((k, _)) = plan
+        && let Some((v, junk)) = dig_of(k).clone()
+    {
+        return if junk { Action::Play(v, true) } else { Action::Discard(v) };
     }
     if on_pace {
         return play_best;
@@ -1251,7 +1254,9 @@ fn aims(b: &Board, hand: &[Card], deck: &[Card]) -> Vec<Aim> {
     let any_copy = copies(&any);
     // runs keeping the same cards and missing one rank are one draw (open-ended: either end's
     // rank completes it); one missing two ranks needs both
-    let mut straights: Vec<(Vec<usize>, Vec<i32>, Vec<Vec<i32>>)> = vec![];
+    // (the cards kept, the ranks one away, the pairs of ranks two away)
+    type Draw = (Vec<usize>, Vec<i32>, Vec<Vec<i32>>);
+    let mut straights: Vec<Draw> = vec![];
     for run in runs.iter() {
         let mut keep: Vec<usize> = run.iter().filter_map(|&r| any_copy[r as usize]).collect();
         keep.sort();
@@ -1438,8 +1443,9 @@ fn aims(b: &Board, hand: &[Card], deck: &[Card]) -> Vec<Aim> {
 /// or with Shortcut a gap of one rank between any two; an Ace is 1 or 14. Computed once per
 /// rule set.
 fn straight_runs(need: usize, shortcut: bool) -> std::rc::Rc<Vec<Vec<i32>>> {
+    type Runs = std::rc::Rc<Vec<Vec<i32>>>;
     thread_local! {
-        static RUNS: std::cell::RefCell<Vec<((usize, bool), std::rc::Rc<Vec<Vec<i32>>>)>> = const { std::cell::RefCell::new(vec![]) };
+        static RUNS: std::cell::RefCell<Vec<((usize, bool), Runs)>> = const { std::cell::RefCell::new(vec![]) };
     }
     if let Some(r) = RUNS.with(|c| c.borrow().iter().find(|e| e.0 == (need, shortcut)).map(|e| e.1.clone())) {
         return r;
@@ -1903,7 +1909,7 @@ fn play_on_instead(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards
     let seed = rng.next_u64();
     let outs = outcomes_after(&plain, &start, &alt, 0..LOOKAHEAD_ROLLOUTS, seed, uses);
     let later = outs.iter().map(|o| g.value(o)).sum::<f64>() / outs.len() as f64;
-    (later > now).then(|| match alt {
+    (later > now).then_some(match alt {
         Move::Play(v) => Action::Play(v, true),
         Move::Discard(v) => Action::Discard(v),
     })

@@ -893,7 +893,7 @@ impl<'a> LongRun<'a> {
     /// `rounds`: projection rounds.
     pub fn deck_value(&self, d: &[Card], money_once: f64, rounds: usize) -> f64 {
         let base = if rounds == TAROT_ROUNDS {
-            self.deck_base().clone()
+            *self.deck_base()
         } else {
             let cached = self.deck_base_n.lock().unwrap().get(&rounds).copied();
             cached.unwrap_or_else(|| {
@@ -909,7 +909,7 @@ impl<'a> LongRun<'a> {
     /// rounds (`part`·`rounds` onwards), against your deck's full projection, so the outcomes
     /// together cover as many independent rounds as one full projection.
     pub fn deck_value_part(&self, d: &[Card], money_once: f64, rounds: usize, part: usize) -> f64 {
-        let base = self.deck_base().clone();
+        let base = *self.deck_base();
         self.value_against(d, money_once, rounds, part * rounds, &base, None)
     }
 
@@ -1019,7 +1019,7 @@ impl<'a> LongRun<'a> {
     }
 
     fn deck_rounds_raw(&self, d: &[Card], money_once: f64, range: std::ops::Range<usize>, income: Option<f64>, planets_share: f64) -> (Vec<f64>, f64) {
-        let base = self.deck_base().clone();
+        let base = *self.deck_base();
         let planets = self.seal_planets(d) * planets_share;
         let rounds = |income: f64| {
             let (bb, start) = self.deck_round(d, self.run.dollars, money_once, income, planets);

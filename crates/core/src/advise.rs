@@ -1184,9 +1184,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             c.desc = describe(&c.key, &ab, &dctx);
         }
     };
-    let mut pool_entries = pool_entries;
     let mut shop = shop;
-    let mut rescue = rescue;
     fill(&mut pool_entries);
     fill(&mut shop);
     fill(&mut rescue);
@@ -2642,12 +2640,11 @@ fn shop_options(
         o.next_strength = Some(v);
     }
     for o in &mut out {
-        if o.kind == "tarot" {
-            if let Some(t) = o.key.as_ref().and_then(|k| tarots.iter().find(|t| &t.key == k)) {
-                if t.reach_now > 0.0 {
-                    o.next_strength = Some(t.reach / t.reach_now);
-                }
-            }
+        if o.kind == "tarot"
+            && let Some(t) = o.key.as_ref().and_then(|k| tarots.iter().find(|t| &t.key == k))
+            && t.reach_now > 0.0
+        {
+            o.next_strength = Some(t.reach / t.reach_now);
         }
         if o.kind == "planet" {
             o.reach = o.key.as_deref().and_then(reach_of);
@@ -2790,13 +2787,13 @@ fn order_tips(run: &RunState, data: &GameData, tarots: &[TarotValue]) -> Vec<Str
     let have = |k: &str| held(k) || offered(k);
     let name = |k: &str| data.name(k).to_string();
     // Temperance pays your jokers' sell value: buy a cheap joker first, use it, sell it back
-    if have("c_temperance") {
-        if let Some(shop) = &run.shop {
-            for j in &shop.jokers {
-                let gain = 2 * j.sell_value - j.cost;
-                if gain > 0 && j.cost as f64 <= run.dollars && (run.jokers.len() as i64) < run.joker_slots + 1 {
-                    tips.push(format!("Buy {} (${}) before using Temperance, then sell it back: +${gain}", j.name, j.cost));
-                }
+    if have("c_temperance")
+        && let Some(shop) = &run.shop
+    {
+        for j in &shop.jokers {
+            let gain = 2 * j.sell_value - j.cost;
+            if gain > 0 && j.cost as f64 <= run.dollars && (run.jokers.len() as i64) < run.joker_slots + 1 {
+                tips.push(format!("Buy {} (${}) before using Temperance, then sell it back: +${gain}", j.name, j.cost));
             }
         }
     }
@@ -2816,11 +2813,11 @@ fn order_tips(run: &RunState, data: &GameData, tarots: &[TarotValue]) -> Vec<Str
     if have("c_fool") {
         let value = |k: &str| tarots.iter().find(|t| t.key == k).and_then(|t| t.long_mult).unwrap_or(1.0);
         let last = run.last_tarot_planet.as_deref().map_or(1.0, value);
-        if let Some(best) = run.consumables.iter().filter(|c| c.key != "c_fool" && c.set == "Tarot").max_by(|a, b| value(&a.key).total_cmp(&value(&b.key))) {
-            if value(&best.key) > last + 0.02 {
-                tips.push(format!("Use {} before The Fool, so The Fool makes another one (×{:.2} instead of ×{:.2} for {})", best.name, value(&best.key), last,
-                    run.last_tarot_planet.as_deref().map_or("nothing".to_string(), name)));
-            }
+        if let Some(best) = run.consumables.iter().filter(|c| c.key != "c_fool" && c.set == "Tarot").max_by(|a, b| value(&a.key).total_cmp(&value(&b.key)))
+            && value(&best.key) > last + 0.02
+        {
+            tips.push(format!("Use {} before The Fool, so The Fool makes another one (×{:.2} instead of ×{:.2} for {})", best.name, value(&best.key), last,
+                run.last_tarot_planet.as_deref().map_or("nothing".to_string(), name)));
         }
     }
     // A voucher stays in the shop all ante: when a shop before the boss is still to come,
