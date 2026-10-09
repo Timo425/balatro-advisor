@@ -292,7 +292,13 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    holds for Delayed Gratification's money, which spending a discard (paying or digging) gives
    up and the policy doesn't weigh. What a discard or a hand does to the jokers over the run
    isn't measured either: growth over antes is a per-joker table (`grow_antes`, e.g. Green
-   Joker, Castle, Ramen, Ice Cream, Seltzer; Yorick missing), and money for how a round is
+   Joker, Castle, Ramen, Ice Cream, Seltzer); the growers in neither it nor the shop events
+   (Ceremonial Dagger, Lucky Cat, Glass Joker, Hiker, Caino, Yorick, Fortune Teller, Supernova)
+   are valued at their size now and labelled so (`unprojected_growth`; a test keeps every
+   growing joker in one of the three). Ceremonial Dagger's is a choice: what you put to its
+   right (raised in play 2026-10-09: a Dagger read as no better than taking nothing, unlabelled),
+   so it needs a joker's loss as an event the projection can price (Madness's destroyed
+   jokers aren't counted either), and money for how a round is
    played (Delayed Gratification, Trading Card, Faceless Joker) has no income line
    (`income_per_ante`; Mail-In's is a hand-set share). The general fix: both measured from
    projected rounds (the board at a round's end against its start, a round's money with and

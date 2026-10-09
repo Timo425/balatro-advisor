@@ -594,6 +594,30 @@ fn non_scoring_note(key: &str) -> Option<&'static str> {
     })
 }
 
+/// Jokers that grow over the run from something neither the shop events (`Joker::mult_from`)
+/// nor the per-ante table (`grow_antes`) counts: valued at their size now, and said so (gap 8).
+fn unprojected_growth(key: &str) -> Option<&'static str> {
+    Some(match key {
+        // card.lua `Card:calculate_joker`, `context.setting_blind`: the joker to its right
+        // (not eternal) is destroyed for twice its sell value in Mult
+        "j_ceremonial" => "grows by destroying the joker to its right at each blind",
+        "j_lucky_cat" => "grows each time a Lucky card triggers",
+        "j_glass" => "grows from each Glass card that breaks",
+        "j_hiker" => "adds Chips for good to each card it scores",
+        "j_caino" => "grows from each face card destroyed",
+        "j_yorick" => "grows every 23 cards discarded",
+        "j_fortune_teller" => "grows from each Tarot used",
+        "j_supernova" => "grows each time a hand type is played again",
+        _ => return None,
+    })
+}
+
+/// What a joker's row says about how it's valued: its non-score value, or the growth that
+/// isn't projected.
+fn joker_note(key: &str) -> Option<String> {
+    non_scoring_note(key).map(str::to_string).or_else(|| unprojected_growth(key).map(|g| format!("{g}: not modelled, valued at its size now")))
+}
+
 /// Hand size / hands / discards a joker adds while owned (its `add_to_deck` effects).
 fn round_mods(j: &Joker) -> (i64, i64, i64) {
     match j.key.as_str() {
@@ -1002,7 +1026,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                 perishable: sj.perishable,
                 rental: sj.rental,
                 debuff: j.debuff,
-                note: non_scoring_note(&j.key).map(str::to_string),
+                note: joker_note(&j.key),
                 desc: describe(&j.key, &sj.ability, &dctx),
                 missing_gold: gold.is_some_and(|g| g.is_missing(&j.key)),
             }
@@ -2088,7 +2112,7 @@ fn evaluate_candidate(ctx: &Ctx, j: Joker, cost: i64, base_odds: &[(f64, Stats)]
         sims,
         per_shop: None,
         roles: roles(&j),
-        note: non_scoring_note(&j.key).map(str::to_string),
+        note: joker_note(&j.key),
         desc: None,
         growth: None,
         long_mult: None,
@@ -4911,6 +4935,25 @@ mod tests {
         assert!(o.survive_next > keep.survive_next, "next-ante survival: joker {:?} vs keeping the money {:?}", o.survive_next, keep.survive_next);
         assert!(keep.survive_next.unwrap() < 1.0, "survival with shops ahead must not saturate");
         assert!(pos("joker") < pos("leave"), "joker {:?} next {:?}", (o.p_win, o.survive, o.survive_next, o.long_mult), keep.survive_next);
+    }
+
+    #[test]
+    fn every_growing_joker_is_grown_or_says_it_isnt() {
+        // A joker that grows over the run is projected (shop events, `grow_antes`) or labelled
+        // (as not modelled, or by what of it is simulated); Hit the Road and Obelisk only grow within a round (reset at its end,
+        // or by the hand they count), which the simulated round plays.
+        let data = GameData::bundled();
+        let in_round = ["j_hit_the_road", "j_obelisk"];
+        for c in data.centers.iter().filter(|c| c.set == "Joker" && scaling_key(&c.key)) {
+            let j = Joker::from_key(&c.key, data).unwrap();
+            let events = RunEvent::ALL.iter().any(|&ev| j.mult_from(ev) > 0.0 || j.xmult_from(ev) > 0.0);
+            let table = grow_antes(&j, &[], 1.0).is_some();
+            // labelled: growth not projected, or a non-score value that says what's simulated
+            let said = unprojected_growth(&c.key).is_some() || non_scoring_note(&c.key).is_some();
+            assert!(!(unprojected_growth(&c.key).is_some() && non_scoring_note(&c.key).is_some()), "{}: two labels, only the first shows", c.key);
+            assert!(events || table || said || in_round.contains(&c.key.as_str()), "{} grows but isn't projected or labelled", c.key);
+            assert!(!(said && (events || table)), "{} is projected and labelled as not", c.key);
+        }
     }
 
     #[test]
