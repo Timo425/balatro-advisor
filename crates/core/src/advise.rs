@@ -298,6 +298,8 @@ pub struct Analysis {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub order_tips: Vec<String>,
     pub elapsed_ms: u128,
+    /// Each step's time (ms, in order; the steps `BAV_TIMING` prints): what the live page logs
+    pub steps_ms: Vec<(String, u128)>,
 }
 
 /// "Which play style has the most room?": each style's best 2-joker addition from the
@@ -802,10 +804,15 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     let t0 = Instant::now();
     let timing = std::env::var_os("BAV_TIMING").is_some();
     let _p = crate::progress::enter(opts.progress.clone().or_else(crate::progress::current));
+    let steps = std::cell::RefCell::new(Vec::<(String, u128)>::new());
     let lap = |what: &str| {
         crate::progress::step();
+        let now = t0.elapsed().as_millis();
+        let mut s = steps.borrow_mut();
+        let before: u128 = s.iter().map(|x| x.1).sum();
+        s.push((what.to_string(), now - before));
         if timing {
-            eprintln!("{:>6} ms  {what}", t0.elapsed().as_millis());
+            eprintln!("{now:>6} ms  {what}");
         }
     };
     let base = Board::from_run(run, data);
@@ -1898,6 +1905,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         live: run.snapshot.live,
         order_tips: tips,
         elapsed_ms: t0.elapsed().as_millis(),
+        steps_ms: steps.take(),
     }
 }
 
@@ -5439,7 +5447,7 @@ mod tests {
             fn strip(v: &mut serde_json::Value) {
                 match v {
                     serde_json::Value::Object(m) => {
-                        for k in ["indices", "elapsed_ms", "save_age_secs", "live"] {
+                        for k in ["indices", "elapsed_ms", "steps_ms", "save_age_secs", "live"] {
                             m.remove(k);
                         }
                         m.values_mut().for_each(strip);

@@ -74,7 +74,7 @@ fn snapshot() {
         let v: Value = serde_json::from_str(&std::fs::read_to_string(f).unwrap()).unwrap();
         let run: RunState = serde_json::from_value(v["state"].clone()).unwrap();
         let mut a = serde_json::to_value(advise::analyze(&run, GameData::bundled(), None, &advise::Options { sims: 300, seed, ..Default::default() })).unwrap();
-        for k in ["elapsed_ms", "save_age_secs", "live"] {
+        for k in ["elapsed_ms", "steps_ms", "save_age_secs", "live"] {
             a.as_object_mut().unwrap().remove(k);
         }
         std::fs::write(out.join(f.file_name().unwrap()), serde_json::to_string_pretty(&a).unwrap()).unwrap();

@@ -121,7 +121,7 @@ pub fn run(save_dir: PathBuf, profile: u8, port: u16, open: bool) -> Result<()> 
                         Ok(r) => {
                             let g = gold::load(&save_dir, profile, data).ok();
                             let stale = newer(m.as_ref().and_then(|x| x.1), last_fp.clone().unwrap_or_default());
-                            let analysed = stoppable(&shared, stale, |p| advise::analyze(&r, data, g.as_ref(), &Options { progress: Some(p), ..Default::default() }));
+                            let analysed = stoppable(&shared, &r, false, stale, |p| advise::analyze(&r, data, g.as_ref(), &Options { progress: Some(p), ..Default::default() }));
                             match analysed {
                                 Ok(Some(a)) => {
                                     if let Some(k) = &keep {
@@ -255,7 +255,7 @@ fn planned_body(
         return Some(serde_json::json!({ "status": "ok", "analysis": a, "gold": g }).to_string());
     }
     let (state, notes) = balatro_advisor::plan::apply(r, a, data, plan);
-    let planned = stoppable(shared, stale, |p| advise::analyze(&state, data, g, &Options { progress: Some(p), ..Default::default() }));
+    let planned = stoppable(shared, &state, true, stale, |p| advise::analyze(&state, data, g, &Options { progress: Some(p), ..Default::default() }));
     Some(match planned {
         Ok(Some(p)) => serde_json::json!({ "status": "ok", "analysis": p, "gold": g, "plan": { "items": plan, "notes": notes } }).to_string(),
         Ok(None) => return None,
@@ -263,11 +263,18 @@ fn planned_body(
     })
 }
 
-/// Runs an analysis (`analyse`, given its `Progress`) while a watcher thread checks every
-/// 400 ms whether it went stale (`stale`: the game wrote another state, the plan changed) and
-/// then stops it. `Ok(None)` when it was stopped, `Err` when it crashed. The page shows how
-/// far it got (`Shared::running`).
-fn stoppable<T>(shared: &Mutex<Shared>, mut stale: impl FnMut() -> bool + Send, analyse: impl FnOnce(Progress) -> T) -> std::thread::Result<Option<T>> {
+/// Runs an analysis of `run` (`analyse`, given its `Progress`) while a watcher thread checks
+/// every 400 ms whether it went stale (`stale`: the game wrote another state, the plan
+/// changed) and then stops it. `Ok(None)` when it was stopped, `Err` when it crashed. The page
+/// shows how far it got (`Shared::running`); each one is logged (`log_timing`).
+fn stoppable(
+    shared: &Mutex<Shared>,
+    run: &save::RunState,
+    planned: bool,
+    mut stale: impl FnMut() -> bool + Send,
+    analyse: impl FnOnce(Progress) -> advise::Analysis,
+) -> std::thread::Result<Option<advise::Analysis>> {
+    let started = Instant::now();
     let p = Progress::new();
     shared.lock().unwrap().running = Some((p.clone(), Instant::now()));
     let done = std::sync::atomic::AtomicBool::new(false);
@@ -286,10 +293,45 @@ fn stoppable<T>(shared: &Mutex<Shared>, mut stale: impl FnMut() -> bool + Send, 
         out
     });
     shared.lock().unwrap().running = None;
+    let how = match &out {
+        Ok(a) => Ok(a),
+        Err(e) if progress::is_stopped(&**e) => Err("stopped"),
+        Err(_) => Err("crashed"),
+    };
+    log_timing(run, planned, how, p.steps_done(), started.elapsed());
     match out {
         Ok(a) => Ok(Some(a)),
         Err(e) if progress::is_stopped(&*e) => Ok(None),
         Err(e) => Err(e),
+    }
+}
+
+/// One line per analysis in `timings.jsonl` (next to the calibration log): when, which state
+/// (ante, round, screen, cards in hand, jokers, consumables), whether it was a planned one,
+/// how it ended, its total and each step's time (ms). For finding where real analyses spend
+/// their time; nothing reads it back.
+fn log_timing(run: &save::RunState, planned: bool, how: Result<&advise::Analysis, &str>, steps_done: usize, took: Duration) {
+    let Some(dir) = balatro_advisor::calibration::default_dir() else { return };
+    let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let line = serde_json::json!({
+        "time": now,
+        "seed": run.seed,
+        "ante": run.ante,
+        "round": run.round,
+        "screen": format!("{:?}", run.screen),
+        "hand": run.hand.len(),
+        "jokers": run.jokers.len(),
+        "consumables": run.consumables.len(),
+        "planned": planned,
+        "ended": how.as_ref().map_or_else(|e| e.to_string(), |_| "done".to_string()),
+        "steps_done": steps_done,
+        "total_ms": took.as_millis(),
+        "steps_ms": how.ok().map(|a| a.steps_ms.clone()),
+        "threads": std::thread::available_parallelism().map_or(0, |n| n.get()),
+    });
+    let _ = std::fs::create_dir_all(&dir);
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("timings.jsonl")) {
+        let _ = std::io::Write::write_all(&mut f, format!("{line}\n").as_bytes());
     }
 }
 
