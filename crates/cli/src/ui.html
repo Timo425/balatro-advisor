@@ -277,7 +277,8 @@ function render(d) {
   let html = `<section style="padding:8px"><div class="rounds">` + a.blinds.map((bl) => {
     const done = bl.p_win == null;
     const p = bl.p_win ?? 0;
-    const round = a.rounds.find((r) => !r.horizon && (r.label === "Boss" ? bl.slot === "Boss" : r.label.endsWith(bl.slot)));
+    // the blind in progress is the round labelled "This blind"
+    const round = a.rounds.find((r) => !r.horizon && (bl.state === "Current" ? r.in_progress : !r.in_progress && (r.label === "Boss" ? bl.slot === "Boss" : r.label.endsWith(bl.slot))));
     const tag = bl.skip_tag ? tagInfo(bl.skip_tag, a, odds) : null;
     return `<div class="round${done ? " done" : ""}" ${round && round.unmodelled ? `title="${esc(round.unmodelled)}"` : ""}>
       <div class="pct" style="color:${done ? "var(--muted)" : color(p)}">${done ? (bl.state === "Skipped" ? "skip" : "✓") : pct(p)}</div>
