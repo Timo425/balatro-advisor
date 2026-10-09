@@ -296,3 +296,37 @@ the best `BIG_HAND_PLAYS` by score now, or a discard outside the structure's), o
 12 cards become common enough for the budget to matter.
 
 Approved by the owner 2026-10-08.
+
+## D11. Review: the Opus reviewer, plus narrow Haiku checks on changes that touch many places (accepted)
+
+**Decision.** Step 5 of the workflow keeps one `advisor-reviewer` on the model the session
+runs (Opus), open-ended over the whole change, and once more on the fixes. A change to how
+advice is decided or valued that touches many places (several stages or files, callers to
+follow, docs and tests to keep true) also gets 4–8 Haiku checkers next to it, the same agent
+with `model: haiku`, effort high. Each gets ONE bounded check written for the change and the
+files it may read, split by code area: e.g. game fidelity against the Lua, every caller or
+board the change must reach, determinism and paired draws, edge cases, tests that would fail
+without the change, docs and labels still true. Every finding gives file:line, a failing
+scenario, severity, confidence and the evidence read, plus what was checked and found fine;
+every one is verified in the code before acting. A small change gets the Opus reviewer alone.
+The template is the owner's "Detailed review" prompt (Obsidian, `AI/Agentic/Subagentide
+fan-out (kokkuvõte ja review).md`).
+
+**Why.** Two trials on real changes. Round 1 (2026-10-08, card arrangement): five Haikus on
+broad angles over the whole diff, three of them raising the same confident, impossible bug;
+not worth it. Round 2 (2026-10-09, The Hook in the simulated round): eight Haikus with one
+narrow check each raised no false alarm of that kind and found six things the Opus review
+didn't (whatif's next-ante boss keeping the blind in progress, The Tooth mislabelled, the
+round loop and Burnt Joker's skip untested through the simulation, the pick depending on card
+order, a doc name), at about 4.8x the Opus review's tokens, which cost far less each. The Opus
+reviews found what mattered most both times (round 2: the lost "not modelled" label, the
+missing proof in a Hook state, the general fix, and on the second pass the pick matched by
+position), so they stay; the Haikus are a cheap addition for the mechanical checks. The
+orchestration (writing the checks, verifying each finding: ~30 in round 2) is on the session's
+model, which is why small changes skip them.
+
+**Revisit if** the Haiku checks stop finding things the Opus review misses, their false
+findings cost more verification than their finds save, or a cheaper or stronger reviewer
+model changes the trade.
+
+Approved by the owner 2026-10-09.

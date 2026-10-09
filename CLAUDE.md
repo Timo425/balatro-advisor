@@ -65,7 +65,12 @@ change to how the advice decides or values things follows these steps, in order:
 5. **Review.** Spawn the `advisor-reviewer` agent (`.claude/agents/`) on the change. It hasn't
    seen your reasoning, which is why it finds what you missed. Apply what holds up (check its
    claims in the code first; it can be wrong), then run it once more on the fixes. Skip only
-   for changes that don't touch how advice is decided or valued (UI text, docs).
+   for changes that don't touch how advice is decided or valued (UI text, docs). A change that
+   touches many places also gets 4–8 Haiku checkers alongside the first review (same agent,
+   `model: haiku`, effort high), each with ONE bounded check written for the change and the
+   files it may read (game fidelity, callers/boards reached, determinism, edge cases, tests
+   that fail without the change, docs and labels); findings need file:line, a failing
+   scenario, severity, confidence and evidence, and each is verified before acting (D11).
 6. **Record.** Commit message starts with the stage (`valuation: …`, `simulated player: …`,
    `moves tried: …`, `noise: …`; `refactor`/`docs` otherwise). Update `docs/design.md` when a
    stage, rule, register entry or known gap changed. Then commit and push.
