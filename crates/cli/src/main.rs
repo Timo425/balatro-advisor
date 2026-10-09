@@ -30,7 +30,12 @@ enum Cmd {
     /// Gold Stake sticker progress
     Gold,
     /// The parsed run state
-    State,
+    State {
+        /// Read this save file instead of the profile's (e.g. one from the page's history, to
+        /// capture as a replay fixture)
+        #[arg(long)]
+        file: Option<PathBuf>,
+    },
     /// Score one hand against your current board (jokers, levels, money… from the save)
     Score {
         /// Cards to play, e.g. "KS KH:glass 5D:stone" (see README for modifiers)
@@ -156,9 +161,14 @@ fn main() -> Result<()> {
                 print_gold(&r);
             }
         }
-        Cmd::State => {
-            let dir = dir()?;
-            let s = save::load(&save::run_path(&dir, profile(&dir)), data)?;
+        Cmd::State { file } => {
+            let s = match file {
+                Some(f) => save::load(f, data)?,
+                None => {
+                    let dir = dir()?;
+                    save::load(&save::run_path(&dir, profile(&dir)), data)?
+                }
+            };
             if cli.json {
                 println!("{}", serde_json::to_string_pretty(&s)?);
             } else {

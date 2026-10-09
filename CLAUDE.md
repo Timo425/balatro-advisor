@@ -94,4 +94,5 @@ page: `calibration.jsonl` (predicted vs actual blind results, every shop seen): 
 replacing a register entry with a measurement; `timings.jsonl` (each analysis' step times);
 `history/<seed>/` (every state analysed, `<ms>-a<ante>-r<round>-<screen>.jkr`, newest runs up
 to 500 MB / 90 days): when the owner reports advice from earlier, find that state there and
-capture it as a fixture (`balatro-advisor analyze --file <jkr>` replays it).
+capture it as a fixture (`balatro-advisor state --file <jkr> --json` gives its `state`;
+`analyze --file <jkr>` replays it).
