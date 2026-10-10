@@ -1110,7 +1110,11 @@ fn dig_for(parts: &HandParts, keep: &[usize], held: &[usize], discards: i64) -> 
 thread_local! {
     /// Futures per alternative for the oracle player (0: off, the default)
     static ORACLE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// In futures played by the policy alone (`policy_outcomes`): the oracle stays out
     static IN_ROLLOUT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Decisions the oracle made in this thread (tests)
+    #[cfg(test)]
+    static ORACLE_DECISIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// A yardstick for the simulated player and for picks a change moved (`advise::Options::judge`),
@@ -1119,9 +1123,28 @@ thread_local! {
 /// policy's move with the alternatives from the hand's structure (`oracle_moves`), each on
 /// `rollouts` futures played on by the policy, and takes one only when it's clearly better on
 /// the same futures (paired, 2 standard errors). Hundreds of times slower than the policy:
-/// for measuring how much it leaves on the table (`tests/player.rs`).
+/// for measuring how much it leaves on the table (`tests/player.rs`). Per thread: rounds run
+/// on other threads (`round_odds` from 16 rounds, the advice's `par_map` workers) play without
+/// it unless they set it themselves, as `Options::judge` does in each worker.
 pub fn set_oracle(rollouts: usize) {
     ORACLE.with(|o| o.set(rollouts));
+}
+
+/// `outcomes_after` played on by the policy alone, with the oracle off in them: the futures of
+/// the oracle's alternatives, and the policy's own look-ahead (`play_on_instead`), whose
+/// estimate is the policy's even in a round the oracle plays. The flag goes back to what it
+/// was, so a look-ahead inside one of the oracle's futures doesn't switch the oracle back on
+/// for the rest of that future.
+fn policy_outcomes(b: &Board, start: &RoundStart, first: &Move, range: std::ops::Range<usize>, seed: u64, uses: &[Use]) -> Vec<Outcome> {
+    // restored on drop: also when a stopped analysis unwinds through here (`progress::checkpoint`)
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            IN_ROLLOUT.with(|x| x.set(self.0));
+        }
+    }
+    let _restore = Restore(IN_ROLLOUT.with(|x| x.replace(true)));
+    outcomes_after(b, start, first, range, seed, uses)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1147,15 +1170,15 @@ fn oracle_decide(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: 
     if cands.len() <= 1 {
         return None;
     }
+    #[cfg(test)]
+    ORACLE_DECISIONS.with(|x| x.set(x.get() + 1));
     let start = RoundStart { hand: hand.to_vec(), deck: deck.to_vec(), hand_size: size as i64, hands, discards, scored, target };
     let seed = rng.next_u64();
-    IN_ROLLOUT.with(|x| x.set(true));
     let g = b.goals.clone();
     let vals: Vec<Vec<f64>> = cands
         .iter()
-        .map(|m| outcomes_after(b, &start, m, 0..r, seed, uses).iter().map(|o| g.as_ref().map_or(o.won, |g| g.value(o))).collect())
+        .map(|m| policy_outcomes(b, &start, m, 0..r, seed, uses).iter().map(|o| g.as_ref().map_or(o.won, |g| g.value(o))).collect())
         .collect();
-    IN_ROLLOUT.with(|x| x.set(false));
     let mut pick = 0;
     let mut gain = 0.0;
     for (i, v) in vals.iter().enumerate().skip(1) {
@@ -1900,7 +1923,8 @@ const LOOKAHEAD_ROLLOUTS: usize = 8;
 /// A win is on the table: is playing on for a better finish worth more? Compares winning now
 /// with `win` against the move the policy would make if it weren't finishing (digging with
 /// the cards that don't pay at round end), on a few simulated futures, by `RoundGoals`. Only
-/// when a better finish could be worth something; the futures play on without looking ahead.
+/// when a better finish could be worth something; the futures play on without looking ahead,
+/// by the policy alone (`policy_outcomes`).
 #[allow(clippy::too_many_arguments)]
 /// `finish`: the finish with its uses (`finish_with_uses`: board, hand, winning play, value),
 /// when there is one, else winning now with `win`; `seen_by`: the round's `seen` credit so far.
@@ -1948,7 +1972,7 @@ fn play_on_instead(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards
     }
     let start = RoundStart { hand: hand.to_vec(), deck: deck.to_vec(), hand_size: size as i64, hands, discards, scored, target };
     let seed = rng.next_u64();
-    let outs = outcomes_after(&plain, &start, &alt, 0..LOOKAHEAD_ROLLOUTS, seed, uses);
+    let outs = policy_outcomes(&plain, &start, &alt, 0..LOOKAHEAD_ROLLOUTS, seed, uses);
     let later = outs.iter().map(|o| g.value(o)).sum::<f64>() / outs.len() as f64;
     (later > now).then_some(match alt {
         Move::Play(v) => Action::Play(v, true),
@@ -2891,6 +2915,40 @@ mod tests {
         let start = RoundStart { hand, deck, hand_size: 8, hands: 4, discards: 3, scored: 0.0, target: 100.0 };
         let r = sim_round_uses(&b, &start, &mut Rng::new(3), &[copies]);
         assert!(r.won && r.planets >= 3.0, "planets {}", r.planets);
+    }
+
+    #[test]
+    fn the_oracle_stays_out_of_the_policys_look_ahead() {
+        // The oracle (`set_oracle`) judges the policy's decisions on futures the policy plays;
+        // the policy's own look-ahead (`play_on_instead`: a Pair of Kings wins now, or dig on for a
+        // Flush, whose planet is worth more on the Blue Seal held) is the policy's estimate
+        // too. With the oracle on, its futures meet decisions the oracle would make, but it
+        // makes none of them, and the flag is left as it was.
+        let hand = Card::parse_list("KH KD 9S 7S 5S 3S:blue 2C 4D").unwrap();
+        let deck: Vec<Card> = standard_deck().into_iter().filter(|c| !hand.iter().any(|h| h.rank == c.rank && h.suit == c.suit)).collect();
+        let mut b = sample_board(&["j_joker"]);
+        b.planet_slots = 2;
+        let mut planet = [0.0; 12];
+        planet[HandType::Flush as usize] = 0.5;
+        b.goals = Some(RoundGoals { planet, ..Default::default() });
+        let win = vec![0, 1];
+        let target = 0.9 * score::score(&b, &hand[..2], &hand[2..], &mut Unlucky, false).score;
+        let decisions = || ORACLE_DECISIONS.with(|x| x.get());
+        set_oracle(8);
+        let before = decisions();
+        let on = play_on_instead(&b, &hand, &deck, 4, 3, 0.0, target, 8, &win, None, &[], &[], &mut Rng::new(3));
+        let during = decisions() - before;
+        let start = RoundStart { hand: hand.clone(), deck: deck.clone(), hand_size: 8, hands: 4, discards: 3, scored: 0.0, target };
+        outcomes_after(&b, &start, &Move::Discard(vec![0, 1, 6, 7]), 0..8, 3, &[]);
+        let met = decisions() - before - during;
+        let flag = IN_ROLLOUT.with(|x| x.get());
+        set_oracle(0);
+        let off = play_on_instead(&b, &hand, &deck, 4, 3, 0.0, target, 8, &win, None, &[], &[], &mut Rng::new(3));
+        assert!(matches!(on, Some(Action::Discard(_))), "plays on: the look-ahead ran ({on:?})");
+        assert!(met > 0, "the same kind of futures meet the oracle's decisions outside a look-ahead");
+        assert_eq!(during, 0, "the oracle decided inside the policy's look-ahead");
+        assert_eq!(format!("{on:?}"), format!("{off:?}"));
+        assert!(!flag);
     }
 
     #[test]
