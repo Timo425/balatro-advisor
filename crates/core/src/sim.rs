@@ -1057,6 +1057,16 @@ fn decide_cards(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i
     // (a plan with nothing to throw can't be chased)
     let mut plan = (0..all.len()).filter(|&k| eligible(&all[k]) && dig_of(k).is_some()).map(|k| (k, run(k, &quick_of))).collect::<Vec<_>>();
     plan.sort_by(|a, c| c.1.value.total_cmp(&a.1.value));
+    // the best of a family only (`Aim::family`): its variants mustn't take every slot
+    let mut families: Vec<(HandType, i32)> = vec![];
+    plan.retain(|(k, _)| match all[*k].family {
+        Some(f) if families.contains(&(all[*k].hand, f)) => false,
+        Some(f) => {
+            families.push((all[*k].hand, f));
+            true
+        }
+        None => true,
+    });
     plan.truncate(AIM_FINALISTS);
     let plan = plan
         .into_iter()
@@ -1274,6 +1284,9 @@ fn structure_discards(b: &Board, hand: &[Card], deck: &[Card], discards: i64, be
 /// what the draw pile must still give (each: the cards that fit, how many are needed).
 #[derive(Debug)]
 struct Aim {
+    /// plans that differ only in how many singles they keep beside a group (the group's rank):
+    /// one of them at most gets the full estimate
+    family: Option<i32>,
     hand: HandType,
     keep: Vec<usize>,
     groups: Vec<(Vec<Card>, usize)>,
@@ -1284,7 +1297,8 @@ struct Aim {
 /// each suit with 2+ cards of it; each straight with all but 1 or 2 of its ranks in hand
 /// (one card of each kept), and each straight flush (a suit's flush part with a straight,
 /// hand.lua `evaluate_poker_hand`); one more of a rank you hold 2+ of (Three, Four, Five of a Kind);
-/// a Full House from Two Pair. Hands already made aren't aims (the best play has them).
+/// a Full House from Two Pair; one more of a single card's rank beside a Pair (Two Pair) or Three
+/// of a Kind (a Full House). Hands already made aren't aims (the best play has them).
 fn aims(b: &Board, hand: &[Card], deck: &[Card]) -> Vec<Aim> {
     use HandType::*;
     let f = b.rule_flags();
@@ -1296,7 +1310,7 @@ fn aims(b: &Board, hand: &[Card], deck: &[Card]) -> Vec<Aim> {
         let fits: Vec<Card> = deck.iter().filter(|c| suited(c, s)).copied().collect();
         if keep.len() >= 2 && keep.len() < need && fits.len() + keep.len() >= need {
             let n = need - keep.len();
-            out.push(Aim { hand: Flush, keep, groups: vec![(fits, n)] });
+            out.push(Aim { family: None, hand: Flush, keep, groups: vec![(fits, n)] });
         }
     }
     // a card's rank as straights see it (Stone cards have none); an Ace is also 1
@@ -1344,7 +1358,7 @@ fn aims(b: &Board, hand: &[Card], deck: &[Card]) -> Vec<Aim> {
         if !one.is_empty() {
             let g: Vec<Card> = one.iter().flat_map(|&m| rank_fits(m, &any)).collect();
             if !g.is_empty() {
-                out.push(Aim { hand: Straight, keep, groups: vec![(g, 1)] });
+                out.push(Aim { family: None, hand: Straight, keep, groups: vec![(g, 1)] });
             }
             continue;
         }
@@ -1359,7 +1373,7 @@ fn aims(b: &Board, hand: &[Card], deck: &[Card]) -> Vec<Aim> {
             .filter(|g| g.iter().all(|x| !x.0.is_empty()))
             .max_by_key(|g| g.iter().map(|x| x.0.len()).product::<usize>());
         if let Some(groups) = best {
-            out.push(Aim { hand: Straight, keep, groups });
+            out.push(Aim { family: None, hand: Straight, keep, groups });
         }
     }
     // Straight flushes, by the game's rule: a flush part and a straight part found apart
@@ -1429,7 +1443,7 @@ fn aims(b: &Board, hand: &[Card], deck: &[Card]) -> Vec<Aim> {
             // already made (no card needed) isn't a plan; a made straight short of the suit is
             if !g.is_empty() && !hand::detect(&kept, f).contains(StraightFlush) {
                 one_away.push(keep.clone());
-                out.push(Aim { hand: StraightFlush, keep: keep.clone(), groups: vec![(g, 1)] });
+                out.push(Aim { family: None, hand: StraightFlush, keep: keep.clone(), groups: vec![(g, 1)] });
             }
         }
         for (keep, missing) in plans.iter().filter(|p| p.1.len() == 2) {
@@ -1449,7 +1463,7 @@ fn aims(b: &Board, hand: &[Card], deck: &[Card]) -> Vec<Aim> {
                 .filter(|g| g.iter().all(|x| !x.0.is_empty()))
                 .max_by_key(|g| g.iter().map(|x| x.0.len()).product::<usize>());
             if let Some(groups) = best {
-                out.push(Aim { hand: StraightFlush, keep: keep.clone(), groups });
+                out.push(Aim { family: None, hand: StraightFlush, keep: keep.clone(), groups });
             }
         }
     }
@@ -1469,7 +1483,7 @@ fn aims(b: &Board, hand: &[Card], deck: &[Card]) -> Vec<Aim> {
         }
         let g = fits(r);
         if !g.is_empty() {
-            out.push(Aim { hand: more, keep, groups: vec![(g, 1)] });
+            out.push(Aim { family: None, hand: more, keep, groups: vec![(g, 1)] });
         }
     }
     for (k, &r1) in pairs.iter().enumerate() {
@@ -1479,7 +1493,34 @@ fn aims(b: &Board, hand: &[Card], deck: &[Card]) -> Vec<Aim> {
             let mut g = fits(r1);
             g.extend(fits(r2));
             if !g.is_empty() {
-                out.push(Aim { hand: FullHouse, keep, groups: vec![(g, 1)] });
+                out.push(Aim { family: None, hand: FullHouse, keep, groups: vec![(g, 1)] });
+            }
+        }
+    }
+    // one more of a single card's rank beside a group (hand.lua `get_X_same`): Two Pair from a
+    // Pair, a Full House from Three of a Kind; the group with one to `AIM_SINGLES` singles, those
+    // with the most cards of their rank left first (then the higher), any of whose ranks
+    // completes it
+    let groups_of = |n: usize| (2..=14).filter(|&r| rank_of(r).len() >= n).count();
+    let mut singles: Vec<i32> = (2..=14).filter(|&r| rank_of(r).len() == 1 && !fits(r).is_empty()).collect();
+    singles.sort_by(|&a, &c| fits(c).len().cmp(&fits(a).len()).then(c.cmp(&a)));
+    for r in 2..=14 {
+        let group = rank_of(r);
+        let made = match group.len() {
+            // a hand already made isn't a plan: two groups make Two Pair, a Full House with three
+            2 if groups_of(2) == 1 => TwoPair,
+            3 if groups_of(2) == 1 => FullHouse,
+            _ => continue,
+        };
+        for k in 1..=singles.len().min(AIM_SINGLES) {
+            let mut keep = group.clone();
+            let mut g = vec![];
+            for &x in &singles[..k] {
+                keep.extend(rank_of(x));
+                g.extend(fits(x));
+            }
+            if !g.is_empty() {
+                out.push(Aim { family: Some(r), hand: made, keep, groups: vec![(g, 1)] });
             }
         }
     }
@@ -1721,16 +1762,22 @@ fn draw_odds_uncached(groups: &[(usize, usize)], pile: usize, seen: usize) -> f6
 /// (`aim_quick`)
 const AIM_FINALISTS: usize = 2;
 
+/// The most single cards a Two Pair or Full House plan keeps beside its group (`aims`): each
+/// more is another rank that completes it and one card fewer drawn per dig. Measured
+/// (2026-10-10, `tests/player.rs`): 1: 60.97%, 2: 61.03%, 3: 60.73% (with three, plans overrate
+/// themselves: a pair among the cards drawn isn't counted, and fewer are drawn)
+const AIM_SINGLES: usize = 2;
+
 /// The screen for `aim_score`: its first completion only, every random roll failing.
 fn aim_quick(b: &Board, aim: &Aim, hand: &[Card], held: &[usize]) -> f64 {
     let kept: Vec<Card> = held.iter().filter(|i| !aim.keep.contains(i)).map(|&i| hand[i]).collect();
-    score::score(b, &aim_middle(aim, hand), &kept, &mut Unlucky, false).score
+    score::score(b, &aim_middle(b, aim, hand), &kept, &mut Unlucky, false).score
 }
 
 /// The middle one of `aim`'s completions (the screen's and the random check's: not the best,
 /// not the worst)
-fn aim_middle(aim: &Aim, hand: &[Card]) -> Vec<Card> {
-    let mut all = aim_completions(aim, hand);
+fn aim_middle(b: &Board, aim: &Aim, hand: &[Card]) -> Vec<Card> {
+    let mut all = aim_completions(b, aim, hand);
     let k = all.len() / 2;
     all.swap_remove(k).0
 }
@@ -1744,7 +1791,7 @@ const AIM_FILLS: usize = 4;
 /// random from what fits (a fixed seed: the same draws for every call). Not a fixed "typical"
 /// card: the middle ones are neighbouring ranks, so a flush draw looked like a straight flush;
 /// spread ones never are, though with Four Fingers and Shortcut one often is.
-fn aim_completions(aim: &Aim, hand: &[Card]) -> Vec<(Vec<Card>, f64)> {
+fn aim_completions(b: &Board, aim: &Aim, hand: &[Card]) -> Vec<(Vec<Card>, f64)> {
     let base: Vec<Card> = aim.keep.iter().map(|&i| hand[i]).collect();
     let distinct = |fits: &[Card]| -> Vec<(Card, f64)> {
         let mut v: Vec<(Card, f64)> = vec![];
@@ -1782,8 +1829,15 @@ fn aim_completions(aim: &Aim, hand: &[Card]) -> Vec<(Vec<Card>, f64)> {
             out.push((cards, 1.0));
         }
     }
+    // a completion is what you'd play of it: more than five cards (a plan keeping five or more)
+    // give their best play, which holds the card that completes it
     for c in &mut out {
-        c.0.truncate(5);
+        if c.0.len() > 5 {
+            if let Some(p) = best_play(b, &c.0) {
+                c.0 = p.cards.iter().map(|&i| c.0[i]).collect();
+            }
+            c.0.truncate(5);
+        }
     }
     out
 }
@@ -1795,7 +1849,7 @@ fn aim_completions(aim: &Aim, hand: &[Card]) -> Vec<(Vec<Card>, f64)> {
 /// the register).
 fn aim_score(b: &Board, aim: &Aim, hand: &[Card], held: &[usize]) -> f64 {
     let kept: Vec<Card> = held.iter().filter(|i| !aim.keep.contains(i)).map(|&i| hand[i]).collect();
-    let all = aim_completions(aim, hand);
+    let all = aim_completions(b, aim, hand);
     // each completion's hand detected once
     let flags = b.rule_flags();
     let infos: Vec<hand::HandInfo> = all.iter().map(|x| hand::detect(&x.0, flags)).collect();
@@ -2480,8 +2534,9 @@ mod tests {
         // On pace with a Pair, so without a reason to discard the player plays it. With
         // Mystic Summit the best play scores more with no discards left: discard first.
         let hand = Card::parse_list("AS AH KD 9C 7S 5H 3D 2C").unwrap();
-        // no Aces left to draw: no Three of a Kind to dig for while on pace
-        let deck: Vec<Card> = standard_deck().into_iter().filter(|c| !hand.iter().any(|h| h.rank == c.rank && h.suit == c.suit) && c.rank.0 != 14).collect();
+        // no card of a rank in hand left to draw: no Three of a Kind or Two Pair to dig for
+        // while on pace
+        let deck: Vec<Card> = standard_deck().into_iter().filter(|c| !hand.iter().any(|h| h.rank == c.rank)).collect();
         let act = |keys: &[&str]| {
             let mut b = sample_board(keys);
             b.discards_left = 2;
@@ -2571,6 +2626,49 @@ mod tests {
     }
 
     #[test]
+    fn a_pair_is_dug_toward_two_pair_and_three_of_a_kind_toward_a_full_house() {
+        // one more of a kept single's rank beside the group (hand.lua `get_X_same`): with one or
+        // two singles, those with the most cards of their rank left first; not when the hand is
+        // already made. Fails without these plans.
+        let plans = |cards: &str, extra: &[&str], want: HandType| -> Vec<(Vec<usize>, usize)> {
+            let hand = Card::parse_list(cards).unwrap();
+            let mut deck: Vec<Card> = standard_deck().into_iter().filter(|c| !hand.iter().any(|h| h.same_kind(c))).collect();
+            deck.retain(|c| !extra.iter().any(|e| Card::parse(e).unwrap().same_kind(c)));
+            aims(&sample_board(&[]), &hand, &deck).into_iter().filter(|a| a.hand == want).map(|a| (a.keep, a.groups[0].0.len())).collect()
+        };
+        // a Pair of 9s, singles K Q 7 4 3 2: all have 3 left, so the higher first; the plans keep
+        // the Pair and one or two singles (`AIM_SINGLES`), 3 more cards of each
+        let two = plans("9S 9H KD QC 7S 4H 2D 3C", &[], HandType::TwoPair);
+        assert_eq!(two, [(vec![0, 1, 2], 3), (vec![0, 1, 2, 3], 6)], "{two:?}");
+        // with two Kings gone from the deck the Queen (3 left) comes first
+        let fewer = plans("9S 9H KD QC 7S 4H 2D 3C", &["KS", "KH"], HandType::TwoPair);
+        assert_eq!(fewer[0], (vec![0, 1, 3], 3), "{fewer:?}");
+        // Three of a Kind: a Full House from one more of a single
+        let full = plans("9S 9H 9D QC 7S 4H 2D 3C", &[], HandType::FullHouse);
+        assert_eq!(full[0], (vec![0, 1, 2, 3], 3), "{full:?}");
+        // made already: Two Pair isn't dug for with two Pairs, nor a Full House with one
+        assert!(plans("9S 9H KD KC 7S 4H 2D 3C", &[], HandType::TwoPair).is_empty());
+        assert!(plans("9S 9H 9D KC KS 4H 2D 3C", &[], HandType::FullHouse).is_empty());
+    }
+
+    #[test]
+    fn every_completion_of_a_plan_makes_its_hand() {
+        // A plan's completions are scored as its hand: a plan keeping five or more cards (Two
+        // Pair with three singles, a Full House with two) is played as its best five, which hold
+        // the card that completes it. Fails if a completion is cut to the kept cards.
+        let b = sample_board(&[]);
+        for cards in ["9S 9H KD QC 7S 4H 2D 3C", "9S 9H 9D QC 7S 4H 2D 3C", "5H 6H 7H 8H KS QC 3D 2C", "AS AH KS KH 9C 9D 2S 3S", "2H 5H 9H JH KD QC 7S 3C"] {
+            let hand = Card::parse_list(cards).unwrap();
+            let deck: Vec<Card> = standard_deck().into_iter().filter(|c| !hand.iter().any(|h| h.same_kind(c))).collect();
+            for a in aims(&b, &hand, &deck) {
+                for (c, _) in aim_completions(&b, &a, &hand) {
+                    assert!(c.len() <= 5 && hand::detect(&c, b.rule_flags()).contains(a.hand), "{cards}: {:?} keep {:?}: {:?}", a.hand, a.keep, c.iter().map(|x| x.label()).collect::<Vec<_>>());
+                }
+            }
+        }
+    }
+
+    #[test]
     fn a_straight_flush_is_a_plan_of_its_own() {
         // A straight flush is its own hand (scored at its own level): the game finds its flush
         // part and straight part apart (hand.lua `evaluate_poker_hand`)
@@ -2616,6 +2714,7 @@ mod tests {
     fn a_chase_is_worked_out_dig_by_dig_against_playing_on() {
         // a plan whose fits are `fits` groups of `n` cards in a 44-card pile, 4 cards kept of 8
         let aim = |groups: &[usize]| Aim {
+            family: None,
             hand: HandType::StraightFlush,
             keep: vec![0, 1, 2, 3],
             groups: groups.iter().map(|&n| (standard_deck()[..n].to_vec(), 1)).collect(),
@@ -2639,7 +2738,7 @@ mod tests {
         assert!(!c.go && c.value < 180.0 * 4.0, "{}", c.value);
         // the lesser hand its cards make on the way (a Flush on pace) is where it often ends,
         // and is valued there
-        let flush = Aim { hand: HandType::Flush, keep: vec![0, 1, 2, 3], groups: vec![(standard_deck()[10..19].to_vec(), 1)] };
+        let flush = Aim { family: None, hand: HandType::Flush, keep: vec![0, 1, 2, 3], groups: vec![(standard_deck()[10..19].to_vec(), 1)] };
         let with = chase(&two, 1000.0, 20.0, &[(&flush, 300.0)], &round(180.0, 876.0, 1));
         assert!(with.value > c.value, "{} {}", with.value, c.value);
     }
@@ -2764,11 +2863,11 @@ mod tests {
     fn discards_that_pay_are_cashed_while_safe() {
         // Money for discards comes from the engine (`discard_money`), the policy names no
         // joker: Mail-In pays per card of its rank, Faceless Joker for 3+ faces at once.
-        // no Aces left to draw: the Pair of Aces has no Three of a Kind to dig for, so only
-        // the money decides
-        let deck: Vec<Card> = standard_deck().into_iter().filter(|c| c.rank.0 != 14).collect();
+        // no card of a rank in hand left to draw: the Pair of Aces has no Three of a Kind or
+        // Two Pair to dig for, so only the money decides
         let decide_on = |keys: &[&str], hand: &str, discards: i64, need_mult: f64| {
             let hand = Card::parse_list(hand).unwrap();
+            let deck: Vec<Card> = standard_deck().into_iter().filter(|c| !hand.iter().any(|h| h.rank == c.rank)).collect();
             let mut b = sample_board(keys);
             b.mail_rank = Some(4);
             b.discards_left = discards;
