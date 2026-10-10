@@ -86,6 +86,25 @@ const TARGETS: &[(&str, f64)] = &[
     ("trousers_goad_4h1d", 2918.0),
     ("flush_club_4h3d", 8808.0),
     ("flush_club_4h1d", 4788.0),
+    // one hand and 3 discards (The Needle), added 2026-10-10: the half points of the first
+    // player that digs before its last hand (before it, a one-hand round was its first deal)
+    ("plain_1h3d", 316.0),
+    ("pairs_1h3d", 3096.0),
+    ("trips_1h3d", 8544.0),
+    ("straight_1h3d", 8352.0),
+    ("straight_easy_1h3d", 8640.0),
+    ("flush_1h3d", 4368.0),
+    ("flush_smeared_1h3d", 2380.0),
+    ("faces_1h3d", 4788.0),
+    ("high_card_1h3d", 2691.0),
+    ("held_1h3d", 2844.0),
+    ("discards_1h3d", 1817.0),
+    ("ranks_1h3d", 5868.0),
+    ("trousers_1h3d", 1208.0),
+    ("growers_1h3d", 470.0),
+    ("enhanced_1h3d", 2976.0),
+    ("trousers_goad_1h3d", 1248.0),
+    ("flush_club_1h3d", 4368.0),
 ];
 
 /// Each board's rounds; a board without a target yet gets 0 (`player_targets` finds it).
@@ -100,7 +119,8 @@ fn rounds() -> Vec<(String, Board, sim::RoundStart)> {
         let mut deck = if *enhanced { enhanced_deck() } else { bench::standard_deck() };
         let f = b.rule_flags();
         rules.apply(&mut deck, f.smeared, f.pareidolia);
-        for (hands, discards) in [(4, 3), (4, 1)] {
+        // a round of 4 hands with 3 or 1 discards, and The Needle's one hand with 3
+        for (hands, discards) in [(4, 3), (4, 1), (1, 3)] {
             let key = format!("{name}_{hands}h{discards}d");
             let target = TARGETS.iter().find(|t| t.0 == key).map_or(0.0, |t| t.1);
             out.push((key, b.clone(), sim::RoundStart { hand: vec![], deck: deck.clone(), hand_size: 8 + rules.hand_size_delta, hands, discards, scored: 0.0, target }));
@@ -129,7 +149,7 @@ fn player_targets() {
     let n: usize = std::env::var("BAV_N").ok().and_then(|s| s.parse().ok()).unwrap_or(2000);
     let only = std::env::var("BAV_ONLY").ok();
     for (key, b, start) in rounds() {
-        if only.as_ref().is_some_and(|o| !key.contains(o.as_str())) {
+        if only.as_ref().is_some_and(|o| !o.split(',').filter(|o| !o.is_empty()).any(|o| key.contains(o))) {
             continue;
         }
         println!("(\"{key}\", {:.0}.0),", half_point(&b, &start, n, 42));
@@ -151,15 +171,27 @@ fn player_win_rates() {
         wins.push(w);
         println!("{key}: {:.1}% ({:.2?})", 100.0 * w, t.elapsed());
     }
-    let mean = |w: &[f64]| 100.0 * w.iter().sum::<f64>() / w.len() as f64;
-    // the plain play styles' mean stays comparable with the history above
-    println!("mean {:.2}% (plain styles {:.2}%, the rest {:.2}%) ({:.2?})", mean(&wins), mean(&wins[..24]), mean(&wins[24..]), t0.elapsed());
+    let mean = |keep: &dyn Fn(&str) -> bool| {
+        let w: Vec<f64> = all.iter().zip(&wins).filter(|(r, _)| keep(&r.0)).map(|(_, w)| *w).collect();
+        100.0 * w.iter().sum::<f64>() / w.len().max(1) as f64
+    };
+    // the plain play styles' 4-hand rounds stay comparable with the history above
+    let plain = |k: &str| BOARDS[..12].iter().any(|b| k.starts_with(&format!("{}_4h", b.0)));
+    println!(
+        "mean {:.2}% (plain styles {:.2}%, the boards added since {:.2}%, one hand {:.2}%) ({:.2?})",
+        mean(&|_| true),
+        mean(&plain),
+        mean(&|k| !plain(k) && !k.ends_with("_1h3d")),
+        mean(&|k| k.ends_with("_1h3d")),
+        t0.elapsed()
+    );
 }
 
 /// The player against the oracle (`sim::set_oracle`, `BAV_R` futures per alternative, default
 /// 24): on each board's round, and on each private fixture's board (the round in progress, and
 /// a fresh round at the score the player wins half the time). A gap well above its standard
 /// error is a decision the player gets wrong; the oracle's choices are where to look.
+/// `BAV_ONLY=a,b`: the cases whose name contains any of these (the long run in parts).
 #[test]
 #[ignore]
 fn player_against_oracle() {
@@ -191,7 +223,7 @@ fn player_against_oracle() {
     }
     let only = std::env::var("BAV_ONLY").ok();
     for (key, b, start) in cases {
-        if only.as_ref().is_some_and(|o| !key.contains(o.as_str())) {
+        if only.as_ref().is_some_and(|o| !o.split(',').filter(|o| !o.is_empty()).any(|o| key.contains(o))) {
             continue;
         }
         let t0 = std::time::Instant::now();

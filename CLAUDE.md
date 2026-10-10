@@ -82,7 +82,8 @@ change to how the advice decides or values things follows these steps, in order:
    scenario, severity, confidence and evidence, and each is verified before acting (D11).
 6. **Record.** Commit message starts with the stage (`valuation: …`, `simulated player: …`,
    `moves tried: …`, `noise: …`; `refactor`/`docs` otherwise). Update `docs/design.md` when a
-   stage, rule, register entry or known gap changed. Then commit and push.
+   stage, rule, register entry or known gap changed, and its "Where things stand" lines (top of
+   the known gaps: now, next, ideas not built yet) when the work moves on. Then commit and push.
 
 **When the rules don't fit the fix.** Sometimes a correct fix can't be made within
 `docs/design.md` (it needs a new kind of value, a new stage, or breaks a rule). Then:

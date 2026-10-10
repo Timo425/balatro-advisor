@@ -934,8 +934,8 @@ fn burn_pays(b: &Board, hand: &[Card], play: &[usize]) -> bool {
 /// - while safe, cash the discard that pays most (`discard_money`); the last discard right
 ///   before the round ends;
 /// - with discards left and a best play that scores more with none left, discard first;
-/// - play the best hand if it surely wins, if it's the last hand, or if repeating it keeps
-///   pace (its average score: `Play::mean`);
+/// - play the best hand if it surely wins, if it's the last hand and no discard is left, or if
+///   repeating it keeps pace (its average score: `Play::mean`);
 /// - otherwise, if digging for a hand (`aims`: a flush, a straight, a straight flush, one
 ///   more of a rank, a Full House) is worth more than playing on (`chase`: the round's
 ///   expected points, dig by dig as this policy plays it), throw away the cards outside it:
@@ -990,7 +990,11 @@ fn decide_cards(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i
             return Action::Discard(v);
         }
     }
-    if best.floor >= need || hands <= 1 || deck.is_empty() {
+    // the last hand is played now only when no discard is left: a discard is allowed with one
+    // hand left (button_callbacks.lua `G.FUNCS.can_discard`: discards left and cards picked)
+    // and draws back to hand size (`G.FUNCS.draw_from_deck_to_hand`), so throwing cards
+    // outside the best play can only add to it; a hand that can't win yet digs first
+    if best.floor >= need || (hands <= 1 && discards <= 0) || deck.is_empty() {
         return play_best;
     }
     let on_pace = best.mean * hands as f64 >= need;
@@ -2533,6 +2537,22 @@ mod tests {
         assert!(p.mean > 2.0 * p.floor, "the average counts the rolls: {} vs {}", p.mean, p.floor);
         let need = 3.0 * (p.floor + p.mean) / 2.0;
         assert!(matches!(decide(&b, &hand, &deck, 3, 2, need, 8), Action::Play(..)));
+    }
+
+    #[test]
+    fn the_last_hand_digs_with_a_discard_left_when_it_cant_win_yet() {
+        // One hand left, one discard, a Pair of Aces short of the target: discarding the cards
+        // outside the Pair keeps it and may improve it, so the player discards first; with no
+        // discard left it plays; one that already wins is played. Fails if the last hand is
+        // always played at once.
+        let hand = Card::parse_list("AS AH KD 9C 7S 5H 3D 2C").unwrap();
+        let deck: Vec<Card> = standard_deck().into_iter().filter(|c| !hand.iter().any(|h| h.same_kind(c))).collect();
+        let b = sample_board(&["j_joker"]);
+        let pair = best_play(&b, &hand).unwrap();
+        let Action::Discard(v) = decide(&b, &hand, &deck, 1, 1, pair.floor * 3.0, 8) else { panic!("a discard is left: dig first") };
+        assert!(!v.iter().any(|&i| hand[i].rank.0 == 14), "the Pair stays: {v:?}");
+        assert!(matches!(decide(&b, &hand, &deck, 1, 0, pair.floor * 3.0, 8), Action::Play(..)));
+        assert!(matches!(decide(&b, &hand, &deck, 1, 1, pair.floor, 8), Action::Play(..)));
     }
 
     #[test]
