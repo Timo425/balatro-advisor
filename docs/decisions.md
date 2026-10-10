@@ -128,7 +128,7 @@ evaluation order, joker configs and save layout. It is proprietary, so:
 
 ### Where ideas came from: `balatro-agent`
 
-`balatro-agent` is the owner's separate, local Balatro bot project. Its
+[`balatro-agent`](https://github.com/Timo425/balatro-agent) is the owner's separate Balatro bot project. Its
 `tools/balatro_state.py` gave us the Lua-table parser idea, the blind targets per
 stake and the "what the save hides" notes, copied and adapted into Rust with an
 attribution comment. Its effect-text scoring was not reused (it estimates rather
