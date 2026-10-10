@@ -342,3 +342,57 @@ findings cost more verification than their finds save, or a cheaper or stronger 
 model changes the trade.
 
 Approved by the owner 2026-10-09.
+
+## D12. Proof in two tiers; picks a change moves on the owner's history, judged by the oracle (accepted)
+
+**Decision.** Every change to how advice is decided or valued runs a fixed set of checks:
+tests, clippy, the snapshot diff, and the history check (`tests/history_picks.rs`, which
+uses only long-stable API so it runs on older base commits, and `tests/history.rs`): Best play's quick
+pass on the states the live page saved in a blind (`~/.local/share/balatro-advisor/history`,
+one in three, chosen by name so the sample holds as the history grows) on the code before and
+after, and every pick that moved (by the cards' places in the hand, so a new arrangement isn't
+a move) played against the old one on the same rounds with the oracle making the policy's
+decisions (`advise::Options::judge`, `sim::set_oracle`). Verdicts use the search's tie margin:
+BETTER or WORSE only when clearly apart and by more than 1%, tie when within it both ways,
+unclear otherwise; a pick that can't be judged (?: a consumable's old target can't be rebuilt)
+or that the change lost (LOST) is listed, not dropped; every WORSE, unclear, ? and LOST pick is
+looked at and explained or fixed. The slow
+checks run where they apply: the full `search_against_reference` for a change to the search or
+the noise stage, else on the fixtures whose Best play moved; the player benchmark (win rates
+and the gap to the oracle, D9) for a change to the simulated player or the simulated game.
+CLAUDE.md step 4.
+
+**Why.** The Goad regression (gap 6). 7374df9 made the simulated round grow Spare Trousers,
+which pushed the pace rule into playing a lone Bonus pair, and Best play threw a Bonus Gold
+Seal 3. No fixture held such a state, the player benchmark had no such board (its win rates on
+the boards added since rose: D9), and every other check judged moves with the same simulated
+player, so it agreed with the flaw; the owner found it in play. The history holds the
+situations the owner actually meets (353 states in a blind over 11 runs by 2026-10-09), so a
+change that moves picks there shows without waiting for the owner. The oracle narrows what the
+policy gets wrong: on the Goad state the policy wins less holding the Bonus 3 than a plain one
+(90.8% vs 93.3%, impossible for a correct player), the oracle doesn't (93.7% vs 93.4%).
+Running the slow checks only where they apply keeps a fix near an hour instead of four.
+
+First run, on 7374df9 itself (128 sampled states, its parent's picks against its own, judged
+by today's code, verdicts then by 2 standard errors without the tie band): 9 picks moved, 6
+judged better, 3 the same, none worse. The Goad pick (not in the sample) is judged unclear
+(the new pick +1.0 ± 0.8%): the check shows it as moved and worth a look, not as worse. What
+the pace flaw costs shows in the oracle gap on the Trousers boards (+9.8 and +13.3 points,
+D9), where the pace fix is judged.
+
+**Limits.** The judge is independent of the search, the noise stage and the policy's
+decisions while no win is on the table. It is not independent of the valuation (both moves are
+measured by the code's `RoundGoals`), the engine, or the finish and consumable use (decided as
+the code does when a win is on the table), and the oracle's own look-ahead plays on by the
+policy, so it narrows a policy flaw but needn't remove it. A change to those is half judging
+itself, and its verdicts say so. Shop choices, value across antes and the engine's fidelity to
+the game still rest on the owner and the calibration log. The quick pass takes 1-60 s a state
+by the Ante (median 2.6 s; all 353 in 58 min), hence the sample (about 20 minutes each side;
+the judge about 30 s a moved pick).
+
+**Revisit if** most moved picks are ties flipping rather than changes, the oracle's verdicts
+disagree with the owner's on cases the owner can explain, the sample misses regressions the
+owner then finds in the states left out, or a stronger independent judge (a deeper search,
+real outcomes) becomes cheap enough.
+
+Approved by the owner 2026-10-09.

@@ -21,7 +21,7 @@ use super::par_map;
 /// The most rounds an option gets by default, and how close (as a share of the leader's value) counts
 /// as equally good.
 pub(super) const MAX: usize = 1600;
-pub(super) const EQUAL: f64 = 0.01;
+pub const EQUAL: f64 = 0.01;
 pub(super) struct Race<T> {
     /// Each option's samples (as many as it got)
     pub samples: Vec<Vec<T>>,

@@ -48,20 +48,29 @@ change to how the advice decides or values things follows these steps, in order:
 3. **Fix the stage, generally.** Ask what the case is an example of and where the game (or
    the simulation) already defines that group. If the fix only makes sense for one joker,
    suit, hand or card, it's the wrong fix. New hand-set numbers go in the register.
-4. **Prove it.** `cargo test --release` must exit 0 (check the exit status, not the printed
-   output), the replay fixtures included, and `cargo clippy --release --all-targets` must
-   report no warnings (fix the ones your change brings). A pure restructuring must leave the full analysis
-   of every fixture unchanged: `BAV_SNAPSHOT_DIR=/tmp/before cargo test --release --test
-   replay -- --ignored snapshot` before and `/tmp/after` after, then `diff -r`. A behaviour
-   change: diff the snapshots and explain every difference. A change to Best play's search
-   or the noise stage: run `cargo test --release --test replay -- --ignored
-   search_against_reference --nocapture` (every move against a reference; slow) before and
-   after, and judge it by how close each pick is to the best, not by which fixture flips. A
-   change to the simulated player: `cargo test --release --test player -- --ignored
-   --nocapture` (win rates at fixed targets, and the gap to the oracle) before and after;
-   explain every board that gets worse. Without `tests/fixtures/private/` (a cloud session
-   has only tracked files), prove values with tests that build the state in code, and say in
-   the PR which fixture checks weren't run: they're run locally before merging.
+4. **Prove it**, in two tiers (D12). Every change to how advice is decided or valued: `cargo
+   test --release` must exit 0 (check the exit status, not the printed output), the replay
+   fixtures included; `cargo clippy --release --all-targets` must report no warnings (fix the
+   ones your change brings); the snapshot diff, `BAV_SNAPSHOT_DIR=/tmp/before cargo test
+   --release --test replay -- --ignored snapshot` before and `/tmp/after` after, then `diff
+   -r` (a pure restructuring leaves it unchanged; a behaviour change: explain every
+   difference); and the history check: `tests/history_picks.rs` before (copied into a `git
+   worktree` of the base commit, started while you work) and after, then `history_judge` in
+   `tests/history.rs`: every pick that moved on the owner's saved states, judged against the
+   old one with the oracle playing on; look at every WORSE, unclear, ? and LOST one and explain
+   or fix it (the judge shares the code's valuation and engine, so a change to those is half
+   judging itself: say so). Then where it applies: a change to the simulated player, or to the simulated game
+   (the engine, what a round simulates), runs `cargo test --release --test player -- --ignored
+   --nocapture` before and after: win rates (explain every board that gets worse) and the gap
+   to the oracle on the boards the change touches (D9; after a change to the simulated game
+   only the gap judges the player, as win rates move with the game). A change to Best play's search or the noise stage: `cargo test --release --test replay --
+   --ignored search_against_reference --nocapture` (every move against a reference; slow,
+   split with `BAV_ONLY`/`BAV_SEEDS`)
+   before and after, judged by how close each pick is to the best, not by which fixture
+   flips; another change runs it on the fixtures whose Best play moved in the snapshot diff.
+   Without `tests/fixtures/private/` and the history (a cloud session has only tracked
+   files), prove values with tests that build the state in code, and say in the PR which
+   checks weren't run: they're run locally before merging.
 5. **Review.** Spawn the `advisor-reviewer` agent (`.claude/agents/`) on the change. It hasn't
    seen your reasoning, which is why it finds what you missed. Apply what holds up (check its
    claims in the code first; it can be wrong), then run it once more on the fixes. Skip only

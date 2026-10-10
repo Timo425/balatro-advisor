@@ -17,6 +17,8 @@ use crate::save::RunState;
 use crate::sim::{self, RoundRules, RoundStart, Stats};
 
 mod compare;
+/// Values within this share of each other are ties (`compare::EQUAL`)
+pub use compare::EQUAL as TIE_MARGIN;
 mod play;
 mod value;
 use value::Gain;
@@ -38,6 +40,13 @@ pub struct Options {
     /// Best play also plays every move it considered for `compare::MAX` rounds of its own
     /// (`PlayAdvice::reference`): what the search's pick is measured against. Slow; for tests.
     pub reference: bool,
+    /// Best play also judges these moves ("action p,q,r [use first]", by positions in your hand
+    /// as the game orders it) against its pick, on `judge_rounds` rounds where the oracle
+    /// (`sim::set_oracle`, `JUDGE_ROLLOUTS`) makes the policy's decisions that aren't a win on
+    /// the table: `PlayAdvice::judged`. Independent of the search and of those decisions, not of
+    /// the valuation, the engine, the finish or consumable use (D12). Very slow; for tests.
+    pub judge: Vec<String>,
+    pub judge_rounds: usize,
     /// Steps done, and a stop to ask for (`progress`): the live page stops an analysis when the
     /// game writes a newer state
     pub progress: Option<crate::progress::Progress>,
@@ -45,7 +54,7 @@ pub struct Options {
 
 impl Default for Options {
     fn default() -> Self {
-        Options { sims: 300, screen_sims: 60, hand_samples: 300, seed: 42, rescue_top: 12, quick: false, reference: false, progress: None }
+        Options { sims: 300, screen_sims: 60, hand_samples: 300, seed: 42, rescue_top: 12, quick: false, reference: false, judge: vec![], judge_rounds: 400, progress: None }
     }
 }
 
@@ -207,6 +216,13 @@ pub struct PlayAdvice {
     /// rounds (the best is chosen on the first block, so its luck there doesn't count)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reference_gap: Option<(f64, f64)>,
+    /// With `Options::judge`: each judged move, and how much more it's worth than the pick (a
+    /// share of the pick's value; negative: worth less) with the standard error, the rounds
+    /// after it played as `Options::judge` says; `None` when it can't be judged: not a move the
+    /// game allows, not in your hand, a consumable used first and no single move considered
+    /// matching it, or `judge_rounds` 0
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub judged: Vec<(String, Option<(f64, f64)>)>,
     /// Planets from Blue Seals held at the end, on average (counted in the ranking)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub planets: Option<f64>,
@@ -694,6 +710,9 @@ const TARGET_BUDGET: &[(usize, usize)] = &[(16, 12), (32, 6), (64, 3)];
 /// limit, not a finding: see `compare`.
 const SEARCH_FIRST: usize = 32;
 const SEARCH_BUDGET: &[(usize, usize)] = &[(32, 48), (64, 24), (128, 12), (256, 8)];
+/// Futures per alternative at each of the oracle's decisions (`Options::judge`), as in
+/// `tests/player.rs`
+const JUDGE_ROLLOUTS: usize = 24;
 fn is_zero_usize(n: &usize) -> bool {
     *n == 0
 }
@@ -4349,7 +4368,7 @@ mod tests {
     }
 
     fn quick() -> Options {
-        Options { sims: 60, screen_sims: 20, hand_samples: 80, seed: 7, rescue_top: 2, quick: false, reference: false, progress: None }
+        Options { sims: 60, screen_sims: 20, hand_samples: 80, seed: 7, rescue_top: 2, quick: false, reference: false, judge: vec![], judge_rounds: 0, progress: None }
     }
 
     fn shop_action(owned: &[(&str, Option<Edition>, Option<i64>)], buy: &str) -> String {
@@ -5012,6 +5031,40 @@ mod tests {
             key: "bl_small".into(), name: "Small Blind".into(), target, scored: 0.0, disabled: false, hands_seen: vec![], only_hand: None,
         });
         r
+    }
+
+    #[test]
+    fn the_judge_plays_named_moves_against_the_pick_by_their_places_in_hand() {
+        // `Options::judge` (D12), on a hand out of the sorted order (positions aren't the
+        // search's indices): the pick judged against itself is a tie by construction (the same
+        // rounds, 0 ± 0); a move named by positions is judged; one with a consumable used first
+        // that isn't among the moves, or one the game doesn't allow, can't be. Fails if moves
+        // are matched by the search's own indices or the judged rounds aren't paired.
+        let r = blind_run(&[("j_joker", None, None)], "4C 7D AS 2S 7C KH 3D 7H", "", ("c_pluto", "Pluto", "Planet"), 900.0);
+        let base = analyze(&r, GameData::bundled(), None, &Options { quick: true, ..quick() }).best_play.unwrap();
+        let mut ix = base.indices.clone();
+        ix.sort();
+        let me = format!("{} {} [{}]", base.action, ix.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(","), base.use_first.clone().unwrap_or_default());
+        let judge = vec![me, "discard 0 []".to_string(), "play 0,1 [Nowhere]".to_string(), "play 0,0 []".to_string(), "play 0,1,2,3,4,5 []".to_string()];
+        let opts = Options { quick: true, judge, judge_rounds: 16, ..quick() };
+        let bp = analyze(&r, GameData::bundled(), None, &opts).best_play.unwrap();
+        assert_eq!((bp.action.as_str(), &bp.indices), (base.action.as_str(), &base.indices), "judging changed the pick");
+        assert_eq!(bp.judged[0].1, Some((0.0, 0.0)), "{:?}", bp.judged);
+        assert!(bp.judged[1].1.is_some_and(|(d, se)| d.is_finite() && se.is_finite()), "{:?}", bp.judged);
+        assert!(bp.judged[2..].iter().all(|j| j.1.is_none()), "{:?}", bp.judged);
+    }
+
+    #[test]
+    fn the_judge_plays_a_move_the_search_no_longer_considers() {
+        // In a hand bigger than `sim::ALL_MOVES_MAX` the moves come from its structure: a
+        // discard of scattered cards isn't among them, and the judge plays it as it is (an old
+        // pick the moves tried no longer give). Fails if such a move can't be judged.
+        let r = blind_run(&[("j_joker", None, None)], "AS AH KS KH 9C 9D 7S 6H 5C 4D 3S 2H QC JD", "", ("c_pluto", "Pluto", "Planet"), 900.0);
+        assert!(r.hand.len() > sim::ALL_MOVES_MAX);
+        let opts = Options { quick: true, judge: vec!["discard 0,4,9,13 []".to_string()], judge_rounds: 16, ..quick() };
+        let bp = analyze(&r, GameData::bundled(), None, &opts).best_play.unwrap();
+        assert!(!bp.alternatives.iter().any(|o| o.action == "discard" && { let mut v = o.indices.clone(); v.sort(); v == [0, 4, 9, 13] }));
+        assert!(bp.judged[0].1.is_some_and(|(d, se)| d.is_finite() && se.is_finite()), "{:?}", bp.judged);
     }
 
     #[test]

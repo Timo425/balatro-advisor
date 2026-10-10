@@ -1113,7 +1113,8 @@ thread_local! {
     static IN_ROLLOUT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// A yardstick for the simulated player, never used by the advice: with `rollouts` > 0, every
+/// A yardstick for the simulated player and for picks a change moved (`advise::Options::judge`),
+/// never used by the advice itself: with `rollouts` > 0, every
 /// decision in this thread's simulated rounds that isn't a win on the table compares the
 /// policy's move with the alternatives from the hand's structure (`oracle_moves`), each on
 /// `rollouts` futures played on by the policy, and takes one only when it's clearly better on

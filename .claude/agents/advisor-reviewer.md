@@ -33,7 +33,9 @@ Check, with file:line references:
 6. **Assumptions.** Every new hand-set number is in the register in `docs/design.md`, labelled
    in the output, and the docs still match the code.
 7. **Proof.** A replay fixture for the motivating state exists; tests and replay pass; a pure
-   restructuring left the snapshots identical.
+   restructuring left the snapshots identical; the history check (`tests/history_picks.rs`,
+   `tests/history.rs`) ran and every pick it flagged WORSE, unclear, ? or LOST is explained or
+   fixed (CLAUDE.md step 4, D12).
 8. **Rule changes.** If the change edits the rules, stages or workflow (`docs/design.md`,
    `CLAUDE.md`), is there a `docs/decisions.md` entry for it, and is it general (widens or
    replaces a rule) rather than an exception or a rule only one case needs?

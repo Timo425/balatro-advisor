@@ -260,14 +260,81 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
             (m / scale.max(1e-9), se / scale.max(1e-9))
         });
         let label = |o: &PlayOption| format!("{} {} [{}]", o.action, o.cards.join(" "), o.use_first.clone().unwrap_or_default());
+        // the yardstick for a pick a change moved (`Options::judge`): each named move against
+        // the pick on rounds the race and the reference didn't use, paired, with the oracle on
+        // in each worker (thread-local): it makes the policy's decisions that aren't a win on
+        // the table; the finish, consumables and valuation stay the code's own
+        let oracle_block = |m: &sim::Move, b: &Board, st: &RoundStart, u: &[sim::Use]| -> Vec<f64> {
+            let from = 3 * compare::MAX;
+            let n = ctx.opts.judge_rounds;
+            let chunks: Vec<usize> = (0..n.div_ceil(8)).collect();
+            par_map(&chunks, |&k| {
+                sim::set_oracle(JUDGE_ROLLOUTS);
+                let v: Vec<f64> = sim::outcomes_after(b, st, m, from + 8 * k..from + (8 * k + 8).min(n), seed, u).iter().map(utility).collect();
+                sim::set_oracle(0);
+                v
+            })
+            .concat()
+        };
+        // a judged move by your hand's positions: one of the moves considered (with a
+        // consumable used first, by its name: what it changes or adds is today's choice), else,
+        // when it uses none and is a move the game allows, played as it is (the moves tried may
+        // have changed)
+        type Judged = (sim::Move, Board, RoundStart, Vec<sim::Use>);
+        let judge_move = |j: &str| -> Option<Judged> {
+            let (action, rest) = j.split_once(' ')?;
+            let (pos, use_first) = rest.split_once(" [")?;
+            let use_first = use_first.strip_suffix(']')?;
+            let mut pos: Vec<usize> = pos.split(',').filter(|x| !x.is_empty()).map(|x| x.parse().ok()).collect::<Option<_>>()?;
+            pos.sort();
+            let same = |c: usize| {
+                let mut ix = opts[c].indices.clone();
+                ix.sort();
+                opts[c].action == action && ix == pos && opts[c].use_first.as_deref().unwrap_or("") == use_first
+            };
+            let found: Vec<usize> = (0..cands.len()).filter(|&c| same(c)).collect();
+            let allowed = matches!(action, "play" | "discard") && (1..=5).contains(&pos.len()) && pos.windows(2).all(|w| w[0] != w[1]) && (action == "play" || start.discards > 0);
+            match (found.as_slice(), use_first.is_empty() && allowed) {
+                ([c], _) => Some((cands[*c].0.clone(), cands[*c].1.clone(), cands[*c].2.clone(), cands[*c].3.clone())),
+                ([], true) => {
+                    let idx: Vec<usize> = pos.iter().map(|p| hand_order.iter().position(|h| h == p)).collect::<Option<_>>()?;
+                    let m = if action == "play" { sim::Move::Play(idx) } else { sim::Move::Discard(idx) };
+                    Some((m, bb.clone(), start.clone(), uses.clone()))
+                }
+                _ => None,
+            }
+        };
+        let to_judge: Vec<(String, Option<Judged>)> = ctx.opts.judge.iter().map(|j| (j.clone(), judge_move(j))).collect();
+        let pick_block = if ctx.opts.judge_rounds == 0 || to_judge.iter().all(|t| t.1.is_none()) {
+            vec![]
+        } else {
+            let (m, b, st, u, _) = &cands[first];
+            oracle_block(m, b, st, u)
+        };
+        let judged: Vec<(String, Option<(f64, f64)>)> = to_judge
+            .into_iter()
+            .map(|(j, mv)| {
+                let r = mv.filter(|_| !pick_block.is_empty()).map(|(m, b, st, u)| {
+                    let q = oracle_block(&m, &b, &st, &u);
+                    let d: Vec<f64> = q.iter().zip(&pick_block).map(|(x, y)| x - y).collect();
+                    let k = d.len() as f64;
+                    let mean = d.iter().sum::<f64>() / k;
+                    let se = (d.iter().map(|x| (x - mean) * (x - mean)).sum::<f64>() / (k - 1.0).max(1.0) / k).sqrt();
+                    let scale = pick_block.iter().sum::<f64>() / k;
+                    (mean / scale.max(1e-9), se / scale.max(1e-9))
+                });
+                (j, r)
+            })
+            .collect();
         let mut reference: Vec<(String, f64, String)> = reference.iter().enumerate().map(|(c, v)| (label(&opts[c]), *v, fate[c].clone())).collect();
         reference.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         let mut sorted: Vec<PlayOption> = order.into_iter().map(|c| opts[c].clone()).collect();
         sorted.dedup_by(|a, b| a.action == b.action && a.cards == b.cards && a.use_first == b.use_first);
-        (sorted, reference, gap)
+        (sorted, reference, gap, judged)
     });
     let reference = look.as_ref().map_or(vec![], |l| l.1.clone());
     let reference_gap = look.as_ref().and_then(|l| l.2);
+    let judged = look.as_ref().map_or(vec![], |l| l.3.clone());
     match look.map(|l| l.0).filter(|o| !o.is_empty()) {
         Some(mut opts) => {
             let best = opts.remove(0);
@@ -285,7 +352,7 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
                 let m = format!("Not used in this look-ahead (no modelled effect on this hand): {}", missing.join(", "));
                 Some(m)
             };
-            Some(PlayAdvice { reference, reference_gap, worth_drawing: worth_drawing.clone(), then: best.then.clone(), ties: opts.iter().filter(|o| o.tie).count(), planets: Some(best.planets), use_first: best.use_first, spare_hands: Some(best.spare_hands), round_money: Some(best.round_money), action: best.action, cards: best.cards, arrange: best.arrange, arrange_indices: best.arrange_indices, dig: best.dig, indices: best.indices, hand: best.hand, score: best.score, p_win: Some(best.p_win), alternatives: opts, tip })
+            Some(PlayAdvice { reference, reference_gap, judged, worth_drawing: worth_drawing.clone(), then: best.then.clone(), ties: opts.iter().filter(|o| o.tie).count(), planets: Some(best.planets), use_first: best.use_first, spare_hands: Some(best.spare_hands), round_money: Some(best.round_money), action: best.action, cards: best.cards, arrange: best.arrange, arrange_indices: best.arrange_indices, dig: best.dig, indices: best.indices, hand: best.hand, score: best.score, p_win: Some(best.p_win), alternatives: opts, tip })
         }
         None => {
             let hand: Vec<Card> = hand_order.iter().map(|&i| run.hand[i]).collect();
@@ -295,6 +362,7 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
             use_first: None,
             reference: vec![],
             reference_gap: None,
+            judged: vec![],
             worth_drawing: worth_drawing.clone(),
             planets: None,
             then: None,
