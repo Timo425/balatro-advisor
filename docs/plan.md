@@ -1,13 +1,20 @@
 # balatro-advisor: plan
 
+> **Status.** This is the original phase-1 plan, kept for its reasoning. It is not a
+> description of the code today: the architecture lives in [design.md](design.md), the
+> commands in the README. Built differently from this plan: no MCP server (§6), no `shop`
+> or `watch` commands (the live page, `balatro-advisor ui`, does both), and the library
+> API below is a sketch, not the real signatures.
+
 A fast local tool that reads a vanilla Balatro save and answers three questions:
 
 1. How much does each current joker contribute?
 2. What is their best order?
 3. Which shop or candidate joker would most improve the run?
 
-It is a library first. The CLI and the MCP server are thin entry points over
-the same API, so a separate agent repo can call it.
+The logic lives in a library crate (`crates/core`). The `balatro-advisor` binary
+(`crates/cli`) parses arguments, prints results and serves the live page; it decides
+nothing itself. Scripts or agents read the CLI's `--json` output.
 
 Background: [decisions.md](decisions.md) (language, external engines),
 [formats.md](formats.md) (save/profile layout, verified vs not).
@@ -45,8 +52,7 @@ balatro-advisor/
 │   │   ├── sim/         Monte Carlo: sampling, best-play search, round sim
 │   │   ├── advise/      contributions, ordering, shop ranking, roles, projections
 │   │   └── gold/        profile → gold stake progress
-│   ├── cli/             `balatro-advisor` binary: analyze|shop|gold|watch|bench|score
-│   └── mcp/             `balatro-advisor-mcp` binary: MCP server over stdio
+│   └── cli/             `balatro-advisor` binary: analyze|shop|gold|watch|bench|score
 ├── data/
 │   ├── jokers.base.json    generated from the local game: key, name, rarity, cost, config, compat flags
 │   └── jokers.toml         hand-written: role tags, effect impl id + params, notes
@@ -67,8 +73,9 @@ let gold    = gold::progress(&profile::load(..)?, &JokerDb::bundled());
 let scored  = engine::score_play(&state.board(), &play, ScoreMode::Trace); // one hand, step-by-step
 ```
 
-`RunState` can also be built from JSON (`RunState::from_json`). The agent can
-then ask "what if" questions about hypothetical boards without a save file.
+`RunState` can also be built from JSON (`RunState::from_json`), to ask "what if"
+questions about hypothetical boards without a save file. (Built instead as the
+`whatif` command, which changes the board in the save.)
 
 ---
 
@@ -316,16 +323,10 @@ pass.
 | `bench` | fixed synthetic boards, timings per query type, appended to `bench/history.jsonl` |
 | `score` | score one specified play, with `--trace`; the golden-test entry point |
 
-**MCP server** (`balatro-advisor-mcp`, stdio). Tools map 1:1 to the library:
-`get_run_state`, `analyze_jokers`, `rank_shop`, `gold_progress`, `score_hand`,
-`evaluate_board` (takes a `RunState` JSON for what-ifs). The results are the
-same JSON as the CLI.
-
-**Note for the consuming agent.** `balatro-agent`'s rule is "Python never
-decides; no ranking of siblings". This tool ranks by design. If
-`balatro-agent`'s decision bench is the consumer, it will need an `--unranked`
-mode that returns per-option absolute numbers in the game's fixed order. That
-is cheap to add, and we will add it as soon as the consumer is confirmed.
+**MCP server: not built.** The idea was a stdio MCP server whose tools map 1:1 to
+the library, returning the same JSON as the CLI. An agent that can run shell
+commands gets the same from `analyze --json` and `whatif --json`, so it was
+dropped. It would only be worth adding for a client that can't run commands.
 
 ---
 
@@ -383,24 +384,23 @@ Targets on this machine (12 cores): **< 1 s** for a typical `analyze` + `shop`
 | 2 | Toolchain; `.jkr` parser; `RunState`/`Profile` models; path discovery + config; `gold` command (text + JSON) | Parser tests green; `gold` matches the game's tally on the real profile; one real `save.jkr` read field by field and every field in formats.md marked verified |
 | 3 | Hand detection, scoring engine, first ~30 implementation ids, trace, unit tests, golden harness, `bench`, `score` | All joker tests green; owner's first golden hands match; bench under target |
 | 4 | Monte Carlo, contributions, ordering, shop ranking, roles, projections; `analyze`/`shop`/`watch` | Numbers stable across seeds (±CI); timings under target on a real save |
-| 5 | MCP server + stable JSON schema (`schema_version`), library docs | An MCP client can call every tool; schema snapshot tests |
+| 5 | ~~MCP server~~ (not built, see §6) + stable JSON schema (`schema_version`), library docs | `analyze --json` carries `schema_version` |
 | 6 | **Heuristic, labelled as such**: planets (re-simulate with the hand levelled), card-modifying tarots, vouchers (Observatory, etc.), economy advice (interest steps, reroll value) | Each output carries a `heuristic` label |
 
 ---
 
 ## 10. Open questions for the owner
 
+> Answered or dropped by the phases that followed; kept as the record of what was asked.
+
 1. **Toolchain** (D1): OK to install `rustup` user-locally (~1 GB, no sudo)?
-   The alternative is staying on apt Rust 1.75 with a hand-written MCP layer.
-2. **The two related repos**: the prompt had `[REPO_1]`/`[REPO_2]`
-   placeholders. I assumed `balatro-agent` plus the vendoring pattern from
-   `sts2-advisor-service`. Was something else meant?
-3. **Consumer**: is the future agent `balatro-agent` (which forbids ranking), or
-   a new repo? This decides whether `--unranked` is needed from day one.
-4. **A live save**: phase 2 needs a real `save.jkr`. Start any run on profile 1
+   (Done: the workspace needs Rust 1.88.)
+2. **Related repos and a consuming agent**: dropped. The advisor stands alone;
+   any agent reads its `--json` output (D2 records what was copied from where).
+3. **A live save**: phase 2 needs a real `save.jkr`. Start any run on profile 1
    and leave it in the shop or during a blind. The file is read in place and
    never copied into the repo.
-5. **First joker batch**: keep the table in §3, or swap in jokers you are
+4. **First joker batch**: keep the table in §3, or swap in jokers you are
    hunting for Gold? Your missing-Gold list includes Baron, Mime, DNA, Four
    Fingers, Splash, Shoot the Moon, The Family, The Order and Superposition,
    among 44.
