@@ -7,10 +7,9 @@ Status is `proposed` until the owner signs off at the end of a phase.
 
 ## D1. Implementation language: Rust (proposed)
 
-**Decision.** Write the engine, CLI and MCP server in Rust as one Cargo
-workspace. Python bindings (PyO3) are an optional thin crate added later only if
-the agent repo needs in-process calls. The CLI's `--json` output and the MCP
-server are language-neutral anyway.
+**Decision.** Write the engine and CLI in Rust as one Cargo workspace. The CLI's
+`--json` output is language-neutral, so other tools need no bindings. (An MCP server
+was planned too and never built; see plan.md §6.)
 
 **Why: the workload is a tight loop over many small evaluations.** A rough count
 for one `shop` query, 5 jokers and 5 candidates with full slots:
@@ -59,8 +58,8 @@ and much of the current crate ecosystem has moved past 1.75. Options:
 
 → **Needs owner approval** (this is a heavy toolchain addition).
 
-**Revisit if** the agent repo needs in-process Python calls on a hot path. In
-that case, add a `pyo3` crate over the same library and keep the engine as is.
+**Revisit if** another tool needs in-process calls on a hot path. In that case,
+add a binding crate (e.g. `pyo3`) over the same library and keep the engine as is.
 
 ---
 
@@ -127,23 +126,13 @@ evaluation order, joker configs and save layout. It is proprietary, so:
   and we commit that generated file (values only, no code). A test re-checks it against the
   install when one is present.
 
-### Related local repos
+### Where ideas came from: `balatro-agent`
 
-The prompt named two related repos, but the names came through as unfilled
-placeholders (`[REPO_1]`, `[REPO_2]`). This is what I read:
-
-- `balatro-agent`: `tools/balatro_state.py` has the Lua-table parser, blind
-  targets per stake scaling, the pending-edition-tag logic, "what the save
-  hides" notes and exact flush odds. `sidecar/*` has hand evaluation and
-  text-parsed joker effects. We **copy and adapt** the parser idea, the
-  blind-target tables and the blind-spot notes into Rust, with an attribution
-  comment. `sidecar/scoring.py` is not reused: it estimates from effect text
-  rather than modelling the game.
-- `sts2-advisor-service`: its vendoring pattern (`VENDORED.md`, an override
-  layer over untouched upstream code) is the template if we ever vendor
-  anything.
-
-Neither repo is modified or imported.
+`balatro-agent` is the owner's separate, local Balatro bot project. Its
+`tools/balatro_state.py` gave us the Lua-table parser idea, the blind targets per
+stake and the "what the save hides" notes, copied and adapted into Rust with an
+attribution comment. Its effect-text scoring was not reused (it estimates rather
+than models the game). Nothing is imported from it, and the advisor works without it.
 
 ---
 
@@ -160,8 +149,7 @@ mirror that: `f64` through the whole pass, and `floor` once at the end.
 
 ## D4. Docs and code language: English (proposed)
 
-The spec is in English, a separate agent will read the docs and JSON, and
-`balatro-agent` already set that convention for Balatro work. User-facing CLI
+The spec is in English, and agents and scripts read the docs and JSON. User-facing CLI
 text is also English. Easy to flip if the owner prefers Estonian comments.
 
 ## D5. How the advice is built and changed: four stages, one measure, a required workflow (accepted)
