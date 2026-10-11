@@ -644,8 +644,13 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    so a Stone whose `sort_id` the history saw as a plain card was seen by the player; one it
    never saw that way (made while the page wasn't running, or pruned) counts as unknown. This is
    the rule face-down cards already follow (178249c: shown as face-down, never planned around),
-   which didn't cover Stone fronts. The general fix: a Stone's front is
+   which didn't cover Stone fronts. Knowing a Stone's front isn't knowing which Stone you
+   drew: Stones that look the same (same seal and edition) can't be told apart on screen once
+   shuffled, so the `sort_id` must not say which one is in hand. A Stone you drew is any of the
+   look-alikes it could be (one known 7♥ and one unknown: half 7♥, half one of 52), and only a
+   Stone that looks different from the rest keeps its own front. The general fix: a Stone's front is
    known (seen before it turned Stone) or unknown (one of 52, uniform); the display shows a
-   known one as "Stone (was 7♥)" and an unknown one as "Stone (?)", and the analysis never
+   Stone as what it could be ("Stone (was 7♥)" only when no look-alike could be it, else
+   "Stone (?)" or "Stone (7♥ or ?)"), and the analysis never
    reads an unknown front: where it matters (the moves that take Stone off or copy it), it's
    valued over what it could be, as other random effects (gap 3).
