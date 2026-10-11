@@ -776,3 +776,27 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    and fades jokers by its own table (`grow_antes`, gap 8). The general fix: the rounds ahead
    chained, each starting from the board the simulated round before it ends with (its jokers'
    state, the perishables' rounds, its money), the same step the engine takes between hands.
+
+29. **Plays that win the round now and are worth the same are shown as one arbitrary pick.**
+   When several plays win on the spot and leave the same money, hands and planets, their
+   values are equal, and the last tie-break is the cards themselves (`advise/play.rs`: `ck`,
+   the canonical card order). The page shows that one as the play, not marked as a tie, so it
+   can name a card that does nothing. Raised in play 2026-10-11 (run I6XKKH65, The Plant, 4
+   Stones, a debuffed Steel J♥, 4♣, 8♣ and a Steel A♥ in hand): Best play was three Stones, the
+   debuffed J♥ and the 4♣ (18,933), with four Stones and the 4♣ (22,943) and three Stones
+   and the 4♣ (19,230) listed below it as if worse; any of them wins. Why these aren't
+   flagged as ties isn't traced yet. The fix: plays that win now with equal value reported as
+   one group ("any of these wins"), the highest score shown first, since it is the one that
+   still wins if the estimate is off.
+
+30. **The card order is a footnote, though a play's score can depend on it.** The engine
+   scores the play in the order it proposes (`engine::score` arrangement), and Best play's
+   score and win chance assume you play it that way, but the page shows the order as one small
+   line ("Arrange your hand, left to right", `ui.html`), without saying what playing the cards
+   as they sit would cost. Raised in play 2026-10-11 (run I6XKKH65, Ante 4 Big Blind, Hanging
+   Chad, a Pair of 10s with a Stone): with the Stone first among the scoring cards, Chad
+   retriggers it (+100 Chips) and the hand scores 8,280; played as it sat, Stone last, the
+   10♣ got the retriggers and it scored 4,600, and the round's chance fell from 99.8% to 84%
+   on that one hand (the owner had to play a held Gold card later, losing its money). The
+   fix: when the order changes the score by more than a little, the page shows both scores
+   ("as it sits 4,600 · arranged 8,280") and puts the order where the play is.
