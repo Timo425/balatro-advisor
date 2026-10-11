@@ -638,8 +638,13 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    hand turned Stone during the Ante 4 Spectral Pack, shown as `7♥ [stone]` at Ante 5); one
    Marble Joker adds is a random front over all 52 (card.lua: `pseudorandom_element(G.P_CARDS)`),
    never shown, and so are Stones from Standard packs; a deck can hold both kinds. The save
-   doesn't say which; the history does (a card with the same `playing_card` / `sort_id` seen
-   before as a non-Stone card was seen by the player). The general fix: a Stone's front is
+   doesn't say which, and the advisor reads every front today, so with several Stones it
+   "knows" the ones you never saw too. The history can tell them apart: a card keeps its
+   `sort_id` through saves (card.lua `Card:save` / `Card:load`; `save.rs` doesn't read it yet),
+   so a Stone whose `sort_id` the history saw as a plain card was seen by the player; one it
+   never saw that way (made while the page wasn't running, or pruned) counts as unknown. This is
+   the rule face-down cards already follow (178249c: shown as face-down, never planned around),
+   which didn't cover Stone fronts. The general fix: a Stone's front is
    known (seen before it turned Stone) or unknown (one of 52, uniform); the display shows a
    known one as "Stone (was 7♥)" and an unknown one as "Stone (?)", and the analysis never
    reads an unknown front: where it matters (the moves that take Stone off or copy it), it's
