@@ -695,7 +695,7 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    base rank), a tarot that sets another enhancement, Death, Cryptid, DNA; Strength and the
    suit tarots change the hidden front as they would a visible one. Where the advisor leaks
    it: the state and the page show the front (in Best play's cards and its "Arrange your
-   hand" order too, where an instruction names a card you can't find: gap 30), and code that
+   hand" order too, where an instruction names a card you can't find), and code that
    counts suits or ranks over the
    hand and deck counts Stone cards' hidden fronts (`sim::keep_suit`'s commonest suit; to be
    audited elsewhere). What the player knows depends on how the Stone was made: The Tower on a
@@ -718,7 +718,13 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    Stone as what it could be ("Stone (was 7♥)" only when no look-alike could be it, else
    "Stone (?)" or "Stone (7♥ or ?)"), and the analysis never
    reads an unknown front: where it matters (the moves that take Stone off or copy it), it's
-   valued over what it could be, as other random effects (gap 3).
+   valued over what it could be, as other random effects (gap 3). What it costs in play
+   (2026-10-11, run I6XKKH65, Ante 4 Big Blind, Hanging Chad): Best play's order was "A♠
+   Q♠ [stone] 10♣ 10♦ 9♥", the Stone first among the scoring cards so Chad retriggers it
+   (+100 Chips, 8,280). The owner saw no Q♠, only a Stone, played the hand as it sat, Stone
+   last, and the 10♣ got the retriggers: 4,600, and the round's chance fell from 99.8% to 84%
+   on that one hand. So the display fix covers instructions too: a Stone is named as a Stone
+   in every card list and order the page gives.
 25. **A face-down card is never played, even when the hand's sort shows what it is.** Best play
    and the simulated player leave out every play that holds a face-down card (`sim.rs`
    `all_plays` and the play search's `hidden` mask; 178249c), so a face-down card is only ever
@@ -804,20 +810,3 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    one group ("any of these wins"), the highest score shown first, since it is the one that
    still wins if the estimate is off.
 
-30. **The card order is a footnote, though a play's score can depend on it.** The engine
-   scores the play in the order it proposes (`engine::score` arrangement), and Best play's
-   score and win chance assume you play it that way, but the page shows the order as one small
-   line ("Arrange your hand, left to right", `ui.html`), without saying what playing the cards
-   as they sit would cost. Raised in play 2026-10-11 (run I6XKKH65, Ante 4 Big Blind, Hanging
-   Chad, a Pair of 10s with a Stone): with the Stone first among the scoring cards, Chad
-   retriggers it (+100 Chips) and the hand scores 8,280; played as it sat, Stone last, the
-   10♣ got the retriggers and it scored 4,600, and the round's chance fell from 99.8% to 84%
-   on that one hand (the owner had to play a held Gold card later, losing its money). The
-   order line itself was hard to follow because of gap 24: it named the Stone by its hidden
-   front ("A♠ Q♠ [stone] 10♣ 10♦ 9♥"), a Q♠ the owner can't see, so the instruction pointed
-   at a card that isn't on screen (the hand's only Stone, here; with several Stones, which one
-   can't be told at all). The fix: a Stone named as a Stone in every instruction (gap 24's
-   display fix), and when the order changes the score by more than a little, the page shows
-   both scores ("as it sits 4,600 · arranged 8,280") and puts the order where the play is. Not
-   gap 19, which is the engine missing a better order; here it found the right one and the
-   page didn't get it across.
