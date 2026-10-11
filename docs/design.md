@@ -694,7 +694,9 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    only when the Stone is taken off or copied: Vampire (`vampired`, then `get_id` gives the
    base rank), a tarot that sets another enhancement, Death, Cryptid, DNA; Strength and the
    suit tarots change the hidden front as they would a visible one. Where the advisor leaks
-   it: the state and the page show the front, and code that counts suits or ranks over the
+   it: the state and the page show the front (in Best play's cards and its "Arrange your
+   hand" order too, where an instruction names a card you can't find: gap 30), and code that
+   counts suits or ranks over the
    hand and deck counts Stone cards' hidden fronts (`sim::keep_suit`'s commonest suit; to be
    audited elsewhere). What the player knows depends on how the Stone was made: The Tower on a
    card you chose, you saw (raised in play 2026-10-11: Anaglyph Deck run 2BTAA2XK, the 7♥ in
@@ -811,7 +813,11 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    retriggers it (+100 Chips) and the hand scores 8,280; played as it sat, Stone last, the
    10♣ got the retriggers and it scored 4,600, and the round's chance fell from 99.8% to 84%
    on that one hand (the owner had to play a held Gold card later, losing its money). The
-   fix: when the order changes the score by more than a little, the page shows both scores
-   ("as it sits 4,600 · arranged 8,280") and puts the order where the play is. Not gap 19,
-   which is the engine missing a better order; here it found the right one and the page
-   didn't get it across.
+   order line itself was hard to follow because of gap 24: it named the Stone by its hidden
+   front ("A♠ Q♠ [stone] 10♣ 10♦ 9♥"), a Q♠ the owner can't see, so the instruction pointed
+   at a card that isn't on screen (the hand's only Stone, here; with several Stones, which one
+   can't be told at all). The fix: a Stone named as a Stone in every instruction (gap 24's
+   display fix), and when the order changes the score by more than a little, the page shows
+   both scores ("as it sits 4,600 · arranged 8,280") and puts the order where the play is. Not
+   gap 19, which is the engine missing a better order; here it found the right one and the
+   page didn't get it across.
