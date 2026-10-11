@@ -706,9 +706,11 @@ const TARGET_FIRST: usize = 16;
 const TARGET_MAX: usize = 128;
 const TARGET_BUDGET: &[(usize, usize)] = &[(16, 12), (32, 6), (64, 3)];
 /// Best play's search over every move (`compare::race`): rounds in the first batch, and the
-/// budget: (up to this many rounds done, at most this many moves still undecided). A cost
-/// limit, not a finding: see `compare`.
-const SEARCH_FIRST: usize = 32;
+/// budget's table: (up to this many rounds done, at most this many moves still undecided),
+/// its first row from the first batch on. With many moves (an 8-card hand has 436) the budget
+/// halves from all of them instead, while that keeps more (`compare::halving`, from the first
+/// batch: 218 after 16 rounds, 109 after 32, …). A cost limit, not a finding: see `compare`.
+const SEARCH_FIRST: usize = 16;
 const SEARCH_BUDGET: &[(usize, usize)] = &[(32, 48), (64, 24), (128, 12), (256, 8)];
 /// Futures per alternative at each of the oracle's decisions (`Options::judge`), as in
 /// `tests/player.rs`

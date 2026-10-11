@@ -163,7 +163,8 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
         let progress = |o: &sim::Outcome| (1.0 - o.won) * (o.total / start.target.max(1.0)).min(1.0);
         let mean_u = |v: &[sim::Outcome]| v.iter().map(utility).sum::<f64>() / v.len().max(1) as f64;
         let ck = |c: usize| (cands[c].4.clone(), canon(&cands[c].0, &cands[c].2.hand));
-        let budget = |done: usize| SEARCH_BUDGET.iter().find(|b| done <= b.0).map_or(SEARCH_BUDGET[SEARCH_BUDGET.len() - 1].1, |b| b.1);
+        // the budget, halving many moves (`compare::halving`)
+        let budget = compare::halving(SEARCH_BUDGET, SEARCH_FIRST, cands.len());
         let race = compare::race(
             cands.len(),
             SEARCH_FIRST,

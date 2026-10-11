@@ -58,7 +58,9 @@ fn mean_se(d: &[f64]) -> (f64, f64) {
 /// (95%, the rule of three), so the rounds not yet seen could still move the difference by
 /// 3 · largest / n. Equal needs that within
 /// `EQUAL` · scale: about 300 rounds when a round is worth about the leader's value, many
-/// more for a round you usually lose (a small leader's value).
+/// more for a round you usually lose (a small leader's value). With every round seen worth
+/// nothing (a round you rarely win, none won yet) nothing is shown equal: the round that would
+/// part them could be worth anything.
 ///
 /// `lost_outright`: a round can be lost outright (worth 0, as Best play's are), so the round
 /// where they part ways is a jump worth up to the largest round value. Better then counts one
@@ -72,7 +74,7 @@ fn paired(a: &[f64], b: &[f64], scale: f64, lost_outright: bool) -> (f64, bool) 
     let k = d.len() as f64;
     let (m, se) = mean_se(&d);
     let largest = a.iter().chain(b).fold(0.0f64, |x, y| x.max(y.abs()));
-    (better_by(a, b, lost_outright), 3.0 * largest <= k * EQUAL * scale && m.abs() + 2.0 * se < EQUAL * scale)
+    (better_by(a, b, lost_outright), largest > 0.0 && 3.0 * largest <= k * EQUAL * scale && m.abs() + 2.0 * se < EQUAL * scale)
 }
 
 /// How far `a` is shown better than `b` (`paired`'s test: the paired difference less 2
@@ -85,6 +87,20 @@ fn better_by(a: &[f64], b: &[f64], lost_outright: bool) -> f64 {
     }
     let (m, se) = mean_se(&d);
     m - 2.0 * se
+}
+
+/// A budget for `race` (`budget(rounds done)`): `table` ((up to this many rounds done, at most
+/// this many options still undecided), its last row beyond), and with many options at least
+/// half of the `n` raced for each doubling of the rounds after the `first` batch (successive
+/// halving: `n` options, n/2 after the first batch, n/4 after twice its rounds, …, each stage
+/// costing about half the first batch while the halving is above the table). A fixed cut on
+/// the first batch alone drops good options where many share the same results on few rounds
+/// (a round won or lost) or one trails by luck.
+pub(super) fn halving(table: &'static [(usize, usize)], first: usize, n: usize) -> impl Fn(usize) -> usize {
+    move |done: usize| {
+        let fixed = table.iter().find(|b| done <= b.0).map_or(table[table.len() - 1].1, |b| b.1);
+        fixed.max((n * first).div_ceil(2 * done.max(1)))
+    }
 }
 
 /// `sample(i, range)`: option i's samples for rounds `range`; `value`: a sample's value;
@@ -224,6 +240,28 @@ mod tests {
         let race = race(2, 16, MAX, |_| 2, sample, |x| *x, |x| *x, |x, y| y.cmp(&x), true);
         assert_eq!(race.leader, 0);
         assert!(!race.tied[1] && !race.undecided[1]);
+    }
+
+    #[test]
+    fn options_that_win_rarely_arent_called_equal_before_a_round_is_won() {
+        // A wins 1 round in 40, from round 20; B never wins. On the first 16 rounds both are
+        // worth nothing every round: nothing there says how far apart they are, so they mustn't
+        // be called equal (the race would end on it, B as good as A)
+        let sample = |o: usize, r: std::ops::Range<usize>| -> Vec<f64> { r.map(|i| if o == 0 && i % 40 == 20 { 1.0 } else { 0.0 }).collect() };
+        let race = race(2, 16, MAX, |_| 2, sample, |x| *x, |x| *x, |x, y| y.cmp(&x), true);
+        assert_eq!(race.leader, 0, "{:?}", race.left);
+        assert!(!race.tied[1], "{:?}", race.left);
+    }
+
+    #[test]
+    fn the_halving_budget_keeps_half_of_many_options_each_time_the_rounds_double() {
+        // 436 moves from a first batch of 16: 218 after it, 109 after 32 rounds, 55 after 64;
+        // never fewer than the table's, so a few options are cut by the table alone
+        let table: &'static [(usize, usize)] = &[(32, 48), (64, 24), (128, 12), (256, 8)];
+        let b = halving(table, 16, 436);
+        assert_eq!((b(16), b(32), b(64), b(128), b(256), b(512), b(1024)), (218, 109, 55, 28, 14, 8, 8));
+        let few = halving(table, 16, 60);
+        assert_eq!((few(16), few(32), few(64), few(512)), (48, 48, 24, 8));
     }
 
     #[test]
