@@ -370,7 +370,13 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    holds for Delayed Gratification's money, which spending a discard (paying or digging) gives
    up and the policy doesn't weigh. What a discard or a hand does to the jokers over the run
    isn't measured either: growth over antes is a per-joker table (`grow_antes`, e.g. Green
-   Joker, Castle, Ramen, Ice Cream, Seltzer); the growers in neither it nor the shop events
+   Joker, Castle, Ramen, Ice Cream, Seltzer), at fixed rates whatever the run's play: Green
+   Joker's +4 and Ramen's −×0.3 an ante both take about 8 discards (30 cards) an ante. A run
+   played without discards keeps Ramen whole (raised in play 2026-10-11: still ×2 three antes
+   after buying it, Green Joker at +25), yet By Ante 8 faded it to ×1.25 and preferred selling
+   it over Wily Joker (×1.17; turned down only as it cost 58 points now; fixture
+   `shop_keep_unfaded_ramen`). The save counts the run's own discards (`unused_discards`, with
+   the rounds played), a direct source for those rates until the general fix below; the growers in neither it nor the shop events
    (Ceremonial Dagger, Lucky Cat, Glass Joker, Hiker, Caino, Yorick, Fortune Teller, Supernova)
    are valued at their size now and labelled so (`unprojected_growth`; a test keeps every
    growing joker in one of the three). Ceremonial Dagger's is a choice: what you put to its

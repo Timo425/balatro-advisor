@@ -1259,11 +1259,13 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             let note = format!("sell {sell_name} for it, not {keep_name}: better by Ante 8 {now_part}");
             *c = Candidate { missing_gold: c.missing_gold, desc: c.desc.take(), long_mult: Some(lr.ratio(best_v, Some(best))), sell_note: Some(note), ..alt };
         } else {
-            c.sell_note = Some(format!(
-                "by Ante 8, selling {sell_name} instead would be better (×{:.2}), but costs {:.0} points of win chance now",
+            // the action still sells `today`: a note beside it, not in its place
+            let note = format!(
+                "by Ante 8, selling {sell_name} instead of {keep_name} would be better (×{:.2}), but costs {:.0} points of win chance now",
                 lr.ratio(best_v, Some(best)),
                 (now_p(c) - now_p(&alt)) * 100.0
-            ));
+            );
+            c.note = Some(c.note.take().map_or(note.clone(), |n| format!("{n} · {note}")));
         }
     }
     // A perishable that runs out before Ante 8 is gone by then (the joker sold for it was
