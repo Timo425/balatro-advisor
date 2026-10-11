@@ -663,3 +663,23 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    "Stone (?)" or "Stone (7♥ or ?)"), and the analysis never
    reads an unknown front: where it matters (the moves that take Stone off or copy it), it's
    valued over what it could be, as other random effects (gap 3).
+25. **A face-down card is never played, even when the hand's sort shows what it is.** Best play
+   and the simulated player leave out every play that holds a face-down card (`sim.rs`
+   `all_plays` and the play search's `hidden` mask; 178249c), so a face-down card is only ever
+   held or discarded. Its stand-in is already bounded by what the sort gives away (`advise.rs`,
+   4bb22a4: the game sorts face-down cards by their real key, cardarea.lua `CardArea:sort`,
+   card.lua `Card:get_nominal`), but that bound only picks the stand-in; it never makes the card
+   playable. Raised in play 2026-10-11 (Anaglyph Deck run 1RVL49LQ, The House at Ante 6, 3
+   hands, no discards, 120,000 to beat): the hand sorted by suit read K♠ ? ? 6♠ 5♠ 4♠ 3♥ 5♦ 2♦,
+   so both face-down cards are spades from 6 to K (a Stone sorts last, a Wild by its base suit
+   and counts as a spade anyway), and K♠ ? ? 6♠ 5♠ is a Flush whatever they are: 43,000 at the
+   least on this board, against Best play's Pair of 5s to dig (12,000). What's pinned
+   depends on the sort: by suit it's the suit (and a rank range); by rank it's the rank when
+   both neighbours share it, else a range. The general fix: a face-down card may be played,
+   and a play that holds one is valued over what the card could be (the draw-pile cards that
+   fit its bounds, a fresh pick for each simulated round, as other random effects: gap 3), not
+   over the one stand-in picked today, so a play that relies only on what's pinned (the suit
+   for a Flush) comes out sure and one that hopes for a rank is averaged. The shown score of
+   such a play is a range. Fixture: `tests/fixtures/private/pending/house_facedown_spades_flush.json`
+   (in `pending/` because the replay test, which reads only the folder's top level, would fail
+   until this is fixed; move it up then).
