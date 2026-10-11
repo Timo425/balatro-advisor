@@ -602,3 +602,18 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    Stuntman, Merry Andy, Drunkard) mid-blind is valued as if the round in play kept them. Rare
    (most joker moves are in the shop). The general fix: `apply_mods` on the round in progress
    too, with hand size and discards, not hands.
+23. **Shop options are ranked as alternatives, and a reroll doesn't count the shop it
+   replaces.** `shop_options` values each option alone on your board as it is; the ranking
+   says what to do first and is redone after each move. But a reroll redraws the shop's joker
+   slots (packs and vouchers stay), and its option (`expected_best`) values its best find on
+   the board without the jokers on screen, with nothing lost for throwing them away. Jokers
+   that could all be bought are each valued alone, so two that work together (one Chips, one
+   Mult) each look small, and the reroll ranks above buying them. Raised in play 2026-10-11:
+   Ante 2, $34, 4 free slots, The Mouth with Wily Joker alone 6%, + Green Joker (rental, $1)
+   10%, + Blue Joker (perishable, $5) 13%, both 38% (`whatif`); the ranking put the reroll
+   first (its survival inflated by gap 17's sum), which throws both away, where buying both
+   left $28 (interest kept) and the reroll still affordable after. A rental's sell value is its
+   $1 price (card.lua `Card:set_cost`), so buying one into a free slot costs nothing to undo.
+   The general fix: the moves tried include the shop's buys in sequence (the sets of jokers on
+   screen that fit the free slots and the money, then the reroll from the board they leave),
+   each valued on the board it leaves, as the rest of the ranking is.
