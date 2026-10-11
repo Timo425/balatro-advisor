@@ -290,15 +290,19 @@ fn main() -> Result<()> {
                 for n in &o.notes {
                     println!("⚠ {n}");
                 }
-                println!("{:<28} {:>10} {:>16} {:>16}", "", "target", "now", "plan");
+                println!("{:<28} {:>10} {:>22} {:>22}", "", "target", "now", "plan");
                 for (a, b) in o.now.iter().zip(&o.plan) {
                     let cell = |x: &balatro_advisor::whatif::BlindOdds| {
                         let bones = x.p_with_bones.map_or(String::new(), |p| format!(" ({:.0}%)", p * 100.0));
-                        format!("{:.1}%{bones} · {:.0}%", x.p_win * 100.0, x.reach * 100.0)
+                        format!("{:.1}%{bones} · {:.0}% · ${:.1}", x.p_win * 100.0, x.reach * 100.0, x.round_money)
                     };
-                    println!("{:<28} {:>10.0} {:>16} {:>16}", a.label, a.target, cell(a), cell(b));
+                    println!("{:<28} {:>10.0} {:>22} {:>22}", a.label, a.target, cell(a), cell(b));
                 }
-                println!("(win chance on score, Mr. Bones' save in brackets · average share of the target reached; {sims} rounds each)");
+                let m = &o.money;
+                println!("{:<28} {:>10} {:>22} {:>22}", "Money now", "", format!("${:.0}", m.dollars), format!("${:.0}", m.dollars_after));
+                let signed = |x: f64| format!("{}${:.0}", if x < 0.0 { "−" } else { "+" }, x.abs());
+                println!("{:<28} {:>10} {:>22} {:>22}", "Jokers pay a round (− rent)", "", signed(m.per_round), signed(m.per_round_after));
+                println!("(win chance on score, Mr. Bones' save in brackets · average share of the target reached · money the round makes while played: Lucky, Gold cards; {sims} rounds each. Score odds don't see money: compare the money rows for jokers that pay)");
             }
         }
         Cmd::Ui { port, no_open } => {

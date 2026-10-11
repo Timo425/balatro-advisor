@@ -26,7 +26,8 @@ plan against the blinds ahead, next to the board as it is (`--json` for machines
 `--jokers a,b,b` sets the whole joker list (owned ones keep their values; naming one
 twice copies it, e.g. Ankh), `--sell` / `--add` change it, `--card "OLD=NEW"` changes a
 card in hand or deck ("4D:lucky:red=4D:glass:red"), `--add-cards` / `--remove-cards`.
-It plans nothing itself: spotting the line is the human's (or agent's) part.
+The odds count only score: a joker that pays (Rocket) shows in the money rows. It plans
+nothing itself: spotting the line is the human's (or agent's) part.
 
 ## Refining the advice (required workflow)
 

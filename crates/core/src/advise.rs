@@ -2701,7 +2701,7 @@ fn glass_presence(antes_left: f64) -> f64 {
 /// Money a joker pays per ante (3 rounds), averaged over the antes left, for jokers with
 /// a fixed payout (card.lua `calculate_dollar_bonus` and end-of-round effects). Counted
 /// as money you hold every ante in the By Ante 8 projection.
-fn income_per_ante(key: &str, ability: &serde_json::Value, run: &RunState, antes_left: f64) -> f64 {
+pub(crate) fn income_per_ante(key: &str, ability: &serde_json::Value, run: &RunState, antes_left: f64) -> f64 {
     let extra = ability.get("extra");
     let num = |v: Option<&serde_json::Value>, d: f64| v.and_then(|x| x.as_f64()).unwrap_or(d);
     let per_round = match key {
@@ -4320,6 +4320,21 @@ mod tests {
         for (now, plan) in same.now.iter().zip(&same.plan) {
             assert_eq!(plan.reach, now.reach, "{}", now.label);
         }
+    }
+
+    #[test]
+    fn a_whatif_plan_reports_the_money_its_jokers_make() {
+        // Rocket scores nothing, so the odds can't tell it from an empty slot: the money rows
+        // can. Selling it ($2 back) for the shop's Half Joker (its price): $30 → $27, and
+        // Rocket's $1 a round (a fresh one's) gone.
+        let r = shop_run(&[("j_rocket", None, None), ("j_joker", None, None)], &["j_half"]);
+        let plan = crate::whatif::Plan { sell: vec!["rocket".into()], add: vec!["half_joker".into()], ..Default::default() };
+        let o = crate::whatif::run(&r, GameData::bundled(), &plan, 50, 3).unwrap();
+        let price = r.shop.as_ref().unwrap().jokers[0].cost as f64;
+        assert_eq!(o.money.dollars, 30.0);
+        assert_eq!(o.money.dollars_after, 30.0 + 2.0 - price);
+        assert_eq!(o.money.per_round, 1.0);
+        assert_eq!(o.money.per_round_after, 0.0);
     }
 
     fn shop_run(owned: &[(&str, Option<Edition>, Option<i64>)], for_sale: &[&str]) -> RunState {

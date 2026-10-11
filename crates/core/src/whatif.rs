@@ -35,6 +35,23 @@ pub struct BlindOdds {
     pub p_with_bones: Option<f64>,
     /// Mean round total as a share of the target
     pub reach: f64,
+    /// Money the round makes while it's played, on average (Lucky cards, Gold cards held at
+    /// its end, Gold Seals, discards that pay): the simulated round's own (`sim::round_odds`)
+    pub round_money: f64,
+}
+
+/// What the plan does to your money, beside the score: the odds above count only what the
+/// jokers score, so a joker that pays (Rocket, Golden Joker) looks like an empty slot there.
+#[derive(Debug, Clone, Serialize)]
+pub struct Money {
+    pub dollars: f64,
+    /// After the plan: what selling gives back (`sell_value`), less what buying costs (the
+    /// shop's price, else the joker's base price)
+    pub dollars_after: f64,
+    /// Jokers' fixed payout at the end of a round, less rent ($3 a rental): now and with the
+    /// plan (`advise::income_per_ante`, this round's rate; Rocket's later raises not counted)
+    pub per_round: f64,
+    pub per_round_after: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -43,6 +60,7 @@ pub struct Outcome {
     pub notes: Vec<String>,
     pub now: Vec<BlindOdds>,
     pub plan: Vec<BlindOdds>,
+    pub money: Money,
 }
 
 /// A joker named by key (`red_card`, `j_red_card`) or name (`Red Card`), with optional
@@ -220,6 +238,7 @@ pub fn run(run: &RunState, data: &GameData, plan: &Plan, sims: usize, seed: u64)
                 p_win: p,
                 p_with_bones: bones.then_some(st.p_saved),
                 reach: st.mean / start.target.max(1.0),
+                round_money: st.money,
             });
         }
         // Next ante: a plain boss, to see how far the board carries
@@ -231,14 +250,47 @@ pub fn run(run: &RunState, data: &GameData, plan: &Plan, sims: usize, seed: u64)
         let start = RoundStart { hand: vec![], deck: full.to_vec(), hand_size: run.hand_size, hands: run.round_hands, discards: run.round_discards, scored: 0.0, target };
         let start = crate::advise::apply_mods(&start, added, removed, true);
         let (p, st) = sim::round_odds(&b, &start, sims, seed);
-        out.push(BlindOdds { label: format!("Ante {ante} plain boss"), target, p_win: p, p_with_bones: None, reach: st.mean / target.max(1.0) });
+        out.push(BlindOdds { label: format!("Ante {ante} plain boss"), target, p_win: p, p_with_bones: None, reach: st.mean / target.max(1.0), round_money: st.money });
         out
     };
+    // Money: the jokers sold and bought (by key, as above), and the payouts and rent of the
+    // board you'd hold. Owned jokers are matched to the save's (their own counters, rental);
+    // one bought comes from the shop when it's there, else fresh at its base price.
+    let mut shop: Vec<&crate::save::JokerCard> = run.shop.as_ref().map(|s| s.jokers.iter().collect()).unwrap_or_default();
+    let mut owned_left: Vec<&crate::save::JokerCard> = run.jokers.iter().collect();
+    let sold: i64 = removed.iter().filter_map(|j| owned_left.iter().position(|sj| sj.key == j.key).map(|i| owned_left.remove(i).sell_value)).sum();
+    let fresh = |key: &str| data.center(key).map(|c| (crate::engine::joker::ability_from_config(&c.config), c.cost));
+    let mut bought = 0;
+    let mut kept: Vec<(String, serde_json::Value, bool, bool)> = Vec::new();
+    for j in &jokers {
+        if let Some(i) = owned_left.iter().position(|sj| sj.key == j.key) {
+            let sj = owned_left.remove(i);
+            kept.push((sj.key.clone(), sj.ability.clone(), sj.rental, sj.debuff));
+        } else if let Some(i) = shop.iter().position(|sj| sj.key == j.key) {
+            let sj = shop.remove(i);
+            bought += sj.cost;
+            kept.push((sj.key.clone(), sj.ability.clone(), sj.rental, false));
+        } else {
+            let (ability, cost) = fresh(&j.key).unwrap_or_default();
+            bought += cost;
+            kept.push((j.key.clone(), ability, false, false));
+        }
+    }
+    let per_round = |js: &[(String, serde_json::Value, bool, bool)]| -> f64 {
+        js.iter().filter(|j| !j.3).map(|j| crate::advise::income_per_ante(&j.0, &j.1, run, 1.0) / 3.0).sum::<f64>() - js.iter().filter(|j| j.2).count() as f64 * 3.0
+    };
+    let now_js: Vec<_> = run.jokers.iter().map(|sj| (sj.key.clone(), sj.ability.clone(), sj.rental, sj.debuff)).collect();
+    let money = Money { dollars: run.dollars, dollars_after: run.dollars + (sold - bought) as f64, per_round: per_round(&now_js), per_round_after: per_round(&kept) };
+    if money.dollars_after < 0.0 {
+        notes.push(format!("the plan costs ${:.0} more than the ${:.0} you have", -money.dollars_after, run.dollars));
+    }
+
     let full_now = run.full_deck();
     Ok(Outcome {
         jokers: jokers.iter().map(|j| format!("{}{}", data.name(&j.key), j.edition.map_or(String::new(), |e| format!(" ({e:?})").to_lowercase()))).collect(),
         notes,
         now: odds(&base.jokers, &run.hand, &run.draw_pile, &full_now, &[], &[]),
         plan: odds(&jokers, &hand, &pile, &full_after, &added, &removed),
+        money,
     })
 }
