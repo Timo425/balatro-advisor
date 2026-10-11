@@ -525,6 +525,15 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    by the budget after 32 rounds. Keying the Hook's pick by card rather than by position didn't
    change it (4.8% before), so it's the search's first cuts under the Hook's added spread: a
    question for the noise stage (`SEARCH_BUDGET`), measured on this fixture.
+   The Pillar (blind.lua `Blind:debuff_card`: a card with `ability.played_this_ante` is
+   debuffed) is one of the rest, and costs more than most: the save's `played_this_ante` isn't
+   read (`save.rs`), and the rounds before it aren't chained (gap 28), so its odds count every
+   card at full strength, and nothing in the Small or Big Blind is played to keep cards for it.
+   Raised in play 2026-10-11 (run I6XKKH65, Ante 5 shop): a deck whose chips are its Stones
+   (Hanging Chad, Raised Fist, Mime), where each Stone played before the boss is dead in it;
+   the boss showed 56% and the shop options were ranked on it. The fix is this gap's (the rule
+   in the simulated round, from the save's flag for a round in progress) and gap 28's (the
+   rounds of the ante chained, so what they play is debuffed in the boss).
    Verdant Leaf (Ante 8: every card debuffed until a joker is sold) is simulated before it
    with nothing debuffed and nothing sold, so the boss's chance and the outlook before it
    measure the whole board, when one joker must go first; in it, the save's debuffs are
