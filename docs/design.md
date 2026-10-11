@@ -171,7 +171,8 @@ behind it is a blind spot nobody has written down yet.
   applies the card's ×Mult and the jokers that read it again (`engine/score.rs`, `PlayRepetition`
   and `HeldRepetition`), tested one joker at a time (`engine/tests.rs`), not the pairs. Building
   toward it is blocked: two jokers on screen are never bought together (gap 23), a new joker
-  isn't placed in the best order (gap 26). Not measured: whether a consumable's target search
+  isn't placed in the best order (gap 26), a partner you'd find later is worth only a
+  generic stand-in (gap 27). Not measured: whether a consumable's target search
   puts the Red Seal or the edition on the card that leads. Check: an engine test per pair
   (Photograph + Hanging Chad on a lone King is ×8), and the shop on a board with one of the
   pair owned ranks the other first.
@@ -737,3 +738,20 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    (the order `best_order` would pick for the board it leaves, or the freed slot and the right
    end when the permutations are too many), used by every caller that adds one: the shop, the
    outlook, the long-run projection and packs.
+27. **The long run can't see a joker's future partner, so nothing builds toward a combo.** The
+   projection fills empty slots with stand-ins of three kinds (`value.rs` `fill_slots`: ×1.5,
+   +15 Mult or +60 Chips, in the shares your shop pool offers), and an option is compared with a
+   typical find (×1.25) in its slot. A stand-in never works with what you own, so a joker that
+   is strong only with a partner (Photograph with Hanging Chad, Sock and Buskin or Pareidolia;
+   Baron with Mime; Idol with Sock and Buskin) is worth the same by Ante 8 as if the partner
+   could never show up, and a partner you'd buy later is worth only its stand-in's score.
+   The style outlook (`archetype_outlook`) is a rough answer kept apart from the valuation: it
+   picks pairs within hand-made style groups, greedily from the top 3 single jokers, on 32
+   rounds (too few: two pairs 7% apart can't be told apart, gap 26's case), against a fixed
+   Ante +2 boss, and lists picks by their odds per shop even when one is on screen. Raised in
+   play 2026-10-11 (run I6XKKH65, Photograph + Hanging Chad in the shop, gaps 23 and 26). The
+   general fix: the stand-ins drawn from your shop pool's real jokers (each at its odds of being
+   found by the ante it would arrive), scored on the projected board with what you own, so a
+   partner's chance counts in the long run, and an option that completes a combo is worth the
+   combo. The outlook then becomes that search shown (which partners lift your board most, and
+   their odds), with the groups only as labels.
