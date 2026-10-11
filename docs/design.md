@@ -755,3 +755,17 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    partner's chance counts in the long run, and an option that completes a combo is worth the
    combo. The outlook then becomes that search shown (which partners lift your board most, and
    their odds), with the groups only as labels.
+28. **Every blind ahead starts from your board as it is now, not the one the blinds before it
+   leave.** The blind odds, the next-ante horizon and the style outlook each simulate their
+   round from the current board (`advise.rs` `board_for`: `Board::new_round` only resets the
+   round), so what a round does to the jokers is undone before the next: within a round the
+   engine steps them (`Board::after_hand`), between rounds nothing does. Jokers that run out
+   count in full in every round ahead (Seltzer's hands, Ice Cream's Chips, Popcorn's Mult a
+   round, a perishable's rounds), and jokers that grow count at their size now (Green Joker,
+   Ride the Bus, Runner: an under-count). Raised in play 2026-10-11 (run I6XKKH65, Ante 3 Big
+   Blind, Seltzer with 3 hands left, used up by The Wheel): the Ante 4 boss showed 82% with
+   Seltzer in every round and 11.5% without it (`whatif`), and Fortune Teller (perishable, 4
+   rounds) is debuffed by then. The long-run projection doesn't have this problem, as it grows
+   and fades jokers by its own table (`grow_antes`, gap 8). The general fix: the rounds ahead
+   chained, each starting from the board the simulated round before it ends with (its jokers'
+   state, the perishables' rounds, its money), the same step the engine takes between hands.
