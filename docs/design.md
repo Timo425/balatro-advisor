@@ -623,9 +623,15 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    first (its survival inflated by gap 17's sum), which throws both away, where buying both
    left $28 (interest kept) and the reroll still affordable after. A rental's sell value is its
    $1 price (card.lua `Card:set_cost`), so buying one into a free slot costs nothing to undo.
-   The general fix: the moves tried include the shop's buys in sequence (the sets of jokers on
-   screen that fit the free slots and the money, then the reroll from the board they leave),
-   each valued on the board it leaves, as the rest of the ranking is.
+   Full slots hide it the same way: raised in play 2026-10-11 (Anaglyph Deck run I6XKKH65, Ante 2
+   shop, 5/5 jokers, $8): Photograph (rental, $1) and Hanging Chad (eternal, $4) on screen.
+   Photograph alone for Marble Joker took the Ante 3 boss from 56% to 113% of its target and
+   ranked third, behind the Mega Buffoon Pack and the reroll; both for Chaos the Clown and Joker
+   win that boss 92% of the time against 3% now and 64% with Photograph alone (`whatif`), and
+   that move was never valued. The general fix: the moves tried include the shop's buys in
+   sequence (the sets of jokers on screen that fit the slots, counting the sales that free them,
+   and the money, then the reroll from the board they leave), each valued on the board it
+   leaves, as the rest of the ranking is.
 24. **A Stone card's rank and suit are shown and used, though the game hides them.** The game
    draws no front on a Stone card and its tooltip names only the enhancement (card.lua
    `Card:draw`: `ability.effect ~= 'Stone Card'`; common_events.lua `generate_card_UI`), but
@@ -683,3 +689,20 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    such a play is a range. Fixture: `tests/fixtures/private/pending/house_facedown_spades_flush.json`
    (in `pending/` because the replay test, which reads only the folder's top level, would fail
    until this is fixed; move it up then).
+26. **A joker added to a board goes in one fixed place, so the jokers' order isn't the one you'd
+   pick.** Jokers act left to right (state_events.lua `evaluate_play`), so +Mult before ×Mult
+   scores more, and you can reorder them for free at any time. `best_order` finds that order,
+   but only for the board you own. The style outlook (`archetype_outlook`) puts a new joker
+   into a free slot at the right end or into the slot of the joker it replaces, and never
+   reorders the rest. The shop (`evaluate_candidate`) tries the freed slot and the right end,
+   and leaves the others where they are. The long-run projection (`value::LongRun`) appends the
+   option. Raised in play 2026-10-11 (run I6XKKH65, Ante 2 shop, outlook to the Ante 4 boss, 32
+   rounds each): in the Face cards style, Smiley Face then Photograph reached 0.99 of the target
+   and Photograph then Smiley Face 0.74. The outlook's pair is greedy over the top 3 singles,
+   so a pair whose first joker lands in the wrong slot can drop out. That day Photograph +
+   Hanging Chad reached 1.03, Smiley Face + Pareidolia reached 1.10 and was shown, and on 32
+   rounds the two can't be told apart. The outlook also lists picks by their odds per shop, even
+   when one is on screen now. The general fix: one step that places a joker added to a board
+   (the order `best_order` would pick for the board it leaves, or the freed slot and the right
+   end when the permutations are too many), used by every caller that adds one: the shop, the
+   outlook, the long-run projection and packs.
