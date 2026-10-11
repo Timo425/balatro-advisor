@@ -617,3 +617,30 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    The general fix: the moves tried include the shop's buys in sequence (the sets of jokers on
    screen that fit the free slots and the money, then the reroll from the board they leave),
    each valued on the board it leaves, as the rest of the ranking is.
+24. **A Stone card's rank and suit are shown and used, though the game hides them.** The game
+   draws no front on a Stone card and its tooltip names only the enhancement (card.lua
+   `Card:draw`: `ability.effect ~= 'Stone Card'`; common_events.lua `generate_card_UI`), but
+   the save keeps its `base`, so `state` prints `7♥ [stone]` and the analysis can use it. In
+   play the front does nothing: `Card:get_id` gives a random negative id (no rank: no pairs,
+   straights, faces, Raised Fist) and `Card:is_suit` is false for every suit, flush or not, so
+   a Stone held in hand breaks Blackboard whatever its hidden suit (the engine already does
+   this: `engine/hand.rs` `is_suit`). Its seal and edition do act and are visible in the game:
+   Red Seal retriggers and Purple Seal makes a tarot on discard (`Card:calculate_seal`), Gold
+   Seal pays $3 when scored (`Card:get_p_dollars`), Blue Seal makes a planet at the end of the
+   round (`Card:get_end_of_round_effect`); none of them checks for Stone. The front matters
+   only when the Stone is taken off or copied: Vampire (`vampired`, then `get_id` gives the
+   base rank), a tarot that sets another enhancement, Death, Cryptid, DNA; Strength and the
+   suit tarots change the hidden front as they would a visible one. Where the advisor leaks
+   it: the state and the page show the front, and code that counts suits or ranks over the
+   hand and deck counts Stone cards' hidden fronts (`sim::keep_suit`'s commonest suit; to be
+   audited elsewhere). What the player knows depends on how the Stone was made: The Tower on a
+   card you chose, you saw (raised in play 2026-10-11: Anaglyph Deck run 2BTAA2XK, the 7♥ in
+   hand turned Stone during the Ante 4 Spectral Pack, shown as `7♥ [stone]` at Ante 5); one
+   Marble Joker adds is a random front over all 52 (card.lua: `pseudorandom_element(G.P_CARDS)`),
+   never shown, and so are Stones from Standard packs; a deck can hold both kinds. The save
+   doesn't say which; the history does (a card with the same `playing_card` / `sort_id` seen
+   before as a non-Stone card was seen by the player). The general fix: a Stone's front is
+   known (seen before it turned Stone) or unknown (one of 52, uniform); the display shows a
+   known one as "Stone (was 7♥)" and an unknown one as "Stone (?)", and the analysis never
+   reads an unknown front: where it matters (the moves that take Stone off or copy it), it's
+   valued over what it could be, as other random effects (gap 3).
