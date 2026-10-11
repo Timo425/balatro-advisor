@@ -810,6 +810,18 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    partner's chance counts in the long run, and an option that completes a combo is worth the
    combo. The outlook then becomes that search shown (which partners lift your board most, and
    their odds), with the groups only as labels.
+   The deck has the same blind spot. Each change to it is valued alone, on the deck as it is
+   (a consumable's targets, D8), so one Death, Strength or Hanged Man that moves the deck a
+   step toward a shape (most cards within five ranks for Straights, one suit for Flushes)
+   can't be told from no change and shows "no target", though the steps together are the
+   point; and a Standard pack's cards count as nothing in the projection's spending (the
+   register: "Standard counted as 0"), though for a Straight deck it's the easiest way to add
+   the ranks the shape needs (easier than for Four of a Kind: any rank in the window helps).
+   Raised in play 2026-10-11 (Ante 5, The Order, Devious Joker and Card Sharp, a Death in an
+   Arcana pack: "no target" next to A♥ K♥ Q♥ J♥ and low cards in hand). The general fix, the
+   same as for jokers: the projection draws the deck changes the run is likely to find (the
+   tarots, spectrals and Standard pack cards in its pool, at their odds by the ante they'd
+   arrive), so a step is worth what it adds to where the deck is heading.
 28. **Every blind ahead starts from your board as it is now, not the one the blinds before it
    leave.** The blind odds, the next-ante horizon and the style outlook each simulate their
    round from the current board (`advise.rs` `board_for`: `Board::new_round` only resets the
