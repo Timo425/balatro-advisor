@@ -785,7 +785,11 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    Stones, a debuffed Steel J♥, 4♣, 8♣ and a Steel A♥ in hand): Best play was three Stones, the
    debuffed J♥ and the 4♣ (18,933), with four Stones and the 4♣ (22,943) and three Stones
    and the 4♣ (19,230) listed below it as if worse; any of them wins. Why these aren't
-   flagged as ties isn't traced yet. The fix: plays that win now with equal value reported as
+   flagged as ties isn't traced; the likely cause is the Noise stage: a tie is shown only after
+   about 300 shared rounds (3 × the largest round value / n ≤ 1%), and before that the budget
+   cuts moves of exactly equal value by the cards themselves, so equal plays can leave as
+   "budget", not "equal". Not gap 1, which is which of several moves within 1% is picked
+   (noise); here the values are exactly equal and the report hides it. The fix: plays that win now with equal value reported as
    one group ("any of these wins"), the highest score shown first, since it is the one that
    still wins if the estimate is off.
 
@@ -799,4 +803,6 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    10♣ got the retriggers and it scored 4,600, and the round's chance fell from 99.8% to 84%
    on that one hand (the owner had to play a held Gold card later, losing its money). The
    fix: when the order changes the score by more than a little, the page shows both scores
-   ("as it sits 4,600 · arranged 8,280") and puts the order where the play is.
+   ("as it sits 4,600 · arranged 8,280") and puts the order where the play is. Not gap 19,
+   which is the engine missing a better order; here it found the right one and the page
+   didn't get it across.
