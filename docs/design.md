@@ -153,6 +153,37 @@ add to this list's kind; remove from it.
 | A short perishable's price dropped from its value | `advise.rs` (`long_mult = 1 + unlock`) | `LongRun::value` with its price |
 | What a joker adds to a round (hand size, hands, discards) as a table, and Turtle Bean's shrink by name; Burglar counted as if it changed the round you start with (it acts when the blind is set: from memory of card.lua, not checked) | `advise.rs` `round_mods`, `value.rs` `long_spec_for` | the center's config in `data/` (`h_size`, `d_size`, `extra`) as game facts; a fading joker's state projected as growth is (`grow_antes`); "set to N" effects (Burglar's discards, The Needle, The Water) applied after the additive ones |
 
+## What strong play does
+
+Lines experienced players know win, each with what the simulation needs to find it on its own,
+where that stands, and the check that would show it. They aren't rules (nothing in the code
+branches on them): a line blocked by several gaps moves those gaps up, and a line with no gap
+behind it is a blind spot nobody has written down yet.
+
+- **Small hands over and over to grow jokers that grow when hands are played** (Ride the Bus,
+  Square Joker, Runner, Green Joker: Pair is the hand you can always make). Needs a joker's
+  state at the round's end in the round's value, and growth measured from what the simulated
+  player plays. Blocked: gap 18 (plays), gap 8 (discards); the projection grows them by a table
+  (`grow_antes`). Check: a player benchmark board with Ride the Bus plays more hands with no
+  face card scored than the same board with Ride the Bus taken off.
+- **Retriggered ×Mult on one card** (Photograph + Hanging Chad, Idol + Sock and Buskin, Baron +
+  Mime on Steel Kings, a Red Seal Glass or Polychrome card). Scoring is exact: each trigger
+  applies the card's ×Mult and the jokers that read it again (`engine/score.rs`, `PlayRepetition`
+  and `HeldRepetition`), tested one joker at a time (`engine/tests.rs`), not the pairs. Building
+  toward it is blocked: two jokers on screen are never bought together (gap 23), a new joker
+  isn't placed in the best order (gap 26). Not measured: whether a consumable's target search
+  puts the Red Seal or the edition on the card that leads. Check: an engine test per pair
+  (Photograph + Hanging Chad on a lone King is ×8), and the shop on a board with one of the
+  pair owned ranks the other first.
+- **Glass and Steel against the last bosses** (their ×Mult doesn't care which hand you can
+  make). Needs the bosses ahead in the rounds a deck change is valued on. Blind spot: the
+  projection plays rounds with no boss rule and no target (`value.rs`, `RoundRules::default()`);
+  gaps 12 and 13 cover the target and the horizon, not the bosses. Check: Justice on a card is
+  worth more to a deck facing The Eye or The Psychic than to one facing plain rounds.
+
+Endless play (past Ante 8) is out of scope (the question above is winning the run); it rewards
+the same retriggered ×Mult.
+
 ## Known gaps
 
 **Where things stand** (kept current with every commit that changes it):
