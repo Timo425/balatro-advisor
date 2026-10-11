@@ -810,3 +810,18 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    one group ("any of these wins"), the highest score shown first, since it is the one that
    still wins if the estimate is off.
 
+
+30. **Best play trades win chance for money by a dollar's weight that was never measured.** A
+   won round is worth 1 + a dollar's weight × its money (`sim::RoundGoals::value`), the weight
+   being what +$10 adds to the long-run projection, a tenth of it a dollar (`play.rs`
+   `dollar_gain`, in the register as linear and unmeasured). A lost round is the run's end, so
+   every point of win chance should cost a lot of money; when the weight is high, a few dollars
+   outbid it. Raised in play 2026-10-11 (run I6XKKH65, Ante 5 Small Blind, a Lucky Gold Seal
+   J♣ with Hanging Chad): Best play's discard won 97.2% with $10.35 of round money; another
+   won 99.2% with $9.05. Picking the first means a dollar is worth at least 1.8% of a won
+   round, +$10 at least 18% of the run's value, on a board the advice gives 5% at the next
+   ante's boss. Likely cause, not traced: the projection values money as what it buys by Ante
+   8, as if the run gets there (close to gap 13, which is the horizon past the win ante). The
+   fix: the dollar's weight measured, from `calibration.jsonl` (what money turned into) or by
+   valuing the money on the runs that survive, and checked on states where a move trades win
+   chance for money.
