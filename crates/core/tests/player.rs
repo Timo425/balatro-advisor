@@ -8,7 +8,8 @@ use serde_json::Value;
 /// One board per play style, 8 cards in hand: its jokers, whether its deck is `ENHANCED` (else
 /// the standard 52) and its boss ("" for none). The first twelve are plain play styles; the
 /// rest have what those lack and real runs have: jokers that grow during the round, a few
-/// strong cards among plain ones, and a boss that debuffs cards.
+/// strong cards among plain ones, a boss that debuffs cards, jokers that read the round's memory
+/// of the hands played (Card Sharp, Acrobat, Obelisk; The Eye) and jokers that fade.
 const BOARDS: &[(&str, &[&str], bool, &str)] = &[
     ("plain", &[], false, ""),
     ("pairs", &["j_jolly", "j_duo", "j_sly"], false, ""),
@@ -27,6 +28,9 @@ const BOARDS: &[(&str, &[&str], bool, &str)] = &[
     ("enhanced", &["j_jolly", "j_duo", "j_joker"], true, ""),
     ("trousers_goad", &["j_trousers", "j_trousers", "j_joker"], true, "bl_goad"),
     ("flush_club", &["j_droll", "j_tribe", "j_crafty"], false, "bl_club"),
+    ("memory", &["j_card_sharp", "j_acrobat", "j_obelisk"], false, ""),
+    ("trousers_eye", &["j_trousers", "j_trousers", "j_joker"], false, "bl_eye"),
+    ("faders", &["j_ice_cream", "j_selzer", "j_joker"], false, ""),
 ];
 
 /// A deck as a run has it by Ante 3 or 4: the standard 52 with these cards changed (Bonus 3s,
@@ -105,6 +109,17 @@ const TARGETS: &[(&str, f64)] = &[
     ("enhanced_1h3d", 2976.0),
     ("trousers_goad_1h3d", 1248.0),
     ("flush_club_1h3d", 4368.0),
+    // the boards added 2026-10-11 (the round's memory, fading jokers): the half points of the
+    // player at 73d6808 (before playing on counted growth)
+    ("memory_4h3d", 1811.0),
+    ("memory_4h1d", 1591.0),
+    ("memory_1h3d", 948.0),
+    ("trousers_eye_4h3d", 2672.0),
+    ("trousers_eye_4h1d", 2072.0),
+    ("trousers_eye_1h3d", 876.0),
+    ("faders_4h3d", 5690.0),
+    ("faders_4h1d", 4898.0),
+    ("faders_1h3d", 1800.0),
 ];
 
 /// Each board's rounds; a board without a target yet gets 0 (`player_targets` finds it).
