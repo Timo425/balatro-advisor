@@ -581,12 +581,19 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    never plays for. It matters most for a joker that stays: an Eternal Square can't be sold
    (`value.rs` keeps it), so its slot is only ever worth what it grows to (raised in play,
    2026-10-05). The same holds for every joker that grows from how a hand is played (Runner,
-   Wee, Trousers, Green Joker, Ride the Bus, Hiker's cards; discards are gap 8). The general
-   fix: the jokers' state at a round's end in the round's value, through the one measure (the
-   end board's long-run value against the start's: what the growth is worth by Ante 8, an
-   Eternal one for the whole run), and each joker's growth an ante measured from the simulated
-   player's rounds on the projected board instead of a table, so the projection counts what the
-   advice plays for.
+   Wee, Trousers, Green Joker, Ride the Bus, Hiker's cards; discards are gap 8). The deck is
+   the same blind spot the other way round: a card a play destroys costs nothing in the round's
+   value. A Glass card breaks 1 in 4 each hand it scores (card.lua `Card:shatter`; the engine
+   takes it out for the rest of the round, `engine/score.rs`), so in a round won whatever is
+   played, Best play plays it as readily as anything else, and when it doesn't, that's the
+   money tie-break, not care (raised in play 2026-10-11, run I6XKKH65: Glass K♠ with Photograph
+   and Hanging Chad, ×64 Mult as the first card scored, in a Small Blind every move won; the
+   discard picked it, by $2 of money). The general fix: the board's state at a round's end
+   (jokers and deck) in the round's value, through the one measure (the end board's long-run
+   value against the start's: what the growth is worth by Ante 8, an Eternal one for the whole
+   run, a broken Glass card as the deck without it, `value.rs` `without_new_glass`), and each
+   joker's growth an ante measured from the simulated player's rounds on the projected board
+   instead of a table, so the projection counts what the advice plays for.
 19. **The card order tried is one proposal, checked, not a search.** The engine proposes the
    order its cards' maps say scores most (worked out in the order given; Mult only), and keeps
    it, or either half of it, only when the whole hand scores more as played (`engine::score`).
