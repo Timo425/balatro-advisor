@@ -453,8 +453,10 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    without the joker), as the deck path does with a deck's money. Not
    modelled in the discard step: Purple Seal's Tarot (raised in play 2026-10-11, run
    BLZMQ7NJ, The Eye: discarding a Purple Seal 2♠ gave Justice, Glass on a Straight's J♦ took
-   its last hand from 49,084 to 76,828 and won the round; worth a lot when the round is
-   short and slots are free), and what Trading Card's destroyed card
+   its last hand from 49,084 to 76,828 and won the round. The Tarot is random, but going for
+   it raises the odds: the fix values the discard over the Tarots it can give, each at its
+   chance, as the random effects already are (`RANDOM_OUTCOMES`), so a Purple Seal is thrown
+   first when a round is short and a consumable slot is free), and what Trading Card's destroyed card
    changes beyond the deck's size (Caino, Glass Joker); in a projected round (`Board::new_round`),
    the targets the game draws anew each round (Castle's suit, Mail-In's rank: this round's are
    kept) and Campfire's reset after a boss.
