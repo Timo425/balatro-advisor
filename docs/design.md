@@ -451,7 +451,10 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    (`income_per_ante`; Mail-In's is a hand-set share). The general fix: both measured from
    projected rounds (the board at a round's end against its start, a round's money with and
    without the joker), as the deck path does with a deck's money. Not
-   modelled in the discard step: Purple Seal's Tarot, and what Trading Card's destroyed card
+   modelled in the discard step: Purple Seal's Tarot (raised in play 2026-10-11, run
+   BLZMQ7NJ, The Eye: discarding a Purple Seal 2♠ gave Justice, Glass on a Straight's J♦ took
+   its last hand from 49,084 to 76,828 and won the round; worth a lot when the round is
+   short and slots are free), and what Trading Card's destroyed card
    changes beyond the deck's size (Caino, Glass Joker); in a projected round (`Board::new_round`),
    the targets the game draws anew each round (Castle's suit, Mail-In's rank: this round's are
    kept) and Campfire's reset after a boss.
@@ -674,6 +677,10 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    the repo: `~/.local/share/balatro-advisor/hand32-stuck.jkr`) took about two days, then
    ~15 minutes with the round's hand size, then ~3.5 minutes (quick; Best play ~170 s, its moves
    now from every card: it discards 5♣ 5♦ 4♣ 4♦ 2♠ where it threw K♥ Q♦ and the 10s).
+   Still too slow to use in play (2026-10-11, run BLZMQ7NJ, The Eye at Ante 6 after Hieroglyph,
+   5 Juggle Tags, 28 cards in hand): every quick pass of the round was stopped by the next
+   save after 27–54 s (`timings.jsonl`: "stopped", 3–9 steps done), so the round was played
+   with no Best play at all.
 21. **Tags you hold aren't read, and a tag's effect on a later blind is valued only in one
    case.** Skip-or-play values a Juggle Tag (+3 hand size, tag.lua `round_start_bonus`: the
    next round played) only when skipping the Big blind; on a Small blind skip it's "not
