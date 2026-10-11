@@ -158,9 +158,10 @@ add to this list's kind; remove from it.
   2026-10-10). 2. Dig plans for Two Pair from a Pair and a Full House from Three of a Kind (done
   2026-10-10). 3. Pace by playing on: each later hand the best play again on the board the one
   before leaves, the game's own step but The Eye's ban (done 2026-10-11; the Goad fixture keeps its Bonus Gold 3).
-  What's left of gap 6: later hands taken as the cards held again (the next general fix for
-  pace: the policy's own hand from the draw pile; behind the over-counts under The Eye, Card
-  Sharp and Ride the Bus with 1 discard), the Goad-like boards' gap of 14 with 3 discards, growth that depends on
+  What's left of gap 6: later hands taken as the cards held again (behind the over-counts under
+  The Eye, Card Sharp and Ride the Bus with 1 discard; dealing them from the draw pile instead
+  was tried and rejected 2026-10-11, below: the pace must judge the hand you hold, so its later
+  hands must depend on it), the Goad-like boards' gap of 14 with 3 discards, growth that depends on
   which cards are played (gap 8), each chase branch's own growth (made, failed, stopped), the high one-hand gaps
   (growers, discards: about 20).
 - **Next:** the search budget's first cut (gap 1: two misses where it cut the best move after
@@ -297,8 +298,21 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    and 1 discards against 50.1% before the change; without the ban 53.5% and 51.4%, the oracle
    gap 5.0 → 4.0 and 6.0 → 6.5), which in turn counts a growth The Eye would stop (Spare Trousers
    credited with Two Pairs that can't be played again); both are the cards held taken to come
-   back, which the next fix for pace replaces: a later hand as the policy's own hand from the
-   draw pile (a few seeded deals), every rule and growth then the game's own step; a straight two ranks away is dropped when a straight one rank away keeps the same
+   back. Dealing the later hands from the draw pile instead (4 seeded deals of the pile in an
+   order of its own, the cards left after each play and the ones drawn, the board stepping on;
+   2,000 rounds a board, 2026-10-11) was rejected: with no discard spent on a later hand the
+   17 older boards' mean fell 61.34% → 55.93% (plain with 3 discards −24.2), with the discards
+   left spread over the later hands 57.60%, and also asking that playing now beat throwing the
+   cards outside the best play first (both on the same deals) 57.37%, at 1.6–2.2× the time.
+   Split in two: drawn hands in the on-pace test alone 57.63% (the whole loss: the player spent
+   its discards chasing and then dug with junk hands, a High Card junk dig first in 17% of plain
+   rounds against 5%), in the chase's `later` alone 61.43% (within noise, at 1.8× the time). The
+   reason is general: three of four hands are later ones, and a drawn estimate barely depends on
+   the hand held, so the pace stops judging that hand and asks only whether the round is
+   winnable on average, a coin flip at targets near the half point; the cards held taken again
+   are what make it a test of this hand. A fix for the over-counts must keep that: correct what
+   the cards held taken again would repeat that real draws wouldn't (a hand type again for Card
+   Sharp and The Eye, a growth's condition), not replace them; a straight two ranks away is dropped when a straight one rank away keeps the same
    cards (an odds judgement the chase now makes itself); face-down cards are planned with as if
    seen. It cost time (a simulated round about 40% longer, mostly the best play of the hand each
    plan's dig leaves, worked out for every plan in every decision), won back by speedups that
