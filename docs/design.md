@@ -2,7 +2,7 @@
 
 How the advice is built, and how to change it. Read this before changing what the advice
 says. The required workflow for a change (fixture, diagnosis, fix, proof, review, record) is
-in `CLAUDE.md`; the original plan is `plan.md`.
+in `CLAUDE.md`.
 
 ## The question every piece of advice answers
 
@@ -55,6 +55,9 @@ The engineering practices behind the stages, in plain words:
   in the register and in the output (D10).
 - **Assumptions are parameters.** A number nobody can derive is a named value in one place,
   listed in the register, labelled in the output, and replaceable by a measurement.
+- **Calibrated words.** Outcomes are chances, not verdicts: no certainty words ("easily",
+  "100%") unless the chance is at least 95%. Advice that sounded sure and then missed is
+  worse than a plain number.
 - **Deterministic.** Same input, same output: fixed seeds, and nothing depends on the order
   cards or options happen to be listed in.
 - **Regression-proofed.** Every state where the advice was caught wrong becomes a replay

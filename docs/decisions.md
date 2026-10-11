@@ -9,7 +9,8 @@ Status is `proposed` until the owner signs off at the end of a phase.
 
 **Decision.** Write the engine and CLI in Rust as one Cargo workspace. The CLI's
 `--json` output is language-neutral, so other tools need no bindings. (An MCP server
-was planned too and never built; see plan.md §6.)
+was planned too and dropped: an agent that can run commands gets the same from
+`analyze --json` and `whatif --json`.)
 
 **Why: the workload is a tight loop over many small evaluations.** A rough count
 for one `shop` query, 5 jokers and 5 candidates with full slots:
@@ -175,8 +176,8 @@ the mistakes it prevents.
 **Decision.** Every change is committed and pushed once its checks passed: for a change to
 how the advice decides or values things, the workflow's step 4 (tests and replay exit 0,
 snapshots explained) and the `advisor-reviewer` run on the fixes (`CLAUDE.md`, D5). Asking
-first is kept only for heavy dependencies and scope changes. The "Phased work" rule is dropped
-and `docs/plan.md` §9 is kept as history.
+first is kept only for heavy dependencies and scope changes. The "Phased work" rule and the
+original plan's phase table are dropped.
 
 **Why.** "Ask before pushing" contradicted the workflow's "commit and push", and asking added
 nothing: the owner doesn't review this repo's docs or instruction files before they go out,
@@ -309,8 +310,6 @@ board the change must reach, determinism and paired draws, edge cases, tests tha
 without the change, docs and labels still true. Every finding gives file:line, a failing
 scenario, severity, confidence and the evidence read, plus what was checked and found fine;
 every one is verified in the code before acting. A small change gets the Opus reviewer alone.
-The template is the owner's "Detailed review" prompt (Obsidian, `AI/Agentic/Subagentide
-fan-out (kokkuvõte ja review).md`).
 
 **Why.** Two trials on real changes. Round 1 (2026-10-08, card arrangement): five Haikus on
 broad angles over the whole diff, three of them raising the same confident, impossible bug;
