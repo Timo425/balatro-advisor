@@ -892,24 +892,28 @@ impl<'a> LongRun<'a> {
     /// `money_once`: one-off money that comes with the change (already through `once`).
     /// `rounds`: projection rounds.
     pub fn deck_value(&self, d: &[Card], money_once: f64, rounds: usize) -> f64 {
-        let base = if rounds == TAROT_ROUNDS {
-            *self.deck_base()
-        } else {
-            let cached = self.deck_base_n.lock().unwrap().get(&rounds).copied();
-            cached.unwrap_or_else(|| {
-                let st = self.deck_stats_n(&self.ctx.fresh_deck, self.run.dollars, 0.0, 0.0, rounds);
-                self.deck_base_n.lock().unwrap().insert(rounds, st);
-                st
-            })
-        };
+        let base = self.deck_base_on(rounds);
         self.value_against(d, money_once, rounds, 0, &base, None)
     }
 
-    /// One of several random outcomes of a change (outcome `part`): valued on its own slice of
-    /// rounds (`part`·`rounds` onwards), against your deck's full projection, so the outcomes
-    /// together cover as many independent rounds as one full projection.
-    pub fn deck_value_part(&self, d: &[Card], money_once: f64, rounds: usize, part: usize) -> f64 {
-        let base = *self.deck_base();
+    /// Your deck projected on the first `rounds` rounds (`deck_base`'s when they're as many)
+    fn deck_base_on(&self, rounds: usize) -> crate::sim::Stats {
+        if rounds == TAROT_ROUNDS {
+            return *self.deck_base();
+        }
+        let cached = self.deck_base_n.lock().unwrap().get(&rounds).copied();
+        cached.unwrap_or_else(|| {
+            let st = self.deck_stats_n(&self.ctx.fresh_deck, self.run.dollars, 0.0, 0.0, rounds);
+            self.deck_base_n.lock().unwrap().insert(rounds, st);
+            st
+        })
+    }
+
+    /// One of `parts` random outcomes of a change (outcome `part`): valued on its own slice of
+    /// rounds (`part`·`rounds` onwards), against your deck on the rounds the outcomes cover
+    /// together (`parts`·`rounds`), as many independent rounds as one projection on them.
+    pub fn deck_value_part(&self, d: &[Card], money_once: f64, rounds: usize, part: usize, parts: usize) -> f64 {
+        let base = self.deck_base_on(rounds * parts);
         self.value_against(d, money_once, rounds, part * rounds, &base, None)
     }
 
