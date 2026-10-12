@@ -542,7 +542,17 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    a pack's joker counts as if you'd make room for it. The general fix: a per-joker "keep"
    choice on the page, kept with the run, that every sell choice respects as it does eternal
    (a pack joker then counts only into a free slot or by selling another). Raised in play,
-   2026-10-05 (Ante 7, Arrowhead without its Gold sticker).
+   2026-10-05 (Ante 7, Arrowhead without its Gold sticker). A keep is more than a sell filter:
+   a Gold sticker goes to every joker held when the run is won (misc_functions.lua
+   `set_joker_win`), so a kept joker is a condition on the win, and the measure stays the same
+   (win chance and strength, with the joker held to the end). Its slot is then taken in every
+   plan, and what makes it useful (Straights for Superposition, a Death that fills a rank) is
+   worth more because there's no other joker for that slot. That's valued only through win
+   chance, never as a goal of its own, so the keep adds no second objective and no "worse play
+   for later". Today the advice weighs the slot as free to swap, so it shapes the deck for the
+   jokers that do the scoring now. Raised again 2026-10-12 (run on Anaglyph Deck, Ante 2,
+   Superposition without its Gold sticker: Death went on a second Steel 4♦ while the owner
+   was moving to Straights). Deck shaping's own value is gap 27.
 15. **Bosses whose rule isn't in the simulated round are played as plain blinds.** The
    simulated round knows the suit and face debuffs, The Manacle, The Needle, The Water, The Hook
    (2 held cards discarded at random once a hand is played, before it scores: `sim`
@@ -890,3 +900,11 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    fix: the dollar's weight measured, from `calibration.jsonl` (what money turned into) or by
    valuing the money on the runs that survive, and checked on states where a move trades win
    chance for money.
+31. **Best play says "use Death first" without naming its cards.** A move after a held
+   consumable carries only its name (`PlayOption::use_first`); the cards it goes on are the
+   ones its target search chose (gap 2: one target per consumable), shown only in the Tarots
+   list's note. So Best play's cards are the hand after the use, and you can't tell which card
+   changed. The fix: carry the target (`sim::Use::swap`, the cards before and after) to the
+   option and say "use Death: 7♣ becomes 4♦ [steel]" in Best play, text and JSON. Raised in
+   play 2026-10-12 (Anaglyph Deck, Ante 2 The Head: Best play said Death first, Tarots said
+   7♣ → Steel 4♦).
