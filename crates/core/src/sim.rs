@@ -266,8 +266,7 @@ fn best_play_of(b: &Board, hand: &[Card], part: u32, prefilter: bool, seen: Opti
 
 /// `best_play_of`, searching only the plays `only` (masks, ascending) when given, and noting
 /// every play it scores in `scored` (its mask, hand, and chips and Mult with every roll failing,
-/// before the deck balances them: `Outcome::unbalanced`; only without `seen`, whose floors keep
-/// no chips or Mult)
+/// before the deck balances them: `Outcome::unbalanced`)
 fn best_play_among(
     b: &Board,
     hand: &[Card],
@@ -275,9 +274,8 @@ fn best_play_among(
     prefilter: bool,
     mut seen: Option<&mut [Option<SeenPlay>]>,
     only: Option<&[u32]>,
-    mut scored: Option<&mut Vec<(u32, HandType, f64, f64)>>,
+    mut scored: Option<&mut Vec<Scored>>,
 ) -> Option<(Play, bool)> {
-    assert!(seen.is_none() || scored.is_none(), "a floor `seen` keeps has no chips or Mult to note");
     let n = hand.len().min(16);
     let flags = b.rule_flags();
     let keep_kickers = kickers_matter(b);
@@ -324,19 +322,17 @@ fn best_play_among(
         }
         let held_mask = part & !mask;
         // a floor scored with these cards held or more, none of them taking part, is this one
-        let mut parts = (0.0, 0.0);
-        let (floor, hand_type, asked) = match known.as_ref().and_then(|k| k.floor).filter(|f| held_mask & !f.held == 0) {
-            Some(f) => (f.score, f.hand, f.asked),
+        let (floor, hand_type, asked, parts) = match known.as_ref().and_then(|k| k.floor).filter(|f| held_mask & !f.held == 0) {
+            Some(f) => (f.score, f.hand, f.asked, f.parts),
             None => {
                 held.clear();
                 held.extend((0..n).filter(|i| held_mask & (1 << i) != 0).map(|i| hand[i]));
                 let mut rolls = Watched { rolls: Unlucky, asked: false };
                 let o = score::score_detected(b, &played, &held, info.clone(), &mut rolls, false);
                 if let Some(k) = known.as_mut().filter(|k| k.floor.is_none() && !o.held_used) {
-                    k.floor = Some(SeenFloor { held: held_mask, score: o.score, hand: o.hand, asked: rolls.asked });
+                    k.floor = Some(SeenFloor { held: held_mask, score: o.score, hand: o.hand, asked: rolls.asked, parts: o.unbalanced });
                 }
-                parts = o.unbalanced;
-                (o.score, o.hand, rolls.asked)
+                (o.score, o.hand, rolls.asked, o.unbalanced)
             }
         };
         if let Some(v) = scored.as_deref_mut() {
@@ -348,6 +344,10 @@ fn best_play_among(
     }
     best
 }
+
+/// A play a search scored (`best_play_among`): its mask, hand, and chips and Mult with every
+/// roll failing, before a deck balances them
+type Scored = (u32, HandType, f64, f64);
 
 /// What's known of a play of a hand (`best_play_of`): its hand, and its floor when no held card
 /// took part in it (`Outcome::held_used`)
@@ -365,6 +365,8 @@ struct SeenFloor {
     score: f64,
     hand: HandType,
     asked: bool,
+    /// its chips and Mult before a deck balances them (`Outcome::unbalanced`)
+    parts: (f64, f64),
 }
 
 /// The best plays of parts of one hand (a decision's: the hand each plan's dig leaves, the
@@ -377,6 +379,9 @@ struct HandParts<'a> {
     /// what's known of the plays, by mask (nothing for a hand of more than `PARTS_MAX` cards)
     detected: std::cell::RefCell<Vec<Option<SeenPlay>>>,
     done: std::cell::RefCell<Vec<(u32, Option<Play>)>>,
+    /// the whole hand's plays as its search scored them (`best_play_among`): their front
+    /// (`front_of`) is where `playing_on`'s later hands start
+    scored: std::cell::RefCell<Option<Vec<Scored>>>,
 }
 
 /// The largest hand `HandParts` shares detections for (2^n of them)
@@ -385,7 +390,13 @@ const PARTS_MAX: usize = 12;
 impl<'a> HandParts<'a> {
     fn new(b: &'a Board, hand: &'a [Card]) -> Self {
         let size = if hand.len() <= PARTS_MAX { 1 << hand.len() } else { 0 };
-        HandParts { b, hand, detected: std::cell::RefCell::new(vec![None; size]), done: std::cell::RefCell::new(vec![]) }
+        HandParts { b, hand, detected: std::cell::RefCell::new(vec![None; size]), done: std::cell::RefCell::new(vec![]), scored: std::cell::RefCell::new(None) }
+    }
+
+    /// The whole hand's unbeaten plays (`front_of`), once its best play was worked out: the
+    /// shortlist `playing_on` starts from (none for a hand of more than `PARTS_MAX` cards)
+    fn shortlist(&self) -> Option<Shortlist> {
+        self.scored.borrow().clone().map(|v| Shortlist { plays: front_of(v), stale: false })
     }
 
     /// `best_play` of the cards at `idx` (indices into the hand, in order): the play's cards
@@ -403,7 +414,14 @@ impl<'a> HandParts<'a> {
         if let Some((_, p)) = self.done.borrow().iter().find(|e| e.0 == part) {
             return p.clone();
         }
-        let p = best_play_of(b, hand, part, true, Some(&mut self.detected.borrow_mut())).map(|(mut p, rolled)| {
+        // the whole hand's search notes its plays' chips and Mult for its front
+        let whole = part.count_ones() as usize == hand.len();
+        let mut scored = Vec::new();
+        let found = best_play_among(b, hand, part, true, Some(&mut self.detected.borrow_mut()), None, whole.then_some(&mut scored));
+        if whole {
+            *self.scored.borrow_mut() = Some(scored);
+        }
+        let p = found.map(|(mut p, rolled)| {
             // as `best_play_with`: a floor that rolled nothing (the part's other cards held) is
             // its average
             if rolled {
@@ -581,7 +599,7 @@ pub fn outcomes_after(b: &Board, start: &RoundStart, first: &Move, range: std::o
                     let s = score::score(&bb, &played, &held, &mut rng, false);
                     o.cash += s.dollars;
                     let total = start.scored + s.score;
-                    bb.after_hand(&s);
+                    let _ = bb.after_hand(&s);
                     if total >= start.target || start.hands <= 1 {
                         if total >= start.target {
                             o.won = 1.0;
@@ -990,7 +1008,7 @@ fn decide_cards(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i
     // playing on (`playing_on`): what the best play scores this hand and the best play of the
     // same cards each hand after, on the board the one before leaves; worked out once, when needed
     let on_cell = std::cell::OnceCell::new();
-    let on = || *on_cell.get_or_init(|| playing_on(b, hand, &best, hands));
+    let on = || *on_cell.get_or_init(|| playing_on_with(b, hand, &best, hands, true, true, parts.shortlist()));
     let all: Vec<usize> = (0..hand.len()).collect();
     let now = discards > 1 || best.floor >= need || hands <= 1;
     if now && discards > 0 && discard_money(b, hand, &all) > 0.0 && on() >= need {
@@ -1144,15 +1162,16 @@ fn keeps_pace(b: &Board, hand: &[Card], hands: i64, need: f64) -> bool {
 /// the best play times the hands, as before. A card a joker changes (Vampire, Hiker) comes back
 /// as it was.
 fn playing_on(b: &Board, hand: &[Card], best: &Play, hands: i64) -> f64 {
-    playing_on_with(b, hand, best, hands, true, true)
+    playing_on_with(b, hand, best, hands, true, true, None)
 }
 
 
 /// `playing_on`, `shortcut`: whether a play whose jokers and score didn't move is taken to stay
 /// the best without searching again (off only to test that it changes nothing); `shortlist`:
 /// whether a later hand searches only the plays the last full search left unbeaten
-/// (`later_best`; off only to test it)
-fn playing_on_with(b: &Board, hand: &[Card], best: &Play, hands: i64, shortcut: bool, shortlist: bool) -> f64 {
+/// (`later_best`; off only to test it); `start`: the plays this hand's own search left unbeaten
+/// on `b` (`HandParts::shortlist`), where they begin (else the first later hand searches in full)
+fn playing_on_with(b: &Board, hand: &[Card], best: &Play, hands: i64, shortcut: bool, shortlist: bool, start: Option<Shortlist>) -> f64 {
     let cards = |play: &[usize]| -> (Vec<Card>, Vec<Card>) {
         (play.iter().map(|&i| hand[i]).collect(), (0..hand.len()).filter(|i| !play.contains(i)).map(|i| hand[i]).collect())
     };
@@ -1160,7 +1179,8 @@ fn playing_on_with(b: &Board, hand: &[Card], best: &Play, hands: i64, shortcut: 
         return best.mean;
     }
     let (mut total, mut last) = (best.mean, best.mean);
-    let mut short: Option<Shortlist> = None;
+    // a start found on a board with other hands left than the round's (Dusk, Acrobat) is redone
+    let mut short: Option<Shortlist> = if shortlist { start.map(|s| Shortlist { stale: s.stale || b.hands_left != hands, ..s }) } else { None };
     let mut board = b.clone();
     // the round counts down from `hands` (Acrobat and Dusk read it), as the round's own loop sets it
     board.hands_left = hands;
@@ -1175,8 +1195,11 @@ fn playing_on_with(b: &Board, hand: &[Card], best: &Play, hands: i64, shortcut: 
         // dug where it should play, 8-9 points lower on the benchmark); without it a growth The
         // Eye would stop is counted. The Mouth's lock is carried: it holds whatever is drawn.
         let eye = board.blind.eye_seen;
-        board.after_hand(&o);
+        let apart = board.after_hand(&o);
         board.blind.eye_seen = eye;
+        if let Some(s) = short.as_mut() {
+            s.stale |= apart;
+        }
         // the same play again when nothing it scores by moved (the jokers as they were, and it
         // scores as it did: what The Eye or The Arm do to it would show): it stays the best,
         // without searching again
@@ -1196,11 +1219,29 @@ fn playing_on_with(b: &Board, hand: &[Card], best: &Play, hands: i64, shortcut: 
     total
 }
 
-/// The plays a later hand in `playing_on` searches (masks, ascending), and the board they were
-/// found on: its number of jokers
+/// Of each hand type, the plays (masks, ascending) no other play of it beats in both chips and
+/// Mult, from a search's `scored` plays: by chips (most first), then Mult, then the earlier mask
+/// (the one the search keeps on a tie), each kept while its Mult beats every play before it
+fn front_of(mut scored: Vec<Scored>) -> Vec<u32> {
+    scored.sort_by(|x, y| (x.1 as usize).cmp(&(y.1 as usize)).then(y.2.total_cmp(&x.2)).then(y.3.total_cmp(&x.3)).then(x.0.cmp(&y.0)));
+    let mut plays = Vec::new();
+    let mut top: Option<(HandType, f64)> = None;
+    for &(mask, h, _, mult) in &scored {
+        if top.is_none_or(|(th, tm)| th != h || mult > tm) {
+            plays.push(mask);
+            top = Some((h, mult));
+        }
+    }
+    plays.sort_unstable();
+    plays
+}
+
+/// The plays a later hand in `playing_on` searches (masks, ascending), and whether the board
+/// moved plays of one hand apart since they were found (`Board::after_hand`): then the next
+/// later hand searches in full again
 struct Shortlist {
     plays: Vec<u32>,
-    jokers: usize,
+    stale: bool,
 }
 
 /// `best_play` of a later hand in `playing_on`, among the plays the last full search left
@@ -1208,16 +1249,16 @@ struct Shortlist {
 /// pareto front). The board one hand on adds the same to every play (its jokers' growth or
 /// fading: +Chips, +Mult, ×Mult; a hand type's level, The Arm, Card Sharp, Obelisk, Supernova
 /// to every play of it), which keeps a beaten play beaten (chips and Mult before a deck balances
-/// them: Plasma Deck). Searched in full again when the board changes in more than its numbers:
-/// a joker gone (Ice Cream, Seltzer), and the last hand where a joker retriggers played cards
-/// (Dusk's retrigger then). Still missed: a hand's level changed (The Arm) under a ×Mult that
-/// differs by play (the play's own cards, played or held: Glass, Polychrome, Steel, Baron), and
-/// a ×Mult that differs by play (Flower Pot) after a growing +Mult before it: a budget, not a
-/// finding (register).
+/// them: Plasma Deck). Searched in full again when a hand's step changed the board in more than
+/// that (`Board::after_hand`: a hand's level, The Arm; a joker gone; the last hand with a joker
+/// that retriggers played cards). Still missed: a joker effect that differs by play scored after
+/// a joker whose numbers moved, unless both add (a ×Mult that differs by play after a growing
+/// +Mult: Flower Pot, Seeing Double, The Duo to The Tribe; a +Mult that differs by play after a
+/// growing ×Mult: Jolly to Crafty, Half Joker after Obelisk, Vampire, Loyalty Card): a budget,
+/// not a finding (register).
 fn later_best(b: &Board, hand: &[Card], short: &mut Option<Shortlist>) -> Option<Play> {
     let n = hand.len().min(SUBSETS_MAX);
-    let last_retrigger = b.hands_left <= 1 && b.retriggers_played();
-    if short.as_ref().is_some_and(|s| s.jokers != b.jokers.len()) || last_retrigger {
+    if short.as_ref().is_some_and(|s| s.stale) {
         *short = None;
     }
     let mut scored = Vec::new();
@@ -1226,19 +1267,7 @@ fn later_best(b: &Board, hand: &[Card], short: &mut Option<Shortlist>) -> Option
         None => best_play_among(b, hand, (1 << n) - 1, true, None, None, Some(&mut scored)),
     };
     if short.is_none() {
-        // each hand type's front: by chips (most first), then Mult, then the earlier mask (the
-        // one the search keeps on a tie); kept while its Mult beats every play before it
-        scored.sort_by(|x, y| (x.1 as usize).cmp(&(y.1 as usize)).then(y.2.total_cmp(&x.2)).then(y.3.total_cmp(&x.3)).then(x.0.cmp(&y.0)));
-        let mut plays = Vec::new();
-        let mut top: Option<(HandType, f64)> = None;
-        for &(mask, h, _, mult) in &scored {
-            if top.is_none_or(|(th, tm)| th != h || mult > tm) {
-                plays.push(mask);
-                top = Some((h, mult));
-            }
-        }
-        plays.sort_unstable();
-        *short = Some(Shortlist { plays, jokers: b.jokers.len() });
+        *short = Some(Shortlist { plays: front_of(scored), stale: false });
     }
     // its mean as `best_play_with` works it out
     found.map(|(mut p, rolled)| {
@@ -2382,7 +2411,7 @@ pub fn sim_round_uses(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[
                 money += o.dollars;
                 best_hand = best_hand.max(o.score);
                 plays.push((o.hand, o.score, dig));
-                b.after_hand(&o);
+                let _ = b.after_hand(&o);
                 hand = held;
                 hands -= 1;
                 if total >= start.target {
@@ -2872,7 +2901,7 @@ mod tests {
         let best = best_play(&b, &hand).unwrap();
         assert_eq!(best.hand, HandType::Pair);
         for shortcut in [true, false] {
-            assert!((playing_on_with(&b, &hand, &best, 3, shortcut, false) - 3.0 * best.mean).abs() < 1e-9 * best.mean, "{shortcut}");
+            assert!((playing_on_with(&b, &hand, &best, 3, shortcut, false, None) - 3.0 * best.mean).abs() < 1e-9 * best.mean, "{shortcut}");
         }
         let (now, three) = on(&["j_ice_cream"], "");
         assert!(three < now * 3.0, "Ice Cream fades: {now} -> {three}");
@@ -2904,7 +2933,7 @@ mod tests {
                     shuffle(&mut deck, &mut rng);
                     let hand = deck[..8].to_vec();
                     let Some(best) = best_play(&b, &hand) else { continue };
-                    let (fast, full) = (playing_on_with(&b, &hand, &best, 4, true, false), playing_on_with(&b, &hand, &best, 4, false, false));
+                    let (fast, full) = (playing_on_with(&b, &hand, &best, 4, true, false, None), playing_on_with(&b, &hand, &best, 4, false, false, None));
                     assert!((fast - full).abs() <= 1e-9 * full.abs(), "{key} {blind} {hand:?}: {fast} vs {full}");
                 }
             }
@@ -2914,25 +2943,28 @@ mod tests {
     #[test]
     fn the_later_hands_front_finds_what_searching_them_all_finds() {
         // `playing_on`'s later hands search only the plays the last full search left unbeaten
-        // (`later_best`): for every joker in the game data beside one that grows, fades or
-        // retriggers in the round, under no boss, The Arm and The Mouth, with and without the
-        // Plasma Deck, on random hands of enhanced cards with editions and random levels, the
-        // total as searching every hand nearly always, and never far off
+        // (`later_best`), from the decision's own search of the hand (`HandParts::shortlist`) or
+        // the first later hand's: for every joker in the game data beside one that grows, fades or
+        // retriggers in the round (after it over 4 hands, before it over 6), under no boss, The
+        // Arm and The Mouth, with and without the Plasma Deck, on random hands of enhanced cards
+        // with editions and random levels, the total as searching every hand nearly always, and
+        // never far off
         let mut rng = Rng::new(7);
         let keys: Vec<String> = crate::data::GameData::bundled().centers.iter().filter(|c| c.key.starts_with("j_")).map(|c| c.key.clone()).collect();
         let movers = ["j_dusk", "j_ice_cream", "j_selzer", "j_bull", "j_ride_the_bus", "j_supernova", "j_green_joker", "j_runner", "j_square", "j_trousers"];
         let enh = [None, None, None, Some(Enhancement::Bonus), Some(Enhancement::Mult), Some(Enhancement::Glass), Some(Enhancement::Steel), Some(Enhancement::Lucky)];
         let edi = [None, None, None, None, Some(Edition::Foil), Some(Edition::Holo), Some(Edition::Polychrome)];
-        let (mut cases, mut differ, mut worst) = (0, 0, 1.0f64);
+        let (mut cases, mut differ, mut worst) = (0, [0, 0], 1.0f64);
         for mover in movers {
             for key in &keys {
-                for (blind, plasma) in ["", "bl_arm", "bl_mouth"].into_iter().flat_map(|bl| [(bl, false), (bl, true)]) {
-                    let mut b = sample_board(&[key.as_str(), mover]);
+                for (blind, plasma, first) in ["", "bl_arm", "bl_mouth"].into_iter().flat_map(|bl| [(bl, false, false), (bl, true, false), (bl, false, true)]) {
+                    let (mut b, hands) = if first { (sample_board(&[mover, key.as_str()]), 6) } else { (sample_board(&[key.as_str(), mover]), 4) };
                     if b.jokers.len() < 2 {
                         continue;
                     }
                     b.new_round(blind);
                     b.plasma = plasma;
+                    b.hands_left = hands;
                     // Ice Cream and Seltzer run out within the round
                     for j in b.jokers.iter_mut() {
                         if j.kind == Kind::IceCream {
@@ -2954,18 +2986,26 @@ mod tests {
                         shuffle(&mut deck, &mut rng);
                         let hand = deck[..8].to_vec();
                         let Some(best) = best_play(&b, &hand) else { continue };
-                        let (short, full) = (playing_on_with(&b, &hand, &best, 4, true, true), playing_on_with(&b, &hand, &best, 4, true, false));
+                        let start = {
+                            let parts = HandParts::new(&b, &hand);
+                            parts.best(&(0..hand.len()).collect::<Vec<_>>());
+                            parts.shortlist()
+                        };
+                        let full = playing_on_with(&b, &hand, &best, hands, true, false, None);
+                        let shorts = [playing_on_with(&b, &hand, &best, hands, true, true, None), playing_on_with(&b, &hand, &best, hands, true, true, start)];
                         cases += 1;
-                        if (short - full).abs() > 1e-9 * full.abs() {
-                            differ += 1;
-                            worst = worst.min(short / full);
+                        for (k, short) in shorts.into_iter().enumerate() {
+                            if (short - full).abs() > 1e-9 * full.abs() {
+                                differ[k] += 1;
+                                worst = worst.min(short / full);
+                            }
                         }
                     }
                 }
             }
         }
-        eprintln!("front: {differ} of {cases} differ, worst {worst:.4}");
-        assert!(differ * 1000 <= cases && worst >= 0.9, "{differ} of {cases}, worst {worst}");
+        eprintln!("front: {differ:?} of {cases} differ (from the first later hand, from the hand's own search), worst {worst:.4}");
+        assert!(differ.iter().all(|&d| d * 1000 <= cases) && worst >= 0.9, "{differ:?} of {cases}, worst {worst}");
     }
 
     #[test]

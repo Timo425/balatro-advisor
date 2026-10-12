@@ -588,7 +588,16 @@ impl Board {
     /// (The Eye and The Mouth remember it), then the `after` context (card.lua
     /// `Card:calculate_joker`, not copies): Ice Cream loses `extra.chip_mod` Chips and Seltzer
     /// a use, each gone at 0.
-    pub fn after_hand(&mut self, o: &Outcome) {
+    ///
+    /// Whether the step moved plays of one hand apart: what it changes otherwise adds the same
+    /// to every play of a hand (the jokers' numbers, money, the hand counters, The Eye's and The
+    /// Mouth's memory of hand types), which `sim::later_best`'s shortlist relies on. A change
+    /// here that doesn't is reported: a hand's level (The Arm: its Mult comes before the
+    /// cards' ×Mult), a joker gone, the last hand reached with a joker that retriggers played
+    /// cards (Dusk's retrigger then).
+    pub fn after_hand(&mut self, o: &Outcome) -> bool {
+        let level = self.levels[o.hand as usize];
+        let jokers = self.jokers.len();
         for (jk, st) in self.jokers.iter_mut().zip(&o.jokers) {
             jk.mult = st.mult;
             jk.x_mult = st.x_mult;
@@ -620,6 +629,7 @@ impl Board {
                 _ => true,
             }
         });
+        (o.level.chips, o.level.mult) != (level.chips, level.mult) || self.jokers.len() != jokers || (self.hands_left == 1 && self.retriggers_played())
     }
 }
 
