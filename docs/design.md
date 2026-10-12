@@ -908,3 +908,14 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    option and say "use Death: 7♣ becomes 4♦ [steel]" in Best play, text and JSON. Raised in
    play 2026-10-12 (Anaglyph Deck, Ante 2 The Head: Best play said Death first, Tarots said
    7♣ → Steel 4♦).
+32. **An open pack's "skip" wins ties, even when skipping keeps nothing.** A pick from a pack
+   already paid for and "skip the pack" are ranked on the same measure (`rank_options`), and a
+   planet for a side hand moves By Ante 8 by less than the noise can show (~1%), so every pick
+   ties with the skip and the skip is listed first. Unless a joker grows from a pack skip (Red
+   Card), skipping keeps nothing, and a hand level never lowers a score. D8's rule (the status
+   quo is kept on a tie only when not acting keeps something) isn't applied to packs. Raised in
+   play 2026-10-12 (Anaglyph Deck, Ante 5 after the Big Blind, Planet pack of Earth, Mars, Pluto,
+   Saturn, Mercury with no Red Card: skip first, Mercury 1.007, Saturn 0.994, all tied). The fix:
+   D8's rule for every race with a status quo, packs included: a skip that keeps nothing loses
+   its ties to a pick (the best pick by paired estimate), and a skip that does keep something
+   (Red Card's growth, a pick's money held) is measured, not assumed.
