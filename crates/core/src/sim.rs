@@ -260,7 +260,24 @@ impl<R: crate::engine::Rolls> crate::engine::Rolls for Watched<R> {
 /// `best_play_with` of the cards `part` (a mask over `hand`'s first 16), without its mean: the
 /// play's cards are indices into `hand`, and whether its floor asked for a roll (`Watched`).
 /// `seen`: what's known of the plays of `hand` (by mask), filled in as it goes.
-fn best_play_of(b: &Board, hand: &[Card], part: u32, prefilter: bool, mut seen: Option<&mut [Option<SeenPlay>]>) -> Option<(Play, bool)> {
+fn best_play_of(b: &Board, hand: &[Card], part: u32, prefilter: bool, seen: Option<&mut [Option<SeenPlay>]>) -> Option<(Play, bool)> {
+    best_play_among(b, hand, part, prefilter, seen, None, None)
+}
+
+/// `best_play_of`, searching only the plays `only` (masks, ascending) when given, and noting
+/// every play it scores in `scored` (its mask, hand, and chips and Mult with every roll failing,
+/// before the deck balances them: `Outcome::unbalanced`; only without `seen`, whose floors keep
+/// no chips or Mult)
+fn best_play_among(
+    b: &Board,
+    hand: &[Card],
+    part: u32,
+    prefilter: bool,
+    mut seen: Option<&mut [Option<SeenPlay>]>,
+    only: Option<&[u32]>,
+    mut scored: Option<&mut Vec<(u32, HandType, f64, f64)>>,
+) -> Option<(Play, bool)> {
+    assert!(seen.is_none() || scored.is_none(), "a floor `seen` keeps has no chips or Mult to note");
     let n = hand.len().min(16);
     let flags = b.rule_flags();
     let keep_kickers = kickers_matter(b);
@@ -270,10 +287,17 @@ fn best_play_of(b: &Board, hand: &[Card], part: u32, prefilter: bool, mut seen: 
     let mut idx: Vec<usize> = Vec::with_capacity(5);
     // Face-down cards can't be planned around (you don't know them): only as filler
     let hidden: u32 = (0..n).filter(|&i| hand[i].face_down).fold(0, |m, i| m | (1 << i));
-    // every play within the part, in increasing order of its mask
+    // every play within the part (or of `only`), in increasing order of its mask
     let mut mask = 0u32;
+    let mut only = only.map(|o| o.iter());
     loop {
-        mask = mask.wrapping_sub(part) & part;
+        mask = match only.as_mut() {
+            Some(o) => match o.next() {
+                Some(&m) => m,
+                None => break,
+            },
+            None => mask.wrapping_sub(part) & part,
+        };
         if mask == 0 {
             break;
         }
@@ -300,6 +324,7 @@ fn best_play_of(b: &Board, hand: &[Card], part: u32, prefilter: bool, mut seen: 
         }
         let held_mask = part & !mask;
         // a floor scored with these cards held or more, none of them taking part, is this one
+        let mut parts = (0.0, 0.0);
         let (floor, hand_type, asked) = match known.as_ref().and_then(|k| k.floor).filter(|f| held_mask & !f.held == 0) {
             Some(f) => (f.score, f.hand, f.asked),
             None => {
@@ -310,9 +335,13 @@ fn best_play_of(b: &Board, hand: &[Card], part: u32, prefilter: bool, mut seen: 
                 if let Some(k) = known.as_mut().filter(|k| k.floor.is_none() && !o.held_used) {
                     k.floor = Some(SeenFloor { held: held_mask, score: o.score, hand: o.hand, asked: rolls.asked });
                 }
+                parts = o.unbalanced;
                 (o.score, o.hand, rolls.asked)
             }
         };
+        if let Some(v) = scored.as_deref_mut() {
+            v.push((mask, hand_type, parts.0, parts.1));
+        }
         if best.as_ref().is_none_or(|(p, _)| floor > p.floor) {
             best = Some((Play { cards: idx.clone(), hand: hand_type, floor, mean: floor }, asked));
         }
@@ -1106,7 +1135,8 @@ fn keeps_pace(b: &Board, hand: &[Card], hands: i64, need: f64) -> bool {
 }
 
 /// What playing on scores over `hands` hands from now: the best play now, then each later hand
-/// the best play of the same cards again (taken to come back) on the board the hand before
+/// the best play of the same cards again (taken to come back; among the plays the last full
+/// search left unbeaten, `later_best`) on the board the hand before
 /// leaves (`Board::after_hand`, the game's own step: what the jokers grow or fade by, Spare
 /// Trousers, Green Joker, Ice Cream; the hand's level, The Arm; the round's memory of it, Card
 /// Sharp, Obelisk; the hands left, Acrobat; The Mouth's lock, not The Eye's ban), each at its average
@@ -1114,12 +1144,15 @@ fn keeps_pace(b: &Board, hand: &[Card], hands: i64, need: f64) -> bool {
 /// the best play times the hands, as before. A card a joker changes (Vampire, Hiker) comes back
 /// as it was.
 fn playing_on(b: &Board, hand: &[Card], best: &Play, hands: i64) -> f64 {
-    playing_on_with(b, hand, best, hands, true)
+    playing_on_with(b, hand, best, hands, true, true)
 }
 
+
 /// `playing_on`, `shortcut`: whether a play whose jokers and score didn't move is taken to stay
-/// the best without searching again (off only to test that it changes nothing)
-fn playing_on_with(b: &Board, hand: &[Card], best: &Play, hands: i64, shortcut: bool) -> f64 {
+/// the best without searching again (off only to test that it changes nothing); `shortlist`:
+/// whether a later hand searches only the plays the last full search left unbeaten
+/// (`later_best`; off only to test it)
+fn playing_on_with(b: &Board, hand: &[Card], best: &Play, hands: i64, shortcut: bool, shortlist: bool) -> f64 {
     let cards = |play: &[usize]| -> (Vec<Card>, Vec<Card>) {
         (play.iter().map(|&i| hand[i]).collect(), (0..hand.len()).filter(|i| !play.contains(i)).map(|i| hand[i]).collect())
     };
@@ -1127,6 +1160,7 @@ fn playing_on_with(b: &Board, hand: &[Card], best: &Play, hands: i64, shortcut: 
         return best.mean;
     }
     let (mut total, mut last) = (best.mean, best.mean);
+    let mut short: Option<Shortlist> = None;
     let mut board = b.clone();
     // the round counts down from `hands` (Acrobat and Dusk read it), as the round's own loop sets it
     board.hands_left = hands;
@@ -1152,13 +1186,65 @@ fn playing_on_with(b: &Board, hand: &[Card], best: &Play, hands: i64, shortcut: 
             o = again;
             continue;
         }
-        let Some(next) = best_play(&board, hand) else { break };
+        let next = if shortlist { later_best(&board, hand, &mut short) } else { best_play(&board, hand) };
+        let Some(next) = next else { break };
         (total, last) = (total + next.mean, next.mean);
         play = next.cards;
         (played, held) = cards(&play);
         o = score::score(&board, &played, &held, &mut Unlucky, false);
     }
     total
+}
+
+/// The plays a later hand in `playing_on` searches (masks, ascending), and the board they were
+/// found on: its number of jokers
+struct Shortlist {
+    plays: Vec<u32>,
+    jokers: usize,
+}
+
+/// `best_play` of a later hand in `playing_on`, among the plays the last full search left
+/// unbeaten: of each hand type, those no other play of it beats in both chips and Mult (the
+/// pareto front). The board one hand on adds the same to every play (its jokers' growth or
+/// fading: +Chips, +Mult, ×Mult; a hand type's level, The Arm, Card Sharp, Obelisk, Supernova
+/// to every play of it), which keeps a beaten play beaten (chips and Mult before a deck balances
+/// them: Plasma Deck). Searched in full again when the board changes in more than its numbers:
+/// a joker gone (Ice Cream, Seltzer), and the last hand where a joker retriggers played cards
+/// (Dusk's retrigger then). Still missed: a hand's level changed (The Arm) under a ×Mult that
+/// differs by play (the play's own cards, played or held: Glass, Polychrome, Steel, Baron), and
+/// a ×Mult that differs by play (Flower Pot) after a growing +Mult before it: a budget, not a
+/// finding (register).
+fn later_best(b: &Board, hand: &[Card], short: &mut Option<Shortlist>) -> Option<Play> {
+    let n = hand.len().min(SUBSETS_MAX);
+    let last_retrigger = b.hands_left <= 1 && b.retriggers_played();
+    if short.as_ref().is_some_and(|s| s.jokers != b.jokers.len()) || last_retrigger {
+        *short = None;
+    }
+    let mut scored = Vec::new();
+    let found = match short.as_ref() {
+        Some(s) => best_play_among(b, hand, (1 << n) - 1, true, None, Some(&s.plays), None),
+        None => best_play_among(b, hand, (1 << n) - 1, true, None, None, Some(&mut scored)),
+    };
+    if short.is_none() {
+        // each hand type's front: by chips (most first), then Mult, then the earlier mask (the
+        // one the search keeps on a tie); kept while its Mult beats every play before it
+        scored.sort_by(|x, y| (x.1 as usize).cmp(&(y.1 as usize)).then(y.2.total_cmp(&x.2)).then(y.3.total_cmp(&x.3)).then(x.0.cmp(&y.0)));
+        let mut plays = Vec::new();
+        let mut top: Option<(HandType, f64)> = None;
+        for &(mask, h, _, mult) in &scored {
+            if top.is_none_or(|(th, tm)| th != h || mult > tm) {
+                plays.push(mask);
+                top = Some((h, mult));
+            }
+        }
+        plays.sort_unstable();
+        *short = Some(Shortlist { plays, jokers: b.jokers.len() });
+    }
+    // its mean as `best_play_with` works it out
+    found.map(|(mut p, rolled)| {
+        p.mean = if rolled || n < hand.len() { mean_score(b, hand, &p.cards, p.floor) } else { p.floor };
+        p
+    })
 }
 
 /// The first dig for a plan keeping `keep`: up to 5 of the lowest cards outside it, never
@@ -2786,7 +2872,7 @@ mod tests {
         let best = best_play(&b, &hand).unwrap();
         assert_eq!(best.hand, HandType::Pair);
         for shortcut in [true, false] {
-            assert!((playing_on_with(&b, &hand, &best, 3, shortcut) - 3.0 * best.mean).abs() < 1e-9 * best.mean, "{shortcut}");
+            assert!((playing_on_with(&b, &hand, &best, 3, shortcut, false) - 3.0 * best.mean).abs() < 1e-9 * best.mean, "{shortcut}");
         }
         let (now, three) = on(&["j_ice_cream"], "");
         assert!(three < now * 3.0, "Ice Cream fades: {now} -> {three}");
@@ -2818,11 +2904,68 @@ mod tests {
                     shuffle(&mut deck, &mut rng);
                     let hand = deck[..8].to_vec();
                     let Some(best) = best_play(&b, &hand) else { continue };
-                    let (fast, full) = (playing_on_with(&b, &hand, &best, 4, true), playing_on_with(&b, &hand, &best, 4, false));
+                    let (fast, full) = (playing_on_with(&b, &hand, &best, 4, true, false), playing_on_with(&b, &hand, &best, 4, false, false));
                     assert!((fast - full).abs() <= 1e-9 * full.abs(), "{key} {blind} {hand:?}: {fast} vs {full}");
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_later_hands_front_finds_what_searching_them_all_finds() {
+        // `playing_on`'s later hands search only the plays the last full search left unbeaten
+        // (`later_best`): for every joker in the game data beside one that grows, fades or
+        // retriggers in the round, under no boss, The Arm and The Mouth, with and without the
+        // Plasma Deck, on random hands of enhanced cards with editions and random levels, the
+        // total as searching every hand nearly always, and never far off
+        let mut rng = Rng::new(7);
+        let keys: Vec<String> = crate::data::GameData::bundled().centers.iter().filter(|c| c.key.starts_with("j_")).map(|c| c.key.clone()).collect();
+        let movers = ["j_dusk", "j_ice_cream", "j_selzer", "j_bull", "j_ride_the_bus", "j_supernova", "j_green_joker", "j_runner", "j_square", "j_trousers"];
+        let enh = [None, None, None, Some(Enhancement::Bonus), Some(Enhancement::Mult), Some(Enhancement::Glass), Some(Enhancement::Steel), Some(Enhancement::Lucky)];
+        let edi = [None, None, None, None, Some(Edition::Foil), Some(Edition::Holo), Some(Edition::Polychrome)];
+        let (mut cases, mut differ, mut worst) = (0, 0, 1.0f64);
+        for mover in movers {
+            for key in &keys {
+                for (blind, plasma) in ["", "bl_arm", "bl_mouth"].into_iter().flat_map(|bl| [(bl, false), (bl, true)]) {
+                    let mut b = sample_board(&[key.as_str(), mover]);
+                    if b.jokers.len() < 2 {
+                        continue;
+                    }
+                    b.new_round(blind);
+                    b.plasma = plasma;
+                    // Ice Cream and Seltzer run out within the round
+                    for j in b.jokers.iter_mut() {
+                        if j.kind == Kind::IceCream {
+                            j.extra.chips = 15.0;
+                        }
+                        if j.kind == Kind::Seltzer {
+                            j.extra.n = 2.0;
+                        }
+                    }
+                    for l in b.levels.iter_mut() {
+                        *l = l.with_level(1 + rng.below(4) as i64);
+                    }
+                    for _ in 0..2 {
+                        let mut deck = standard_deck();
+                        for c in deck.iter_mut() {
+                            c.enhancement = enh[rng.below(enh.len())];
+                            c.edition = edi[rng.below(edi.len())];
+                        }
+                        shuffle(&mut deck, &mut rng);
+                        let hand = deck[..8].to_vec();
+                        let Some(best) = best_play(&b, &hand) else { continue };
+                        let (short, full) = (playing_on_with(&b, &hand, &best, 4, true, true), playing_on_with(&b, &hand, &best, 4, true, false));
+                        cases += 1;
+                        if (short - full).abs() > 1e-9 * full.abs() {
+                            differ += 1;
+                            worst = worst.min(short / full);
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!("front: {differ} of {cases} differ, worst {worst:.4}");
+        assert!(differ * 1000 <= cases && worst >= 0.9, "{differ} of {cases}, worst {worst}");
     }
 
     #[test]

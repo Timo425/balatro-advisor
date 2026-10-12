@@ -182,6 +182,9 @@ pub struct Outcome {
     pub scoring: Vec<usize>,
     pub chips: f64,
     pub mult: f64,
+    /// Chips and Mult before the deck balances them (Plasma Deck); `chips` and `mult` without it
+    #[serde(skip)]
+    pub unbalanced: (f64, f64),
     /// `floor(chips × mult)`, what the round total gains.
     pub score: f64,
     /// Money earned while scoring (gold seals, Lucky cards, Golden Ticket, …).
@@ -343,6 +346,13 @@ struct Answers {
     play_repetition: bool,
     held_repetition: bool,
     other_joker: bool,
+}
+
+impl Board {
+    /// Whether a joker on the board retriggers played cards (`PLAY_REPETITION`)
+    pub fn retriggers_played(&self) -> bool {
+        self.jokers.iter().any(|j| PLAY_REPETITION.contains(&j.kind))
+    }
 }
 
 impl Answers {
@@ -882,6 +892,7 @@ impl<R: Rolls + ?Sized> Pass<'_, R> {
             scoring: self.info.scoring,
             chips,
             mult,
+            unbalanced: (chips, mult),
             score: (chips * mult).floor(),
             dollars: self.earned,
             debuffed_hand,
@@ -1026,13 +1037,14 @@ impl<R: Rolls + ?Sized> Pass<'_, R> {
             }
         }
 
+        let unbalanced = (chips, mult);
         if self.b.plasma {
             let half = ((chips + mult) / 2.0).floor();
             chips = half;
             mult = half;
             self.rec(|_| "Plasma Deck balance".into(), chips, mult);
         }
-        self.outcome(chips, mult, false)
+        Outcome { unbalanced, ..self.outcome(chips, mult, false) }
     }
 
     /// One trigger of a played card: `eval_card` for the card, then every joker's
