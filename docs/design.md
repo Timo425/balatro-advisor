@@ -919,3 +919,16 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    D8's rule for every race with a status quo, packs included: a skip that keeps nothing loses
    its ties to a pick (the best pick by paired estimate), and a skip that does keep something
    (Red Card's growth, a pick's money held) is measured, not assumed.
+33. **Selling a Negative joker is counted as making room.** A Negative joker's slot goes with
+   it (card.lua `Card:remove_from_deck`: the joker limit −1), so selling one to make room frees
+   nothing. The sell choices (`advise.rs`, the "sell X for it" note) pick it like any other
+   joker, so a pick or buy that needs a slot can be valued on a board the game doesn't allow,
+   and the joker you'd really have to sell is never weighed. Raised in play 2026-10-12
+   (Anaglyph Deck, Ante 4 Buffoon pack, 7/7 jokers: "pick Runner, sell Mad Joker (Negative,
+   perishable, debuffed)" ranked first, By Ante 8 ×1.69; selling a real joker for it, simulated
+   with `whatif`: Gluttonous Joker The Window 3% → 10%, Misprint, Gros Michel or Green Joker
+   lower than not taking it). Not traced: how much of the ×1.69 is the slot, since Runner's own
+   growth is projected from the Straights you play now (`grow_antes`: ~1 an ante, +15 Chips).
+   The fix: a Negative joker is never the joker sold to make room (it still can be sold for
+   money, or because it's worth less than nothing), in every caller that makes room: shop,
+   packs, rescue list, skip-or-play's Buffoon pack, `whatif`.
