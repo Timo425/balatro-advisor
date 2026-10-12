@@ -312,3 +312,41 @@ fn the_hooks_discard_uses_no_discard_and_burnt_joker_skips_it() {
     assert_eq!((b.discards_used, b.discards_left), (1, 2));
     assert_eq!(b.levels[HandType::Pair as usize].level, before + 1);
 }
+
+#[test]
+fn only_the_listed_jokers_answer_the_contexts_few_do() {
+    // Unit tests ask every joker in every context (`Pass::asked`) and fail when one answers a
+    // context its kind isn't listed for (`Answers`): every joker, alone and copied, on hands
+    // that reach each context (faces, Kings and Queens held, 2-5s, Aces, the last hand for Dusk,
+    // a held Steel card for Mime, an uncommon joker beside it for Baseball Card)
+    let data = GameData::bundled();
+    let uncommon = j("j_steel_joker");
+    assert_eq!(uncommon.rarity, 2);
+    let hands = [
+        ("KS KH QD", "KC QC 2D 9S"),
+        ("2S 3H 4D 5C 6S", "KD QH JS"),
+        ("AS AH", "KS 3C 7D"),
+        ("JS JH JD 10C 10S", "QS KH 2C"),
+        ("9H", "KC KD QH 4S"),
+        ("7S 7H", "8C:steel 9D"),
+    ];
+    let mut checked = 0;
+    for c in data.centers.iter().filter(|c| c.set == "Joker") {
+        let Some(k) = Joker::from_key(&c.key, data) else { continue };
+        let boards = [vec![k.clone()], vec![j("j_blueprint"), k.clone()], vec![k.clone(), j("j_brainstorm")], vec![k.clone(), j("j_runner")], vec![k.clone(), uncommon.clone()]];
+        for jokers in boards {
+            for last in [true, false] {
+                let mut b = Board::empty();
+                b.jokers = jokers.clone();
+                b.hands_left = if last { 1 } else { 3 };
+                for (played, held) in hands {
+                    score(&b, &cards(played), &cards(held), &mut Unlucky, false);
+                    score(&b, &cards(played), &cards(held), &mut crate::engine::Lucky, false);
+                    checked += 1;
+                }
+            }
+        }
+    }
+    assert!(checked > 1000, "{checked}");
+}
+

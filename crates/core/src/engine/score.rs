@@ -325,6 +325,33 @@ fn eff() -> Option<Eff> {
     Some(NONE)
 }
 
+/// The jokers that answer the contexts few do (`Pass::calc`'s arms for them; card.lua
+/// `Card:calculate_joker`, its `individual` with `G.hand`, `repetition` with `G.play` and
+/// `G.hand`, and `other_joker` branches): where none on
+/// the board can, a pass doesn't ask each joker about each card. A Blueprint or Brainstorm
+/// answers as the joker it copies, which is on the board too. Unit tests ask anyway and check
+/// that nothing answers (`Pass::asked`).
+const HELD_INDIVIDUAL: &[Kind] = &[Kind::ShootTheMoon, Kind::Baron, Kind::ReservedParking, Kind::RaisedFist];
+const PLAY_REPETITION: &[Kind] = &[Kind::SockAndBuskin, Kind::HangingChad, Kind::Dusk, Kind::Seltzer, Kind::Hack];
+const HELD_REPETITION: &[Kind] = &[Kind::Mime];
+const OTHER_JOKER: &[Kind] = &[Kind::Baseball];
+
+/// Which of those contexts any joker on the board answers
+#[derive(Clone, Copy)]
+struct Answers {
+    held_individual: bool,
+    play_repetition: bool,
+    held_repetition: bool,
+    other_joker: bool,
+}
+
+impl Answers {
+    fn of(b: &Board) -> Answers {
+        let any = |kinds: &[Kind]| b.jokers.iter().any(|j| kinds.contains(&j.kind));
+        Answers { held_individual: any(HELD_INDIVIDUAL), play_repetition: any(PLAY_REPETITION), held_repetition: any(HELD_REPETITION), other_joker: any(OTHER_JOKER) }
+    }
+}
+
 #[derive(Clone, Copy)]
 enum Ctx {
     Before,
@@ -375,6 +402,7 @@ struct Pass<'a, R: Rolls + ?Sized> {
     held_order: Option<Vec<usize>>,
     /// `Outcome::held_used`
     held_used: bool,
+    answers: Answers,
 }
 
 /// The joker whose effect joker `j` has: itself, or what a Blueprint (its right neighbour) or
@@ -704,6 +732,7 @@ fn pass<R: Rolls + ?Sized>(b: &Board, played: &[Card], held: &[Card], info: Hand
         card_rolls: false,
         reads_place: false,
         proposed: (None, None),
+        answers: Answers::of(b),
     };
     p.run()
 }
@@ -730,8 +759,9 @@ impl<R: Rolls + ?Sized> Pass<'_, R> {
                 if self.played[ci].seal == Some(Seal::Red) {
                     reps += 1;
                 }
-                for j in 0..self.b.jokers.len() {
+                for j in self.asked(self.answers.play_repetition) {
                     if let Some(e) = self.calc(j, Ctx::PlayRepetition(ci), 0) {
+                        self.answered(self.answers.play_repetition);
                         reps += e.reps;
                     }
                 }
@@ -760,8 +790,9 @@ impl<R: Rolls + ?Sized> Pass<'_, R> {
                     self.push_op(ops, Op { chips: 0.0, mult: 0.0, x: own_x }, |_| Some(format!("{} held (steel)", c.label())));
                 }
                 let mut any_joker = false;
-                for j in 0..self.b.jokers.len() {
+                for j in self.asked(self.answers.held_individual) {
                     if let Some(e) = self.calc(j, Ctx::HeldIndividual(hi), 0) {
+                        self.answered(self.answers.held_individual);
                         any_joker = true;
                         self.earned += e.dollars;
                         if e.h_mult != 0.0 || e.x != 1.0 {
@@ -777,8 +808,9 @@ impl<R: Rolls + ?Sized> Pass<'_, R> {
                     if any && !c.debuff && c.seal == Some(Seal::Red) {
                         reps += 1;
                     }
-                    for j in 0..self.b.jokers.len() {
+                    for j in self.asked(self.answers.held_repetition) {
                         if let Some(e) = self.calc(j, Ctx::HeldRepetition(any), 0) {
+                            self.answered(self.answers.held_repetition);
                             reps += e.reps;
                         }
                     }
@@ -820,6 +852,19 @@ impl<R: Rolls + ?Sized> Pass<'_, R> {
                     self.rec(|_| l, *chips, *mult);
                 }
             }
+        }
+    }
+
+    /// The jokers to ask about a context `any` of them answers (`Answers`): none when none can
+    /// (unit tests ask every one anyway, and `answered` checks)
+    fn asked(&self, any: bool) -> std::ops::Range<usize> {
+        if any || cfg!(test) { 0..self.b.jokers.len() } else { 0..0 }
+    }
+
+    /// A joker answered a context: one `Answers` said could
+    fn answered(&self, any: bool) {
+        if cfg!(test) {
+            assert!(any, "a joker answered a context `Answers` says none on this board does: add its kind to that context's list");
         }
     }
 
@@ -960,8 +1005,9 @@ impl<R: Rolls + ?Sized> Pass<'_, R> {
                 mult *= e.x;
                 self.rec(|p| p.joker_name(j), chips, mult);
             }
-            for v in 0..self.b.jokers.len() {
+            for v in self.asked(self.answers.other_joker) {
                 if let Some(e) = self.calc(v, Ctx::OtherJoker(j), 0) {
+                    self.answered(self.answers.other_joker);
                     mult *= e.x;
                     self.rec(|p| format!("{} on {}", p.joker_name(v), p.joker_name(j)), chips, mult);
                 }
