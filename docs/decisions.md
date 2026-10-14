@@ -383,3 +383,23 @@ owner then finds in the states left out, or a stronger independent judge (a deep
 real outcomes) becomes cheap enough.
 
 Approved by the owner 2026-10-09.
+
+## D13. The test suite runs in the test profile, with overflow checks (accepted)
+
+**Decision.** Step 4's test run is `cargo test`, not `cargo test --release`. The test profile
+(`Cargo.toml`: `opt-level = 3`) runs the same code as release (no `debug_assert` or
+debug-only paths), but an integer overflow panics instead of wrapping. The slower checks that
+compare outputs (the snapshot diff, the history check, the player benchmark,
+`search_against_reference`) stay on `--release`. The release profile keeps wrapping: it is the
+binary the live page runs, and a panic mid-run loses the analysis on screen.
+
+**Why.** 446f0ea: the straight flush plan's room underflowed when a straight flush was held
+whole. A debug build panicked (a reviewer reached it through `round_odds` → `decide`); every
+required check ran in release, where it wrapped silently, so none could catch it, and the test
+added for it passes in release with or without the fix. Under the test profile the whole lib
+suite took about as long as in release (344 s against 315 s, the machine under load).
+
+**Revisit if** the test profile gets much slower than release, or debug-only code paths
+appear (then the two profiles no longer run the same program).
+
+Approved by the owner 2026-10-14.

@@ -50,8 +50,8 @@ change to how the advice decides or values things follows these steps, in order:
    the simulation) already defines that group. If the fix only makes sense for one joker,
    suit, hand or card, it's the wrong fix. New hand-set numbers go in the register.
 4. **Prove it**, in two tiers (D12). Every change to how advice is decided or valued: `cargo
-   test --release` must exit 0 (check the exit status, not the printed output), the replay
-   fixtures included; `cargo clippy --release --all-targets` must report no warnings (fix the
+   test` (not `--release`: the test profile is optimised and keeps overflow checks, D13) must
+   exit 0 (check the exit status, not the printed output), the replay fixtures included; `cargo clippy --release --all-targets` must report no warnings (fix the
    ones your change brings); the snapshot diff, `BAV_SNAPSHOT_DIR=/tmp/before cargo test
    --release --test replay -- --ignored snapshot` before and `/tmp/after` after, then `diff
    -r` (a pure restructuring leaves it unchanged; a behaviour change: explain every
