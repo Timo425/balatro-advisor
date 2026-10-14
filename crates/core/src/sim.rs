@@ -1602,10 +1602,12 @@ fn aims(b: &Board, hand: &[Card], deck: &[Card]) -> Vec<Aim> {
             if missing.len() > 2 || keep.len() + missing.len() > 5 {
                 continue;
             }
-            // the flush part: the suit's other cards, the highest, while there's room
+            // the flush part: the suit's other cards, the highest, while there's room (a slot for
+            // each card drawn, at least one; a run held whole of the suit has none: no card makes
+            // a straight flush with it, as 6 cards are no hand: misc_functions.lua `get_flush`)
             let mut more: Vec<usize> = (0..hand.len()).filter(|i| !keep.contains(i) && in_suit(&hand[*i])).collect();
             more.sort_by(|&a, &c| hand[c].rank.chips().total_cmp(&hand[a].rank.chips()).then(a.cmp(&c)));
-            more.truncate(5 - keep.len() - missing.len().max(1));
+            more.truncate((5 - keep.len()).saturating_sub(missing.len().max(1)));
             keep.extend(more);
             keep.sort();
             keep.dedup();
@@ -3100,6 +3102,24 @@ mod tests {
         assert!(best.mean * 3.0 < need && need < on, "{} {need} {on}", best.mean);
         let a = decide(&b, &hand, &deck, 3, 2, need, 8);
         assert!(matches!(a, Action::Play(ref v, false) if v.len() == 4), "{a:?}");
+    }
+
+    #[test]
+    fn a_straight_flush_held_whole_leaves_no_room_for_its_flush_part() {
+        // Five cards of a suit in a row are the straight part and the flush part at once: no room
+        // for the suit's other cards, nothing to draw, so no plan (already made); the suit's other
+        // runs still are. Panics in a debug build (overflow checks: `cargo test`, not `--release`)
+        // if the flush part's room goes below 0.
+        for (cards, keys) in [("5H 6H 7H 8H 9H KH 2H 3C", &[][..]), ("5H 6D 7H 8D 9H KH 2D 3C", &["j_smeared"][..]), ("AH 2H 3H 4H 5H KH QH 3C", &[][..])] {
+            let hand = Card::parse_list(cards).unwrap();
+            let deck: Vec<Card> = standard_deck().into_iter().filter(|c| !hand.iter().any(|h| h.same_kind(c))).collect();
+            let all = aims(&sample_board(keys), &hand, &deck);
+            assert!(all.iter().all(|a| a.keep.len() <= 5), "{cards}: {:?}", all.iter().map(|a| (a.hand, a.keep.clone())).collect::<Vec<_>>());
+            // the run held (cards 0-4) is no plan; the run one rank up from its top four is
+            let sf: Vec<&Vec<usize>> = all.iter().filter(|a| a.hand == HandType::StraightFlush).map(|a| &a.keep).collect();
+            assert!(!sf.iter().any(|k| (0..5).all(|i| k.contains(&i))), "{cards}: made already {sf:?}");
+            assert!(sf.contains(&&vec![1, 2, 3, 4]), "{cards}: {sf:?}");
+        }
     }
 
     #[test]
