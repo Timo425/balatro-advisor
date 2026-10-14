@@ -1012,9 +1012,18 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    (before: the discard led at 1.043); traces of the discard's rounds show the Flush played
    first, then a small hand to finish. The fixture's `expect` keeps only what still holds (the
    3♠ is never played or thrown); the owner's line (discard, never J♠ 7♠ 4♠ 3♠) waits in its
-   `pending_expect`, and the replay test fails once that holds, so the fix restores it. The
+   `pending_expect`, and the replay test fails once that holds, so the fix restores it (D14).
+   Not measured: that the owner's line really is better. Before 2026-10-14 it rested on the
+   owner's judgement and on the older simulated player agreeing; "a strong player would bank a
+   junk hand after the discard" is reasoning. So the work starts there: play the owner's line as
+   a strong player would (discard K♣ 9♥ 6♥ 5♣, then a junk hand of cards outside the Flush,
+   then the Flush) on the same rounds as the junk-play pick and compare by `RoundGoals::value`.
+   If it wins, this gap is the cause and that margin is the fix's target; if it doesn't, the
+   junk play may be right here (hands nearly free past the interest cap): take it to the owner
+   before changing the fixture either way, never tune the policy until the old line wins. The
    fix: weigh a hand by what it's worth in the round (`RoundGoals`: a spare hand's money, points
    toward the target, a dig without a discard), not as a fixed cost, which is gap 6's general
    fix (a chase weighed by the round's value); a rule for "junk before a Flush" is the wrong
-   fix. Done when the pending expectation holds, the reference ranks the discard first on seeds
-   42-44, and the player benchmark and the history check show no board or pick worse.
+   fix. Done when the pending expectation holds (then restore it into `expect`), the reference
+   ranks the discard first on seeds 42-44, and `player_values`, the player benchmark and the
+   history check show no board or pick worse.
