@@ -578,7 +578,7 @@ impl Board {
             l.played_this_round = 0;
         }
         self.discards_used = 0;
-        for jk in self.jokers.iter_mut().filter(|jk| !jk.debuff && jk.key == "j_hit_the_road") {
+        for jk in self.jokers.iter_mut().filter(|jk| jk.resets_at_round_end()) {
             jk.x_mult = 1.0;
         }
     }

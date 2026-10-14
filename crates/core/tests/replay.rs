@@ -25,6 +25,8 @@ fn replayed_states_give_the_expected_advice() {
                 "best_action" => bp["action"].clone(),
                 "best_hand" => bp["hand"].clone(),
                 "best_use_first" => bp["use_first"].clone(),
+                // how many cards the best move plays or discards
+                "best_size" => Value::from(bp["cards"].as_array().map_or(0, Vec::len)),
                 "top_option" => a["options"][0]["label"].clone(),
                 // the hand that carries most of your points ("Hands that score your points")
                 "top_hand" => a["hand_mix"][0]["hand"].clone(),

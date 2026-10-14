@@ -106,6 +106,12 @@ pub(super) struct LongRun<'a> {
     round_decks: Mutex<std::collections::HashMap<String, std::sync::Arc<RoundChange>>>,
 }
 
+/// The steps a joker's Mult, ×Mult and Chips are valued on (`LongRun::joker_worth`): about what
+/// the jokers a round changes add in a hand or two (Green Joker and Ride the Bus +1 Mult a hand,
+/// Spare Trousers +2; Vampire ×0.1 an enhanced card, Lucky Cat ×0.25; Square +4 Chips, Wee +8,
+/// Runner +15)
+pub(super) const GROWTH_STEPS: [f64; 3] = [2.0, 0.25, 10.0];
+
 /// What an option or event adds to your run, applied to the projected board the same way
 /// everywhere (`LongRun::value`).
 #[derive(Debug, Clone, Default)]
@@ -136,6 +142,9 @@ pub(super) struct Gain {
     pub hand_size: i64,
     pub hands: i64,
     pub discards: i64,
+    /// One of your jokers (by its place) as this now: what its numbers left at a round's end are
+    /// worth (`LongRun::joker_worth`), grown from there as the projection grows it
+    pub joker: Option<(usize, Joker)>,
 }
 
 impl Gain {
@@ -451,6 +460,11 @@ impl<'a> LongRun<'a> {
     /// the money you'd hold buys comes with it (`Projected`). `extra_rent`: more rent per ante
     /// (negative: more income), on top of your jokers'.
     pub fn project_rent(&self, keep: &dyn Fn(usize) -> bool, dollars: f64, extra_rent: f64) -> Projected {
+        self.project_as(keep, dollars, extra_rent, None)
+    }
+
+    /// `project_rent` with joker `i` as `j` now (`changed`), grown from there
+    fn project_as(&self, keep: &dyn Fn(usize) -> bool, dollars: f64, extra_rent: f64, changed: Option<(usize, &Joker)>) -> Projected {
         let (ctx, run) = (self.ctx, self.run);
         let rent = self.owned_rent(keep) + extra_rent;
         let flow = self.owned_income(keep) - rent;
@@ -469,6 +483,7 @@ impl<'a> LongRun<'a> {
             .enumerate()
             .filter(|(i, (_, sj))| keep(*i) && self.lasts(sj))
             .map(|(i, (j, _))| {
+                let j = changed.filter(|c| c.0 == i).map_or(j, |c| c.1);
                 if self.replaced.get().is_some_and(|r| r[i]) {
                     self.stand_in(1.25, 0.0, 0.0)
                 } else {
@@ -477,6 +492,32 @@ impl<'a> LongRun<'a> {
             })
             .collect();
         Projected { board: b, dollars, flow, top_base }
+    }
+
+    /// What one more Mult, ×Mult and Chip on joker `i` (the numbers `Joker::lasting` counts,
+    /// stepped from where they are now) is worth by Ante 8 (`value`, less 1), each measured on a
+    /// step of its own (`GROWTH_STEPS`) and never below nothing (more never scores less), and
+    /// what losing it is worth: its place to a typical find, the benchmark it's kept against
+    /// (`replaced`), so less than nothing for every joker the projection keeps. Nothing for a
+    /// joker the projection drops (a perishable that runs out) or replaces (weaker than a
+    /// typical find, not eternal).
+    pub fn joker_worth(&self, i: usize) -> ([f64; 3], f64) {
+        let run = self.run;
+        if !self.lasts(&run.jokers[i]) || self.replaced.get().is_some_and(|r| r[i]) {
+            return ([0.0; 3], 0.0);
+        }
+        let j = &self.ctx.base.jokers[i];
+        let per = par_map(&[0, 1, 2], |&f| {
+            let mut c = j.clone();
+            match f {
+                0 => c.mult += GROWTH_STEPS[0],
+                1 => c.x_mult += GROWTH_STEPS[1],
+                _ => c.extra.chips += GROWTH_STEPS[2],
+            }
+            ((self.value(&Gain { joker: Some((i, c)), ..Default::default() }) - 1.0) / GROWTH_STEPS[f]).max(0.0)
+        });
+        let gone = self.value(&Gain { joker: Some((i, self.stand_in(1.25, 0.0, 0.0))), ..Default::default() }) - 1.0;
+        ([per[0], per[1], per[2]], gone)
     }
 
     /// Your main hand's level by Ante 8 with money held at `dollars`, `to_levels` of the spare
@@ -791,7 +832,8 @@ impl<'a> LongRun<'a> {
     /// Your projected board with `g` added (what it adds to a round, `Gain::round`, and its
     /// consumable slots are in the round it's played in: `value`)
     pub fn board_with(&self, g: &Gain) -> Board {
-        let mut b = self.fill_long(self.project(&|_| true, self.run.dollars + g.held), None, self.once(g.money));
+        let p = self.project_as(&|_| true, self.run.dollars + g.held, 0.0, g.joker.as_ref().map(|(i, j)| (*i, j)));
+        let mut b = self.fill_long(p, None, self.once(g.money));
         if g.all_levels != 0 {
             for l in b.levels.iter_mut() {
                 *l = add_levels(*l, g.all_levels as f64);

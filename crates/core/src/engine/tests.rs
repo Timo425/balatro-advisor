@@ -314,6 +314,55 @@ fn the_hooks_discard_uses_no_discard_and_burnt_joker_skips_it() {
 }
 
 #[test]
+fn the_jokers_a_round_changes_for_good_are_the_listed_ones() {
+    // Every joker alone, on hands and discards that reach each arm that changes a joker's own
+    // numbers (`CHANGE_IN_ROUND`): four cards and Two Pair with 2s, a straight, faces, a Lucky
+    // card (with every roll won), enhanced cards, a hand other than the most played (Obelisk),
+    // discards of the round's Castle suit, a Jack (Hit the Road: back at the round's end), the
+    // last of Yorick's discards, a Seltzer on its last use. A joker is changed when its numbers
+    // as they'll stand after the round (`Joker::lasting`) moved, or it's gone.
+    let data = GameData::bundled();
+    let plays = ["2S 2H 5D 5C", "2S 3H 4D 5C 6S", "KS KH QD", "AS:lucky", "9S:glass 9H:mult 9D:bonus"];
+    let discards = ["KS QS JS 2S 5H", "3D"];
+    let mut changed: Vec<String> = vec![];
+    for c in data.centers.iter().filter(|c| c.set == "Joker") {
+        let Some(mut k) = Joker::from_key(&c.key, data) else { continue };
+        k.yorick_discards = 1.0;
+        if k.kind == Kind::Seltzer {
+            k.extra.n = 1.0;
+        }
+        let mut b = Board::empty();
+        b.jokers = vec![k];
+        b.hands_left = 3;
+        b.discards_left = 3;
+        b.castle_suit = Some(Suit::Spades);
+        b.levels[HandType::HighCard as usize].played = 10;
+        let moved = |before: &Board, after: &Board| after.jokers.len() != before.jokers.len() || after.jokers[0].lasting() != before.jokers[0].lasting();
+        let mut any = false;
+        for p in plays {
+            for lucky in [false, true] {
+                let mut a = b.clone();
+                let o = if lucky { score(&a, &cards(p), &[], &mut crate::engine::Lucky, false) } else { score(&a, &cards(p), &[], &mut Unlucky, false) };
+                a.after_hand(&o);
+                any |= moved(&b, &a);
+            }
+        }
+        for d in discards {
+            let mut a = b.clone();
+            a.discard(&cards(d));
+            any |= moved(&b, &a);
+        }
+        if any {
+            changed.push(c.key.clone());
+        }
+    }
+    changed.sort();
+    let mut listed: Vec<String> = CHANGE_IN_ROUND.iter().map(|k| k.to_string()).collect();
+    listed.sort();
+    assert_eq!(changed, listed);
+}
+
+#[test]
 fn only_the_listed_jokers_answer_the_contexts_few_do() {
     // Unit tests ask every joker in every context (`Pass::asked`) and fail when one answers a
     // context its kind isn't listed for (`Answers`): every joker, alone and copied, on hands

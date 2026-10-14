@@ -206,6 +206,13 @@ pub struct PlayAdvice {
     /// on it, how much more by Ante 8, as a share of your run)
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub worth_drawing: Vec<(String, String, f64)>,
+    /// What the round leaves the jokers in `grows` (see `PlayOption::grown`)
+    #[serde(skip_serializing_if = "is_zero_f64")]
+    pub grown: f64,
+    /// The jokers whose numbers a round leaves them with count in its value (`PlayOption::grown`):
+    /// (name, what one more Mult, ×Mult and Chip adds by Ante 8, as a share of your run)
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub grows: Vec<(String, [f64; 3])>,
     /// With `Options::reference`: every move considered ("action cards [use first]") and its
     /// value on `compare::MAX` rounds the search didn't use, and how it left the search's race
     /// (`compare::Race::left`), best first
@@ -262,6 +269,11 @@ pub struct PlayOption {
     pub use_first: Option<String>,
     /// Planets from Blue Seals held at the end, on average (counted in the ranking)
     pub planets: f64,
+    /// What the round's hands and discards leave the jokers a round changes (`PlayAdvice::grows`),
+    /// in the unit a won round is 1 in, on average over every round played (a lost round counts
+    /// nothing: counted in the ranking, `sim::RoundGoals::value`)
+    #[serde(skip_serializing_if = "is_zero_f64")]
+    pub grown: f64,
     /// As good as the best move, as far as the simulation can tell
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub tie: bool,
@@ -722,6 +734,9 @@ const SEARCH_BUDGET: &[(usize, usize)] = &[(32, 48), (64, 24), (128, 12), (256, 
 const JUDGE_ROLLOUTS: usize = 24;
 fn is_zero_usize(n: &usize) -> bool {
     *n == 0
+}
+fn is_zero_f64(x: &f64) -> bool {
+    *x == 0.0
 }
 
 
@@ -1906,6 +1921,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     lap("best play");
 
     let tips = order_tips(run, data, &tarots);
+    let grows = best_play.as_ref().is_some_and(|b| !b.grows.is_empty());
     Analysis {
         schema_version: 1,
         deck: run.deck.clone(),
@@ -1949,6 +1965,9 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             "Blue Seal planets by Ante 8 assume a consumable held at round end in a measured share of rounds (one run).",
         ]
         .into_iter()
+        .chain(grows.then_some(
+            "Best play counts what the round's hands and discards leave the jokers that grow or fade in a round, by what one more Mult, ×Mult or Chip adds by Ante 8 (measured on a step of +2 Mult, +×0.25 or +10 Chips, taken as linear; a fall never costs more than losing the joker); the simulated player's own later hands don't aim for it, and what they do to your cards (Vampire's enhancements, Glass breaking) isn't counted. The blinds ahead still play your jokers as they are now.",
+        ))
         .chain((run.hand.len() > sim::ALL_MOVES_MAX).then_some(
             "A big hand: Best play's moves come from the hand's structure (its plays whose cards can all score, the best few of each kind and then by score now; its structure's discards), not every move; the simulated player's best play looks only at its 16 highest cards.",
         ))
@@ -4593,6 +4612,18 @@ mod tests {
         let ctx = Ctx { run, shares: vec![], data, base: Board::from_run(run, data), specs: vec![], fresh_deck, opts: quick() };
         let lr = value::LongRun::new(&ctx, mix, &[], [0; 4]);
         f(&lr)
+    }
+
+    #[test]
+    fn a_jokers_growth_is_worth_what_it_adds_by_ante_8() {
+        // Square Joker's Chips last the run: one more is worth something by Ante 8, its Mult
+        // and ×Mult nothing (Square has none to grow, and the projection's change scores the
+        // same); losing it costs. A perishable one gone before Ante 8 leaves nothing to grow.
+        let r = shop_run(&[("j_square", None, None), ("j_joker", None, None)], &[]);
+        let (per, gone) = with_long_run(&r, |lr| lr.joker_worth(0));
+        assert!(per[2] > 0.0 && per[0] == 0.0 && per[1] == 0.0 && gone < 0.0, "{per:?} {gone}");
+        let r = shop_run(&[("j_square", None, Some(2)), ("j_joker", None, None)], &[]);
+        assert_eq!(with_long_run(&r, |lr| lr.joker_worth(0)), ([0.0; 3], 0.0));
     }
 
     fn mults(b: &Board, key: &str) -> Vec<f64> {

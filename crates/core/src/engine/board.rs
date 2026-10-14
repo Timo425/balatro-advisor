@@ -35,7 +35,8 @@ impl Board {
             mouth_only: b.only_hand.as_deref().and_then(HandType::from_name),
         });
         Board {
-            jokers: s.jokers.iter().map(|j| Joker::from_save(j, data)).collect(),
+            // each told apart from its copies by its place (`Joker::id`)
+            jokers: s.jokers.iter().enumerate().map(|(i, j)| Joker { id: i as u32 + 1, ..Joker::from_save(j, data) }).collect(),
             joker_slots: s.joker_slots,
             levels,
             planets_held: s

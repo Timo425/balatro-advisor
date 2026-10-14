@@ -39,7 +39,7 @@ change to how the advice decides or values things follows these steps, in order:
 1. **Capture.** When the owner says a suggestion is wrong, save that state as a replay
    fixture before touching code: `tests/fixtures/private/<name>.json` = `{"note", "state":
    <balatro-advisor state --json>, "expect": {...}}` (keys: `best_action`, `best_hand`,
-   `best_use_first`, `best_not_cards`: [..], `top_option`, `above`: ["A", "B"], `top_hand`). The folder is
+   `best_use_first`, `best_size`, `best_not_cards`: [..], `top_option`, `above`: ["A", "B"], `top_hand`). The folder is
    git-ignored (real runs aren't committed).
 2. **Diagnose before fixing.** Find out why, by reading the code and simulating the state
    (scratch programs or `whatif`), not by guessing. Name the stage that failed. Run

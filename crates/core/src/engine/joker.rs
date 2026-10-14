@@ -245,6 +245,11 @@ pub struct Joker {
     /// Yorick: discards left until its next ×Mult step (`ability.yorick_discards`)
     #[serde(default)]
     pub yorick_discards: f64,
+    /// Its place on your board as read from the save (1 = leftmost; 0: a joker that isn't
+    /// yours, a stand-in or a shop card), kept through a round's steps: tells it apart from its
+    /// copies when one is used up (`sim::RoundGoals::grown`)
+    #[serde(skip)]
+    pub id: u32,
 }
 
 fn f(v: &serde_json::Value, k: &str) -> f64 {
@@ -300,6 +305,7 @@ impl Joker {
             hands_played_at_create: f(ability, "hands_played_at_create"),
             to_do_hand: ability.get("to_do_poker_hand").and_then(|t| t.as_str()).and_then(HandType::from_name),
             yorick_discards,
+            id: 0,
         }
     }
 
@@ -353,7 +359,44 @@ impl Joker {
     pub fn grow_from(&mut self, ev: RunEvent, n: f64) {
         self.mult += self.mult_from(ev) * n;
     }
+
+    /// Whether the round's end puts its ×Mult back to ×1 (card.lua `end_of_round` context:
+    /// Hit the Road, unless debuffed; `Board::new_round`)
+    pub fn resets_at_round_end(&self) -> bool {
+        !self.debuff && self.key == "j_hit_the_road"
+    }
+
+    /// Its Mult, ×Mult and Chips as they'll stand once the round is over (`resets_at_round_end`):
+    /// what a round leaves of them (`sim::RoundGoals::jokers`)
+    pub fn lasting(&self) -> [f64; 3] {
+        [self.mult, if self.resets_at_round_end() { 1.0 } else { self.x_mult }, self.extra.chips]
+    }
 }
+
+/// The jokers whose own numbers (Mult, ×Mult, Chips) a hand played or a discard changes for
+/// longer than the round, or uses up: the arms of card.lua `Card:calculate_joker` that change
+/// `ability` in the `before`, `individual`, `after` and `discard` contexts, as the engine plays
+/// them (`score`, `Board::after_hand`, `Board::discard_by`). Hit the Road isn't one (back to ×1
+/// at the round's end). What a round's value counts (`sim::RoundGoals::jokers`); a test plays
+/// every joker to check the list. Not modelled: what grows when a played card is destroyed
+/// (card.lua's `cards_destroyed` and `remove_playing_cards` contexts: Glass Joker, Caino), as
+/// the engine destroys none of them in a hand.
+pub const CHANGE_IN_ROUND: &[&str] = &[
+    "j_green_joker",
+    "j_ride_the_bus",
+    "j_runner",
+    "j_square",
+    "j_trousers",
+    "j_wee",
+    "j_lucky_cat",
+    "j_vampire",
+    "j_obelisk",
+    "j_ice_cream",
+    "j_selzer",
+    "j_ramen",
+    "j_castle",
+    "j_yorick",
+];
 
 /// Things that happen between rounds that the board grows from: jokers that grow on them
 /// (`Joker::mult_from`) and the game's counters that jokers score from

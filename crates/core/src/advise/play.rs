@@ -60,6 +60,22 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
         }
         out
     };
+    // What the jokers a round changes (Square, Green Joker, Ice Cream, …) are left with at its
+    // end, in the same long-run measure: per Mult, ×Mult and Chip, and used up
+    // (`LongRun::joker_worth`). A move that grows one is worth that much more.
+    let joker_worth: Vec<sim::JokerWorth> = {
+        let jokers = &ctx.base.jokers;
+        let changed: Vec<usize> = (0..jokers.len()).filter(|&i| !jokers[i].debuff && crate::engine::CHANGE_IN_ROUND.contains(&jokers[i].key.as_str())).collect();
+        let worth = par_map(&changed, |&i| lr.joker_worth(i));
+        // a joker worth nothing either way (one the projection drops or replaces) isn't followed
+        changed
+            .iter()
+            .zip(worth)
+            .filter(|(_, (per, gone))| per.iter().any(|&x| x > 0.0) || *gone != 0.0)
+            .map(|(&i, (per, gone))| sim::JokerWorth { id: jokers[i].id, key: jokers[i].key.clone(), start: jokers[i].lasting(), per, gone })
+            .collect()
+    };
+    let grows: Vec<(String, [f64; 3])> = joker_worth.iter().map(|w| (data.name(&w.key).to_string(), w.per)).collect();
     let worth_drawing: Vec<(String, String, f64)> = seen
         .iter()
         .map(|(k, c, g)| (c.label(), run.consumables.iter().find(|x| &x.key == k).map_or(k.clone(), |x| x.name.clone()), *g))
@@ -68,7 +84,7 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
     let look = ctx.specs.iter().find(|x| x.in_progress).map(|spec| {
         let mut bb = ctx.board_for(&b, spec);
         // The simulated player plays toward the same measure the advice ranks by
-        let goals = sim::RoundGoals { planet: std::array::from_fn(|i| planet_gain_by[i]), dollar: dollar_gain, per_hand: run.money_per_hand, seen: seen.clone(), ..Default::default() };
+        let goals = sim::RoundGoals { planet: std::array::from_fn(|i| planet_gain_by[i]), dollar: dollar_gain, per_hand: run.money_per_hand, seen: seen.clone(), jokers: std::sync::Arc::new(joker_worth.clone()), ..Default::default() };
         bb.goals = Some(goals.clone());
         let start = ctx.start_for(spec, &bb);
         let seed = ctx.opts.seed;
@@ -90,7 +106,7 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
                 Some(sim::Use { name: center.name.clone(), key: c.key.clone(), levels, planet: true, ..Default::default() })
             })
             .collect();
-        let to_opt = |m: &sim::Move, hand: &[Card], board: &Board, (p, mean, spare, cash, planets): (f64, f64, f64, f64, f64), use_first: Option<String>| {
+        let to_opt = |m: &sim::Move, hand: &[Card], board: &Board, (p, mean, spare, cash, planets, grown): (f64, f64, f64, f64, f64, f64), use_first: Option<String>| {
             // A play is shown in the order to play it; a discard by rank (order doesn't matter)
             let sorted_discard;
             let (action, idx) = match m {
@@ -114,7 +130,7 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
             let cards: Vec<Card> = idx.iter().map(|&i| hand[i]).collect();
             // cards a consumable added aren't in your hand yet: no position
             let indices = idx.iter().filter(|&&i| i < hand_order.len()).map(|&i| hand_order[i]).collect();
-            PlayOption { spare_hands: spare, round_money: cash, action: action.into(), cards: cards.iter().map(Card::label).collect(), indices, dig, hand: name, score, p_win: p, mean_total: mean, use_first, planets, tie: false, then: None, arrange: arrange.0, arrange_indices: arrange.1 }
+            PlayOption { spare_hands: spare, round_money: cash, action: action.into(), cards: cards.iter().map(Card::label).collect(), indices, dig, hand: name, score, p_win: p, mean_total: mean, use_first, planets, grown, tie: false, then: None, arrange: arrange.0, arrange_indices: arrange.1 }
         };
         // Exact ties are broken by the cards themselves, so the order your hand is sorted in
         // never changes the advice
@@ -209,7 +225,7 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
                 let k = v.len().max(1) as f64;
                 let avg = |f: fn(&sim::Outcome) -> f64| v.iter().map(f).sum::<f64>() / k;
                 let (m, b, st, _, use_first) = &cands[c];
-                let mut o = to_opt(m, &st.hand, b, (avg(|o| o.won), avg(|o| o.total), avg(|o| o.spare), avg(|o| o.cash), avg(|o| o.planets)), use_first.clone());
+                let mut o = to_opt(m, &st.hand, b, (avg(|o| o.won), avg(|o| o.total), avg(|o| o.spare), avg(|o| o.cash), avg(|o| o.planets), avg(|o| o.won * o.grown)), use_first.clone());
                 o.tie = tied[c];
                 if matches!(m, sim::Move::Discard(_)) {
                     let mut by: std::collections::HashMap<crate::engine::HandType, (usize, f64)> = std::collections::HashMap::new();
@@ -353,7 +369,7 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
                 let m = format!("Not used in this look-ahead (no modelled effect on this hand): {}", missing.join(", "));
                 Some(m)
             };
-            Some(PlayAdvice { reference, reference_gap, judged, worth_drawing: worth_drawing.clone(), then: best.then.clone(), ties: opts.iter().filter(|o| o.tie).count(), planets: Some(best.planets), use_first: best.use_first, spare_hands: Some(best.spare_hands), round_money: Some(best.round_money), action: best.action, cards: best.cards, arrange: best.arrange, arrange_indices: best.arrange_indices, dig: best.dig, indices: best.indices, hand: best.hand, score: best.score, p_win: Some(best.p_win), alternatives: opts, tip })
+            Some(PlayAdvice { reference, reference_gap, judged, worth_drawing: worth_drawing.clone(), grows: grows.clone(), grown: best.grown, then: best.then.clone(), ties: opts.iter().filter(|o| o.tie).count(), planets: Some(best.planets), use_first: best.use_first, spare_hands: Some(best.spare_hands), round_money: Some(best.round_money), action: best.action, cards: best.cards, arrange: best.arrange, arrange_indices: best.arrange_indices, dig: best.dig, indices: best.indices, hand: best.hand, score: best.score, p_win: Some(best.p_win), alternatives: opts, tip })
         }
         None => {
             let hand: Vec<Card> = hand_order.iter().map(|&i| run.hand[i]).collect();
@@ -365,6 +381,8 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
             reference_gap: None,
             judged: vec![],
             worth_drawing: worth_drawing.clone(),
+            grows: grows.clone(),
+            grown: 0.0,
             planets: None,
             then: None,
             ties: 0,

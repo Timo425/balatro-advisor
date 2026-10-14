@@ -6,7 +6,7 @@
 
 use crate::engine::hand::{self, HandType};
 use crate::engine::score::{self, Board};
-use crate::engine::{Kind, Rng, Rolls, Unlucky};
+use crate::engine::{Joker, Kind, Rng, Rolls, Unlucky};
 use crate::model::{Card, Edition, Enhancement, Suit};
 
 /// Best play found for one hand.
@@ -573,6 +573,9 @@ pub struct Outcome {
     /// The hand played last in a won round: a Blue Seal's planet is that hand's
     /// (card.lua Card:get_end_of_round_effect, G.GAME.last_hand_played)
     pub last: Option<HandType>,
+    /// What the round's hands and discards changed on the jokers, in the round's value
+    /// (`RoundGoals::grown`)
+    pub grown: f64,
 }
 
 /// The rounds numbered `range` after `first` (round i always draws the same cards, whatever
@@ -595,11 +598,13 @@ pub fn outcomes_after(b: &Board, start: &RoundStart, first: &Move, range: std::o
                 Move::Play(idx) => {
                     let played: Vec<Card> = idx.iter().filter_map(|&k| hand.get(k).copied()).collect();
                     let mut held: Vec<Card> = (0..hand.len()).filter(|k| !idx.contains(k)).map(|k| hand[k]).collect();
+                    let was = jokers_now(&bb);
                     o.cash += boss_takes_held(&mut bb, &mut held, &rng);
                     let s = score::score(&bb, &played, &held, &mut rng, false);
                     o.cash += s.dollars;
                     let total = start.scored + s.score;
                     let _ = bb.after_hand(&s);
+                    o.grown += grown_since(&bb, &was);
                     if total >= start.target || start.hands <= 1 {
                         if total >= start.target {
                             o.won = 1.0;
@@ -615,7 +620,9 @@ pub fn outcomes_after(b: &Board, start: &RoundStart, first: &Move, range: std::o
                     RoundStart { hand: held, deck, hands: start.hands - 1, scored: total, ..start.clone() }
                 }
                 Move::Discard(idx) => {
+                    let was = jokers_now(&bb);
                     o.cash += bb.discard(&picked(&hand, idx));
+                    o.grown += grown_since(&bb, &was);
                     let kept: Vec<Card> = (0..hand.len()).filter(|k| !idx.contains(k)).map(|k| hand[k]).collect();
                     RoundStart { hand: kept, deck, discards: (start.discards - 1).max(0), ..start.clone() }
                 }
@@ -632,6 +639,7 @@ pub fn outcomes_after(b: &Board, start: &RoundStart, first: &Move, range: std::o
             o.next = r.plays.iter().find(|p| !p.2).map(|p| (p.0, p.1));
             o.last = r.plays.last().map(|p| p.0);
             o.seen = r.seen;
+            o.grown += r.grown;
             o
         })
         .collect()
@@ -857,6 +865,8 @@ pub struct RoundResult {
     pub planets: f64,
     /// The most a card drawn this round adds (`RoundGoals::seen`)
     pub seen: f64,
+    /// What its hands and discards changed on the jokers (`RoundGoals::grown`)
+    pub grown: f64,
 }
 
 fn draw(hand: &mut Vec<Card>, deck: &mut Vec<Card>, size: usize) {
@@ -2150,13 +2160,68 @@ pub struct RoundGoals {
     pub no_lookahead: bool,
     /// The `seen` credit the round already has (per consumable), when a future continues it
     pub carried: Vec<(String, f64)>,
+    /// What the numbers each joker a round changes (`engine::CHANGE_IN_ROUND`) leave at its end
+    /// are worth (`grown`); empty: none counted
+    pub jokers: std::sync::Arc<Vec<JokerWorth>>,
+}
+
+/// What a joker's numbers left at a round's end are worth (`RoundGoals::jokers`), against its
+/// numbers when the analysis started (`start`, as `Joker::lasting` counts them): one more
+/// Mult, ×Mult and Chip each (`per`), never less than the joker used up (`gone`: Ice Cream,
+/// Seltzer, Ramen), so a fall costs at most what losing it does (`JokerWorth::of`)
+#[derive(Debug, Clone, Default)]
+pub struct JokerWorth {
+    /// The joker (`Joker::id`: its place on your board, not 0) and its key
+    pub id: u32,
+    pub key: String,
+    pub start: [f64; 3],
+    pub per: [f64; 3],
+    pub gone: f64,
+}
+
+impl JokerWorth {
+    /// What the joker with these numbers (`None`: used up) is worth against its start
+    fn of(&self, now: Option<[f64; 3]>) -> f64 {
+        now.map_or(self.gone, |n| (0..3).map(|f| self.per[f] * (n[f] - self.start[f])).sum::<f64>().max(self.gone))
+    }
+}
+
+/// The counted jokers' numbers before a hand or a discard, by `RoundGoals::jokers` entry
+/// (`None`: used up)
+type JokersNow = Vec<Option<[f64; 3]>>;
+
+/// `RoundGoals::jokers_now` on the board's goals
+fn jokers_now(b: &Board) -> Option<JokersNow> {
+    b.goals.as_ref().and_then(|g| g.jokers_now(b))
+}
+
+/// `RoundGoals::grown` since `was` (`jokers_now`)
+fn grown_since(b: &Board, was: &Option<JokersNow>) -> f64 {
+    match (&b.goals, was) {
+        (Some(g), Some(w)) => g.grown(w, b),
+        _ => 0.0,
+    }
 }
 
 impl RoundGoals {
     /// A simulated round's value: 0 if lost, else 1 plus what it leaves you.
     pub fn value(&self, o: &Outcome) -> f64 {
         let planet = o.last.map_or(0.0, |h| self.planet[h as usize]);
-        o.won * (1.0 + planet * o.planets + self.dollar * (o.spare * self.per_hand + o.cash) + o.seen)
+        o.won * (1.0 + planet * o.planets + self.dollar * (o.spare * self.per_hand + o.cash) + o.seen + o.grown)
+    }
+
+    /// The counted jokers' numbers now (`None`: used up), by entry, for `grown`; `None` when none
+    /// is counted
+    pub fn jokers_now(&self, b: &Board) -> Option<JokersNow> {
+        (!self.jokers.is_empty()).then(|| self.jokers.iter().map(|w| b.jokers.iter().find(|j| j.id == w.id).map(Joker::lasting)).collect())
+    }
+
+    /// What a hand or a discard changed on the counted jokers since `was` (`jokers_now` before
+    /// it), by what each is worth before and after it (`JokerWorth::of`), each found by its
+    /// place on your board (`Joker::id`, kept through the round's steps)
+    pub fn grown(&self, was: &[Option<[f64; 3]>], b: &Board) -> f64 {
+        let now = self.jokers_now(b).unwrap_or_default();
+        self.jokers.iter().zip(was).zip(&now).map(|((w, before), after)| w.of(*after) - w.of(*before)).sum()
     }
 
     /// The most a card in `cards` adds (`seen`)
@@ -2237,7 +2302,12 @@ fn finish_value(b: &Board, g: &RoundGoals, hand: &[Card], win: &[usize], hands: 
     let played: Vec<Card> = win.iter().map(|&i| hand[i]).collect();
     let held: Vec<Card> = (0..hand.len()).filter(|i| !win.contains(i)).map(|i| hand[i]).collect();
     let s = score::score(b, &played, &held, &mut Unlucky, false);
-    let o = Outcome { won: 1.0, spare: (hands - 1) as f64, cash: s.dollars + won_money(b, &held), planets: seal_planets(b, &held), last: Some(s.hand), seen, ..Default::default() };
+    let grown = g.jokers_now(b).map_or(0.0, |was| {
+        let mut after = b.clone();
+        let _ = after.after_hand(&s);
+        g.grown(&was, &after)
+    });
+    let o = Outcome { won: 1.0, spare: (hands - 1) as f64, cash: s.dollars + won_money(b, &held), planets: seal_planets(b, &held), last: Some(s.hand), seen, grown, ..Default::default() };
     g.value(&o)
 }
 
@@ -2356,6 +2426,7 @@ pub fn sim_round_uses(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[
     let mut best_hand: f64 = 0.0;
     let mut plays = Vec::new();
     let mut money = 0.0;
+    let mut grown = 0.0;
     // Cards worth drawing (`RoundGoals::seen`), per consumable: the best gain drawn so far. A
     // consumable used during the round (on its own fixed targets) takes its gain with it.
     let mut seen_by: Vec<(String, f64)> = b.goals.as_ref().map_or(vec![], |g| g.carried.clone());
@@ -2405,6 +2476,7 @@ pub fn sim_round_uses(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[
                 idx.truncate(5);
                 let played: Vec<Card> = idx.iter().map(|&i| hand[i]).collect();
                 let mut held: Vec<Card> = (0..hand.len()).filter(|i| !idx.contains(i)).map(|i| hand[i]).collect();
+                let was = jokers_now(&b);
                 money += boss_takes_held(&mut b, &mut held, rng);
                 let o = score::score(&b, &played, &held, rng, false);
                 total += o.score;
@@ -2412,18 +2484,21 @@ pub fn sim_round_uses(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[
                 best_hand = best_hand.max(o.score);
                 plays.push((o.hand, o.score, dig));
                 let _ = b.after_hand(&o);
+                grown += grown_since(&b, &was);
                 hand = held;
                 hands -= 1;
                 if total >= start.target {
                     money += won_money(&b, &hand);
                     let seen = seen_by.iter().map(|e| e.1).fold(0.0, f64::max);
-                    return RoundResult { total, won: true, saved: false, best_hand, plays, money, hands_left: hands, planets: seal_planets(&b, &hand), seen };
+                    return RoundResult { total, won: true, saved: false, best_hand, plays, money, hands_left: hands, planets: seal_planets(&b, &hand), seen, grown };
                 }
                 draw(&mut hand, &mut deck, size);
                 note_seen(&b, &hand, &mut seen_by);
             }
             Action::Discard(idx) => {
+                let was = jokers_now(&b);
                 money += b.discard(&picked(&hand, &idx));
+                grown += grown_since(&b, &was);
                 hand = (0..hand.len()).filter(|i| !idx.contains(i)).map(|i| hand[i]).collect();
                 draw(&mut hand, &mut deck, size);
                 discards -= 1;
@@ -2434,7 +2509,7 @@ pub fn sim_round_uses(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[
     // Mr. Bones: a lost round is saved if you reached 25% of the blind (card.lua, game_over)
     let bones = b.jokers.iter().any(|j| j.key == "j_mr_bones" && !j.debuff);
     let won = total >= start.target;
-    RoundResult { total, won, saved: !won && bones && total >= 0.25 * start.target, best_hand, plays, money, hands_left: 0, planets: 0.0, seen: seen_by.iter().map(|e| e.1).fold(0.0, f64::max) }
+    RoundResult { total, won, saved: !won && bones && total >= 0.25 * start.target, best_hand, plays, money, hands_left: 0, planets: 0.0, seen: seen_by.iter().map(|e| e.1).fold(0.0, f64::max), grown }
 }
 
 /// Mean and quantiles of a sample.
@@ -3320,6 +3395,95 @@ mod tests {
             assert!(o.seen == 0.0 || o.seen == 0.5);
             assert_eq!(g.value(o), o.won * (1.0 + o.seen));
         }
+    }
+
+    #[test]
+    fn a_round_counts_what_its_hands_leave_the_jokers() {
+        // Square Joker grows +4 Chips on a hand of exactly 4 cards (card.lua, before context),
+        // for the run. Two Pair wins the round either way: with a fifth card that doesn't score
+        // it's worth the same now, and 4 Chips' worth less (0.01 a Chip here). No rule names
+        // the joker: what one more Chip is worth is the round's goal (`RoundGoals::jokers`).
+        let hand = Card::parse_list("AS AH 10S 10H KD 8C 7S 5C").unwrap();
+        let deck: Vec<Card> = standard_deck().into_iter().filter(|c| !hand.iter().any(|h| h.rank == c.rank && h.suit == c.suit)).collect();
+        let start = RoundStart { hand, deck, hand_size: 8, hands: 4, discards: 3, scored: 0.0, target: 1.0 };
+        let mut b = sample_board(&["j_square"]);
+        b.goals = Some(worths(&mut b, &[([0.0, 0.0, 0.01], -1.0)]));
+        let g = b.goals.clone().unwrap();
+        let mean = |m: Move| {
+            let outs = outcomes_after(&b, &start, &m, 0..20, 7, &[]);
+            assert!(outs.iter().all(|o| o.won == 1.0));
+            outs.iter().map(|o| g.value(o)).sum::<f64>() / outs.len() as f64
+        };
+        let (four, five) = (mean(Move::Play(vec![0, 1, 2, 3])), mean(Move::Play(vec![0, 1, 2, 3, 4])));
+        assert!((four - five - 0.04).abs() < 1e-9, "{four} vs {five}");
+        // nothing counted without the goal: the same value
+        b.goals = Some(RoundGoals::default());
+        let plain = |m: Move| outcomes_after(&b, &start, &m, 0..20, 7, &[]).iter().map(|o| o.grown).sum::<f64>();
+        assert_eq!((plain(Move::Play(vec![0, 1, 2, 3])), plain(Move::Play(vec![0, 1, 2, 3, 4]))), (0.0, 0.0));
+    }
+
+    /// Worth entries for `b`'s jokers as they are now, each given its place as its id
+    fn worths(b: &mut Board, each: &[([f64; 3], f64)]) -> RoundGoals {
+        for (i, j) in b.jokers.iter_mut().enumerate() {
+            j.id = i as u32 + 1;
+        }
+        let jokers = b.jokers.iter().zip(each).map(|(j, &(per, gone))| JokerWorth { id: j.id, key: j.key.clone(), start: j.lasting(), per, gone }).collect();
+        RoundGoals { jokers: std::sync::Arc::new(jokers), ..Default::default() }
+    }
+
+    /// Plays `cards` on `b` and returns what the step left the jokers (`RoundGoals::grown`)
+    fn play_grown(g: &RoundGoals, b: &mut Board, cards: &str) -> f64 {
+        let was = g.jokers_now(b).unwrap();
+        let o = score::score(b, &Card::parse_list(cards).unwrap(), &[], &mut Unlucky, false);
+        b.after_hand(&o);
+        g.grown(&was, b)
+    }
+
+    #[test]
+    fn a_joker_used_up_counts_as_gone_and_a_reset_one_as_unchanged() {
+        // Ice Cream on its last 5 Chips melts after the hand (card.lua, after context): the
+        // round counts what losing it is worth, and the jokers beside it stay matched to their
+        // own worth. Hit the Road's ×Mult from a discarded Jack is back to ×1 at the round's end
+        // (`Joker::lasting`): nothing left to count. Green Joker loses 1 Mult on a discard.
+        let mut b = sample_board(&["j_ice_cream", "j_green_joker", "j_hit_the_road"]);
+        b.jokers[0].extra.chips = 5.0;
+        b.jokers[1].mult = 5.0;
+        let g = worths(&mut b, &[([0.0, 0.0, 0.01], -0.3), ([0.02, 0.0, 0.0], -0.5), ([1.0, 1.0, 1.0], -1.0)]);
+        // Green Joker +1 for the hand, Ice Cream gone
+        assert!((play_grown(&g, &mut b, "2S") - (-0.3 + 0.02)).abs() < 1e-12);
+        assert_eq!(b.jokers.len(), 2);
+        let was = g.jokers_now(&b).unwrap();
+        b.discard(&Card::parse_list("JS JH").unwrap());
+        assert!(b.jokers[1].x_mult > 1.0);
+        assert!((g.grown(&was, &b) + 0.02).abs() < 1e-12, "the discard's −1 Green Joker Mult only");
+    }
+
+    #[test]
+    fn a_used_up_copy_is_the_one_counted_gone_and_a_fall_costs_at_most_losing_it() {
+        // Two Ice Creams: the first on its last 5 Chips melts, the second loses 5 of its 30
+        // (card.lua, after context). The first counts gone, the second its 5 Chips: copies are
+        // told apart by their place on your board (`Joker::id`), not by where they sit after it.
+        let mut b = sample_board(&["j_ice_cream", "j_ice_cream"]);
+        b.jokers[0].extra.chips = 5.0;
+        b.jokers[1].extra.chips = 30.0;
+        let g = worths(&mut b, &[([0.0, 0.0, 0.01], -0.3), ([0.0, 0.0, 0.01], -0.4)]);
+        assert!((play_grown(&g, &mut b, "2S") - (-0.3 - 0.05)).abs() < 1e-12);
+        // and in the hands after it the survivor is still itself: 5 more hands take its other
+        // 25 Chips, −0.25, then it melts: in all its own −0.4 (never below losing it)
+        let rest: f64 = (0..6).map(|_| play_grown(&g, &mut b, "2S")).sum();
+        assert!(b.jokers.is_empty() && (rest - (-0.4 + 0.05)).abs() < 1e-12, "{rest}");
+        // An Ice Cream that fades over a round and then melts adds up to losing it, once
+        let mut b = sample_board(&["j_ice_cream"]);
+        b.jokers[0].extra.chips = 15.0;
+        let g = worths(&mut b, &[([0.0, 0.0, 0.01], -0.3)]);
+        let total: f64 = (0..3).map(|_| play_grown(&g, &mut b, "2S")).sum();
+        assert!(b.jokers.is_empty() && (total + 0.3).abs() < 1e-12, "{total}");
+        // Ride the Bus at +20 Mult reset by a face card: worth 0.01 a Mult, but losing it all
+        // costs no more than losing the joker (0.1)
+        let mut b = sample_board(&["j_ride_the_bus"]);
+        b.jokers[0].mult = 20.0;
+        let g = worths(&mut b, &[([0.01, 0.0, 0.0], -0.1)]);
+        assert!((play_grown(&g, &mut b, "KS") + 0.1).abs() < 1e-12);
     }
 
     #[test]
