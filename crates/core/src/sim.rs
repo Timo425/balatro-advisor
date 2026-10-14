@@ -266,7 +266,7 @@ fn best_play_of(b: &Board, hand: &[Card], part: u32, prefilter: bool, seen: Opti
 
 /// `best_play_of`, searching only the plays `only` (masks, ascending) when given, and noting
 /// every play it scores in `scored` (its mask, hand, and chips and Mult with every roll failing,
-/// before the deck balances them: `Outcome::unbalanced`)
+/// before the deck balances them: `Outcome::unbalanced`; and its floor)
 fn best_play_among(
     b: &Board,
     hand: &[Card],
@@ -336,7 +336,7 @@ fn best_play_among(
             }
         };
         if let Some(v) = scored.as_deref_mut() {
-            v.push((mask, hand_type, parts.0, parts.1));
+            v.push((mask, hand_type, parts.0, parts.1, floor));
         }
         if best.as_ref().is_none_or(|(p, _)| floor > p.floor) {
             best = Some((Play { cards: idx.clone(), hand: hand_type, floor, mean: floor }, asked));
@@ -346,8 +346,8 @@ fn best_play_among(
 }
 
 /// A play a search scored (`best_play_among`): its mask, hand, and chips and Mult with every
-/// roll failing, before a deck balances them
-type Scored = (u32, HandType, f64, f64);
+/// roll failing, before a deck balances them, and its floor
+type Scored = (u32, HandType, f64, f64, f64);
 
 /// What's known of a play of a hand (`best_play_of`): its hand, and its floor when no held card
 /// took part in it (`Outcome::held_used`)
@@ -397,6 +397,12 @@ impl<'a> HandParts<'a> {
     /// shortlist `playing_on` starts from (none for a hand of more than `PARTS_MAX` cards)
     fn shortlist(&self) -> Option<Shortlist> {
         self.scored.borrow().clone().map(|v| Shortlist { plays: front_of(v), stale: false })
+    }
+
+    /// The whole hand's plays as `best_play` tries them, with their floors (`plays_tried`): its
+    /// search's, once the whole hand's best play was worked out, else searched now
+    fn plays(&self) -> Vec<Scored> {
+        self.scored.borrow().clone().unwrap_or_else(|| plays_tried(self.b, self.hand))
     }
 
     /// `best_play` of the cards at `idx` (indices into the hand, in order): the play's cards
@@ -742,6 +748,43 @@ fn win_keeping_seals(b: &Board, hand: &[Card], need: f64) -> Option<Vec<usize>> 
     None
 }
 
+/// The plays `best_play` tries in `hand`, each with its floor (`Scored`)
+fn plays_tried(b: &Board, hand: &[Card]) -> Vec<Scored> {
+    let n = hand.len().min(SUBSETS_MAX);
+    let mut v = Vec::new();
+    best_play_among(b, hand, (1 << n) - 1, true, None, None, Some(&mut v));
+    v
+}
+
+/// The play `mask` (of `hand`'s first `SUBSETS_MAX`) in the order the search plays it (`arrange`)
+fn play_of(hand: &[Card], mask: u32) -> Vec<usize> {
+    let mut idx: Vec<usize> = (0..hand.len().min(SUBSETS_MAX)).filter(|i| mask & (1 << i) != 0).collect();
+    arrange(hand, &mut idx);
+    idx
+}
+
+/// The finish when the round can be won now: of the plays `best_play` tries that surely win it
+/// (floor ≥ `need`), the one worth most by the round's goals (`finish_value`: the Blue Seals and
+/// Gold cards it leaves in hand, the money it makes, what it leaves the jokers a round changes),
+/// the highest floor on a tie. None when no play surely wins.
+fn finish_play(b: &Board, g: &RoundGoals, hand: &[Card], need: f64, hands: i64) -> Option<Vec<usize>> {
+    finish_among(b, g, hand, need, hands, &plays_tried(b, hand))
+}
+
+/// `finish_play` among `plays` (the hand's plays as `plays_tried` gives them)
+fn finish_among(b: &Board, g: &RoundGoals, hand: &[Card], need: f64, hands: i64, plays: &[Scored]) -> Option<Vec<usize>> {
+    let mut best: Option<(f64, f64, Vec<usize>)> = None;
+    for &(mask, _, _, _, floor) in plays.iter().filter(|s| s.4 >= need) {
+        let idx = play_of(hand, mask);
+        // the same `seen` credit and hands left whichever play wins
+        let v = finish_value(b, g, hand, &idx, hands, 0.0);
+        if best.as_ref().is_none_or(|(bv, bf, _)| v > bv + 1e-12 || (v >= bv - 1e-12 && floor > *bf)) {
+            best = Some((v, floor, idx));
+        }
+    }
+    best.map(|x| x.2)
+}
+
 /// The cards at `idx` in `hand`, in hand order (the game discards them left to right).
 fn picked(hand: &[Card], idx: &[usize]) -> Vec<Card> {
     let mut idx = idx.to_vec();
@@ -950,6 +993,12 @@ enum Action {
 /// as the rest of the hand keeps you on pace for the target; then the usual policy decides
 /// with the rest.
 fn decide(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i64, need: f64, size: usize) -> Action {
+    decide_with(b, hand, deck, hands, discards, need, size, None)
+}
+
+/// `decide`, with the whole hand's search when it was already made (`HandParts` of `hand`)
+#[allow(clippy::too_many_arguments)]
+fn decide_with(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i64, need: f64, size: usize, parts: Option<&HandParts>) -> Action {
     // every simulated decision: where an analysis asked to stop does (`progress`)
     crate::progress::checkpoint();
     let keep = pays_at_end(b, hand);
@@ -963,7 +1012,7 @@ fn decide(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i64, ne
             };
         }
     }
-    decide_cards(b, hand, deck, hands, discards, need, size, true)
+    decide_cards_with(b, hand, deck, hands, discards, need, size, true, parts)
 }
 
 /// Whether the best play in `hand` scores more with no discards left than with the board's
@@ -1005,8 +1054,21 @@ fn burn_pays(b: &Board, hand: &[Card], play: &[usize]) -> bool {
 /// `burn`: whether to check if burning discards pays (off inside that check itself).
 #[allow(clippy::too_many_arguments)]
 fn decide_cards(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i64, need: f64, size: usize, burn: bool) -> Action {
+    decide_cards_with(b, hand, deck, hands, discards, need, size, burn, None)
+}
+
+/// `decide_cards`, with the best plays of `hand` and its parts already worked out (`given`)
+#[allow(clippy::too_many_arguments)]
+fn decide_cards_with(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i64, need: f64, size: usize, burn: bool, given: Option<&HandParts>) -> Action {
     // the best plays of this hand and of its parts (`HandParts`)
-    let parts = HandParts::new(b, hand);
+    let own;
+    let parts = match given {
+        Some(p) => p,
+        None => {
+            own = HandParts::new(b, hand);
+            &own
+        }
+    };
     let whole: Vec<usize> = (0..hand.len()).collect();
     let Some(best) = parts.best(&whole) else { return Action::Play(vec![], false) };
     let play_best = Action::Play(with_fillers(b, hand, &best.cards), false);
@@ -1057,7 +1119,14 @@ fn decide_cards(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i
     // hand left (button_callbacks.lua `G.FUNCS.can_discard`: discards left and cards picked)
     // and draws back to hand size (`G.FUNCS.draw_from_deck_to_hand`), so throwing cards
     // outside the best play can only add to it; a hand that can't win yet digs first
-    if best.floor >= need || (hands <= 1 && discards <= 0) || deck.is_empty() {
+    if best.floor >= need {
+        // the winning play worth most by the round's goals, when it has goals (`finish_play`)
+        return match b.goals.as_ref().and_then(|g| finish_among(b, g, hand, need, hands, &parts.plays())) {
+            Some(v) => Action::Play(v, false),
+            None => play_best,
+        };
+    }
+    if (hands <= 1 && discards <= 0) || deck.is_empty() {
         return play_best;
     }
     // When your best play scores more with no discards left (the engine knows which jokers
@@ -1099,7 +1168,7 @@ fn decide_cards(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i
     // failed chase is left with)
     type Dig = Option<(Vec<usize>, bool)>;
     let digs: Vec<std::cell::OnceCell<Dig>> = all.iter().map(|_| std::cell::OnceCell::new()).collect();
-    let dig_of = |k: usize| digs[k].get_or_init(|| dig_for(&parts, &all[k].keep, held_keep(), discards));
+    let dig_of = |k: usize| digs[k].get_or_init(|| dig_for(parts, &all[k].keep, held_keep(), discards));
     let left: Vec<std::cell::OnceCell<f64>> = all.iter().map(|_| std::cell::OnceCell::new()).collect();
     let left_of = |k: usize| {
         *left[k].get_or_init(|| {
@@ -1237,7 +1306,7 @@ fn front_of(mut scored: Vec<Scored>) -> Vec<u32> {
     scored.sort_by(|x, y| (x.1 as usize).cmp(&(y.1 as usize)).then(y.2.total_cmp(&x.2)).then(y.3.total_cmp(&x.3)).then(x.0.cmp(&y.0)));
     let mut plays = Vec::new();
     let mut top: Option<(HandType, f64)> = None;
-    for &(mask, h, _, mult) in &scored {
+    for &(mask, h, _, mult, _) in &scored {
         if top.is_none_or(|(th, tm)| th != h || mult > tm) {
             plays.push(mask);
             top = Some((h, mult));
@@ -1388,17 +1457,7 @@ fn oracle_decide(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: 
         .iter()
         .map(|m| policy_outcomes(b, &start, m, 0..r, seed, uses).iter().map(|o| g.as_ref().map_or(o.won, |g| g.value(o))).collect())
         .collect();
-    let mut pick = 0;
-    let mut gain = 0.0;
-    for (i, v) in vals.iter().enumerate().skip(1) {
-        let d: Vec<f64> = v.iter().zip(&vals[0]).map(|(x, y)| x - y).collect();
-        let m = d.iter().sum::<f64>() / r as f64;
-        let sd = (d.iter().map(|x| (x - m).powi(2)).sum::<f64>() / (r - 1) as f64).sqrt();
-        if m > 2.0 * sd / (r as f64).sqrt() + 1e-9 && m > gain {
-            pick = i;
-            gain = m;
-        }
-    }
+    let pick = paired_pick(&vals).unwrap_or(0);
     if pick == 0 {
         return Some(base);
     }
@@ -2238,64 +2297,181 @@ impl RoundGoals {
 /// playing on.
 const LOOKAHEAD_ROLLOUTS: usize = 8;
 
+/// The least a different finish could add (in `RoundGoals::value`, where winning is 1) for the
+/// round simulation to look ahead at all (`play_on_instead`): a cost cut.
+const LOOKAHEAD_MIN: f64 = 0.01;
+
 /// A win is on the table: is playing on for a better finish worth more? Compares winning now
-/// with `win` against the move the policy would make if it weren't finishing (digging with
-/// the cards that don't pay at round end), on a few simulated futures, by `RoundGoals`. Only
-/// when a better finish could be worth something; the futures play on without looking ahead,
-/// by the policy alone (`policy_outcomes`).
+/// with `win` against playing on, on a few simulated futures, by `RoundGoals`: the move the
+/// policy would make if it weren't finishing (digging with the cards that don't pay at round
+/// end), when keeping them could add something (a Blue Seal's planet, the best hand's, a Gold
+/// card's money, against what this finish keeps); the play that doesn't
+/// win yet and grows the jokers most (`growth_play`), when that growth could be worth more than
+/// the hand it spends. The futures play on without looking ahead, by the policy alone
+/// (`policy_outcomes`).
 #[allow(clippy::too_many_arguments)]
-/// `finish`: the finish with its uses (`finish_with_uses`: board, hand, winning play, value),
-/// when there is one, else winning now with `win`; `seen_by`: the round's `seen` credit so far.
+/// `finish`: the finish with its uses (`finish_with_uses`: board, hand, winning play, the
+/// consumables still held after them), when there is one, else winning now with `win`;
+/// `seen_by`: the round's `seen` credit so far.
 #[allow(clippy::type_complexity)]
-fn play_on_instead(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i64, scored: f64, target: f64, size: usize, win: &[usize], finish: Option<(&Board, &[Card], &[usize], f64)>, seen_by: &[(String, f64)], uses: &[Use], rng: &mut Rng) -> Option<Action> {
+fn play_on_instead(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i64, scored: f64, target: f64, size: usize, win: &[usize], finish: Option<(&Board, &[Card], &[usize], &[Use])>, seen_by: &[(String, f64)], uses: &[Use], rng: &Rng) -> Option<Action> {
     let g = b.goals.as_ref()?;
     if hands <= 1 || g.no_lookahead {
         return None;
     }
     // the finish as it would be played (with its uses)
-    let (fb, fh, fw) = finish.map_or((b, hand, win), |f| (f.0, f.1, f.2));
+    let (fb, fh, fw, fu) = finish.map_or((b, hand, win, uses), |f| (f.0, f.1, f.2, f.3));
     let played: Vec<Card> = fw.iter().map(|&i| fh[i]).collect();
     let held: Vec<Card> = (0..fh.len()).filter(|i| !fw.contains(i)).map(|i| fh[i]).collect();
     let h = score::score(fb, &played, &held, &mut Unlucky, false).hand;
-    let planets = seal_planets(fb, &held);
-    // the most a different finish could add: the best planet for the seals kept
+    // the most a different finish could add by the cards that pay at round end: every one in
+    // hand kept, a Blue Seal's planet the best one, against what this finish keeps
+    let paying: Vec<Card> = pays_at_end(b, hand).into_iter().map(|i| hand[i]).collect();
     let best = g.planet.iter().copied().fold(0.0, f64::max);
-    if (best - g.planet[h as usize]) * planets < 0.01 {
+    let most = best * seal_planets(b, &paying) + g.dollar * held_dollars(&paying);
+    let kept = g.planet[h as usize] * seal_planets(fb, &held) + g.dollar * held_dollars(&held);
+    let for_held = most - kept >= LOOKAHEAD_MIN;
+    let for_growth = growth_play(b, g, hand, target - scored, win);
+    if !for_held && for_growth.is_none() {
         return None;
     }
-    let seen = seen_by.iter().map(|e| e.1).fold(0.0, f64::max);
-    let now = finish.map_or_else(|| finish_value(b, g, hand, win, hands, seen), |f| f.3);
-    // what the policy does when not finishing now, with the cards that pay at round end kept
-    let keep = pays_at_end(b, hand);
-    let free: Vec<usize> = (0..hand.len()).filter(|i| !keep.contains(i)).collect();
-    let cards: Vec<Card> = free.iter().map(|&i| hand[i]).collect();
-    let alt = match decide_cards(b, &cards, deck, hands, discards, f64::INFINITY, size.saturating_sub(keep.len()).max(1), true) {
-        Action::Play(v, _) => Move::Play(v.into_iter().map(|k| free[k]).collect()),
-        Action::Discard(v) => Move::Discard(v.into_iter().map(|k| free[k]).collect()),
-    };
-    if let Move::Play(v) = &alt {
-        let mut a = v.clone();
-        let mut w = win.to_vec();
-        a.sort();
-        w.sort();
-        if a == w || v.is_empty() {
-            return None;
+    let mut alts: Vec<Move> = vec![];
+    if for_held {
+        // what the policy does when not finishing now, with the cards that pay at round end kept
+        let keep = pays_at_end(b, hand);
+        let free: Vec<usize> = (0..hand.len()).filter(|i| !keep.contains(i)).collect();
+        let cards: Vec<Card> = free.iter().map(|&i| hand[i]).collect();
+        let alt = match decide_cards(b, &cards, deck, hands, discards, f64::INFINITY, size.saturating_sub(keep.len()).max(1), true) {
+            Action::Play(v, _) => Move::Play(v.into_iter().map(|k| free[k]).collect()),
+            Action::Discard(v) => Move::Discard(v.into_iter().map(|k| free[k]).collect()),
+        };
+        let same = |v: &[usize]| {
+            let mut a = v.to_vec();
+            let mut w = win.to_vec();
+            a.sort();
+            w.sort();
+            a == w
+        };
+        if !matches!(&alt, Move::Play(v) if same(v) || v.is_empty()) {
+            alts.push(alt);
         }
     }
-    // the futures play to the same goals (the finish included), without looking ahead again
-    let mut plain = b.clone();
-    if let Some(pg) = plain.goals.as_mut() {
-        pg.no_lookahead = true;
-        pg.carried = seen_by.to_vec();
+    if let Some(v) = for_growth {
+        alts.push(Move::Play(v));
     }
+    if alts.is_empty() {
+        return None;
+    }
+    // winning now (with its uses) and each way of playing on, on the same futures
     let start = RoundStart { hand: hand.to_vec(), deck: deck.to_vec(), hand_size: size as i64, hands, discards, scored, target };
-    let seed = rng.next_u64();
-    let outs = policy_outcomes(&plain, &start, &alt, 0..LOOKAHEAD_ROLLOUTS, seed, uses);
-    let later = outs.iter().map(|o| g.value(o)).sum::<f64>() / outs.len() as f64;
-    (later > now).then_some(match alt {
+    let fstart = RoundStart { hand: fh.to_vec(), ..start.clone() };
+    let mut moves: Vec<(&Board, &RoundStart, Move, &[Use])> = vec![(fb, &fstart, Move::Play(fw.to_vec()), fu)];
+    moves.extend(alts.iter().map(|m| (b, &start, m.clone(), uses)));
+    let vals = lookahead_values(&moves, seen_by, lookahead_seed(rng, hands, discards));
+    paired_pick(&vals).map(|k| match alts.swap_remove(k - 1) {
         Move::Play(v) => Action::Play(v, true),
         Move::Discard(v) => Action::Discard(v),
     })
+}
+
+/// The look-ahead's futures' seed, from the round's random stream without drawing from it (a
+/// round's later rolls and The Hook's picks stay the same whether or not it looked ahead), and
+/// the hands and discards left (each decision of a round has its own)
+fn lookahead_seed(rng: &Rng, hands: i64, discards: i64) -> u64 {
+    rng.clone().next_u64() ^ 0x6c6f_6f6b_6168_6561 ^ ((hands as u64) << 16 | discards as u64)
+}
+
+/// Each move from its board and round start, with the consumables still held, valued by the
+/// board's `RoundGoals` on the same few simulated futures (`LOOKAHEAD_ROLLOUTS`, from `seed`),
+/// each future's value: they play to the same goals without looking ahead again, by the policy
+/// alone (`policy_outcomes`); `seen_by`: the round's `seen` credit so far (less what a move's
+/// board has used up).
+#[allow(clippy::type_complexity)]
+fn lookahead_values(moves: &[(&Board, &RoundStart, Move, &[Use])], seen_by: &[(String, f64)], seed: u64) -> Vec<Vec<f64>> {
+    moves
+        .iter()
+        .map(|(b, start, m, uses)| {
+            let Some(g) = b.goals.as_ref() else { return vec![0.0; LOOKAHEAD_ROLLOUTS] };
+            let mut fb = (*b).clone();
+            if let Some(pg) = fb.goals.as_mut() {
+                pg.no_lookahead = true;
+            }
+            let mut carried = seen_by.to_vec();
+            drop_used_seen(&fb, &mut carried);
+            if let Some(pg) = fb.goals.as_mut() {
+                pg.carried = carried;
+            }
+            policy_outcomes(&fb, start, m, 0..LOOKAHEAD_ROLLOUTS, seed, uses).iter().map(|o| g.value(o)).collect()
+        })
+        .collect()
+}
+
+/// Of moves valued on the same rounds (`vals[i]`: move i's value on each), the one clearly
+/// better than the first: its mean gain on the first, paired round by round, above two standard
+/// errors of it, the largest such gain (the first move on none); `None` when the first stays.
+fn paired_pick(vals: &[Vec<f64>]) -> Option<usize> {
+    let r = vals.first()?.len();
+    if r < 2 {
+        return None;
+    }
+    let mut pick = 0;
+    let mut gain = 0.0;
+    for (i, v) in vals.iter().enumerate().skip(1) {
+        let d: Vec<f64> = v.iter().zip(&vals[0]).map(|(x, y)| x - y).collect();
+        let m = d.iter().sum::<f64>() / r as f64;
+        let sd = (d.iter().map(|x| (x - m).powi(2)).sum::<f64>() / (r - 1) as f64).sqrt();
+        if m > 2.0 * sd / (r as f64).sqrt() + 1e-9 && m > gain {
+            pick = i;
+            gain = m;
+        }
+    }
+    (pick > 0).then_some(pick)
+}
+
+/// The play to grow the jokers a round changes before winning (`play_on_instead`): of the plays
+/// `best_play` tries in `hand` that don't surely win yet (floor below `need`), the one that
+/// grows them most (`RoundGoals::grown`), then one that leaves the winning play `win` in hand,
+/// then the highest floor; only when its growth is worth more than the hand it spends (a spare
+/// hand's money) by `LOOKAHEAD_MIN`, the most playing on could add; topped up with fillers
+/// (`with_fillers`) when they leave its growth as it is. None without such jokers.
+fn growth_play(b: &Board, g: &RoundGoals, hand: &[Card], need: f64, win: &[usize]) -> Option<Vec<usize>> {
+    let was = g.jokers_now(b)?;
+    let mut best: Option<(f64, bool, f64, Vec<usize>)> = None;
+    for &(mask, _, _, _, floor) in plays_tried(b, hand).iter().filter(|s| s.4 < need) {
+        let idx = play_of(hand, mask);
+        let played: Vec<Card> = idx.iter().map(|&i| hand[i]).collect();
+        let held: Vec<Card> = (0..hand.len()).filter(|i| !idx.contains(i)).map(|i| hand[i]).collect();
+        let s = score::score(b, &played, &held, &mut Unlucky, false);
+        let mut after = b.clone();
+        let _ = after.after_hand(&s);
+        let grown = g.grown(&was, &after);
+        let keeps = !idx.iter().any(|i| win.contains(i));
+        let better = best.as_ref().is_none_or(|(bg, bk, bf, _)| {
+            if (grown - bg).abs() > 1e-12 {
+                grown > *bg
+            } else if keeps != *bk {
+                keeps
+            } else {
+                floor > *bf
+            }
+        });
+        if better {
+            best = Some((grown, keeps, floor, idx));
+        }
+    }
+    let (grown, keeps, _, idx) = best.filter(|x| x.0 - g.dollar * g.per_hand >= LOOKAHEAD_MIN)?;
+    // topped up with the cards a play can spare (`with_fillers`: more drawn next hand) when that
+    // grows the jokers as much and leaves the winning play in hand as the play did
+    let filled = with_fillers(b, hand, &idx);
+    let keeps_too = |v: &[usize]| !keeps || !v.iter().any(|i| win.contains(i));
+    let grows = |v: &[usize]| {
+        let played: Vec<Card> = v.iter().map(|&i| hand[i]).collect();
+        let held: Vec<Card> = (0..hand.len()).filter(|i| !v.contains(i)).map(|i| hand[i]).collect();
+        let mut after = b.clone();
+        let _ = after.after_hand(&score::score(b, &played, &held, &mut Unlucky, false));
+        g.grown(&was, &after)
+    };
+    Some(if filled.len() > idx.len() && keeps_too(&filled) && grows(&filled) >= grown - 1e-12 { filled } else { idx })
 }
 
 /// What winning now with `win` is worth (`RoundGoals::value`, the measure every move is ranked
@@ -2344,7 +2520,7 @@ fn finish_with_uses(b: &Board, g: &RoundGoals, hand: &[Card], win: &[usize], use
                 continue;
             }
             let Some((b2, h2)) = u.apply(&cur.0, &cur.1) else { continue };
-            let Some(w2) = win_keeping_seals(&b2, &h2, need) else { continue };
+            let Some(w2) = finish_play(&b2, g, &h2, need, hands) else { continue };
             let v = finish_value(&b2, g, &h2, &w2, hands, seen(&b2));
             // the biggest gain first; equal gains by key (not slot order)
             let better = match &best {
@@ -2441,12 +2617,23 @@ pub fn sim_round_uses(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[
         b.deck_remaining = deck.len() as i64;
         use_if_better(&mut b, &mut hand, uses, &mut used, start.target - total, hands);
         drop_used_seen(&b, &mut seen_by);
-        let act = match win_keeping_seals(&b, &hand, start.target - total) {
+        // a win on the table: the finish (`finish_play` by the round's goals; without them, while
+        // a card that pays at round end can stay in hand) and whether to play on instead
+        // the whole hand's search, shared with the decision when nothing wins (`decide_with`)
+        let parts = HandParts::new(&b, &hand);
+        let all: Vec<usize> = (0..hand.len()).collect();
+        let win = match &b.goals {
+            Some(g) => parts.best(&all).filter(|p| p.floor >= start.target - total).and_then(|_| finish_among(&b, g, &hand, start.target - total, hands, &parts.plays())),
+            None => win_keeping_seals(&b, &hand, start.target - total),
+        };
+        let act = match win {
             Some(v) => {
                 // the finish, with any held consumable that makes it worth more used first
                 let fin = b.goals.as_ref().filter(|_| used.iter().any(|u| !u)).and_then(|g| finish_with_uses(&b, g, &hand, &v, uses, &used, start.target - total, hands, &seen_by));
                 let unused: Vec<Use> = uses.iter().zip(&used).filter(|(_, u)| !**u).map(|(x, _)| x.clone()).collect();
-                let finish = fin.as_ref().map(|f| (&f.0, f.1.as_slice(), f.2.as_slice(), f.4));
+                // the finish's own: without the ones it uses
+                let fin_unused: Vec<Use> = fin.as_ref().map_or(vec![], |f| uses.iter().enumerate().filter(|(k, _)| !used[*k] && !f.3.contains(k)).map(|(_, x)| x.clone()).collect());
+                let finish = fin.as_ref().map(|f| (&f.0, f.1.as_slice(), f.2.as_slice(), fin_unused.as_slice()));
                 match play_on_instead(&b, &hand, &deck, hands, discards, total, start.target, size, &v, finish, &seen_by, &unused, rng) {
                     Some(a) => a,
                     None => match fin {
@@ -2457,6 +2644,13 @@ pub fn sim_round_uses(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[
                             drop_used_seen(&b, &mut seen_by);
                             Action::Play(v2, false)
                         }
+                        // a discard would pay: the policy may cash it first, while the round
+                        // stays safe (`decide_cards`, a threshold in the register), never with a
+                        // card that pays at round end; else the finish
+                        None if b.goals.is_some() && discards > 0 && discard_money(&b, &hand, &(0..hand.len()).collect::<Vec<_>>()) > 0.0 => match decide(&b, &hand, &deck, hands, discards, start.target - total, size) {
+                            Action::Discard(d) if discard_money(&b, &hand, &d) > 0.0 && !pays_at_end(&b, &hand).iter().any(|i| d.contains(i)) => Action::Discard(d),
+                            _ => Action::Play(v, false),
+                        },
                         None => Action::Play(v, false),
                     },
                 }
@@ -2469,7 +2663,8 @@ pub fn sim_round_uses(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[
                         oracle_decide(&b, &hand, &deck, hands, discards, total, start.target, size, &unused, rng)
                     })
                     .flatten();
-                oracle.unwrap_or_else(|| decide(&b, &hand, &deck, hands, discards, start.target - total, size))
+                // without goals the search wasn't made: the decision makes it, as before
+                oracle.unwrap_or_else(|| decide_with(&b, &hand, &deck, hands, discards, start.target - total, size, b.goals.is_some().then_some(&parts)))
             }
         };
         match act {
@@ -3444,6 +3639,82 @@ mod tests {
         assert_eq!((plain(Move::Play(vec![0, 1, 2, 3])), plain(Move::Play(vec![0, 1, 2, 3, 4]))), (0.0, 0.0));
     }
 
+    #[test]
+    fn the_finish_is_the_winning_play_worth_most() {
+        // A Flush and Two Pair both win the round now. Scored, the Flush is the best play;
+        // valued, Two Pair's 4 cards grow Square Joker (+4 Chips for the run, 0.01 a Chip here),
+        // so the finish is a 4-card play. No rule names the joker: the round's goals decide.
+        let hand = Card::parse_list("AS KS QS JS 9S AH KH 2C").unwrap();
+        let mut b = sample_board(&["j_square"]);
+        assert_eq!(best_play(&b, &hand).map(|p| p.hand), Some(HandType::Flush));
+        let g = worths(&mut b, &[([0.0, 0.0, 0.01], -1.0)]);
+        assert_eq!(finish_play(&b, &g, &hand, 1.0, 3).map(|v| v.len()), Some(4));
+        // nothing growing: the best-scoring win
+        assert_eq!(finish_play(&b, &RoundGoals::default(), &hand, 1.0, 3).map(|v| v.len()), Some(5));
+        // nothing wins: no finish
+        assert_eq!(finish_play(&b, &g, &hand, 1e9, 3), None);
+    }
+
+    #[test]
+    fn playing_on_grows_the_jokers_when_the_growth_pays_for_the_hand() {
+        // Only the Flush wins: a 4-card play that doesn't win yet grows Square Joker. It's the
+        // play to look ahead at when 4 Chips are worth more than a spare hand's money by the
+        // look-ahead's margin, and none when they aren't.
+        let hand = Card::parse_list("AS KS QS JS 9S AH KH 2C").unwrap();
+        let mut b = sample_board(&["j_square"]);
+        let flush = best_play(&b, &hand).unwrap();
+        assert_eq!(flush.hand, HandType::Flush);
+        let need = flush.floor - 1.0;
+        let mut g = worths(&mut b, &[([0.0, 0.0, 0.01], -1.0)]);
+        let win = finish_play(&b, &g, &hand, need, 3).unwrap();
+        assert_eq!(win.len(), 5);
+        let grow = growth_play(&b, &g, &hand, need, &win).expect("a growing play");
+        assert_eq!(grow.len(), 4);
+        // no 4-card play leaves the Flush whole: the highest-scoring one, Two Pair
+        let cards: Vec<Card> = grow.iter().map(|&i| hand[i]).collect();
+        assert_eq!(score::score(&b, &cards, &[], &mut Unlucky, false).hand, HandType::TwoPair);
+        // a spare hand worth as much as the growth: no look-ahead for it
+        g.dollar = 0.01;
+        g.per_hand = 4.0;
+        assert_eq!(growth_play(&b, &g, &hand, need, &win), None);
+        // nor without growing jokers
+        assert_eq!(growth_play(&b, &RoundGoals::default(), &hand, need, &win), None);
+    }
+
+    #[test]
+    fn the_finish_keeps_a_blue_seal_when_a_win_without_it_is_worth_more() {
+        // Any play wins; the 3♠ Blue Seal's planet (the last hand's) counts only while it's
+        // held at the end, so the finish leaves it in hand. With the planet worth nothing, the
+        // best-scoring win, which plays it in the Flush.
+        let hand = Card::parse_list("AS KS QS JS 3S:blue AH 2C").unwrap();
+        let mut b = sample_board(&[]);
+        b.planet_slots = 1;
+        let seal = hand.iter().position(|c| c.seal.is_some()).unwrap();
+        let g = RoundGoals { planet: [0.05; 12], ..Default::default() };
+        let v = finish_play(&b, &g, &hand, 1.0, 3).unwrap();
+        assert!(!v.contains(&seal), "{v:?}");
+        let v = finish_play(&b, &RoundGoals::default(), &hand, 1.0, 3).unwrap();
+        assert!(v.contains(&seal), "{v:?}");
+    }
+
+    #[test]
+    fn the_growth_play_leaves_the_winning_cards_in_hand_when_one_grows_as_much() {
+        // Every 4-card play grows Square Joker alike; one of them (the four low off-suit cards, a
+        // 5-high High Card) leaves the Flush that wins in hand, so it's the one to look ahead at,
+        // though a 4-card play with the Ace scores more.
+        let hand = Card::parse_list("AS KS QS JS 9S 2H 5D 3C 4C").unwrap();
+        let mut b = sample_board(&["j_square"]);
+        let need = best_play(&b, &hand).unwrap().floor - 1.0;
+        let g = worths(&mut b, &[([0.0, 0.0, 0.01], -1.0)]);
+        let win = finish_play(&b, &g, &hand, need, 3).unwrap();
+        let grow = growth_play(&b, &g, &hand, need, &win).unwrap();
+        assert_eq!(grow.len(), 4);
+        let low: Vec<Card> = grow.iter().map(|&i| hand[i]).collect();
+        let ace = Card::parse_list("AS 2H 5D 3C").unwrap();
+        assert!(score::score(&b, &ace, &[], &mut Unlucky, false).score > score::score(&b, &low, &[], &mut Unlucky, false).score);
+        assert!(grow.iter().all(|i| !win.contains(i)), "{grow:?} against {win:?}");
+    }
+
     /// Worth entries for `b`'s jokers as they are now, each given its place as its id
     fn worths(b: &mut Board, each: &[([f64; 3], f64)]) -> RoundGoals {
         for (i, j) in b.jokers.iter_mut().enumerate() {
@@ -3605,14 +3876,14 @@ mod tests {
         let decisions = || ORACLE_DECISIONS.with(|x| x.get());
         set_oracle(8);
         let before = decisions();
-        let on = play_on_instead(&b, &hand, &deck, 4, 3, 0.0, target, 8, &win, None, &[], &[], &mut Rng::new(3));
+        let on = play_on_instead(&b, &hand, &deck, 4, 3, 0.0, target, 8, &win, None, &[], &[], &Rng::new(3));
         let during = decisions() - before;
         let start = RoundStart { hand: hand.clone(), deck: deck.clone(), hand_size: 8, hands: 4, discards: 3, scored: 0.0, target };
         outcomes_after(&b, &start, &Move::Discard(vec![0, 1, 6, 7]), 0..8, 3, &[]);
         let met = decisions() - before - during;
         let flag = IN_ROLLOUT.with(|x| x.get());
         set_oracle(0);
-        let off = play_on_instead(&b, &hand, &deck, 4, 3, 0.0, target, 8, &win, None, &[], &[], &mut Rng::new(3));
+        let off = play_on_instead(&b, &hand, &deck, 4, 3, 0.0, target, 8, &win, None, &[], &[], &Rng::new(3));
         assert!(matches!(on, Some(Action::Discard(_))), "plays on: the look-ahead ran ({on:?})");
         assert!(met > 0, "the same kind of futures meet the oracle's decisions outside a look-ahead");
         assert_eq!(during, 0, "the oracle decided inside the policy's look-ahead");

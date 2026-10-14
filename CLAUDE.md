@@ -40,7 +40,11 @@ change to how the advice decides or values things follows these steps, in order:
    fixture before touching code: `tests/fixtures/private/<name>.json` = `{"note", "state":
    <balatro-advisor state --json>, "expect": {...}}` (keys: `best_action`, `best_hand`,
    `best_use_first`, `best_size`, `best_not_cards`: [..], `top_option`, `above`: ["A", "B"], `top_hand`). The folder is
-   git-ignored (real runs aren't committed).
+   git-ignored (real runs aren't committed). When a fix can't meet a fixture's expectation yet
+   because of a known gap, narrow `expect` to what still holds and move the rest to
+   `"pending_expect"` with `"pending_gap": "gap N"` (the gap in `docs/design.md` names the
+   fixture); the note says why. The replay test fails once the pending expectation holds, so
+   the fix that closes the gap restores it (D14).
 2. **Diagnose before fixing.** Find out why, by reading the code and simulating the state
    (scratch programs or `whatif`), not by guessing. Name the stage that failed. Run
    `git log --oneline | grep -i '<stage>'` for earlier fixes to it (commits before d8c27ef

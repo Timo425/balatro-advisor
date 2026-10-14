@@ -256,3 +256,98 @@ fn player_against_oracle() {
         println!("{key}: player {:.1}% oracle {:.1}%, gap {:+.1} ± {:.1} ({ta:.2?} vs {to:.2?})", win(&a), win(&o), 100.0 * m, 100.0 * se);
     }
 }
+
+/// Boards for `player_values`: what a round leaves you beyond winning it counts on these (the
+/// round's goals, `sim::RoundGoals`, fixed here as an analysis would set them): jokers that grow
+/// in the round, Blue Seal cards (a planet each, the last hand's) and Gold cards ($3 each) held
+/// at the end. Each: its jokers, each joker's worth per Mult, ×Mult and Chip (`JokerWorth::per`,
+/// about the sizes `LongRun::joker_worth` measured, design.md's register), and its deck's
+/// changed cards.
+type GoalBoard = (&'static str, &'static [(&'static str, [f64; 3])], &'static [&'static str]);
+const GOAL_BOARDS: &[GoalBoard] = &[
+    ("square", &[("j_square", [0.0, 0.0, 0.0037]), ("j_joker", [0.0; 3])], &[]),
+    ("growers", &[("j_green_joker", [0.019, 0.0, 0.0]), ("j_ride_the_bus", [0.012, 0.0, 0.0]), ("j_runner", [0.0, 0.0, 0.002])], &[]),
+    ("trousers", &[("j_trousers", [0.0048, 0.0, 0.0]), ("j_trousers", [0.0048, 0.0, 0.0]), ("j_joker", [0.0; 3])], &[]),
+    ("seals", &[("j_joker", [0.0; 3]), ("j_droll", [0.0; 3])], &["3S:blue", "7H:blue", "KD:blue", "2C:blue", "5D:gold", "9C:gold", "QS:gold"]),
+    ("seals_growers", &[("j_green_joker", [0.019, 0.0, 0.0]), ("j_square", [0.0, 0.0, 0.0037])], &["3S:blue", "7H:blue", "KD:blue", "5D:gold", "9C:gold"]),
+];
+
+/// The simulated player's rounds valued as Best play values them (`RoundGoals::value`: 0 lost,
+/// else 1 plus the planets, money, hands left and jokers' growth it leaves), with its win rate,
+/// on `GOAL_BOARDS` (4 hands, 3 or 1 discards) at the score the player without goals wins half
+/// the time (the same rounds for any player that plays goal-less boards alike). The game and
+/// the measure are the same code for any player version, so a version that plays toward the
+/// goals better scores higher here; `player_win_rates` can't see it (its boards have no goals).
+/// `BAV_N` rounds per board (default 2000). `BAV_VALUES_OUT=dir` writes each round's value and
+/// win (`<board>.tsv`), so two versions compare paired, round by round (the same rounds):
+/// `BAV_VALUES_BEFORE=dir` prints the paired difference against such a dir.
+#[test]
+#[ignore]
+fn player_values() {
+    let n: usize = std::env::var("BAV_N").ok().and_then(|s| s.parse().ok()).unwrap_or(2000);
+    let mut planet = [0.03; 12];
+    planet[5] = 0.06; // Flush
+    planet[2] = 0.05; // Two Pair
+    planet[4] = 0.05; // Straight
+    let (mut values, mut wins) = (vec![], vec![]);
+    let t0 = std::time::Instant::now();
+    for (name, jokers, cards) in GOAL_BOARDS {
+        let keys: Vec<&str> = jokers.iter().map(|j| j.0).collect();
+        let mut b = bench::sample_board(&keys);
+        assert_eq!(b.jokers.len(), keys.len(), "{name}: unknown joker key");
+        b.new_round("");
+        b.planet_slots = 2;
+        for (i, j) in b.jokers.iter_mut().enumerate() {
+            j.id = i as u32 + 1;
+        }
+        let worth: Vec<sim::JokerWorth> = b.jokers.iter().zip(*jokers).filter(|(_, w)| w.1.iter().any(|&x| x > 0.0)).map(|(j, w)| sim::JokerWorth { id: j.id, key: j.key.clone(), start: j.lasting(), per: w.1, gone: -0.3 }).collect();
+        let goals = sim::RoundGoals { planet, dollar: 0.005, per_hand: 1.0, jokers: std::sync::Arc::new(worth), ..Default::default() };
+        let mut deck = bench::standard_deck();
+        for t in *cards {
+            let c = Card::parse(t).unwrap();
+            *deck.iter_mut().find(|d| d.rank == c.rank && d.suit == c.suit).unwrap() = c;
+        }
+        for (hands, discards) in [(4, 3), (4, 1)] {
+            let mut start = sim::RoundStart { hand: vec![], deck: deck.clone(), hand_size: 8, hands, discards, scored: 0.0, target: 1.0 };
+            start.target = half_point(&b, &start, 400, 7);
+            let mut gb = b.clone();
+            gb.goals = Some(goals.clone());
+            let t = std::time::Instant::now();
+            let rs = sim::round_results(&gb, &start, 0..n, 42);
+            let v: Vec<f64> = rs
+                .iter()
+                .map(|r| {
+                    let o = sim::Outcome { won: r.won as u8 as f64, total: r.total, spare: r.hands_left as f64, cash: r.money, planets: r.planets, next: None, seen: r.seen, last: r.plays.last().map(|p| p.0), grown: r.grown };
+                    goals.value(&o)
+                })
+                .collect();
+            let m = v.iter().sum::<f64>() / n as f64;
+            let se = (v.iter().map(|x| (x - m).powi(2)).sum::<f64>() / (n - 1) as f64).sqrt() / (n as f64).sqrt();
+            let w = rs.iter().filter(|r| r.won).count() as f64 / n as f64;
+            println!("{name}_{hands}h{discards}d: value {m:.4} ± {se:.4}, won {:.1}% ({:.2?})", 100.0 * w, t.elapsed());
+            let key = format!("{name}_{hands}h{discards}d");
+            if let Some(dir) = std::env::var_os("BAV_VALUES_OUT") {
+                std::fs::create_dir_all(&dir).unwrap();
+                let rows: String = v.iter().zip(&rs).map(|(x, r)| format!("{x}\t{}\n", r.won as u8)).collect();
+                std::fs::write(std::path::Path::new(&dir).join(format!("{key}.tsv")), rows).unwrap();
+            }
+            if let Some(text) = std::env::var_os("BAV_VALUES_BEFORE").and_then(|dir| std::fs::read_to_string(std::path::Path::new(&dir).join(format!("{key}.tsv"))).ok()) {
+                let old: Vec<(f64, f64)> = text.lines().map(|l| {
+                    let mut f = l.split('\t').map(|x| x.parse::<f64>().unwrap());
+                    (f.next().unwrap(), f.next().unwrap())
+                }).collect();
+                let paired = |d: Vec<f64>| {
+                    let m = d.iter().sum::<f64>() / d.len() as f64;
+                    (m, (d.iter().map(|x| (x - m).powi(2)).sum::<f64>() / (d.len() - 1) as f64).sqrt() / (d.len() as f64).sqrt())
+                };
+                let (dv, sv) = paired(v.iter().zip(&old).map(|(x, o)| x - o.0).collect());
+                let (dw, sw) = paired(rs.iter().zip(&old).map(|(r, o)| r.won as u8 as f64 - o.1).collect());
+                println!("    against before: value {dv:+.4} ± {sv:.4}, won {:+.2} ± {:.2} points", 100.0 * dw, 100.0 * sw);
+            }
+            values.push(m);
+            wins.push(w);
+        }
+    }
+    let mean = |v: &[f64]| v.iter().sum::<f64>() / v.len() as f64;
+    println!("mean value {:.4}, won {:.2}% ({:.2?})", mean(&values), 100.0 * mean(&wins), t0.elapsed());
+}

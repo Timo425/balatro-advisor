@@ -403,3 +403,29 @@ suite took about as long as in release (344 s against 315 s, the machine under l
 appear (then the two profiles no longer run the same program).
 
 Approved by the owner 2026-10-14.
+
+## D14. A fixture's expectation that waits on a known gap is kept as pending, and fails the test once it holds (proposed)
+
+**What.** When a correct fix can't meet a replay fixture's expectation because of another
+known gap, the fixture's `expect` is narrowed to what still holds and the rest moves to
+`"pending_expect"`, with `"pending_gap": "gap N"`; the gap in `docs/design.md` names the
+fixture, and the fixture's note says why. The replay test checks both: `expect` must hold, and
+the test fails once all of `pending_expect` holds, so the fix that closes the gap is told to move
+it back into `expect`. A `pending_expect` that isn't a non-empty object, or another key starting
+with "pending", fails the test. This replaces the `pending/` folder (a fixture there wasn't run
+at all; its one fixture, gap 25's, moved to the new form).
+
+**Why.** The owner's fixtures are the evidence that a line is right; dropping an expectation to
+make a change pass loses it silently, and keeping a failing fixture blocks every change behind
+one gap. Raised 2026-10-14: finishing by the round's value (gap 18) moved
+`head_keep_spades_and_seal` to a junk play because of another gap of the simulated player (gap
+34: it never banks a free hand before the hand that wins); the owner agreed to ship with the
+expectation narrowed "as long as the gap is clearly recorded so it can be reliably fixed later
+and the fixture is handled properly now and during the fix".
+
+**Revisit if** an expectation stays pending for long while its gap isn't being worked on (then
+the gap's rank, not the fixture, is the problem), or pending fixtures pile up (then changes are
+being shipped past the owner's evidence too easily).
+
+Approved by the owner 2026-10-14 (narrowing that fixture with the gap recorded); the mechanism
+(pending_expect, the failing check) was proposed with that change, for the owner to confirm.

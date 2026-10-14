@@ -1,6 +1,9 @@
 //! Real game states the advice once got wrong, with what it must say now. They live in
 //! tests/fixtures/private/ (git-ignored: real runs aren't committed); each file is
 //! {"note", "state": `balatro-advisor state --json`, "expect": {...}}. Skipped when empty.
+//! A fixture whose full expectation waits on a known gap keeps it in "pending_expect" (with
+//! "pending_gap", the gap in docs/design.md): the test fails once all of it holds, so the fix
+//! that closes the gap moves it back into "expect".
 
 use balatro_advisor::{advise, data::GameData, save::RunState};
 use serde_json::Value;
@@ -20,33 +23,50 @@ fn replayed_states_give_the_expected_advice() {
         let run: RunState = serde_json::from_value(v["state"].clone()).unwrap_or_else(|e| panic!("{name}: {e}"));
         let a = serde_json::to_value(advise::analyze(&run, data, None, &opts)).unwrap();
         let bp = &a["best_play"];
-        for (k, want) in v["expect"].as_object().unwrap() {
-            let got = match k.as_str() {
-                "best_action" => bp["action"].clone(),
-                "best_hand" => bp["hand"].clone(),
-                "best_use_first" => bp["use_first"].clone(),
-                // how many cards the best move plays or discards
-                "best_size" => Value::from(bp["cards"].as_array().map_or(0, Vec::len)),
-                "top_option" => a["options"][0]["label"].clone(),
-                // the hand that carries most of your points ("Hands that score your points")
-                "top_hand" => a["hand_mix"][0]["hand"].clone(),
-                // cards the best move must not use (play or discard)
-                "best_not_cards" => {
-                    let cards = bp["cards"].as_array().cloned().unwrap_or_default();
-                    Value::Bool(want.as_array().unwrap().iter().all(|c| !cards.contains(c)))
+        // the expectations in `exp` that don't hold, each as "key = got, expected want"
+        let missed = |exp: &Value| -> Vec<String> {
+            let mut out = vec![];
+            for (k, want) in exp.as_object().unwrap() {
+                let got = match k.as_str() {
+                    "best_action" => bp["action"].clone(),
+                    "best_hand" => bp["hand"].clone(),
+                    "best_use_first" => bp["use_first"].clone(),
+                    // how many cards the best move plays or discards
+                    "best_size" => Value::from(bp["cards"].as_array().map_or(0, Vec::len)),
+                    "top_option" => a["options"][0]["label"].clone(),
+                    // the hand that carries most of your points ("Hands that score your points")
+                    "top_hand" => a["hand_mix"][0]["hand"].clone(),
+                    // cards the best move must not use (play or discard)
+                    "best_not_cards" => {
+                        let cards = bp["cards"].as_array().cloned().unwrap_or_default();
+                        Value::Bool(want.as_array().unwrap().iter().all(|c| !cards.contains(c)))
+                    }
+                    // ["A", "B"]: option A ranks above option B
+                    "above" => {
+                        let pos = |l: &Value| a["options"].as_array().unwrap().iter().position(|o| &o["label"] == l);
+                        let (x, y) = (pos(&want[0]), pos(&want[1]));
+                        Value::Bool(x.is_some() && (y.is_none() || x < y))
+                    }
+                    other => panic!("{name}: unknown expectation {other}"),
+                };
+                let want = if k == "above" || k == "best_not_cards" { &Value::Bool(true) } else { want };
+                if &got != want {
+                    out.push(format!("{k} = {got}, expected {want}"));
                 }
-                // ["A", "B"]: option A ranks above option B
-                "above" => {
-                    let pos = |l: &Value| a["options"].as_array().unwrap().iter().position(|o| &o["label"] == l);
-                    let (x, y) = (pos(&want[0]), pos(&want[1]));
-                    Value::Bool(x.is_some() && (y.is_none() || x < y))
-                }
-                other => panic!("{name}: unknown expectation {other}"),
-            };
-            let want = if k == "above" || k == "best_not_cards" { &Value::Bool(true) } else { want };
-            if &got != want {
-                failures.push(format!("{name}: {k} = {got}, expected {want} ({})", v["note"].as_str().unwrap_or("")));
             }
+            out
+        };
+        // a pending expectation that can never tell its gap is closed is a mistake, not a skip
+        for k in v.as_object().unwrap().keys().filter(|k| k.starts_with("pending")) {
+            assert!(k == "pending_expect" || k == "pending_gap", "{name}: unknown key {k}");
+        }
+        if !v["pending_expect"].is_null() {
+            assert!(v["pending_expect"].as_object().is_some_and(|o| !o.is_empty()), "{name}: pending_expect must be a non-empty object");
+        }
+        let note = v["note"].as_str().unwrap_or("");
+        failures.extend(missed(&v["expect"]).into_iter().map(|m| format!("{name}: {m} ({note})")));
+        if v["pending_expect"].is_object() && missed(&v["pending_expect"]).is_empty() {
+            failures.push(format!("{name}: its pending expectation holds now: move \"pending_expect\" back into \"expect\" and mark {} closed for it ({note})", v["pending_gap"].as_str().unwrap_or("its gap")));
         }
     }
     assert!(failures.is_empty(), "\n{}", failures.join("\n"));
@@ -117,7 +137,9 @@ fn search_against_reference() {
             let within = bp.reference.iter().take_while(|(_, x, _)| *x >= best * 0.99).count();
             let verdict = if gap - 2.0 * se <= 0.01 { "ok" } else { "MISS" };
             println!("{verdict} {name} seed {seed}: pick {pick}: {:.2}% ± {:.2}% below the best, rank {:?} of {}, {within} within 1%", 100.0 * gap, 100.0 * se, rank.map(|r| r + 1), bp.reference.len());
-            for (l, x, fate) in bp.reference.iter().take(3) {
+            // `BAV_REF_TOP`: how many of the reference's moves to show (default 3)
+            let top: usize = std::env::var("BAV_REF_TOP").ok().and_then(|s| s.parse().ok()).unwrap_or(3);
+            for (l, x, fate) in bp.reference.iter().take(top) {
                 println!("    {x:.4} {l} ({fate})");
             }
         }

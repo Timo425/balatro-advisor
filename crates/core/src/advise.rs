@@ -1966,7 +1966,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         ]
         .into_iter()
         .chain(grows.then_some(
-            "Best play counts what the round's hands and discards leave the jokers that grow or fade in a round, by what one more Mult, ×Mult or Chip adds by Ante 8 (measured on a step of +2 Mult, +×0.25 or +10 Chips, taken as linear; a fall never costs more than losing the joker); the simulated player's own later hands don't aim for it, and what they do to your cards (Vampire's enhancements, Glass breaking) isn't counted. The blinds ahead still play your jokers as they are now.",
+            "Best play counts what the round's hands and discards leave the jokers that grow or fade in a round, by what one more Mult, ×Mult or Chip adds by Ante 8 (measured on a step of +2 Mult, +×0.25 or +10 Chips, taken as linear; a fall never costs more than losing the joker); the simulated player aims for it only in how it finishes the round (the winning play worth most, or playing on for growth on a few simulated futures), not in its digs, and what they do to your cards (Vampire's enhancements, Glass breaking) isn't counted. The blinds ahead still play your jokers as they are now.",
         ))
         .chain((run.hand.len() > sim::ALL_MOVES_MAX).then_some(
             "A big hand: Best play's moves come from the hand's structure (its plays whose cards can all score, the best few of each kind and then by score now; its structure's discards), not every move; the simulated player's best play looks only at its 16 highest cards.",
