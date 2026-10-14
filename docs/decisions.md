@@ -404,7 +404,7 @@ appear (then the two profiles no longer run the same program).
 
 Approved by the owner 2026-10-14.
 
-## D14. A fixture's expectation that waits on a known gap is kept as pending, and fails the test once it holds (proposed)
+## D14. A fixture's expectation that waits on a known gap is kept as pending, and fails the test once it holds (accepted)
 
 **What.** When a correct fix can't meet a replay fixture's expectation because of another
 known gap, the fixture's `expect` is narrowed to what still holds and the rest moves to
@@ -427,5 +427,7 @@ and the fixture is handled properly now and during the fix".
 the gap's rank, not the fixture, is the problem), or pending fixtures pile up (then changes are
 being shipped past the owner's evidence too easily).
 
-Approved by the owner 2026-10-14 (narrowing that fixture with the gap recorded); the mechanism
-(pending_expect, the failing check) was proposed with that change, for the owner to confirm.
+Approved by the owner 2026-10-14: the fixture narrowed only with the gap clearly recorded, so
+it can be handled later without confusion, now and during the fix; this mechanism is what that
+requires (dropping or loosening the expectation, or parking the fixture where it isn't run, would
+lose it).
