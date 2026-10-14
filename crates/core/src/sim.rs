@@ -89,15 +89,15 @@ pub const ALL_MOVES_MAX: usize = 12;
 const BIG_HAND_PLAYS: usize = 256;
 
 /// Every play of `hand` (bit masks, ascending) whose cards could all score: Stone cards with
-/// any play (they always score: hand.lua `evaluate_play`), the rest only as poker hands make
-/// them, where every part of a play that could all score could too: one rank or two, one
-/// suit as flushes count it (`hand::is_suit`: Wild cards, Smeared Joker), distinct ranks
-/// within one straight's run (`straight_runs`, Shortcut's gaps, the Ace low or high); with
-/// Four Fingers one card may fall outside the suit or repeat a rank in the run. Built card by
-/// card: a set that can't be part of such a play is dropped with every set containing it, so a
-/// 32-card hand gives thousands, not every 5-card subset. A superset (`hand::detect` decides),
-/// except with Splash, where every card scores: then only the plays a poker hand makes, and
-/// the extra cards are `with_kickers`' (the highest few: a heuristic). Face-down
+/// any play (they always score: state_events.lua `G.FUNCS.evaluate_play`), the rest only as
+/// poker hands make them, where every part of a play that could all score could too: one rank
+/// or two, one suit as flushes count it (`hand::is_suit`: Wild cards, Smeared Joker), distinct
+/// ranks within one straight's run (`straight_runs`, Shortcut's gaps, the Ace low or high);
+/// with Four Fingers one card may fall outside the suit or repeat a rank in the run. Built card
+/// by card: a set that can't be part of such a play is dropped with every set containing it, so
+/// a 32-card hand gives thousands, not every 5-card subset. A superset (`hand::detect`
+/// decides), except with Splash, where every card scores: then only the plays a poker hand
+/// makes, and the extra cards are `with_kickers`' (the highest few: a heuristic). Face-down
 /// cards are left out (you can't plan around them); the first 64 cards, the first 10 Stone
 /// cards.
 pub fn scoring_plays(hand: &[Card], f: hand::RuleFlags) -> Vec<u64> {
@@ -436,12 +436,13 @@ impl<'a> HandParts<'a> {
 }
 
 /// Whether every card of the play `mask` (of `hand`'s first `n`) could score, before running
-/// hand detection: Stone cards always do (hand.lua `evaluate_play`); of the rest, 2 or 3 can
-/// only all score as one rank (a Pair, Three of a Kind: no flush or straight is that short),
-/// and 4 without Four Fingers only as Two Pair or Four of a Kind; 5 without Four Fingers only
-/// as a flush (hand.rs `flush`: one suit, a Wild card or Smeared Joker's colours aside), a
-/// straight (5 ranks) or two ranks at most (Full House, Five of a Kind). Splash isn't checked
-/// here (`best_play` doesn't call this with it). A shortcut: `hand::detect` decides.
+/// hand detection: Stone cards always do (state_events.lua `G.FUNCS.evaluate_play`); of the
+/// rest, 2 or 3 can only all score as one rank (a Pair, Three of a Kind: no flush or straight
+/// is that short), and 4 without Four Fingers only as Two Pair or Four of a Kind; 5 without
+/// Four Fingers only as a flush (hand.rs `flush`: one suit, a Wild card or Smeared Joker's
+/// colours aside), a straight (5 ranks) or two ranks at most (Full House, Five of a Kind).
+/// Splash isn't checked here (`best_play` doesn't call this with it). A shortcut:
+/// `hand::detect` decides.
 fn could_all_score(hand: &[Card], mask: u32, n: usize, flags: hand::RuleFlags) -> bool {
     if flags.splash {
         return true;
@@ -1413,9 +1414,9 @@ fn oracle_decide(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: 
 /// worth keeping: each suit you hold 2+ of, each straight's run of ranks (`straight_runs`) you
 /// hold all but 1 or 2 of (one card a rank), the cards that pair, the biggest rank group, the
 /// best play; each also with the cards that pay at round end kept. By the game's hand rules
-/// as `aims` reads them (hand.lua): suits as flushes count them (`hand::is_suit`: Wild cards,
-/// Smeared Joker), runs of 4 with Four Fingers and with Shortcut's gaps, ranks as straights
-/// and sets see them (`hand::card_id`: Stone cards have none).
+/// as `aims` reads them (misc_functions.lua): suits as flushes count them (`hand::is_suit`:
+/// Wild cards, Smeared Joker), runs of 4 with Four Fingers and with Shortcut's gaps, ranks as
+/// straights and sets see them (`hand::card_id`: Stone cards have none).
 fn oracle_moves(b: &Board, hand: &[Card], deck: &[Card], discards: i64) -> Vec<Move> {
     let mut out = vec![];
     let Some(best) = best_play(b, hand) else { return out };
@@ -1486,13 +1487,14 @@ struct Aim {
     groups: Vec<(Vec<Card>, usize)>,
 }
 
-/// Every hand worth digging for, from the game's own hand rules (hand.lua `get_flush`,
-/// `get_straight`, `get_X_same`, with Four Fingers, Shortcut and Smeared Joker): a flush of
-/// each suit with 2+ cards of it; each straight with all but 1 or 2 of its ranks in hand
-/// (one card of each kept), and each straight flush (a suit's flush part with a straight,
-/// hand.lua `evaluate_poker_hand`); one more of a rank you hold 2+ of (Three, Four, Five of a Kind);
-/// a Full House from Two Pair; one more of a single card's rank beside a Pair (Two Pair) or Three
-/// of a Kind (a Full House). Hands already made aren't aims (the best play has them).
+/// Every hand worth digging for, from the game's own hand rules (misc_functions.lua
+/// `get_flush`, `get_straight`, `get_X_same`, with Four Fingers, Shortcut and Smeared Joker): a
+/// flush of each suit with 2+ cards of it; each straight with all but 1 or 2 of its ranks in
+/// hand (one card of each kept), and each straight flush (a suit's flush part with a straight,
+/// misc_functions.lua `evaluate_poker_hand`); one more of a rank you hold 2+ of (Three, Four,
+/// Five of a Kind); a Full House from Two Pair; one more of a single card's rank beside a Pair
+/// (Two Pair) or Three of a Kind (a Full House). Hands already made aren't aims (the best play
+/// has them).
 fn aims(b: &Board, hand: &[Card], deck: &[Card]) -> Vec<Aim> {
     use HandType::*;
     let f = b.rule_flags();
@@ -1571,13 +1573,13 @@ fn aims(b: &Board, hand: &[Card], deck: &[Card]) -> Vec<Aim> {
         }
     }
     // Straight flushes, by the game's rule: a flush part and a straight part found apart
-    // (hand.lua `evaluate_poker_hand`; with Four Fingers each is 4 of the 5 cards played), so a
-    // play holds `need` cards of the suit and at most 5 − need others. For each suit and
-    // straight: the suit's copy of each rank, another only within that allowance, else the rank
-    // is drawn; then the suit's other cards in hand, as many as there's room for (the flush
-    // part). One card away, its fits are the cards that make a straight flush with what's kept
-    // (`hand::detect`); two away, a card of each missing rank, as many of them of the suit as
-    // the flush part still lacks.
+    // (misc_functions.lua `evaluate_poker_hand`; with Four Fingers each is 4 of the 5 cards
+    // played), so a play holds `need` cards of the suit and at most 5 − need others. For each
+    // suit and straight: the suit's copy of each rank, another only within that allowance, else
+    // the rank is drawn; then the suit's other cards in hand, as many as there's room for (the
+    // flush part). One card away, its fits are the cards that make a straight flush with what's
+    // kept (`hand::detect`); two away, a card of each missing rank, as many of them of the suit
+    // as the flush part still lacks.
     let off_suit = 5 - need;
     for s in Suit::ALL {
         let in_suit = |c: &Card| suited(c, s);
@@ -1693,10 +1695,10 @@ fn aims(b: &Board, hand: &[Card], deck: &[Card]) -> Vec<Aim> {
             }
         }
     }
-    // one more of a single card's rank beside a group (hand.lua `get_X_same`): Two Pair from a
-    // Pair, a Full House from Three of a Kind; the group with one to `AIM_SINGLES` singles, those
-    // with the most cards of their rank left first (then the higher), any of whose ranks
-    // completes it
+    // one more of a single card's rank beside a group (misc_functions.lua `get_X_same`): Two
+    // Pair from a Pair, a Full House from Three of a Kind; the group with one to `AIM_SINGLES`
+    // singles, those with the most cards of their rank left first (then the higher), any of
+    // whose ranks completes it
     let groups_of = |n: usize| (2..=14).filter(|&r| rank_of(r).len() >= n).count();
     let mut singles: Vec<i32> = (2..=14).filter(|&r| rank_of(r).len() == 1 && !fits(r).is_empty()).collect();
     singles.sort_by(|&a, &c| fits(c).len().cmp(&fits(a).len()).then(c.cmp(&a)));
@@ -1744,9 +1746,9 @@ fn aims(b: &Board, hand: &[Card], deck: &[Card]) -> Vec<Aim> {
     out
 }
 
-/// Every run of `need` ranks a straight can be (hand.lua `get_straight`): consecutive ranks,
-/// or with Shortcut a gap of one rank between any two; an Ace is 1 or 14. Computed once per
-/// rule set.
+/// Every run of `need` ranks a straight can be (misc_functions.lua `get_straight`): consecutive
+/// ranks, or with Shortcut a gap of one rank between any two; an Ace is 1 or 14. Computed once
+/// per rule set.
 fn straight_runs(need: usize, shortcut: bool) -> std::rc::Rc<Vec<Vec<i32>>> {
     type Runs = std::rc::Rc<Vec<Vec<i32>>>;
     thread_local! {
@@ -2895,9 +2897,9 @@ mod tests {
 
     #[test]
     fn a_pair_is_dug_toward_two_pair_and_three_of_a_kind_toward_a_full_house() {
-        // one more of a kept single's rank beside the group (hand.lua `get_X_same`): with one or
-        // two singles, those with the most cards of their rank left first; not when the hand is
-        // already made. Fails without these plans.
+        // one more of a kept single's rank beside the group (misc_functions.lua `get_X_same`):
+        // with one or two singles, those with the most cards of their rank left first; not when
+        // the hand is already made. Fails without these plans.
         let plans = |cards: &str, extra: &[&str], want: HandType| -> Vec<(Vec<usize>, usize)> {
             let hand = Card::parse_list(cards).unwrap();
             let mut deck: Vec<Card> = standard_deck().into_iter().filter(|c| !hand.iter().any(|h| h.same_kind(c))).collect();
@@ -3125,7 +3127,7 @@ mod tests {
     #[test]
     fn a_straight_flush_is_a_plan_of_its_own() {
         // A straight flush is its own hand (scored at its own level): the game finds its flush
-        // part and straight part apart (hand.lua `evaluate_poker_hand`)
+        // part and straight part apart (misc_functions.lua `evaluate_poker_hand`)
         let plans = |cards: &str, keys: &[&str]| -> Vec<(Vec<usize>, Vec<String>)> {
             let hand = Card::parse_list(cards).unwrap();
             let deck: Vec<Card> = standard_deck().into_iter().filter(|c| !hand.iter().any(|h| h.same_kind(c))).collect();
