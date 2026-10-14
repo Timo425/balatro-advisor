@@ -1015,10 +1015,13 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    `pending_expect`, and the replay test fails once that holds, so the fix restores it (D14).
    Not measured: that the owner's line really is better. Before 2026-10-14 it rested on the
    owner's judgement and on the older simulated player agreeing; "a strong player would bank a
-   junk hand after the discard" is reasoning. So the work starts there: play the owner's line as
-   a strong player would (discard K♣ 9♥ 6♥ 5♣, then a junk hand of cards outside the Flush,
-   then the Flush) on the same rounds as the junk-play pick and compare by `RoundGoals::value`.
-   If it wins, this gap is the cause and that margin is the fix's target; if it doesn't, the
+   junk hand after the discard" is a guess, and so is any line picked by eye (the owner's firm
+   objection was only to discarding the seal; keeping the Spades is the plausible line). So the
+   work starts there: compare the owner's discard (K♣ 9♥ 6♥ 5♣) and the junk-play pick with the
+   oracle playing the rest of the round (`Options::judge`, as the history check does: it finds
+   its own lines), on the same rounds, by `RoundGoals::value`; the guessed line (discard, a junk
+   hand of cards outside the Flush, then the Flush) is one more candidate, not the answer. If the
+   discard wins, this gap is the cause and that margin is the fix's target; if it doesn't, the
    junk play may be right here (hands nearly free past the interest cap): take it to the owner
    before changing the fixture either way, never tune the policy until the old line wins. The
    fix: weigh a hand by what it's worth in the round (`RoundGoals`: a spare hand's money, points
