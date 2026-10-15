@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use super::hand::{self, HandInfo, HandType, RuleFlags, card_id, is_face, is_suit};
 use super::joker::{Joker, Kind};
-use super::rng::{Rolls, Unlucky};
+use super::rng::{Pick, Rolls, Unlucky};
 use crate::model::{Card, Edition, Enhancement, Seal, Suit};
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -219,6 +219,20 @@ pub struct Outcome {
     /// Orders proposed for the parts whose cards' maps aren't exact (`Pass::arrangement`)
     #[serde(skip)]
     pub(crate) proposed: (Option<Vec<usize>>, Option<Vec<usize>>),
+    /// The held cards the boss's press-play step discarded before the hand scored (indices into
+    /// the held cards, ascending: The Hook's, `score`). When which go can't change the hand
+    /// (`hook_pick_matters`), the first ones: not what stays to the round's end (Gold cards and
+    /// Blue Seals there are averaged over every set: `sim::held_at_end`)
+    #[serde(skip)]
+    pub hooked: Vec<usize>,
+    /// The jokers the press-play discard ate (places on the board scored: Ramen), gone in
+    /// `Board::after_hand`; their entries in `jokers` keep their state as it was
+    #[serde(skip)]
+    pub eaten: Vec<usize>,
+    /// The score with the pick that costs most when the press-play step's pick is averaged
+    /// (`Pick::Average`, D15): what a play surely scores. `score` otherwise
+    #[serde(skip)]
+    pub sure: f64,
 }
 
 /// One step of a card's effect on the score: chips added, Mult added, then ×Mult (the order
@@ -509,6 +523,11 @@ impl Board {
     /// `not context.hook`) and no discard is used (state_events.lua
     /// `G.FUNCS.discard_cards_from_highlighted` with `hook`).
     pub fn discard_by(&mut self, discarded: &[Card], by_hook: bool) -> f64 {
+        self.discard_eating(discarded, by_hook).0
+    }
+
+    /// `discard_by`, and the places on the board before it of the jokers it ate (Ramen)
+    fn discard_eating(&mut self, discarded: &[Card], by_hook: bool) -> (f64, Vec<usize>) {
         let money = discard_money(self, discarded);
         if self.discards_used <= 0 && !discarded.is_empty() && !by_hook {
             let burnt = (0..self.jokers.len()).filter_map(|j| effective_joker(self, j)).filter(|jk| jk.key == "j_burnt").count() as i64;
@@ -564,7 +583,7 @@ impl Board {
             self.discards_left = (self.discards_left - 1).max(0);
         }
         self.dollars += money;
-        money
+        (money, (0..eaten.len()).filter(|&j| eaten[j]).collect())
     }
 
     /// The board as round `blind` starts: what lasts only a round reset (state_events.lua
@@ -603,6 +622,13 @@ impl Board {
             jk.x_mult = st.x_mult;
             jk.extra.chips = st.extra_chips;
         }
+        if !o.eaten.is_empty() {
+            let mut k = 0;
+            self.jokers.retain(|_| {
+                k += 1;
+                !o.eaten.contains(&(k - 1))
+            });
+        }
         self.levels[o.hand as usize] = o.level;
         self.dollars = o.money;
         self.hands_played += 1;
@@ -634,21 +660,199 @@ impl Board {
 }
 
 /// Scores `played` with `held` staying in hand, both in the order that scores most (the
-/// player arranges them: `Outcome::played_order`, `Outcome::held_order`).
+/// player arranges them: `Outcome::played_order`, `Outcome::held_order`), after the boss's
+/// press-play step (`press_play`: The Hook's discard).
 pub fn score<R: Rolls + ?Sized>(b: &Board, played: &[Card], held: &[Card], rolls: &mut R, trace: bool) -> Outcome {
     let info = hand::detect(played, b.rule_flags());
     score_detected(b, played, held, info, rolls, trace)
 }
 
+/// `score` of a hand whose press-play step already ran on `b` and `held` (the simulated round
+/// makes The Hook's pick itself, from a seed of its own, and discards through `discard_by`), or
+/// that a caller scores as if every held card stays (`sim::held_value`: what a card adds)
+pub fn score_pressed<R: Rolls + ?Sized>(b: &Board, played: &[Card], held: &[Card], rolls: &mut R, trace: bool) -> Outcome {
+    let info = hand::detect(played, b.rule_flags());
+    score_arranged(b, played, held, info, rolls, trace)
+}
+
+/// How many held cards the boss's press-play step discards once the played cards left the hand
+/// (blind.lua `Blind:press_play`): The Hook 2, one at a time from the cards held (as many as
+/// there are), unless disabled; none otherwise
+pub fn hook_takes(b: &Board, held: usize) -> usize {
+    if b.blind.active("bl_hook") { held.min(2) } else { 0 }
+}
+
+/// Every set of `hook_takes` held cards of `n` (indices, ascending), each as likely as the game's
+/// pick; none without a press-play discard
+pub fn hook_sets(b: &Board, n: usize) -> Vec<Vec<usize>> {
+    match hook_takes(b, n) {
+        0 => vec![],
+        1 => (0..n).map(|i| vec![i]).collect(),
+        _ => (0..n).flat_map(|i| (i + 1..n).map(move |j| vec![i, j])).collect(),
+    }
+}
+
+/// Whether which held cards the press-play step takes can change the hand scored (its score,
+/// money or jokers): some stay and the score reads held cards, or the discard reads the cards
+pub fn hook_pick_matters(b: &Board, held: &[Card]) -> bool {
+    let (n, k) = (held.len(), hook_takes(b, held.len()));
+    k > 0 && ((k < n && held_read(b, held)) || discard_reads_cards(b, k))
+}
+
+/// Whether a held card can take part in scoring on `b` (`Outcome::held_used`): a Steel card's
+/// own ×Mult, a joker on held cards (`HELD_INDIVIDUAL`), Blackboard looking at them all
+fn held_read(b: &Board, held: &[Card]) -> bool {
+    Answers::of(b).held_individual || b.has(Kind::Blackboard) || held.iter().any(|c| !c.debuff && c.enhancement == Some(Enhancement::Steel))
+}
+
+/// Whether what discarding `k` cards does (`Board::discard_by`) depends on which cards they are:
+/// Castle's suit, Hit the Road's Jacks, Mail-In Rebate's rank (money: Bull and Bootstraps read
+/// it), Faceless Joker when `k` cards reach its faces
+fn discard_reads_cards(b: &Board, k: usize) -> bool {
+    let copied = (0..b.jokers.len()).filter_map(|j| effective_joker(b, j)).any(|jk| match jk.key.as_str() {
+        "j_mail" => b.mail_rank.is_some(),
+        "j_faceless" => jk.extra.faces <= k as f64,
+        _ => false,
+    });
+    copied
+        || b.jokers.iter().any(|jk| {
+            !jk.debuff
+                && match jk.key.as_str() {
+                    "j_castle" => b.castle_suit.is_some(),
+                    "j_hit_the_road" => true,
+                    _ => false,
+                }
+        })
+}
+
+/// Whether how many cards a discard takes changes the jokers (`Board::discard_by`): Green Joker
+/// (any), Ramen and Yorick (each card), Trading Card (one)
+fn discard_counts(b: &Board) -> bool {
+    b.jokers.iter().any(|jk| !jk.debuff && matches!(jk.key.as_str(), "j_green_joker" | "j_ramen" | "j_yorick" | "j_trading"))
+}
+
+/// The press-play step before `played` scores, then the score (`score_arranged`): The Hook
+/// discards `hook_takes` held cards through `Board::discard_by`. Which ones is a pick
+/// (`Rolls::pick`), asked only when it can change the hand (`hook_pick_matters`): otherwise the
+/// first ones go, as any would do for the hand. An estimate's pick (`Pick::Average`, D15) scores
+/// every set: its `score` and `dollars` are their average, `sure` the score of the set that
+/// costs most, and the rest (jokers, `hooked`, the trace) that set's; `Pick::Best` the set that
+/// costs least; a given pick (`Pick::These`) is scored as it is. The outcome counts the
+/// discard's money in `dollars`, its jokers' changes in `jokers`, and names the cards in
+/// `hooked`. Not carried to the board after it (`after_hand`): Yorick's count and a card Trading
+/// Card destroys.
+#[allow(clippy::too_many_arguments)]
+fn pressed<R: Rolls + ?Sized>(b: &Board, played: &[Card], held: &[Card], info: HandInfo, rolls: &mut R, trace: bool, k: usize, as_played: bool) -> Outcome {
+    let n = held.len();
+    let mut o = if !(k < n && hook_pick_matters(b, held)) {
+        press_with(b, played, held, info, rolls, trace, &(0..k).collect::<Vec<_>>(), as_played)
+    } else {
+        match rolls.pick(n, k) {
+            Pick::These(v) => press_with(b, played, held, info, rolls, trace, &v, as_played),
+            pick => {
+                // every set of `k` once, weighted by how many sets have the same cards
+                let mut sets: Vec<(Vec<usize>, Vec<Card>, f64)> = vec![];
+                for v in hook_sets(b, n) {
+                    let mut c: Vec<Card> = v.iter().map(|&i| held[i]).collect();
+                    c.sort_by_key(|x| x.order_key());
+                    match sets.iter_mut().find(|s| s.1 == c) {
+                        Some(s) => s.2 += 1.0,
+                        None => sets.push((v, c, 1.0)),
+                    }
+                }
+                let outs: Vec<(Outcome, f64)> = sets.iter().map(|(v, _, w)| (press_with(b, played, held, info.clone(), rolls, false, v, as_played), *w)).collect();
+                // the set that costs most (`sure`), the one that costs least
+                let by = |better: &dyn Fn(f64, f64) -> bool| (0..outs.len()).fold(0, |a, i| if better(outs[i].0.score, outs[a].0.score) { i } else { a });
+                let (worst, best) = (by(&|x, y| x < y), by(&|x, y| x > y));
+                let sure = outs[worst].0.score;
+                let one = if pick == Pick::Best { best } else { worst };
+                // the outcome of that set (traced when asked), with the average's score and money
+                let mut o = if trace { press_with(b, played, held, info, rolls, true, &sets[one].0, as_played) } else { outs[one].0.clone() };
+                if pick == Pick::Average {
+                    let w: f64 = outs.iter().map(|x| x.1).sum();
+                    let avg = |f: &dyn Fn(&Outcome) -> f64| outs.iter().map(|x| f(&x.0) * x.1).sum::<f64>() / w;
+                    let dollars = avg(&|x| x.dollars);
+                    o.score = avg(&|x| x.score);
+                    o.money += dollars - o.dollars;
+                    o.dollars = dollars;
+                    // each joker's numbers too (what it grew by, Castle's suit, Hit the Road's
+                    // Jacks; the same jokers in every set)
+                    for (j, st) in o.jokers.iter_mut().enumerate() {
+                        st.mult = avg(&|x| x.jokers[j].mult);
+                        st.x_mult = avg(&|x| x.jokers[j].x_mult);
+                        st.extra_chips = avg(&|x| x.jokers[j].extra_chips);
+                    }
+                }
+                o.sure = sure;
+                o
+            }
+        }
+    };
+    // other cards held is another discard (`Outcome::held_used`): when which go reads them, or how
+    // many go changes the jokers
+    o.held_used |= hook_pick_matters(b, held) || discard_counts(b);
+    o
+}
+
+/// The Hook's discard of `gone` (indices into `held`), then the score of what's left
+#[allow(clippy::too_many_arguments)]
+fn press_with<R: Rolls + ?Sized>(b: &Board, played: &[Card], held: &[Card], info: HandInfo, rolls: &mut R, trace: bool, gone: &[usize], as_played: bool) -> Outcome {
+    let mut after = b.clone();
+    let out: Vec<Card> = gone.iter().map(|&i| held[i]).collect();
+    let (money, eaten) = after.discard_eating(&out, true);
+    let kept: Vec<usize> = (0..held.len()).filter(|i| !gone.contains(i)).collect();
+    let rest: Vec<Card> = kept.iter().map(|&i| held[i]).collect();
+    let mut o = if as_played { pass(&after, played, &rest, info, rolls, trace, false) } else { score_arranged(&after, played, &rest, info, rolls, trace) };
+    o.dollars += money;
+    // the order to hold the cards in, as indices into every held card (the ones gone last)
+    o.held_order = o.held_order.map(|ord| ord.iter().map(|&i| kept[i]).chain(gone.iter().copied()).collect());
+    // each joker of `b`'s state, by its place: the ones eaten as they were, gone in `after_hand`
+    if !eaten.is_empty() {
+        let mut left = o.jokers.into_iter();
+        o.jokers = b
+            .jokers
+            .iter()
+            .enumerate()
+            .map(|(k, j)| if eaten.contains(&k) { JokerState { mult: j.mult, x_mult: j.x_mult, extra_chips: j.extra.chips } } else { left.next().unwrap_or_default() })
+            .collect();
+        o.eaten = eaten;
+    }
+    if trace && !out.is_empty() {
+        let labels: Vec<String> = out.iter().map(Card::label).collect();
+        o.trace.insert(0, Step { source: format!("The Hook discards {}", labels.join(" ")), chips: 0.0, mult: 0.0 });
+    }
+    o.hooked = gone.to_vec();
+    o
+}
+
 /// Scores `played` (in play order) with `held` staying in hand (in hand order), as the game
-/// scores a hand that was played in that arrangement: for checking against real scores.
+/// scores a hand that was played in that arrangement, after the press-play step (`pressed`):
+/// for checking against real scores.
 pub fn score_as_played<R: Rolls + ?Sized>(b: &Board, played: &[Card], held: &[Card], rolls: &mut R, trace: bool) -> Outcome {
     let info = hand::detect(played, b.rule_flags());
-    pass(b, played, held, info, rolls, trace, false)
+    match hook_takes(b, held.len()) {
+        0 => pass(b, played, held, info, rolls, trace, false),
+        k => pressed(b, played, held, info, rolls, trace, k, true),
+    }
 }
 
 /// `score` with the hand already detected (`hand::detect(played, b.rule_flags())`).
 pub fn score_detected<R: Rolls + ?Sized>(
+    b: &Board,
+    played: &[Card],
+    held: &[Card],
+    info: HandInfo,
+    rolls: &mut R,
+    trace: bool,
+) -> Outcome {
+    match hook_takes(b, held.len()) {
+        0 => score_arranged(b, played, held, info, rolls, trace),
+        k => pressed(b, played, held, info, rolls, trace, k, false),
+    }
+}
+
+/// `score_detected` with no press-play step: the cards arranged, then scored
+fn score_arranged<R: Rolls + ?Sized>(
     b: &Board,
     played: &[Card],
     held: &[Card],
@@ -720,6 +924,12 @@ impl<R: Rolls + ?Sized> Rolls for Asked<'_, R> {
     fn unit(&mut self) -> f64 {
         self.asked = true;
         self.inner.unit()
+    }
+    /// an average is exact, not a roll drawn (D15)
+    fn pick(&mut self, n: usize, k: usize) -> Pick {
+        let p = self.inner.pick(n, k);
+        self.asked |= p != Pick::Average;
+        p
     }
 }
 
@@ -914,6 +1124,9 @@ impl<R: Rolls + ?Sized> Pass<'_, R> {
             played_order: self.played_order,
             held_order: self.held_order,
             proposed: self.proposed,
+            hooked: vec![],
+            eaten: vec![],
+            sure: (chips * mult).floor(),
         }
     }
 

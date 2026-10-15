@@ -9,7 +9,9 @@ use serde_json::Value;
 /// the standard 52) and its boss ("" for none). The first twelve are plain play styles; the
 /// rest have what those lack and real runs have: jokers that grow during the round, a few
 /// strong cards among plain ones, a boss that debuffs cards, jokers that read the round's memory
-/// of the hands played (Card Sharp, Acrobat, Obelisk; The Eye) and jokers that fade.
+/// of the hands played (Card Sharp, Acrobat, Obelisk; The Eye), jokers that fade, and The Hook
+/// (held cards discarded before each hand scores) on boards that read held cards, hold seals
+/// and Steel, or grow by discards.
 const BOARDS: &[(&str, &[&str], bool, &str)] = &[
     ("plain", &[], false, ""),
     ("pairs", &["j_jolly", "j_duo", "j_sly"], false, ""),
@@ -31,6 +33,9 @@ const BOARDS: &[(&str, &[&str], bool, &str)] = &[
     ("memory", &["j_card_sharp", "j_acrobat", "j_obelisk"], false, ""),
     ("trousers_eye", &["j_trousers", "j_trousers", "j_joker"], false, "bl_eye"),
     ("faders", &["j_ice_cream", "j_selzer", "j_joker"], false, ""),
+    ("held_hook", &["j_baron", "j_shoot_the_moon", "j_raised_fist"], false, "bl_hook"),
+    ("enhanced_hook", &["j_jolly", "j_duo", "j_joker"], true, "bl_hook"),
+    ("growers_hook", &["j_green_joker", "j_ride_the_bus", "j_runner"], false, "bl_hook"),
 ];
 
 /// A deck as a run has it by Ante 3 or 4: the standard 52 with these cards changed (Bonus 3s,
@@ -120,6 +125,17 @@ const TARGETS: &[(&str, f64)] = &[
     ("faders_4h3d", 5690.0),
     ("faders_4h1d", 4898.0),
     ("faders_1h3d", 1800.0),
+    // the boards added 2026-10-15 (The Hook): the half points of the player at 04410bb (before
+    // its estimates counted the Hook)
+    ("held_hook_4h3d", 4752.0),
+    ("held_hook_4h1d", 3920.0),
+    ("held_hook_1h3d", 1200.0),
+    ("enhanced_hook_4h3d", 7336.0),
+    ("enhanced_hook_4h1d", 5872.0),
+    ("enhanced_hook_1h3d", 2880.0),
+    ("growers_hook_4h3d", 1508.0),
+    ("growers_hook_4h1d", 1099.0),
+    ("growers_hook_1h3d", 470.0),
 ];
 
 /// Each board's rounds; a board without a target yet gets 0 (`player_targets` finds it).

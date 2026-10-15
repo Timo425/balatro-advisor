@@ -262,6 +262,10 @@ pub struct PlayOption {
     pub dig: usize,
     pub hand: String,
     pub score: f64,
+    /// What the play surely scores (`engine::Outcome::sure`: The Hook taking the cards that cost
+    /// most); `score` otherwise
+    #[serde(skip)]
+    pub sure: f64,
     pub p_win: f64,
     pub mean_total: f64,
     /// A consumable to use before the move.
@@ -2000,9 +2004,7 @@ fn cost(data: &GameData, key: &str) -> i64 {
 
 fn unmodelled_boss(key: &str) -> Option<String> {
     let s = match key {
-        // in the round's outcome, not in the simulated player's choices (nor, The Hook, in the
-        // scores shown): gap 15
-        "bl_hook" => "The Hook in the simulated player's choices and the scores shown (its discards are in the outcome)",
+        // in the round's outcome, not in the simulated player's choices: gap 15
         "bl_tooth" => "The Tooth in the simulated player's choices (its money is in the outcome)",
         "bl_serpent" => "The Serpent's 3-card draws",
         "bl_pillar" => "The Pillar's debuffs",
@@ -5078,10 +5080,11 @@ mod tests {
 
     #[test]
     fn a_boss_in_the_outcome_only_says_what_isnt_simulated() {
-        // The Tooth's money (engine `score`) and The Hook's discards are in the round's outcome,
-        // not in the simulated player's choices (nor, The Hook, in the scores shown): said so
+        // The Tooth's money (engine `score`) is in the round's outcome, not in the simulated
+        // player's choices: said so. The Hook's discard is in both and in the scores shown (the
+        // engine's press-play step), so nothing is said
         assert!(unmodelled_boss("bl_tooth").is_some_and(|s| s.contains("choices") && s.contains("outcome")));
-        assert!(unmodelled_boss("bl_hook").is_some_and(|s| s.contains("choices") && s.contains("scores shown")));
+        assert!(unmodelled_boss("bl_hook").is_none());
         assert!(unmodelled_boss("bl_serpent").is_some());
     }
 

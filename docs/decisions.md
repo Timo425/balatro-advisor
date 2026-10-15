@@ -431,3 +431,36 @@ Approved by the owner 2026-10-14: the fixture narrowed only with the gap clearly
 it can be handled later without confusion, now and during the fix; this mechanism is what that
 requires (dropping or loosening the expectation, or parking the fixture where it isn't run, would
 lose it).
+
+## D15. The Hook's pick in an estimate: its average to choose by, its worst pair for "surely wins" (accepted)
+
+**What.** The Hook discards 2 held cards at random before a hand scores (blind.lua
+`Blind:press_play`), and the engine's `score` now runs that step (gap 15). Which two it takes
+isn't a roll that fails or succeeds: every pair is as likely. So in every estimate that picks a
+move, the pick is its exact average over the pairs it could take (`Pick::Average`, with every
+other roll still failing for the floor, sampled for `Play::mean`): the play is chosen by that
+floor and pace starts from it, as the register says ("the play itself chosen by its floor").
+Whether a play surely wins reads a second number, the score with the pair whose loss costs most
+(`Outcome::sure`, `Play::sure`): the finish (`finish_play`), the decision's "play it now", the
+seal-keeping win and Best play's "wins now" tie-break. What a held card adds (`held_value`: the cards never
+thrown away) is measured as if it stays: a discard draws back to hand size, so The Hook picks
+from as many cards either way; measured with the pick averaged, every plain card beside a Steel
+one looked worth holding, as a card the Hook might take instead (the enhanced deck's Hook rounds
+4.7-7.7 points below the worst pair's player). Both come from one pass over the pairs;
+other rolls keep their floor as before. The simulated round keeps its own pick (one pair, keyed
+by card).
+
+**Why.** With the worst pair as the floor, a held card worth anything was always the one taken:
+with Baron and a Steel King held the player played both Kings (floor 108) over a Pair of 7s that
+holds them (floor 48, expected 116); with Baron and Shoot the Moon the best floor fell from 960
+to 360, every held-card joker worth nothing; and `held_value` already needed an exception
+(found by the review of the change, 2026-10-15). The worst pair is right only for the question
+"does it surely win". A pick over sets of cards is a kind of randomness the floor's "every roll
+failing" didn't cover; this rule covers any such pick.
+
+**Revisit if** the player benchmark's Hook boards or the gap to the oracle on them get worse
+than with the worst pair, a Hook round is lost on a finish that won only on average, or the
+cost (every pair scored on a Hook board whose jokers read held cards, ~16× per best play) shows
+in the live page's timings.
+
+Approved by the owner 2026-10-15.

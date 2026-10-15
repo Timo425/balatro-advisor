@@ -15,8 +15,15 @@ pub struct Play {
     /// Indices into the hand, in the order to play them.
     pub cards: Vec<usize>,
     pub hand: HandType,
-    /// Score with every random roll failing (used to choose, and to know a play surely wins).
+    /// Score with every random roll failing, and a pick of cards (The Hook's) averaged over what
+    /// it could take (D15): what a play is chosen by.
     pub floor: f64,
+    /// Score with every roll failing and the pick that costs most (`Outcome::sure`): whether the
+    /// play surely wins. The floor when nothing is picked.
+    pub sure: f64,
+    /// The most any play the search tried surely scores (`sure`): whether the round can be won
+    /// surely now, by this play or another (`surely_winning`). The floor when nothing is picked.
+    pub surest: f64,
     /// Average score over the random rolls (Misprint, Lucky cards, …): what the play is
     /// expected to add, the measure for pace and for comparing it with a chase. The floor
     /// when nothing in it is random.
@@ -255,6 +262,12 @@ impl<R: crate::engine::Rolls> crate::engine::Rolls for Watched<R> {
         self.asked = true;
         self.rolls.unit()
     }
+    /// an average is exact, not a roll drawn (D15)
+    fn pick(&mut self, n: usize, k: usize) -> crate::engine::Pick {
+        let p = self.rolls.pick(n, k);
+        self.asked |= p != crate::engine::Pick::Average;
+        p
+    }
 }
 
 /// `best_play_with` of the cards `part` (a mask over `hand`'s first 16), without its mean: the
@@ -280,6 +293,7 @@ fn best_play_among(
     let flags = b.rule_flags();
     let keep_kickers = kickers_matter(b);
     let mut best: Option<(Play, bool)> = None;
+    let mut surest = f64::NEG_INFINITY;
     let mut played: Vec<Card> = Vec::with_capacity(5);
     let mut held: Vec<Card> = Vec::with_capacity(n);
     let mut idx: Vec<usize> = Vec::with_capacity(5);
@@ -322,8 +336,9 @@ fn best_play_among(
         }
         let held_mask = part & !mask;
         // a floor scored with these cards held or more, none of them taking part, is this one
-        let (floor, hand_type, asked, parts) = match known.as_ref().and_then(|k| k.floor).filter(|f| held_mask & !f.held == 0) {
-            Some(f) => (f.score, f.hand, f.asked, f.parts),
+        let (floor, sure, hand_type, asked, parts) = match known.as_ref().and_then(|k| k.floor).filter(|f| held_mask & !f.held == 0) {
+            // no held card took part: no pick changed it, `sure` is the floor
+            Some(f) => (f.score, f.score, f.hand, f.asked, f.parts),
             None => {
                 held.clear();
                 held.extend((0..n).filter(|i| held_mask & (1 << i) != 0).map(|i| hand[i]));
@@ -332,22 +347,23 @@ fn best_play_among(
                 if let Some(k) = known.as_mut().filter(|k| k.floor.is_none() && !o.held_used) {
                     k.floor = Some(SeenFloor { held: held_mask, score: o.score, hand: o.hand, asked: rolls.asked, parts: o.unbalanced });
                 }
-                (o.score, o.hand, rolls.asked, o.unbalanced)
+                (o.score, o.sure, o.hand, rolls.asked, o.unbalanced)
             }
         };
         if let Some(v) = scored.as_deref_mut() {
-            v.push((mask, hand_type, parts.0, parts.1, floor));
+            v.push((mask, hand_type, parts.0, parts.1, floor, sure));
         }
+        surest = surest.max(sure);
         if best.as_ref().is_none_or(|(p, _)| floor > p.floor) {
-            best = Some((Play { cards: idx.clone(), hand: hand_type, floor, mean: floor }, asked));
+            best = Some((Play { cards: idx.clone(), hand: hand_type, floor, sure, surest: 0.0, mean: floor }, asked));
         }
     }
-    best
+    best.map(|(p, asked)| (Play { surest, ..p }, asked))
 }
 
 /// A play a search scored (`best_play_among`): its mask, hand, and chips and Mult with every
-/// roll failing, before a deck balances them, and its floor
-type Scored = (u32, HandType, f64, f64, f64);
+/// roll failing, before a deck balances them, its floor and what it surely scores (`Play::sure`)
+type Scored = (u32, HandType, f64, f64, f64, f64);
 
 /// What's known of a play of a hand (`best_play_of`): its hand, and its floor when no held card
 /// took part in it (`Outcome::held_used`)
@@ -396,7 +412,7 @@ impl<'a> HandParts<'a> {
     /// The whole hand's unbeaten plays (`front_of`), once its best play was worked out: the
     /// shortlist `playing_on` starts from (none for a hand of more than `PARTS_MAX` cards)
     fn shortlist(&self) -> Option<Shortlist> {
-        self.scored.borrow().clone().map(|v| Shortlist { plays: front_of(v), stale: false })
+        self.scored.borrow().clone().filter(|_| front_holds(self.b, self.hand)).map(|v| Shortlist { plays: front_of(v), stale: false })
     }
 
     /// The whole hand's plays as `best_play` tries them, with their floors (`plays_tried`): its
@@ -607,7 +623,7 @@ pub fn outcomes_after(b: &Board, start: &RoundStart, first: &Move, range: std::o
                     let mut held: Vec<Card> = (0..hand.len()).filter(|k| !idx.contains(k)).map(|k| hand[k]).collect();
                     let was = jokers_now(&bb);
                     o.cash += boss_takes_held(&mut bb, &mut held, &rng);
-                    let s = score::score(&bb, &played, &held, &mut rng, false);
+                    let s = score::score_pressed(&bb, &played, &held, &mut rng, false);
                     o.cash += s.dollars;
                     let total = start.scored + s.score;
                     let _ = bb.after_hand(&s);
@@ -741,8 +757,9 @@ fn win_keeping_seals(b: &Board, hand: &[Card], need: f64) -> Option<Vec<usize>> 
     for r in (1..=keep.len()).rev() {
         let free: Vec<usize> = (0..hand.len()).filter(|i| !keep[..r].contains(i)).collect();
         let cards: Vec<Card> = free.iter().map(|&i| hand[i]).collect();
-        if let Some(p) = best_play(b, &cards).filter(|p| p.floor >= need) {
-            return Some(p.cards.iter().map(|&j| free[j]).collect());
+        if let Some(p) = best_play(b, &cards).filter(|p| p.surest >= need) {
+            let v = if p.sure >= need { p.cards } else { surely_winning(&cards, &plays_tried(b, &cards), need)? };
+            return Some(v.iter().map(|&j| free[j]).collect());
         }
     }
     None
@@ -764,7 +781,7 @@ fn play_of(hand: &[Card], mask: u32) -> Vec<usize> {
 }
 
 /// The finish when the round can be won now: of the plays `best_play` tries that surely win it
-/// (floor ≥ `need`), the one worth most by the round's goals (`finish_value`: the Blue Seals and
+/// (`Play::sure` ≥ `need`), the one worth most by the round's goals (`finish_value`: the Blue Seals and
 /// Gold cards it leaves in hand, the money it makes, what it leaves the jokers a round changes),
 /// the highest floor on a tie. None when no play surely wins.
 fn finish_play(b: &Board, g: &RoundGoals, hand: &[Card], need: f64, hands: i64) -> Option<Vec<usize>> {
@@ -774,7 +791,7 @@ fn finish_play(b: &Board, g: &RoundGoals, hand: &[Card], need: f64, hands: i64) 
 /// `finish_play` among `plays` (the hand's plays as `plays_tried` gives them)
 fn finish_among(b: &Board, g: &RoundGoals, hand: &[Card], need: f64, hands: i64, plays: &[Scored]) -> Option<Vec<usize>> {
     let mut best: Option<(f64, f64, Vec<usize>)> = None;
-    for &(mask, _, _, _, floor) in plays.iter().filter(|s| s.4 >= need) {
+    for &(mask, _, _, _, floor, _) in plays.iter().filter(|s| s.5 >= need) {
         let idx = play_of(hand, mask);
         // the same `seen` credit and hands left whichever play wins
         let v = finish_value(b, g, hand, &idx, hands, 0.0);
@@ -783,6 +800,19 @@ fn finish_among(b: &Board, g: &RoundGoals, hand: &[Card], need: f64, hands: i64,
         }
     }
     best.map(|x| x.2)
+}
+
+/// Of `plays` (the hand's plays as `plays_tried` gives them), the one with the highest floor that
+/// surely wins (`Play::sure` ≥ `need`): the finish without the round's goals when the best play
+/// by its floor doesn't surely win (The Hook may take the cards it holds for: D15)
+fn surely_winning(hand: &[Card], plays: &[Scored], need: f64) -> Option<Vec<usize>> {
+    let mut best: Option<&Scored> = None;
+    for s in plays.iter().filter(|s| s.5 >= need) {
+        if best.is_none_or(|b| s.4 > b.4) {
+            best = Some(s);
+        }
+    }
+    best.map(|s| play_of(hand, s.0))
 }
 
 /// The cards at `idx` in `hand`, in hand order (the game discards them left to right).
@@ -1083,7 +1113,7 @@ fn decide_cards_with(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discar
     let on_cell = std::cell::OnceCell::new();
     let on = || *on_cell.get_or_init(|| playing_on_with(b, hand, &best, hands, true, true, parts.shortlist()));
     let all: Vec<usize> = (0..hand.len()).collect();
-    let now = discards > 1 || best.floor >= need || hands <= 1;
+    let now = discards > 1 || best.surest >= need || hands <= 1;
     if now && discards > 0 && discard_money(b, hand, &all) > 0.0 && on() >= need {
         let n = hand.len().min(12);
         let key = |v: &[usize]| {
@@ -1119,11 +1149,13 @@ fn decide_cards_with(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discar
     // hand left (button_callbacks.lua `G.FUNCS.can_discard`: discards left and cards picked)
     // and draws back to hand size (`G.FUNCS.draw_from_deck_to_hand`), so throwing cards
     // outside the best play can only add to it; a hand that can't win yet digs first
-    if best.floor >= need {
-        // the winning play worth most by the round's goals, when it has goals (`finish_play`)
+    if best.surest >= need {
+        // the winning play worth most by the round's goals, when it has goals (`finish_play`);
+        // else the best play, or when it doesn't surely win, the best that does
         return match b.goals.as_ref().and_then(|g| finish_among(b, g, hand, need, hands, &parts.plays())) {
             Some(v) => Action::Play(v, false),
-            None => play_best,
+            None if best.sure >= need => play_best,
+            None => surely_winning(hand, &parts.plays(), need).map_or(play_best, |v| Action::Play(v, false)),
         };
     }
     if (hands <= 1 && discards <= 0) || deck.is_empty() {
@@ -1299,6 +1331,13 @@ fn playing_on_with(b: &Board, hand: &[Card], best: &Play, hands: i64, shortcut: 
     total
 }
 
+/// Whether a play's score follows its chips and Mult (`front_of`): not when The Hook's pick
+/// changes it, which an estimate averages (D15) while the chips and Mult are one pick's; then
+/// every later hand searches in full
+fn front_holds(b: &Board, hand: &[Card]) -> bool {
+    !score::hook_pick_matters(b, hand)
+}
+
 /// Of each hand type, the plays (masks, ascending) no other play of it beats in both chips and
 /// Mult, from a search's `scored` plays: by chips (most first), then Mult, then the earlier mask
 /// (the one the search keeps on a tie), each kept while its Mult beats every play before it
@@ -1306,7 +1345,7 @@ fn front_of(mut scored: Vec<Scored>) -> Vec<u32> {
     scored.sort_by(|x, y| (x.1 as usize).cmp(&(y.1 as usize)).then(y.2.total_cmp(&x.2)).then(y.3.total_cmp(&x.3)).then(x.0.cmp(&y.0)));
     let mut plays = Vec::new();
     let mut top: Option<(HandType, f64)> = None;
-    for &(mask, h, _, mult, _) in &scored {
+    for &(mask, h, _, mult, _, _) in &scored {
         if top.is_none_or(|(th, tm)| th != h || mult > tm) {
             plays.push(mask);
             top = Some((h, mult));
@@ -1346,7 +1385,7 @@ fn later_best(b: &Board, hand: &[Card], short: &mut Option<Shortlist>) -> Option
         Some(s) => best_play_among(b, hand, (1 << n) - 1, true, None, Some(&s.plays), None),
         None => best_play_among(b, hand, (1 << n) - 1, true, None, None, Some(&mut scored)),
     };
-    if short.is_none() {
+    if short.is_none() && front_holds(b, hand) {
         *short = Some(Shortlist { plays: front_of(scored), stale: false });
     }
     // its mean as `best_play_with` works it out
@@ -2146,14 +2185,17 @@ fn aim_score(b: &Board, aim: &Aim, hand: &[Card], held: &[usize]) -> f64 {
 
 /// The cards of `hand` outside `play` that add to its score while held (Baron's Kings, Steel
 /// cards, Shoot the Moon's Queens, …: the engine's held effects): thrown away, they'd cost
-/// the play now. One scoring per card.
+/// the play now. One scoring per card, as if it stays (`score_pressed`: no press-play discard
+/// first): a discard or a dig draws back to hand size, so The Hook picks from as many cards
+/// either way, and with its pick averaged a card taken away would look worth holding only
+/// because the Hook might take it instead of another (every plain card beside a Steel one:
+/// 4.7-7.7 points lost on the enhanced deck's Hook rounds, D15).
 fn held_value(b: &Board, hand: &[Card], play: &[usize]) -> Vec<usize> {
     let played: Vec<Card> = play.iter().map(|&i| hand[i]).collect();
     let rest: Vec<usize> = (0..hand.len()).filter(|i| !play.contains(i)).collect();
     let held = |skip: Option<usize>| -> Vec<Card> { rest.iter().filter(|&&i| Some(i) != skip).map(|&i| hand[i]).collect() };
-    let info = hand::detect(&played, b.rule_flags());
-    let all = score::score_detected(b, &played, &held(None), info.clone(), &mut Unlucky, false).score;
-    rest.iter().copied().filter(|&i| score::score_detected(b, &played, &held(Some(i)), info.clone(), &mut Unlucky, false).score < all).collect()
+    let all = score::score_pressed(b, &played, &held(None), &mut Unlucky, false).score;
+    rest.iter().copied().filter(|&i| score::score_pressed(b, &played, &held(Some(i)), &mut Unlucky, false).score < all).collect()
 }
 
 /// Simulates the rest of a round with the `decide` policy.
@@ -2329,7 +2371,8 @@ fn play_on_instead(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards
     let paying: Vec<Card> = pays_at_end(b, hand).into_iter().map(|i| hand[i]).collect();
     let best = g.planet.iter().copied().fold(0.0, f64::max);
     let most = best * seal_planets(b, &paying) + g.dollar * held_dollars(&paying);
-    let kept = g.planet[h as usize] * seal_planets(fb, &held) + g.dollar * held_dollars(&held);
+    // what this finish keeps of them once the press-play step went (The Hook), on average
+    let kept = over_hook_sets(fb, &held, |left| (g.planet[h as usize] * seal_planets(fb, left) + g.dollar * held_dollars(left), 0.0)).0;
     let for_held = most - kept >= LOOKAHEAD_MIN;
     let for_growth = growth_play(b, g, hand, target - scored, win);
     if !for_held && for_growth.is_none() {
@@ -2437,7 +2480,7 @@ fn paired_pick(vals: &[Vec<f64>]) -> Option<usize> {
 fn growth_play(b: &Board, g: &RoundGoals, hand: &[Card], need: f64, win: &[usize]) -> Option<Vec<usize>> {
     let was = g.jokers_now(b)?;
     let mut best: Option<(f64, bool, f64, Vec<usize>)> = None;
-    for &(mask, _, _, _, floor) in plays_tried(b, hand).iter().filter(|s| s.4 < need) {
+    for &(mask, _, _, _, floor, _) in plays_tried(b, hand).iter().filter(|s| s.5 < need) {
         let idx = play_of(hand, mask);
         let played: Vec<Card> = idx.iter().map(|&i| hand[i]).collect();
         let held: Vec<Card> = (0..hand.len()).filter(|i| !idx.contains(i)).map(|i| hand[i]).collect();
@@ -2481,14 +2524,56 @@ fn growth_play(b: &Board, g: &RoundGoals, hand: &[Card], need: f64, win: &[usize
 fn finish_value(b: &Board, g: &RoundGoals, hand: &[Card], win: &[usize], hands: i64, seen: f64) -> f64 {
     let played: Vec<Card> = win.iter().map(|&i| hand[i]).collect();
     let held: Vec<Card> = (0..hand.len()).filter(|i| !win.contains(i)).map(|i| hand[i]).collect();
+    let value = |s: &crate::engine::Outcome, money: f64, planets: f64| {
+        let grown = g.jokers_now(b).map_or(0.0, |was| {
+            let mut after = b.clone();
+            let _ = after.after_hand(s);
+            g.grown(&was, &after)
+        });
+        let o = Outcome { won: 1.0, spare: (hands - 1) as f64, cash: s.dollars + money, planets, last: Some(s.hand), seen, grown, ..Default::default() };
+        g.value(&o)
+    };
+    // the boss's press-play discard first (The Hook): when which cards go changes the hand, the
+    // value of each set it could take, on average; else the hand once, with what the cards held
+    // pay at round end on average (`held_at_end`)
+    if score::hook_pick_matters(b, &held) {
+        let sets = score::hook_sets(b, held.len());
+        let total: f64 = sets
+            .iter()
+            .map(|gone| {
+                let s = score::score(b, &played, &held, &mut crate::engine::Given(gone.clone()), false);
+                let left: Vec<Card> = (0..held.len()).filter(|i| !gone.contains(i)).map(|i| held[i]).collect();
+                value(&s, won_money(b, &left), seal_planets(b, &left))
+            })
+            .sum();
+        return total / sets.len() as f64;
+    }
     let s = score::score(b, &played, &held, &mut Unlucky, false);
-    let grown = g.jokers_now(b).map_or(0.0, |was| {
-        let mut after = b.clone();
-        let _ = after.after_hand(&s);
-        g.grown(&was, &after)
-    });
-    let o = Outcome { won: 1.0, spare: (hands - 1) as f64, cash: s.dollars + won_money(b, &held), planets: seal_planets(b, &held), last: Some(s.hand), seen, grown, ..Default::default() };
-    g.value(&o)
+    let (money, planets) = held_at_end(b, &held);
+    value(&s, money, planets)
+}
+
+/// The average of `pays` over the cards held while the winning hand scores that are still held at
+/// the round's end: every set the boss's press-play step could discard first (`score::hook_sets`:
+/// The Hook's 2, any as likely), each once
+fn over_hook_sets(b: &Board, held: &[Card], pays: impl Fn(&[Card]) -> (f64, f64)) -> (f64, f64) {
+    let sets = score::hook_sets(b, held.len());
+    if sets.is_empty() {
+        return pays(held);
+    }
+    let (mut x, mut y) = (0.0, 0.0);
+    for gone in &sets {
+        let left: Vec<Card> = (0..held.len()).filter(|i| !gone.contains(i)).map(|i| held[i]).collect();
+        let (a, c) = pays(&left);
+        (x, y) = (x + a, y + c);
+    }
+    (x / sets.len() as f64, y / sets.len() as f64)
+}
+
+/// What the cards held while the winning hand scores pay at the round's end (`won_money`,
+/// `seal_planets`), on average over what the press-play step leaves (`over_hook_sets`)
+fn held_at_end(b: &Board, held: &[Card]) -> (f64, f64) {
+    over_hook_sets(b, held, |h| (won_money(b, h), seal_planets(b, h)))
 }
 
 /// Drops the `seen` credit of consumables already used (theirs went with them)
@@ -2623,7 +2708,7 @@ pub fn sim_round_uses(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[
         let parts = HandParts::new(&b, &hand);
         let all: Vec<usize> = (0..hand.len()).collect();
         let win = match &b.goals {
-            Some(g) => parts.best(&all).filter(|p| p.floor >= start.target - total).and_then(|_| finish_among(&b, g, &hand, start.target - total, hands, &parts.plays())),
+            Some(g) => parts.best(&all).filter(|p| p.surest >= start.target - total).and_then(|_| finish_among(&b, g, &hand, start.target - total, hands, &parts.plays())),
             None => win_keeping_seals(&b, &hand, start.target - total),
         };
         let act = match win {
@@ -2677,7 +2762,7 @@ pub fn sim_round_uses(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[
                 let mut held: Vec<Card> = (0..hand.len()).filter(|i| !idx.contains(i)).map(|i| hand[i]).collect();
                 let was = jokers_now(&b);
                 money += boss_takes_held(&mut b, &mut held, rng);
-                let o = score::score(&b, &played, &held, rng, false);
+                let o = score::score_pressed(&b, &played, &held, rng, false);
                 total += o.score;
                 money += o.dollars;
                 best_hand = best_hand.max(o.score);
@@ -2883,6 +2968,32 @@ mod tests {
         b.blind.key = "bl_hook".into();
         b.blind.disabled = true;
         assert_eq!(outcomes_after(&b, &start, &Move::Play(vec![0]), 0..8, 3, &[]).iter().map(|o| o.total).collect::<Vec<_>>(), plain);
+    }
+
+    #[test]
+    fn under_the_hook_a_play_is_chosen_by_its_average_and_wins_surely_by_its_worst() {
+        // D15: Baron (×1.5 a King held), a Steel King. Played, the Kings score once; held, the
+        // Hook takes 2 of the 6 cards held, so they stay most of the time: the player holds them.
+        // With every pair against you (the old floor) holding them looked worth nothing
+        let mut b = crate::bench::sample_board(&["j_baron"]);
+        b.blind.key = "bl_hook".into();
+        let hand = Card::parse_list("7S 7C KH KD:steel 2H 3D 4C 5S").unwrap();
+        let p = best_play(&b, &hand).unwrap();
+        let played: Vec<String> = p.cards.iter().map(|&i| hand[i].label()).collect();
+        assert!(!played.iter().any(|c| c.starts_with('K')), "{played:?} {} {}", p.floor, p.sure);
+        assert!(p.sure < p.floor, "{} {}", p.sure, p.floor);
+        // and the Kings add while held, so they're never thrown away
+        let kings: Vec<usize> = (0..hand.len()).filter(|&i| hand[i].rank.0 == 13).collect();
+        let held = held_value(&b, &hand, &p.cards);
+        assert!(kings.iter().all(|k| held.contains(k)), "{held:?}");
+        // but a round it can win surely now it wins surely: the last hand, 78 to go, where the
+        // Pair of 7s wins only when The Hook spares the Steel King (10 pairs of 15)
+        assert!(p.surest >= 78.0 && p.sure < 78.0, "{} {}", p.surest, p.sure);
+        let Action::Play(idx, _) = decide(&b, &hand, &[], 1, 0, 78.0, 8) else { panic!("discarded") };
+        let played: Vec<Card> = idx.iter().map(|&i| hand[i]).collect();
+        let held: Vec<Card> = (0..hand.len()).filter(|i| !idx.contains(i)).map(|i| hand[i]).collect();
+        let o = score::score(&b, &played, &held, &mut Unlucky, false);
+        assert!(o.sure >= 78.0, "{:?} surely {}", played.iter().map(Card::label).collect::<Vec<_>>(), o.sure);
     }
 
     #[test]

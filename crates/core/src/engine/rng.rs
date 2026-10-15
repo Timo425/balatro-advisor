@@ -8,6 +8,18 @@ pub trait Rolls {
     fn range(&mut self, min: i64, max: i64) -> i64;
     /// Uniform float in [0, 1).
     fn unit(&mut self) -> f64;
+    /// Which `k` of `n` cards a random pick takes (The Hook's: blind.lua `Blind:press_play`).
+    fn pick(&mut self, n: usize, k: usize) -> Pick;
+}
+
+/// A random pick of cards (`Rolls::pick`): every set it could take, averaged (each as likely: an
+/// estimate's, D15), the set the hand loses least by (every roll for you), or these (indices,
+/// ascending)
+#[derive(Debug, Clone, PartialEq)]
+pub enum Pick {
+    Average,
+    Best,
+    These(Vec<usize>),
 }
 
 /// Every roll fails, Misprint rolls its minimum: the guaranteed floor.
@@ -23,6 +35,29 @@ impl Rolls for Unlucky {
     fn unit(&mut self) -> f64 {
         0.0
     }
+    /// a pick isn't a roll that fails: its average (D15; the worst set is `Outcome::sure`)
+    fn pick(&mut self, _n: usize, _k: usize) -> Pick {
+        Pick::Average
+    }
+}
+
+/// Every roll fails (`Unlucky`), and a pick takes these cards (indices, ascending): a hand
+/// scored with a pick already known (The Hook's, for each set it could take)
+pub struct Given(pub Vec<usize>);
+
+impl Rolls for Given {
+    fn chance(&mut self, p: f64) -> bool {
+        Unlucky.chance(p)
+    }
+    fn range(&mut self, min: i64, max: i64) -> i64 {
+        Unlucky.range(min, max)
+    }
+    fn unit(&mut self) -> f64 {
+        Unlucky.unit()
+    }
+    fn pick(&mut self, _n: usize, _k: usize) -> Pick {
+        Pick::These(self.0.clone())
+    }
 }
 
 /// Every roll succeeds, Misprint rolls its maximum: the ceiling.
@@ -37,6 +72,9 @@ impl Rolls for Lucky {
     }
     fn unit(&mut self) -> f64 {
         0.0
+    }
+    fn pick(&mut self, _n: usize, _k: usize) -> Pick {
+        Pick::Best
     }
 }
 
@@ -86,5 +124,9 @@ impl Rolls for Rng {
     }
     fn unit(&mut self) -> f64 {
         (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
+    }
+    /// every set averaged, the other rolls drawn (D15: an estimate's pace)
+    fn pick(&mut self, _n: usize, _k: usize) -> Pick {
+        Pick::Average
     }
 }

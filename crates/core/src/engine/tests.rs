@@ -399,3 +399,80 @@ fn only_the_listed_jokers_answer_the_contexts_few_do() {
     assert!(checked > 1000, "{checked}");
 }
 
+
+#[test]
+fn the_hook_discards_before_the_hand_scores_and_its_pick_is_a_roll() {
+    // blind.lua `Blind:press_play`: 2 held cards discarded once the played ones left the hand,
+    // before scoring. High Card A: 5 + 11 = 16 Chips, ×1.5 a Steel card held
+    let mut b = Board::empty();
+    b.blind.key = "bl_hook".into();
+    let (played, held) = (cards("AS"), cards("KH:steel 2C 3D"));
+    // an estimate averages the pairs it could take (D15): 2 of 3 lose the Steel card, so
+    // (16 + 16 + 24) / 3; what it surely scores is the pair that costs most, and the cards it
+    // names are that pair's; every roll for you keeps it
+    let est = score(&b, &played, &held, &mut Unlucky, false);
+    assert!((est.score - 56.0 / 3.0).abs() < 1e-9, "{}", est.score);
+    assert_eq!((est.sure, est.hooked.len()), (16.0, 2));
+    assert!(est.hooked.contains(&0));
+    assert_eq!(score(&b, &played, &held, &mut Lucky, false).score, 24.0);
+    // a random stream averages the pick too (only the other rolls are drawn)
+    assert!((score(&b, &played, &held, &mut Rng::new(7), false).score - 56.0 / 3.0).abs() < 1e-9);
+    // a pick given is scored as it is
+    assert_eq!(score(&b, &played, &held, &mut Given(vec![1, 2]), false).score, 24.0);
+    // as many as are held; none when it's disabled (Chicot, Luchador)
+    let one = score(&b, &played, &cards("KH:steel"), &mut Unlucky, false);
+    assert_eq!((one.score, one.sure), (16.0, 16.0));
+    b.blind.disabled = true;
+    assert_eq!(score(&b, &played, &held, &mut Unlucky, false).score, 24.0);
+    // the round's own pick already ran: `score_pressed` scores what's left as it is
+    b.blind.disabled = false;
+    assert_eq!(score_pressed(&b, &played, &held, &mut Unlucky, false).score, 24.0);
+}
+
+#[test]
+fn the_hooks_pick_asks_no_roll_when_any_cards_would_do() {
+    // plain cards held on a board that reads none of them: whichever go, the hand scores the
+    // same, so no roll is asked (a floor that rolled nothing is the play's average)
+    struct Never;
+    impl Rolls for Never {
+        fn chance(&mut self, _: f64) -> bool {
+            panic!("asked")
+        }
+        fn range(&mut self, _: i64, _: i64) -> i64 {
+            panic!("asked")
+        }
+        fn unit(&mut self) -> f64 {
+            panic!("asked")
+        }
+        fn pick(&mut self, _: usize, _: usize) -> super::rng::Pick {
+            panic!("asked")
+        }
+    }
+    let mut b = board(&["j_joker"]);
+    b.blind.key = "bl_hook".into();
+    let o = score(&b, &cards("AS"), &cards("2C 3D 4H"), &mut Never, false);
+    assert_eq!((o.score, o.hooked.clone()), (16.0 * 5.0, vec![0, 1]));
+    // Green Joker loses a Mult to the discard before the hand adds one: (5 + 11) × (1 + 4 - 1 + 1),
+    // where without the Hook it's × 6
+    let mut b = board(&["j_green_joker"]);
+    b.jokers[0].mult = 4.0;
+    b.blind.key = "bl_hook".into();
+    let o = score(&b, &cards("AS"), &cards("2C 3D"), &mut Never, false);
+    assert_eq!(o.score, 16.0 * 5.0);
+    assert!(o.held_used, "fewer cards held is another discard");
+    // a Ramen eaten by the discard is gone after the hand, and every other joker keeps its own
+    // state by its place (two Ramens, the first eaten: the second loses ×0.02, 2 cards)
+    let mut b = board(&["j_joker", "j_ramen", "j_ramen"]);
+    b.jokers[1].x_mult = 1.005;
+    b.jokers[2].x_mult = 1.5;
+    b.blind.key = "bl_hook".into();
+    let o = score(&b, &cards("AS"), &cards("2C 3D"), &mut Unlucky, false);
+    // (5 + 11) × (1 + 4) × 1.48, the Joker first
+    assert_eq!(o.score, (16.0 * 5.0 * 1.48f64).floor());
+    let mut after = b.clone();
+    let _ = after.after_hand(&o);
+    let left: Vec<(&str, f64)> = after.jokers.iter().map(|j| (j.key.as_str(), j.x_mult)).collect();
+    assert_eq!(left.len(), 2);
+    assert_eq!(left[1].0, "j_ramen");
+    assert!((left[1].1 - 1.48).abs() < 1e-9, "{left:?}");
+}

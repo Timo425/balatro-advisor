@@ -429,7 +429,12 @@ fn print_score(board: &Board, played: &[Card], held: &[Card], o: &engine::Outcom
     for s in &o.trace {
         println!("  {:<34} {:>10} × {}", s.source, fmt_num(s.chips), fmt_num(s.mult));
     }
-    println!("Score: {} ({} × {})", fmt_num(o.score), fmt_num(o.chips), fmt_num(o.mult));
+    if o.sure != o.score {
+        // The Hook's pick averaged (D15); the chips, Mult and trace are the costliest pair's
+        println!("Score: {} on average over the 2 held cards The Hook may take; surely {} ({} × {}, the trace above)", fmt_num(o.score.round()), fmt_num(o.sure), fmt_num(o.chips), fmt_num(o.mult));
+    } else {
+        println!("Score: {} ({} × {})", fmt_num(o.score), fmt_num(o.chips), fmt_num(o.mult));
+    }
     if let Some(v) = &o.played_order {
         println!("  play them in this order: {}", label(&v.iter().map(|&i| played[i]).collect::<Vec<_>>()));
     }
@@ -437,7 +442,7 @@ fn print_score(board: &Board, played: &[Card], held: &[Card], o: &engine::Outcom
         println!("  hold them in this order, left to right: {}", label(&v.iter().map(|&i| held[i]).collect::<Vec<_>>()));
     }
     if ceil != o.score {
-        println!("  random effects: {} if every roll fails, {} if all hit, mean ≈ {}", fmt_num(o.score), fmt_num(ceil), fmt_num(mean.round()));
+        println!("  random effects: {} if every roll fails (The Hook's pick averaged), {} if all hit, mean ≈ {}", fmt_num(o.score.round()), fmt_num(ceil), fmt_num(mean.round()));
     }
     if o.dollars > 0.0 {
         println!("  earns ${}", o.dollars);

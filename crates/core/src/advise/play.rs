@@ -119,18 +119,18 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
                 }
             };
             let mut idx = idx.clone();
-            let (name, score, dig, arrange) = if action == "play" {
+            let (name, score, sure, dig, arrange) = if action == "play" {
                 let (order, arrange, o) = arranged(board, hand, &idx, hand_order);
                 let dig = idx.len().saturating_sub(o.scoring.len());
                 idx = order;
-                (o.hand.name().to_string(), o.score, dig, arrange)
+                (o.hand.name().to_string(), o.score, o.sure, dig, arrange)
             } else {
-                (String::new(), 0.0, 0, (vec![], vec![]))
+                (String::new(), 0.0, 0.0, 0, (vec![], vec![]))
             };
             let cards: Vec<Card> = idx.iter().map(|&i| hand[i]).collect();
             // cards a consumable added aren't in your hand yet: no position
             let indices = idx.iter().filter(|&&i| i < hand_order.len()).map(|&i| hand_order[i]).collect();
-            PlayOption { spare_hands: spare, round_money: cash, action: action.into(), cards: cards.iter().map(Card::label).collect(), indices, dig, hand: name, score, p_win: p, mean_total: mean, use_first, planets, grown, tie: false, then: None, arrange: arrange.0, arrange_indices: arrange.1 }
+            PlayOption { spare_hands: spare, round_money: cash, action: action.into(), cards: cards.iter().map(Card::label).collect(), indices, dig, hand: name, score, sure, p_win: p, mean_total: mean, use_first, planets, grown, tie: false, then: None, arrange: arrange.0, arrange_indices: arrange.1 }
         };
         // Exact ties are broken by the cards themselves, so the order your hand is sorted in
         // never changes the advice
@@ -249,7 +249,7 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
         // is paired: the leader's value plus each one's difference to it on the rounds both
         // were sampled on (ties stop early; their own averages are over fewer, other rounds).
         let need = start.target - start.scored;
-        let wins_now = |o: &PlayOption| o.action == "play" && o.use_first.is_none() && o.score >= need;
+        let wins_now = |o: &PlayOption| o.action == "play" && o.use_first.is_none() && o.sure >= need;
         let group = order.iter().take_while(|&&c| c == leader || tied[c]).count();
         let prog = |c: usize| outs[c].iter().map(progress).sum::<f64>() / outs[c].len().max(1) as f64;
         let estimate = |c: usize| {
@@ -425,6 +425,7 @@ fn arranged(board: &Board, hand: &[Card], idx: &[usize], hand_order: &[usize]) -
         v.sort_by_key(|&i| hand_order.get(i).copied().unwrap_or(usize::MAX));
         v
     };
+    // as they sit, on the same measure (The Hook's pick averaged over every set: D15)
     let as_they_sit = score_as_played(board, &cards(&on_screen(idx)), &cards(&on_screen(&rest)), &mut Unlucky, false).score;
     let arrange = if as_they_sit < o.score {
         let all: Vec<usize> = play.iter().chain(&keep).copied().collect();
