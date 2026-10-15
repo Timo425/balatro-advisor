@@ -901,6 +901,16 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    such a play is a range. Fixture: `house_facedown_spades_flush` (its `best_hand: Flush` in
    `pending_expect`, `pending_gap: gap 25`: the replay test fails once it holds, so the fix
    moves it into `expect`; until 2026-10-14 it sat in a `pending/` folder the test didn't read).
+   The same gap throws away a card the sort pins. Raised in play 2026-10-15 (Anaglyph Deck run
+   Q84UC3NR, The Mark at Ante 4, 18,000 to beat): the hand sorted by suit read ? 9♠ 8♠ 4♠ ? 9♥
+   2♥ ?, so the leftmost face-down card is a spade above 9 (and, as The Mark turns down only face
+   cards, a J, Q or K of spades), four spades with 9♠ 8♠ 4♠. Best play throws all three
+   face-down cards with 9♠ 8♠ (71% to win): a held face-down card can't be played later, so
+   keeping it is worth nothing. The owner would keep the spade and throw the other two (not
+   measured). The stand-in also misses what the boss says: under The Mark every face-down card
+   is a face card, and the stand-in is any draw-pile card the sort allows. The general fix
+   covers this: a face-down card is any card that fits everything you know about it, which
+   means the sort and the boss's rule (The Mark: a face card).
 26. **A joker added to a board goes in one fixed place, so the jokers' order isn't the one you'd
    pick.** Jokers act left to right (state_events.lua `evaluate_play`), so +Mult before ×Mult
    scores more, and you can reorder them for free at any time. `best_order` finds that order,
@@ -1063,3 +1073,17 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    fix. Done when the pending expectation holds (then restore it into `expect`), the reference
    ranks the discard first on seeds 42-44, and `player_values`, the player benchmark and the
    history check show no board or pick worse.
+35. **Every face-down card is named "face-down card", so the page can't say which to throw.**
+   `Card::label` names a face-down card by that one label (`model.rs`), in Best play, its
+   alternatives and every card list. The analysis tells them apart, as each gets its own stand-in
+   bounded by where it sorts (gap 25), and the JSON carries `indices`, but the page shows only the
+   labels. With three in hand, "discard face-down card, 9♠" doesn't say which of the three.
+   Re-sorting is not the problem: it re-analyses with face-down cards in hand (da6a41b), and the
+   stand-ins don't depend on the current order. Raised in play 2026-10-15 (run Q84UC3NR, The
+   Mark at Ante 4, the state in gap 25): Best play read "discard face-down card, face-down card,
+   face-down card, 9♠, 8♠". That one throws all three, so it isn't ambiguous, but the owner
+   couldn't tell from the list, and a move that throws one or two would be. Replay fixtures
+   can't name one either (`best_not_cards` compares labels). The fix: name a face-down card by
+   its place and what the sort shows ("face-down card, 1st from left: ♠ above 9"), in text and
+   JSON, and give fixtures a way to name one by its place. It names the card, so it waits on
+   nothing, but it matters most once gap 25 lets a face-down card be kept for a reason.
