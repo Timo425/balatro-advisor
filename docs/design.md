@@ -727,7 +727,11 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
      round end, which stay out only while the rest keeps pace), and the look-ahead tries one
      growth play, the one that grows most (then keeps the winning play's cards, then scores
      most), not every one, one step deep (its futures don't look ahead), and on 8 futures a loss
-     rarer than 1 in 8 can go unseen.
+     rarer than 1 in 8 can go unseen. So Best play counts a growth the rest of the round would
+     keep, but not one it can't see kept: with Ride the Bus at +7 (raised in play 2026-10-15,
+     fixture `ride_the_bus_queens_dig`, pending) it digs with a Pair of Queens, as every move it
+     tried shows the reset (the rest of the round's digs score a face card in nearly every
+     future), so keeping the Queens out of this one gains nothing in its eyes.
    - The projection grows jokers by a table (`grow_antes`: Square 3 four-card hands an ante,
      whatever is played) and not at all for Obelisk, Lucky Cat, Vampire and Yorick, so their
      worth rests on it: an Obelisk reset is priced as lasting the run (up to losing the joker),

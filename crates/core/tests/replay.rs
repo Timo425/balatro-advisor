@@ -41,6 +41,11 @@ fn replayed_states_give_the_expected_advice() {
                         let cards = bp["cards"].as_array().cloned().unwrap_or_default();
                         Value::Bool(want.as_array().unwrap().iter().all(|c| !cards.contains(c)))
                     }
+                    // cards the best move must not play (discarding them is fine)
+                    "best_not_played" => {
+                        let cards = if bp["action"] == "play" { bp["cards"].as_array().cloned().unwrap_or_default() } else { vec![] };
+                        Value::Bool(want.as_array().unwrap().iter().all(|c| !cards.contains(c)))
+                    }
                     // ["A", "B"]: option A ranks above option B
                     "above" => {
                         let pos = |l: &Value| a["options"].as_array().unwrap().iter().position(|o| &o["label"] == l);
@@ -49,7 +54,7 @@ fn replayed_states_give_the_expected_advice() {
                     }
                     other => panic!("{name}: unknown expectation {other}"),
                 };
-                let want = if k == "above" || k == "best_not_cards" { &Value::Bool(true) } else { want };
+                let want = if k == "above" || k == "best_not_cards" || k == "best_not_played" { &Value::Bool(true) } else { want };
                 if &got != want {
                     out.push(format!("{k} = {got}, expected {want}"));
                 }
