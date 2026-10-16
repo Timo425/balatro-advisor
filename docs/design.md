@@ -239,7 +239,7 @@ the same retriggered ×Mult.
 - **Done 2026-10-16:** The Hook's two lower boards (gap 15): a junk hand played to dig loses
   held cards to the Hook, which the chase now counts (growers_hook played twice as many junk
   hands); a held card is measured against a card drawn from the pile in its place, over the
-  sets the Hook could take (D15's amendment, proposed). Over 20,000 rounds against the player
+  sets the Hook could take (D15's amendment, accepted). Over 20,000 rounds against the player
   before the Hook: held_hook +3.5/+12.0/+13.5 points, enhanced_hook +0.3 to +1.5, growers_hook
   −0.5/−0.4 (gap 8: its discards' Green Joker Mult); held_hook 4h3d's drop was noise. Every other
   board the same; 3 of 367 saved picks moved (2 tie, 1 unclear).

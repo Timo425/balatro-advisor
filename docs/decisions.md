@@ -465,7 +465,7 @@ in the live page's timings.
 
 Approved by the owner 2026-10-15.
 
-**Amendment 2026-10-15 (proposed, awaiting the owner's approval)** (gap 15): what a held card
+**Amendment 2026-10-15 (accepted)** (gap 15): what a held card
 adds is no longer measured as if it stays. Under The Hook, when the score reads held cards, a
 card is measured against a card drawn from the pile in its place, over every set the Hook could
 take (`held_value`): the hand keeps its size, as a discard draws back to it, so the Hook is as
@@ -479,3 +479,5 @@ stays" (both with the chase's count) +3.7/+3.8/+4.8 (±0.4); the enhanced deck's
 by it. Without The Hook the card is still measured left out (a known gap, gap 15). Revisit too
 if the scorings this costs (about C(n,2) + the pile's kinds × C(n,3) for n cards held, on Hook
 boards whose score reads held cards) show in the timings.
+
+Amendment approved by the owner 2026-10-16.
