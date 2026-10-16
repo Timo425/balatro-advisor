@@ -1191,35 +1191,95 @@ fn decide_cards_with(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discar
         !on_pace || (breaks_draw && one_away)
     };
     let all = aims(b, hand, deck);
-    // a plan's score, on its middle completion (the screen) or all of them (`aim_score`),
-    // worked out once each
-    let quick: Vec<std::cell::OnceCell<f64>> = all.iter().map(|_| std::cell::OnceCell::new()).collect();
-    let quick_of = |k: usize| *quick[k].get_or_init(|| aim_quick(b, &all[k], hand, held_keep()));
-    let full: Vec<std::cell::OnceCell<f64>> = all.iter().map(|_| std::cell::OnceCell::new()).collect();
-    let full_of = |k: usize| *full[k].get_or_init(|| aim_score(b, &all[k], hand, held_keep()));
+    // When the score reads held cards (a card's own held effect, a joker on held cards,
+    // Blackboard; the pile's cards too, as they may be drawn), what a plan's completion and the
+    // hand its dig leaves hold beside them counts: the cards the dig leaves and those drawn into
+    // the rest (`Ends`, `held_beside`)
+    let pile_sorted: Vec<Card> = if score::held_read(b, hand) || score::held_read(b, deck) {
+        let mut v = deck.to_vec();
+        v.sort_by(|p, q| p.order_cmp(q));
+        v
+    } else {
+        vec![]
+    };
+    let ends = (!pile_sorted.is_empty()).then_some(Ends { pile: &pile_sorted, size });
     let round = ChaseRound { pile: deck.len(), size, hands, discards, need, best: best.mean, later, on_pace, takes: score::hook_takes(b, size), stays: 0 };
     // the first dig for each plan (`dig_for`), and the hand it leaves (its best play: what a
     // failed chase is left with)
     type Dig = Option<(Vec<usize>, bool)>;
     let digs: Vec<std::cell::OnceCell<Dig>> = all.iter().map(|_| std::cell::OnceCell::new()).collect();
     let dig_of = |k: usize| digs[k].get_or_init(|| dig_for(parts, &all[k].keep, held_keep(), discards));
+    // what a plan's completion holds beside it: with `ends`, every card its dig leaves in hand,
+    // else the cards worth holding
+    let kept_of = |k: usize| -> Vec<usize> {
+        match (ends, dig_of(k)) {
+            (Some(_), d) => {
+                // the cards worth holding first: a dig never throws them (`held_beside`)
+                let thrown = d.as_ref().map_or(&[][..], |d| &d.0[..]);
+                let left = |i: &usize| !all[k].keep.contains(i) && !thrown.contains(i);
+                let keep = held_keep();
+                keep.iter().copied().filter(left).chain((0..hand.len()).filter(|i| left(i) && !keep.contains(i))).collect()
+            }
+            (None, _) => held_keep().clone(),
+        }
+    };
+    // a plan's score, on its middle completion (the screen) or all of them (`aim_score`),
+    // worked out once each
+    let quick: Vec<std::cell::OnceCell<f64>> = all.iter().map(|_| std::cell::OnceCell::new()).collect();
+    let quick_of = |k: usize| *quick[k].get_or_init(|| aim_quick(b, &all[k], hand, &kept_of(k), ends));
+    let full: Vec<std::cell::OnceCell<f64>> = all.iter().map(|_| std::cell::OnceCell::new()).collect();
+    let full_of = |k: usize| *full[k].get_or_init(|| aim_score(b, &all[k], hand, &kept_of(k), ends));
     let left: Vec<std::cell::OnceCell<f64>> = all.iter().map(|_| std::cell::OnceCell::new()).collect();
     let left_of = |k: usize| {
         *left[k].get_or_init(|| {
             let thrown = dig_of(k).as_ref().map_or(&[][..], |d| &d.0[..]);
             let rest: Vec<usize> = (0..hand.len()).filter(|i| !thrown.contains(i)).collect();
-            parts.best(&rest).map_or(0.0, |p| p.mean)
+            parts.best(&rest).map_or(0.0, |p| match ends {
+                // the cards drawn after the dig held beside its play, on `HELD_DRAWS` draws
+                Some(e) if !thrown.is_empty() => {
+                    let played: Vec<Card> = p.cards.iter().map(|&i| hand[i]).collect();
+                    let held: Vec<Card> = rest.iter().filter(|i| !p.cards.contains(i)).map(|&i| hand[i]).collect();
+                    let count = e.size.saturating_sub(rest.len());
+                    let own = score::score(b, &played, &held, &mut Unlucky, false).score;
+                    let drawn = (0..HELD_DRAWS)
+                        .map(|s| {
+                            let mut h = held.clone();
+                            h.extend(held_draws(e.pile, &[], count, s));
+                            score::score(b, &played, &h, &mut Unlucky, false).score
+                        })
+                        .sum::<f64>()
+                        / HELD_DRAWS as f64;
+                    p.mean + drawn - own
+                }
+                _ => p.mean,
+            })
         })
     };
     // each plan's chase (`chase`): with the lesser plans it keeps alive (a lesser hand whose
     // cards it keeps), always on their full estimate (a middle completion can be far off: a
     // flush draw's may be a straight flush), and the hand it leaves
+    // a lesser plan made inside plan `k`'s chase, in the hand `k`'s dig leaves (with `ends`): its
+    // completion beside `k`'s other kept cards and what `k`'s dig leaves
+    let in_chase: std::cell::RefCell<Vec<((usize, usize), f64)>> = Default::default();
+    let lesser_of = |k: usize, j: usize| -> f64 {
+        if ends.is_none() {
+            return full_of(j);
+        }
+        if let Some(e) = in_chase.borrow().iter().find(|e| e.0 == (k, j)) {
+            return e.1;
+        }
+        // `k`'s own cards first, then what its dig leaves (`held_beside` keeps them in that order)
+        let kept: Vec<usize> = all[k].keep.iter().copied().filter(|i| !all[j].keep.contains(i)).chain(kept_of(k)).collect();
+        let v = aim_score(b, &all[j], hand, &kept, ends);
+        in_chase.borrow_mut().push(((k, j), v));
+        v
+    };
     let run = |k: usize, score: &dyn Fn(usize) -> f64| {
         let lesser: Vec<(&Aim, f64)> = (0..all.len())
             .filter(|&j| (all[j].hand as usize) > (all[k].hand as usize) && all[j].keep.iter().all(|i| all[k].keep.contains(i)))
-            .map(|j| (&all[j], full_of(j)))
+            .map(|j| (&all[j], lesser_of(k, j)))
             .collect();
-        let stays = if round.takes > 0 { held_keep().iter().filter(|i| !all[k].keep.contains(i)).count() } else { 0 };
+        let stays = held_keep().iter().filter(|i| !all[k].keep.contains(i)).count();
         chase(&all[k], score(k), left_of(k), &lesser, &ChaseRound { stays, ..round })
     };
     // screened on one completion each; the best few get the full estimate
@@ -1882,16 +1942,21 @@ fn straight_runs(need: usize, shortcut: bool) -> std::rc::Rc<Vec<Vec<i32>>> {
 }
 
 /// The chance of completing `aim` within `digs` digs, each throwing away up to 5 cards not in
-/// it. A flush: the exact draw (`flush_odds`: the suited cards you draw stay, so later digs
+/// it, from `slots` slots of the hand: its size less the cards held back beside the plan, which
+/// a dig doesn't throw (`ChaseRound::stays`). None when its cards and the cards it still needs
+/// don't fit in those slots (a dig never makes room by throwing the cards held back). A flush: the exact draw (`flush_odds`: the suited cards you draw stay, so later digs
 /// see fewer). Others: the cards the digs would see if each refilled every slot outside the
 /// aim (up to 5), taken as one draw from the pile (`draw_odds`). As if every one of them went
 /// to this plan: `chase` asks it dig by dig.
-fn aim_odds(aim: &Aim, pile: usize, size: usize, digs: usize) -> f64 {
+fn aim_odds(aim: &Aim, pile: usize, slots: usize, digs: usize) -> f64 {
+    if slots < aim.keep.len() + aim.groups.iter().map(|g| g.1).sum::<usize>() {
+        return 0.0;
+    }
     if aim.hand == HandType::Flush {
         let (fits, n) = &aim.groups[0];
-        return flush_odds(aim.keep.len(), fits.len(), pile, size, aim.keep.len() + n, digs);
+        return flush_odds(aim.keep.len(), fits.len(), pile, slots, aim.keep.len() + n, digs);
     }
-    let seen = (digs * size.saturating_sub(aim.keep.len()).min(5)).min(pile);
+    let seen = (digs * slots.saturating_sub(aim.keep.len()).min(5)).min(pile);
     let groups: Vec<(usize, usize)> = aim.groups.iter().map(|g| (g.0.len(), g.1)).collect();
     draw_odds(&groups, pile, seen)
 }
@@ -1913,7 +1978,8 @@ struct ChaseRound {
     /// the most cards the boss's press-play step discards from those held once a hand is played
     /// (`score::hook_takes`: The Hook's 2), a junk hand too
     takes: usize,
-    /// the cards held beside the plan's that a dig never throws (`held_value`, `dig_for`)
+    /// the cards held beside the plan's that a dig never throws (`held_value`, `dig_for`): they
+    /// take slots a dig would refill
     stays: usize,
 }
 
@@ -1936,7 +2002,8 @@ const ON_PACE_MARGIN: f64 = 0.5;
 /// chase from there is worth more than playing the hand the first dig leaves (`left`, the same
 /// at every dig), then a later hand played on (`later`): a simpler test than the policy's own at its
 /// next decision, which sees the new cards and, on pace, its margin and rules. At each dig, the plan is made with its
-/// chance given the digs before failed (`aim_odds` between them); else a lesser plan it keeps
+/// chance given the digs before failed (`aim_odds` between them, with the slots the plan's cards
+/// and the cards held back beside them leave, `stays`); else a lesser plan it keeps
 /// alive (`lesser`: every card it keeps, the chase keeps) can be made first, and ends it when
 /// it puts the round on pace (its score × the hands left after the dig: the flat pace, its own growth
 /// isn't worked out); else the chase goes
@@ -1948,10 +2015,12 @@ const ON_PACE_MARGIN: f64 = 0.5;
 /// when several turn up. On pace, the chase must beat playing on by `ON_PACE_MARGIN` of the
 /// best play.
 fn chase(aim: &Aim, score: f64, left: f64, lesser: &[(&Aim, f64)], r: &ChaseRound) -> Chase {
-    let t = r.size.saturating_sub(aim.keep.len()).min(5);
+    // the hand's slots a dig refills: all but the cards it holds back (`stays`)
+    let room = r.size.saturating_sub(r.stays);
+    let t = room.saturating_sub(aim.keep.len()).min(5);
     let digs = (r.discards + r.hands - 1).max(0) as usize;
     // made within j digs, for j up to every dig
-    let made: Vec<f64> = (0..=digs).map(|j| aim_odds(aim, r.pile, r.size, j)).collect();
+    let made: Vec<f64> = (0..=digs).map(|j| aim_odds(aim, r.pile, room, j)).collect();
     let fits: Vec<&Card> = aim.groups.iter().flat_map(|g| g.0.iter()).collect();
     // each lesser plan's groups without the plan's own fits, the best first
     let mut lesser: Vec<(Vec<(usize, usize)>, f64)> = lesser
@@ -2084,18 +2153,73 @@ const AIM_FINALISTS: usize = 2;
 /// themselves: a pair among the cards drawn isn't counted, and fewer are drawn)
 const AIM_SINGLES: usize = 2;
 
-/// The screen for `aim_score`: its first completion only, every random roll failing.
-fn aim_quick(b: &Board, aim: &Aim, hand: &[Card], held: &[usize]) -> f64 {
+/// The screen for `aim_score`: its middle completion only (not the best, not the worst), every
+/// random roll failing, with the cards held beside it (`held_beside`: the first draw).
+fn aim_quick(b: &Board, aim: &Aim, hand: &[Card], held: &[usize], ends: Option<Ends>) -> f64 {
     let kept: Vec<Card> = held.iter().filter(|i| !aim.keep.contains(i)).map(|&i| hand[i]).collect();
-    score::score(b, &aim_middle(b, aim, hand), &kept, &mut Unlucky, false).score
+    let mut all = aim_completions_held(b, aim, hand);
+    let (cards, _, rest) = all.swap_remove(all.len() / 2);
+    let held = held_beside(aim, hand, &cards, &rest, &kept, ends, 0);
+    score::score(b, &cards, &held, &mut Unlucky, false).score
 }
 
-/// The middle one of `aim`'s completions (the screen's and the random check's: not the best,
-/// not the worst)
-fn aim_middle(b: &Board, aim: &Aim, hand: &[Card]) -> Vec<Card> {
-    let mut all = aim_completions(b, aim, hand);
-    let k = all.len() / 2;
-    all.swap_remove(k).0
+/// The draw pile (in a fixed order) and the hand size, when the score reads held cards: the
+/// cards a completed plan holds beside it then count the ones drawn into the slots it doesn't keep
+#[derive(Clone, Copy)]
+struct Ends<'a> {
+    pile: &'a [Card],
+    size: usize,
+}
+
+/// The draws a plan's completions are scored with when they hold drawn cards (`held_beside`),
+/// the same for every plan and for the hand a dig leaves: each completion one at least, every
+/// draw used (more when the rolls ask for more; heuristic, in the register)
+const HELD_DRAWS: usize = 4;
+
+/// The cards held beside a plan's completion `cards`: `kept` (what its dig leaves in hand beside
+/// the plan) and `rest` (the plan's cards beyond the five played), and, when the score reads held
+/// cards (`ends`), the hand filled to its size from the pile: draw `s` of `held_draws`, without
+/// the completion's own fits. Without `ends`, `kept` alone.
+fn held_beside(aim: &Aim, hand: &[Card], cards: &[Card], rest: &[Card], kept: &[Card], ends: Option<Ends>, s: usize) -> Vec<Card> {
+    let Some(e) = ends else { return kept.to_vec() };
+    // the plan's own cards stay, then `kept` in its order (the cards worth holding first), up to
+    // the hand's size: a guard, as a plan whose cards don't fit beside the cards held back is
+    // never made (`aim_odds`)
+    let mut held: Vec<Card> = rest.iter().chain(kept).copied().collect();
+    held.truncate(e.size.saturating_sub(cards.len()));
+    // the fits: the completion's cards that aren't the plan's own
+    let mut fits: Vec<Card> = cards.iter().chain(rest).copied().collect();
+    for &i in &aim.keep {
+        if let Some(p) = fits.iter().position(|c| *c == hand[i]) {
+            fits.swap_remove(p);
+        }
+    }
+    let count = e.size.saturating_sub(cards.len() + held.len());
+    held.extend(held_draws(e.pile, &fits, count, s));
+    held
+}
+
+/// `count` cards drawn from `pile` (in a fixed order) without the cards `taken`: draw `s` is one
+/// order of the whole pile, seeded by `s` alone, whose first cards not taken are drawn, so every
+/// plan, and the hand a dig leaves, sees the same draws but where a plan's own fit falls, and a
+/// draw of more cards begins with those of fewer
+fn held_draws(pile: &[Card], taken: &[Card], count: usize, s: usize) -> Vec<Card> {
+    let mut order: Vec<Card> = pile.to_vec();
+    shuffle(&mut order, &mut Rng::new(0x4e1d_0000 + s as u64));
+    let mut skip: Vec<Card> = taken.to_vec();
+    let mut out = Vec::with_capacity(count);
+    for c in order {
+        if out.len() >= count {
+            break;
+        }
+        match skip.iter().position(|t| *t == c) {
+            Some(p) => {
+                skip.swap_remove(p);
+            }
+            None => out.push(c),
+        }
+    }
+    out
 }
 
 /// Random completions drawn for a plan more than one card away
@@ -2107,7 +2231,14 @@ const AIM_FILLS: usize = 4;
 /// random from what fits (a fixed seed: the same draws for every call). Not a fixed "typical"
 /// card: the middle ones are neighbouring ranks, so a flush draw looked like a straight flush;
 /// spread ones never are, though with Four Fingers and Shortcut one often is.
+#[cfg(test)]
 fn aim_completions(b: &Board, aim: &Aim, hand: &[Card]) -> Vec<(Vec<Card>, f64)> {
+    aim_completions_held(b, aim, hand).into_iter().map(|(c, w, _)| (c, w)).collect()
+}
+
+/// `aim_completions`, each with the cards of it left out of the play (a plan keeping five or
+/// more: its kept cards and fits beyond the best five), which stay in hand
+fn aim_completions_held(b: &Board, aim: &Aim, hand: &[Card]) -> Vec<(Vec<Card>, f64, Vec<Card>)> {
     let base: Vec<Card> = aim.keep.iter().map(|&i| hand[i]).collect();
     let distinct = |fits: &[Card]| -> Vec<(Card, f64)> {
         let mut v: Vec<(Card, f64)> = vec![];
@@ -2146,26 +2277,34 @@ fn aim_completions(b: &Board, aim: &Aim, hand: &[Card]) -> Vec<(Vec<Card>, f64)>
         }
     }
     // a completion is what you'd play of it: more than five cards (a plan keeping five or more)
-    // give their best play, which holds the card that completes it
-    for c in &mut out {
-        if c.0.len() > 5 {
-            if let Some(p) = best_play(b, &c.0) {
-                c.0 = p.cards.iter().map(|&i| c.0[i]).collect();
+    // give their best play, which holds the card that completes it; the rest stay in hand
+    out.into_iter()
+        .map(|(mut cards, w)| {
+            let mut rest = vec![];
+            if cards.len() > 5 {
+                let mut play: Vec<Card> = best_play(b, &cards).map(|p| p.cards.iter().map(|&i| cards[i]).collect()).unwrap_or_else(|| cards.clone());
+                play.truncate(5);
+                for c in &play {
+                    if let Some(p) = cards.iter().position(|d| d == c) {
+                        cards.swap_remove(p);
+                    }
+                }
+                rest = cards;
+                cards = play;
             }
-            c.0.truncate(5);
-        }
-    }
-    out
+            (cards, w, rest)
+        })
+        .collect()
 }
 
 /// What completing `aim` is expected to score: the weighted average over its completions
-/// (`aim_completions`), with the cards worth holding (`held`) held, random effects at their
-/// average (`MEAN_ROLLS` rolls in all) when the middle completion or any Lucky card in it is
-/// random. Only the cards that complete it count, not what else the chase leaves in hand (see
-/// the register).
-fn aim_score(b: &Board, aim: &Aim, hand: &[Card], held: &[usize]) -> f64 {
+/// (`aim_completions`), random effects at their average (`MEAN_ROLLS` rolls in all) when the
+/// middle completion or any Lucky card in it is random. Held beside it: `held`, and when the
+/// score reads held cards (`ends`), the hand as it is then (`held_beside`: what the dig leaves
+/// and the draws into the rest, `HELD_DRAWS` of them over the completions).
+fn aim_score(b: &Board, aim: &Aim, hand: &[Card], held: &[usize], ends: Option<Ends>) -> f64 {
     let kept: Vec<Card> = held.iter().filter(|i| !aim.keep.contains(i)).map(|&i| hand[i]).collect();
-    let all = aim_completions(b, aim, hand);
+    let all = aim_completions_held(b, aim, hand);
     // each completion's hand detected once
     let flags = b.rule_flags();
     let infos: Vec<hand::HandInfo> = all.iter().map(|x| hand::detect(&x.0, flags)).collect();
@@ -2174,21 +2313,29 @@ fn aim_score(b: &Board, aim: &Aim, hand: &[Card], held: &[usize]) -> f64 {
     // the middle completion's floor, when worked out for the check (it's its score when nothing
     // is random); a floor that asked for no roll (`Watched`) is its ceiling too
     let mut mid_floor = None;
-    let random = all.iter().any(|x| x.0.iter().any(lucky)) || kept.iter().any(lucky) || {
+    let mid_held = held_beside(aim, hand, mid, &all[all.len() / 2].2, &kept, ends, 0);
+    let random = all.iter().any(|x| x.0.iter().any(lucky)) || {
         let mut w = Watched { rolls: Unlucky, asked: false };
-        let floor = score::score_detected(b, mid, &kept, mid_info.clone(), &mut w, false).score;
+        let floor = score::score_detected(b, mid, &mid_held, mid_info.clone(), &mut w, false).score;
         mid_floor = Some(floor);
-        w.asked && score::score_detected(b, mid, &kept, mid_info.clone(), &mut crate::engine::Lucky, false).score > floor
+        w.asked && score::score_detected(b, mid, &mid_held, mid_info.clone(), &mut crate::engine::Lucky, false).score > floor
     };
     let mut rolls = Rng::new(0x1d1e);
     let per = if random { MEAN_ROLLS.div_ceil(all.len()) } else { 1 };
+    // with drawn cards held, every completion one draw at least, and every one of the
+    // `HELD_DRAWS` draws used
+    let per = if ends.is_some() { per.max(HELD_DRAWS.div_ceil(all.len())) } else { per };
     let (mut total, mut weight) = (0.0, 0.0);
-    for (k, ((cards, w), info)) in all.iter().zip(&infos).enumerate() {
-        for _ in 0..per {
+    let mut s = 0;
+    for (k, ((cards, w, rest), info)) in all.iter().zip(&infos).enumerate() {
+        for r in 0..per {
+            // every plan, and the hand a dig leaves, on the same `HELD_DRAWS` draws
+            let held = held_beside(aim, hand, cards, rest, &kept, ends, s % HELD_DRAWS);
+            s += 1;
             total += w * match (random, mid_floor) {
-                (true, _) => score::score_detected(b, cards, &kept, info.clone(), &mut rolls, false).score,
-                (false, Some(f)) if k == all.len() / 2 => f,
-                (false, _) => score::score_detected(b, cards, &kept, info.clone(), &mut Unlucky, false).score,
+                (true, _) => score::score_detected(b, cards, &held, info.clone(), &mut rolls, false).score,
+                (false, Some(f)) if ends.is_none() && k == all.len() / 2 && r == 0 => f,
+                (false, _) => score::score_detected(b, cards, &held, info.clone(), &mut Unlucky, false).score,
             };
             weight += w;
         }
@@ -3573,6 +3720,73 @@ mod tests {
     }
 
     #[test]
+    fn a_plan_is_scored_with_what_its_hand_holds_then() {
+        // A flush plan's completion is played beside the 3 cards the hand holds then, drawn
+        // ones here (the dig throws every other card): Raised Fist reads the lowest of them, and
+        // Blackboard's ×3 needs every one a Spade or Club. Scored with the cards kept beside it
+        // alone (none), the Fist read nothing and Blackboard always paid.
+        let hand = Card::parse_list("2H 5H 9H JH KS 3C 4D 6C").unwrap();
+        let deck: Vec<Card> = standard_deck().into_iter().filter(|c| !hand.iter().any(|h| h.same_kind(c))).collect();
+        let mut pile = deck.clone();
+        pile.sort_by(|p, q| p.order_cmp(q));
+        let ends = Some(Ends { pile: &pile, size: 8 });
+        let flush = |b: &Board| aims(b, &hand, &deck).into_iter().find(|a| a.hand == HandType::Flush && a.keep == [0, 1, 2, 3]).unwrap();
+        let fist = sample_board(&["j_raised_fist"]);
+        let a = flush(&fist);
+        assert!(aim_score(&fist, &a, &hand, &[], ends) > aim_score(&fist, &a, &hand, &[], None));
+        let black = sample_board(&["j_blackboard"]);
+        let a = flush(&black);
+        assert!(aim_score(&black, &a, &hand, &[], ends) < aim_score(&black, &a, &hand, &[], None));
+        // a completion that can't be made beside the cards held back (2 Hearts kept, 4 Steel
+        // cards worth holding, 2 slots a dig refills, 3 Hearts missing) has no odds, and what it
+        // holds beside it never takes the hand past its size, the first cards held back first
+        let hand = Card::parse_list("2H 5H KS:steel KC:steel KD:steel QS:steel 3C 4D").unwrap();
+        let deck: Vec<Card> = standard_deck().into_iter().filter(|c| !hand.iter().any(|h| h.same_kind(c))).collect();
+        let mut pile = deck.clone();
+        pile.sort_by(|p, q| p.order_cmp(q));
+        let ends = Some(Ends { pile: &pile, size: 8 });
+        let b = sample_board(&[]);
+        let a = aims(&b, &hand, &deck).into_iter().find(|a| a.hand == HandType::Flush && a.keep == [0, 1]).unwrap();
+        let kept: Vec<Card> = hand[2..].to_vec();
+        for (cards, _, rest) in aim_completions_held(&b, &a, &hand) {
+            let held = held_beside(&a, &hand, &cards, &rest, &kept, ends, 0);
+            assert_eq!(cards.len() + held.len(), 8, "{cards:?} {held:?}");
+            assert_eq!(held[..3], hand[2..5]);
+        }
+    }
+
+    #[test]
+    fn held_draws_are_shared_and_a_plan_skips_only_its_fits() {
+        let pile: Vec<Card> = standard_deck();
+        for s in 0..4 {
+            let all = held_draws(&pile, &[], 6, s);
+            // a draw of fewer cards is the start of one of more
+            assert_eq!(held_draws(&pile, &[], 3, s), all[..3]);
+            // a plan whose fit falls among them draws the next card in its place, the rest the same
+            let fit = all[2];
+            let mut without: Vec<Card> = all.clone();
+            without.remove(2);
+            assert_eq!(held_draws(&pile, &[fit], 5, s), without);
+        }
+    }
+
+    #[test]
+    fn a_completion_of_more_than_five_cards_keeps_the_rest_in_hand() {
+        // Three Kings and two singles kept for a Full House: a completion is 6 cards, its best 5
+        // played and the other single held
+        let hand = Card::parse_list("KS KH KD 5C 9D 2H 3S 4C").unwrap();
+        let deck: Vec<Card> = standard_deck().into_iter().filter(|c| !hand.iter().any(|h| h.same_kind(c))).collect();
+        let b = sample_board(&[]);
+        let a = aims(&b, &hand, &deck).into_iter().find(|a| a.hand == HandType::FullHouse && a.keep.len() == 5).unwrap();
+        let kept: Vec<Card> = a.keep.iter().map(|&i| hand[i]).collect();
+        for (cards, _, rest) in aim_completions_held(&b, &a, &hand) {
+            assert_eq!((cards.len(), rest.len()), (5, 1), "{cards:?} {rest:?}");
+            assert!(kept.iter().all(|k| cards.contains(k) || rest.contains(k)));
+            assert!(!cards.contains(&rest[0]));
+        }
+    }
+
+    #[test]
     fn a_chase_is_worked_out_dig_by_dig_against_playing_on() {
         // a plan whose fits are `fits` groups of `n` cards in a 44-card pile, 4 cards kept of 8
         let aim = |groups: &[usize]| Aim {
@@ -3599,17 +3813,25 @@ mod tests {
         let hook = |discards: i64| chase(&one, 20000.0, 74.0, &[], &ChaseRound { takes: 2, ..round(3312.0, 21360.0, discards) });
         assert!(!hook(0).go, "{}", hook(0).value);
         // with 2 cards kept for their held value the junk hand plays 2, so 6 are held and the
-        // plan's 4 are spared 1 time in 15
+        // plan's 4 are spared 1 time in 15 (and a dig draws 2 cards, not 4: they take its slots)
         let kept = chase(&one, 20000.0, 74.0, &[], &ChaseRound { takes: 2, stays: 2, ..round(3312.0, 21360.0, 0) });
         assert!(kept.value > hook(0).value, "{} {}", kept.value, hook(0).value);
         let plain = chase(&one, 20000.0, 74.0, &[], &round(3312.0, 21360.0, 3));
         assert!(hook(3).go && hook(3).value < plain.value, "{} {}", hook(3).value, plain.value);
+        // cards held back for their held value take slots a dig would refill: with 2 of them a
+        // dig draws 2 cards, not 4, and the plan is worth less (without The Hook too)
+        let held_back = chase(&one, 20000.0, 74.0, &[], &ChaseRound { stays: 2, ..round(3312.0, 21360.0, 3) });
+        assert!(held_back.value < plain.value, "{} {}", held_back.value, plain.value);
         // two cards away, 3 fits each, with 1 discard: the rule before took every dig left
         // (the discard and 3 junk hands) as spent on it (56%, × score × 2 against the best × 4)
         // and chased it; dig by dig, each junk hand costs a hand and a failed chase leaves only
         // what it kept (here High Card), so it isn't worth more than playing on
         let two = aim(&[3, 3]);
         let p = aim_odds(&two, 44, 8, 4);
+        // 4 cards kept and 2 missing need 6 slots: with 3 cards held back beside them (5 slots) it
+        // can't be made, however many digs
+        assert_eq!(aim_odds(&two, 44, 5, 4), 0.0);
+        assert!(aim_odds(&two, 44, 6, 4) > 0.0);
         assert!(p * 1000.0 * 2.0 > 180.0 * 4.0, "{p}");
         let c = chase(&two, 1000.0, 20.0, &[], &round(180.0, 876.0, 1));
         assert!(!c.go && c.value < 180.0 * 4.0, "{}", c.value);
