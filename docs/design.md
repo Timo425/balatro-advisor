@@ -641,10 +641,11 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    Hook any more). On the benchmark's own rounds (2000, the targets above): held_hook
    48.2/58.1/61.8 → 54.4/62.1/65.5%, enhanced_hook 49.9/50.2/51.6 → 50.2/50.8/51.6, growers_hook
    50.5/48.6/50.5 → 50.4/49.5/50.5 (the player at 04410bb: 50.1 on growers_hook 4h1d), every
-   other board the same; the gap to the oracle on eight of the nine 69.5 → 73.0 points (held_hook
-   1h3d 10.5 → 18.0, 4h1d 11.5 → 7.0, growers_hook 4h3d 7.0 → 4.5, the rest within ±2; ±3-5 a
-   board, the oracle's futures played by the better policy too: on held_hook 1h3d it gained 11
-   points to the player's 3.5, so its discards there are the next place to look); 3 of 367 saved picks moved (2
+   other board the same; the gap to the oracle over the nine 80.5 → 86.0 points (held_hook
+   10.5/11.5/11.0 → 18.0/7.0/13.0 for 1h3d/4h1d/4h3d, growers_hook 4h3d 7.0 → 4.5, the rest
+   within ±2; ±3-5 a board, the oracle's futures played by the better policy too: on held_hook
+   1h3d and 4h3d it gained 11 and 9 points to the player's 3.5 and 7, so its choices there are
+   the next place to look); 3 of 367 saved picks moved (2
    tie, 1 unclear: the Hook fixture `boss_hook_ante1`, whose pick is within 1% of the reference's
    best before and after); a round on a held_hook board about 10-20% slower. growers_hook's rest
    is gap 8: the player now spends more discards (2.60 → 2.71 a round with 3, 0.85 → 0.95 with
