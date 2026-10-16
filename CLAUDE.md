@@ -18,6 +18,11 @@
 - **No coupling** to `balatro-agent` or other local repos. Copy and adapt with
   an attribution comment if needed, and never import by path.
 - Code, comments and docs in English (D4 in `docs/decisions.md`).
+- **One task, one chat, started by the owner.** Never start, fork or hand off to another
+  session (no session cards, no "own initiative" proposals, no background sessions), and work
+  in the main checkout, not a worktree. A follow-up goes at the end of your final message as a
+  ready prompt the owner can paste into a new chat. Sessions that start each other and wake each
+  other on every turn burned a third of a 5-hour limit on 2026-10-16.
 
 ## Answering "what if I…" questions
 
