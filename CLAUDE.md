@@ -18,11 +18,15 @@
 - **No coupling** to `balatro-agent` or other local repos. Copy and adapt with
   an attribution comment if needed, and never import by path.
 - Code, comments and docs in English (D4 in `docs/decisions.md`).
-- **One task, one chat, started by the owner.** Never start, fork or hand off to another
-  session (no session cards, no "own initiative" proposals, no background sessions), and work
-  in the main checkout, not a worktree. A follow-up goes at the end of your final message as a
-  ready prompt the owner can paste into a new chat. Sessions that start each other and wake each
-  other on every turn burned a third of a 5-hour limit on 2026-10-16.
+- **One task, one independent chat.** Only the chat the owner is talking to may offer a
+  follow-up, as a task card (`start_session`, "own_initiative", context "fresh", in the main
+  checkout); it never starts one without the owner's click. The started chat is detached at once
+  (`detach_session`: it then never reports back or wakes the chat that offered it): its brief's
+  first step is to detach itself ("self"), and the offering chat detaches it when it can; if the
+  app refuses, the owner uses "Detach to top level". A chat started from a card never offers,
+  starts, forks or hands off to another chat: its follow-ups go in its final message as a ready
+  prompt. Chats that started each other and woke each other on every turn burned a third of a
+  5-hour limit on 2026-10-16.
 
 ## Answering "what if I…" questions
 
