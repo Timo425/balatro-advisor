@@ -481,3 +481,12 @@ if the scorings this costs (about C(n,2) + the pile's kinds × C(n,3) for n card
 boards whose score reads held cards) show in the timings.
 
 Amendment approved by the owner 2026-10-16.
+
+Tried without the Hook as well (2026-10-16, gap 15): the same measure with no set taken, on
+every board whose score reads held cards, lost on the held boards (−2.8/−3.6/−8.0 points over
+20,000 rounds, paired; Raised Fist alone gained 2.5-19 points, Baron with Shoot the Moon and
+Blackboard level), so it stays under the Hook only. Why: a card is measured with the rest held as
+they are, one card replaced, while a dig throws up to 5 and draws them all; beside Kings and
+Queens every card above the one Raised Fist reads became a keeper, which no dig throws. The same
+holds under the Hook, where it still beat the measures before it; a held value weighed against
+what the dig gains instead of a keep would answer both.

@@ -242,7 +242,9 @@ the same retriggered ×Mult.
   sets the Hook could take (D15's amendment, accepted). Over 20,000 rounds against the player
   before the Hook: held_hook +3.5/+12.0/+13.5 points, enhanced_hook +0.3 to +1.5, growers_hook
   −0.5/−0.4 (gap 8: its discards' Green Joker Mult); held_hook 4h3d's drop was noise. Every other
-  board the same; 3 of 367 saved picks moved (2 tie, 1 unclear).
+  board the same; 3 of 367 saved picks moved (2 tie, 1 unclear). Tried and not kept: the same
+  drawn-card measure without the Hook (gap 15): the held boards lost 2.8-8.0 points, as a keep
+  is all or nothing and a card that only guards Raised Fist's read blocked the dig.
 - **Next:** the rest of gap 18 (the projection's growth
   measured from the simulated player's rounds instead of `grow_antes`; its digs weighing
   growth); a free hand banked before the hand that wins (gap 34); Ceremonial Dagger's value
@@ -620,8 +622,8 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    rescore is the average; on the last hand a play that wins on average but not surely is
    weighed only by its average, not by its chance over the pairs; without The Hook a card is
    still measured left out, not against a card drawn (Raised Fist: a 9 beside a King isn't kept,
-   as leaving it out lets the Fist read the King; the same code with no set taken would measure
-   it so, a change to every board); the junk hand's size isn't a move (with 8 cards and none
+   as leaving it out lets the Fist read the King; the drawn-card measure was tried on every
+   board and lost, below); the junk hand's size isn't a move (with 8 cards and none
    kept for its held value a plan of 2+ kept cards is never spared, where playing 1 card and
    holding 7 would be 10 times in 21), a plan that loses a card to the Hook isn't resumed, and
    the cards drawn for the ones it took aren't counted toward it.
@@ -653,6 +655,28 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    Against a card that adds nothing in its place (the hand keeping its size) instead of a drawn
    one, held_hook was level or lower (−0.08, +0.47, −2.25 ± 0.3-0.4): that stand-in made every
    card Raised Fist could read a keeper.
+   Tried 2026-10-16 and not kept: the drawn-card measure on every board (the same code with no
+   set taken, gated on `score::held_read` as under the Hook). Only the held boards move, all
+   lower: over rounds 2000-22000 paired with the player before, −2.76 ± 0.23 / −3.60 ± 0.26 /
+   −7.98 ± 0.33 points (4h3d/4h1d/1h3d; the benchmark's 2000 rounds 92.0/81.7/50.8 →
+   89.1/77.3/43.5%), every other board the same (the enhanced deck's boards, whose Steel cards
+   are read, round for round); the gap to the oracle on the held boards 1.5/2.0/2.5 →
+   4.0/4.5/13.0 points (200 rounds, ±1.3-3.2; the oracle itself lower, its futures played by the
+   same policy); a round on the held boards about 1.5× as slow (the benchmark's 6.4/5.2/3.7 →
+   13.1/9.9/8.5 s on a busier machine, its unchanged Hook boards 1.4× slower in the same run).
+   On scratch boards (rounds 2000-12000, targets by the player before): Raised Fist with Joker
+   +12.0/+2.5/+19.2
+   (± 0.6), Baron with Shoot the Moon +0.0/+0.1/+0.6 (± 0.2), Blackboard with Joker
+   +0.8/−0.2/+0.7 (± 0.5). Why the held boards lose: beside Kings and Queens the Fist reads a
+   Jack, a 10 or an Ace, and every card held above the lowest became a keeper, since a card drawn
+   in its place is lower on average. The measure replaces one card with the rest held as they
+   are, but a dig throws up to 5 together, and the lowest of their draws is nearly always
+   below the Jack: the keep protects little, and it takes the slots the dig for Kings and
+   Queens draws into. A keep is all or nothing (never thrown), whatever it's worth beside what
+   the dig is for, so a small, real held value blocks a large dig. The Best play picks of the 18
+   replay fixtures stayed (the joker pool's, tarots' and outlook's values moved, through the
+   held-card jokers they simulate). Next for this measure: a held card weighed against what the
+   dig gains, not kept outright.
    The Tooth is in the round's outcome only (its money leaves the board, not the round's
    value: `Outcome::cash` counts money made), and the blind says so. Chicot
    isn't simulated: a boss it disables is played as active, in a round ahead and in a round in
