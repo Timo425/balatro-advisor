@@ -36,9 +36,12 @@ Check, with file:line references:
    restructuring left the snapshots identical; the history check (`tests/history_picks.rs`,
    `tests/history.rs`) ran and every pick it flagged WORSE, unclear, ? or LOST is explained or
    fixed (CLAUDE.md step 4, D12).
-8. **Rule changes.** If the change edits the rules, stages or workflow (`docs/design.md`,
-   `CLAUDE.md`), is there a `docs/decisions.md` entry for it, and is it general (widens or
-   replaces a rule) rather than an exception or a rule only one case needs?
+8. **Rule changes.** Does the change need a `docs/decisions.md` entry by `CLAUDE.md`'s
+   definition ("What needs a decision": the stages, patterns or numbered rules of
+   `docs/design.md`, a new `Gain` field, the workflow, a project-wide choice)? If so, is there
+   one, and is it general (widens or replaces a rule) rather than an exception or a rule only
+   one case needs? If not, flag an entry added anyway: what a stage does, a register value or a
+   known gap belongs in `docs/design.md`.
 
 Report only the findings, ranked by how likely they are to cause the next "patch on
 patch", each with what a general fix looks like; don't restate the change. Be specific and

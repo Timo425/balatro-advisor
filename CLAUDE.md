@@ -109,6 +109,14 @@ change to how the advice decides or values things follows these steps, in order:
    would make us revisit). Rule changes without an entry don't count, and the reviewer
    flags them.
 
+**What needs a decision.** An entry in `docs/decisions.md` is needed only for a change to how
+the project is built or worked on: the four stages, the patterns or the numbered rules in
+`docs/design.md`, a new kind of value (a `Gain` field), the workflow in this file, or a
+project-wide choice (language, dependencies, scope). What a stage does is never one, however
+large the change: its text, a register value, a retire-list item or a known gap is recorded in
+`docs/design.md`, its evidence in the gap or the register row. This is the one definition; the
+reviewer and `docs/decisions.md` point here.
+
 **Example.** The advice played a junk Spade instead of digging with the off-suit cards,
 because the simulated rest of the round spent the 3♠ Blue Seal in a Flush.
 - First fix (wrong scope): "keep Blue Seal cards in hand while on pace". Right stage (the

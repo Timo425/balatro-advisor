@@ -1,7 +1,8 @@
 # Decisions
 
-Each entry: what was decided, why, and what would make us revisit it.
-Status is `proposed` until the owner signs off at the end of a phase.
+Each entry: what was decided, why, and what would make us revisit it. Status is `proposed`
+until the owner approves it, then `accepted`. What needs an entry: `CLAUDE.md`, "What needs a
+decision" (how the project is built or worked on, not what a stage does).
 
 ---
 
@@ -490,3 +491,23 @@ they are, one card replaced, while a dig throws up to 5 and draws them all; besi
 Queens every card above the one Raised Fist reads became a keeper, which no dig throws. The same
 holds under the Hook, where it still beat the measures before it; a held value weighed against
 what the dig gains instead of a keep would answer both.
+
+## D16. What needs a decision: how the project is built or worked on, not what a stage does (accepted)
+
+**What.** An entry here only for a change to the four stages, the patterns or the numbered rules
+of `docs/design.md`, a new kind of value (a `Gain` field), the workflow in `CLAUDE.md`, or a
+project-wide choice (language, dependencies, scope). A change to what a stage does, however
+large, is recorded in `docs/design.md`: its text, the register, the retire list, the known gaps
+(the evidence there). One definition, in `CLAUDE.md` ("What needs a decision"); the reviewer's
+check 8 and this file's header point to it.
+
+**Why.** The bar was set in two places that disagreed: `CLAUDE.md` asked for an entry when a fix
+can't be made within the design's rules, the reviewer whenever a change edits `docs/design.md`,
+which nearly every fix does; and this file's header still spoke of phases, retired in D6. Entries
+drifted from how the project works (D1-D14) toward single behaviours (D15, an amendment to it, and
+a dig-plan change filed as a decision and folded back into gap 15 on 2026-10-16).
+
+**Revisit if** a behaviour recorded only in `docs/design.md` gets reverted or re-argued because
+no one could find why it was chosen.
+
+Accepted by the owner 2026-10-16.
