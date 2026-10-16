@@ -669,7 +669,8 @@ pub fn score<R: Rolls + ?Sized>(b: &Board, played: &[Card], held: &[Card], rolls
 
 /// `score` of a hand whose press-play step already ran on `b` and `held` (the simulated round
 /// makes The Hook's pick itself, from a seed of its own, and discards through `discard_by`), or
-/// that a caller scores as if every held card stays (`sim::held_value`: what a card adds)
+/// that a caller scores with the cards it says are held (`sim::held_value`: what a card adds,
+/// each set the step could leave)
 pub fn score_pressed<R: Rolls + ?Sized>(b: &Board, played: &[Card], held: &[Card], rolls: &mut R, trace: bool) -> Outcome {
     let info = hand::detect(played, b.rule_flags());
     score_arranged(b, played, held, info, rolls, trace)
@@ -701,7 +702,7 @@ pub fn hook_pick_matters(b: &Board, held: &[Card]) -> bool {
 
 /// Whether a held card can take part in scoring on `b` (`Outcome::held_used`): a Steel card's
 /// own ×Mult, a joker on held cards (`HELD_INDIVIDUAL`), Blackboard looking at them all
-fn held_read(b: &Board, held: &[Card]) -> bool {
+pub fn held_read(b: &Board, held: &[Card]) -> bool {
     Answers::of(b).held_individual || b.has(Kind::Blackboard) || held.iter().any(|c| !c.debuff && c.enhancement == Some(Enhancement::Steel))
 }
 

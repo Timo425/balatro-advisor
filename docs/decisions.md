@@ -464,3 +464,18 @@ cost (every pair scored on a Hook board whose jokers read held cards, ~16× per 
 in the live page's timings.
 
 Approved by the owner 2026-10-15.
+
+**Amendment 2026-10-15 (proposed, awaiting the owner's approval)** (gap 15): what a held card
+adds is no longer measured as if it stays. Under The Hook, when the score reads held cards, a
+card is measured against a card drawn from the pile in its place, over every set the Hook could
+take (`held_value`): the hand keeps its size, as a discard draws back to it, so the Hook is as
+likely to take the card as what replaced it (no decoys), and the card counts only when it
+stays, with the cards it may stay with, which "as if it stays" missed (Raised Fist reads the
+lowest card left). Against a card that adds nothing instead, every card Raised Fist could read
+was a keeper. Measured over 20,000 rounds: with the chase's count of the Hook (same change),
+held_hook +3.5/+12.0/+13.5 points against the player at 04410bb; this measure's own share,
+against the card that adds nothing, +0.08/−0.47/+2.25 (±0.3-0.4), and as against "as if it
+stays" (both with the chase's count) +3.7/+3.8/+4.8 (±0.4); the enhanced deck's Hook boards unchanged
+by it. Without The Hook the card is still measured left out (a known gap, gap 15). Revisit too
+if the scorings this costs (about C(n,2) + the pile's kinds × C(n,3) for n cards held, on Hook
+boards whose score reads held cards) show in the timings.

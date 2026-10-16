@@ -979,16 +979,18 @@ pub fn flush_odds(hold: usize, deck_suit: usize, deck_size: usize, hand_size: us
     p
 }
 
+/// The number of ways to choose `k` of `n` (0 when `k > n`)
+fn comb(n: usize, k: usize) -> f64 {
+    if k > n {
+        return 0.0;
+    }
+    (0..k).fold(1.0, |acc, i| acc * (n - i) as f64 / (i + 1) as f64)
+}
+
 fn flush_odds_uncached(hold: usize, deck_suit: usize, deck_size: usize, hand_size: usize, need: usize, draws: usize) -> f64 {
     // a BTreeMap: the sum below in a fixed order, so the odds are the same to the last bit
     // every time (a HashMap's order differs per map, and near-ties between plans flipped)
     use std::collections::BTreeMap;
-    fn comb(n: usize, k: usize) -> f64 {
-        if k > n {
-            return 0.0;
-        }
-        (0..k).fold(1.0, |acc, i| acc * (n - i) as f64 / (i + 1) as f64)
-    }
     let mut dist: BTreeMap<(usize, usize, usize), f64> = BTreeMap::from([((hold, deck_suit, deck_size), 1.0)]);
     for _ in 0..draws {
         let mut next: BTreeMap<(usize, usize, usize), f64> = BTreeMap::new();
@@ -1179,7 +1181,7 @@ fn decide_cards_with(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discar
     let later = if hands > 1 { (on() - best.mean) / (hands - 1) as f64 } else { best.mean };
     // the cards worth holding (`held_value`), worked out only when needed
     let held_cell = std::cell::OnceCell::new();
-    let held_keep = || held_cell.get_or_init(|| held_value(b, hand, &best.cards));
+    let held_keep = || held_cell.get_or_init(|| held_value(b, hand, &best.cards, deck));
     // When on pace, a hand is only chased if it's one card away and the best hand would spend
     // 2+ of its cards (playing it would break the draw); then only if clearly better
     // (`ON_PACE_MARGIN`).
@@ -1195,7 +1197,7 @@ fn decide_cards_with(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discar
     let quick_of = |k: usize| *quick[k].get_or_init(|| aim_quick(b, &all[k], hand, held_keep()));
     let full: Vec<std::cell::OnceCell<f64>> = all.iter().map(|_| std::cell::OnceCell::new()).collect();
     let full_of = |k: usize| *full[k].get_or_init(|| aim_score(b, &all[k], hand, held_keep()));
-    let round = ChaseRound { pile: deck.len(), size, hands, discards, need, best: best.mean, later, on_pace };
+    let round = ChaseRound { pile: deck.len(), size, hands, discards, need, best: best.mean, later, on_pace, takes: score::hook_takes(b, size), stays: 0 };
     // the first dig for each plan (`dig_for`), and the hand it leaves (its best play: what a
     // failed chase is left with)
     type Dig = Option<(Vec<usize>, bool)>;
@@ -1217,7 +1219,8 @@ fn decide_cards_with(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discar
             .filter(|&j| (all[j].hand as usize) > (all[k].hand as usize) && all[j].keep.iter().all(|i| all[k].keep.contains(i)))
             .map(|j| (&all[j], full_of(j)))
             .collect();
-        chase(&all[k], score(k), left_of(k), &lesser, &round)
+        let stays = if round.takes > 0 { held_keep().iter().filter(|i| !all[k].keep.contains(i)).count() } else { 0 };
+        chase(&all[k], score(k), left_of(k), &lesser, &ChaseRound { stays, ..round })
     };
     // screened on one completion each; the best few get the full estimate
     // (a plan with nothing to throw can't be chased)
@@ -1907,6 +1910,11 @@ struct ChaseRound {
     /// a later hand played on, on average (`playing_on`)
     later: f64,
     on_pace: bool,
+    /// the most cards the boss's press-play step discards from those held once a hand is played
+    /// (`score::hook_takes`: The Hook's 2), a junk hand too
+    takes: usize,
+    /// the cards held beside the plan's that a dig never throws (`held_value`, `dig_for`)
+    stays: usize,
 }
 
 /// What chasing a plan is worth, as the policy plays it out.
@@ -1980,7 +1988,18 @@ fn chase(aim: &Aim, score: f64, left: f64, lesser: &[(&Aim, f64)], r: &ChaseRoun
             stop += miss * q * ends(*sc);
             miss *= 1.0 - q;
         }
-        let value = hit * ends(score) + (1.0 - hit) * (stop + miss * next.unwrap_or_else(|| stay(s + 1)));
+        let mut value = hit * ends(score) + (1.0 - hit) * (stop + miss * next.unwrap_or_else(|| stay(s + 1)));
+        // a junk hand is a played hand: the press-play step then discards from the cards held
+        // (the plan's, those kept for their held value and the rest the junk hand, of up to 5,
+        // leaves), the plan's among them; the plan goes on only when none of its cards is
+        // taken, else the round plays on from the hand that dig leaves (the cards drawn in
+        // place of those taken aren't counted toward it)
+        if s as i64 >= r.discards && r.takes > 0 {
+            let held = r.size - r.size.saturating_sub(aim.keep.len() + r.stays).min(5);
+            let k = r.takes.min(held);
+            let spared = comb(held.saturating_sub(aim.keep.len()), k) / comb(held, k).max(1.0);
+            value = spared * value + (1.0 - spared) * stay(s + 1);
+        }
         let margin = if s == 0 && r.on_pace { ON_PACE_MARGIN * r.best } else { 0.0 };
         out = Chase { value, go: value > stay(s) + margin };
         next = out.go.then_some(value);
@@ -2037,12 +2056,6 @@ impl std::hash::Hasher for OneWord {
 }
 
 fn draw_odds_uncached(groups: &[(usize, usize)], pile: usize, seen: usize) -> f64 {
-    fn comb(n: usize, k: usize) -> f64 {
-        if k > n {
-            return 0.0;
-        }
-        (0..k).fold(1.0, |acc, i| acc * (n - i) as f64 / (i + 1) as f64)
-    }
     let in_groups: usize = groups.iter().map(|g| g.0).sum();
     if in_groups > pile {
         return 0.0;
@@ -2185,17 +2198,70 @@ fn aim_score(b: &Board, aim: &Aim, hand: &[Card], held: &[usize]) -> f64 {
 
 /// The cards of `hand` outside `play` that add to its score while held (Baron's Kings, Steel
 /// cards, Shoot the Moon's Queens, …: the engine's held effects): thrown away, they'd cost
-/// the play now. One scoring per card, as if it stays (`score_pressed`: no press-play discard
-/// first): a discard or a dig draws back to hand size, so The Hook picks from as many cards
-/// either way, and with its pick averaged a card taken away would look worth holding only
-/// because the Hook might take it instead of another (every plain card beside a Steel one:
-/// 4.7-7.7 points lost on the enhanced deck's Hook rounds, D15).
-fn held_value(b: &Board, hand: &[Card], play: &[usize]) -> Vec<usize> {
+/// the play now. One scoring per card, left out. Under a press-play discard that takes some of
+/// the cards held (The Hook), when the score reads held cards, a card is measured against what
+/// throwing it puts in its place, a card from `pile` (each of its cards as likely), over every
+/// set the step could take: a discard or a dig draws back to hand size, so the step picks from
+/// as many cards either way, and the card counts only when it stays, with the cards it may stay
+/// with (Raised Fist reads the lowest one left). Left out instead, every plain card beside a
+/// Steel one looked worth holding, as a card the Hook might take in its place (4.7-7.7 points
+/// on the enhanced deck's Hook rounds, D15); against a card that adds nothing, any card Raised
+/// Fist could read. What the step's discard of the card itself does (Castle, Hit the Road)
+/// isn't counted. When the step takes every card held, none is worth holding.
+fn held_value(b: &Board, hand: &[Card], play: &[usize], pile: &[Card]) -> Vec<usize> {
     let played: Vec<Card> = play.iter().map(|&i| hand[i]).collect();
     let rest: Vec<usize> = (0..hand.len()).filter(|i| !play.contains(i)).collect();
-    let held = |skip: Option<usize>| -> Vec<Card> { rest.iter().filter(|&&i| Some(i) != skip).map(|&i| hand[i]).collect() };
-    let all = score::score_pressed(b, &played, &held(None), &mut Unlucky, false).score;
-    rest.iter().copied().filter(|&i| score::score_pressed(b, &played, &held(Some(i)), &mut Unlucky, false).score < all).collect()
+    let n = rest.len();
+    let full: Vec<Card> = rest.iter().map(|&i| hand[i]).collect();
+    let takes = score::hook_takes(b, n);
+    if takes > 0 && takes >= n {
+        return vec![];
+    }
+    let of = |held: &[Card]| score::score_pressed(b, &played, held, &mut Unlucky, false).score;
+    // with no held card read, none adds (and a drawn one only could: a Steel card)
+    if takes == 0 || pile.is_empty() || !score::held_read(b, &full) {
+        let all = of(&full);
+        return (0..n).filter(|&k| of(&full.iter().enumerate().filter(|&(j, _)| j != k).map(|(_, c)| *c).collect::<Vec<_>>()) < all).map(|k| rest[k]).collect();
+    }
+    // the pile's cards, each kind once with its copies, in a fixed order
+    let mut sorted = pile.to_vec();
+    sorted.sort_by(|x, y| x.order_cmp(y));
+    let mut kinds: Vec<(Card, f64)> = vec![];
+    for c in sorted {
+        match kinds.last_mut() {
+            Some(last) if last.0 == c => last.1 += 1.0,
+            _ => kinds.push((c, 1.0)),
+        }
+    }
+    // the play's score with the held cards but those of `gone` (by place in `rest`; a hand holds
+    // fewer than 64), and a card of the pile when given: each scored once
+    let mut seen: std::collections::HashMap<(u64, Option<usize>), f64> = std::collections::HashMap::new();
+    let mut score = |gone: u64, drawn: Option<usize>| -> f64 {
+        *seen.entry((gone, drawn)).or_insert_with(|| {
+            let mut held: Vec<Card> = (0..n).filter(|j| gone & (1 << j) == 0).map(|j| full[j]).collect();
+            held.extend(drawn.map(|d| kinds[d].0));
+            of(&held)
+        })
+    };
+    let sets = score::hook_sets(b, n);
+    let mut keep = vec![];
+    for (k, &i) in rest.iter().enumerate() {
+        // what a card drawn in its place scores over the card, on each set that leaves its place
+        // (a set that takes it, or what replaced it, scores the same either way): differences,
+        // so a card that adds no more than any drawn one comes to 0 exactly
+        let mut gain = 0.0;
+        for g in sets.iter().filter(|g| !g.contains(&k)) {
+            let gone = g.iter().fold(0u64, |m, &j| m | (1 << j));
+            let own = score(gone, None);
+            for (d, (_, w)) in kinds.iter().enumerate() {
+                gain += w * (score(gone | (1 << k), Some(d)) - own);
+            }
+        }
+        if gain < 0.0 {
+            keep.push(i);
+        }
+    }
+    keep
 }
 
 /// Simulates the rest of a round with the `decide` policy.
@@ -2984,7 +3050,7 @@ mod tests {
         assert!(p.sure < p.floor, "{} {}", p.sure, p.floor);
         // and the Kings add while held, so they're never thrown away
         let kings: Vec<usize> = (0..hand.len()).filter(|&i| hand[i].rank.0 == 13).collect();
-        let held = held_value(&b, &hand, &p.cards);
+        let held = held_value(&b, &hand, &p.cards, &standard_deck());
         assert!(kings.iter().all(|k| held.contains(k)), "{held:?}");
         // but a round it can win surely now it wins surely: the last hand, 78 to go, where the
         // Pair of 7s wins only when The Hook spares the Steel King (10 pairs of 15)
@@ -2994,6 +3060,40 @@ mod tests {
         let held: Vec<Card> = (0..hand.len()).filter(|i| !idx.contains(i)).map(|i| hand[i]).collect();
         let o = score::score(&b, &played, &held, &mut Unlucky, false);
         assert!(o.sure >= 78.0, "{:?} surely {}", played.iter().map(Card::label).collect::<Vec<_>>(), o.sure);
+    }
+
+    #[test]
+    fn under_the_hook_a_held_card_is_measured_against_a_card_drawn() {
+        let pile = |hand: &[Card]| -> Vec<Card> { standard_deck().into_iter().filter(|c| !hand.iter().any(|h| h.same_kind(c))).collect() };
+        // The Hook takes 2 of the cards held: a plain card beside a Steel King isn't worth
+        // holding (left out instead, it would be, as a card the Hook might take in the King's
+        // place), the King is
+        let mut b = sample_board(&[]);
+        b.blind.key = "bl_hook".into();
+        let hand = Card::parse_list("7S 7C KD:steel 2H 3D 4C 9S JH").unwrap();
+        assert_eq!(held_value(&b, &hand, &[0, 1], &pile(&hand)), [2]);
+        // and with a ×Mult that isn't a short binary fraction, a plain card that adds no more
+        // than a card drawn still isn't (a tie compared as differences, not sums)
+        for x in [1.1, 1.3, 1.7, 1.97] {
+            let mut b = sample_board(&["j_constellation"]);
+            b.jokers[0].x_mult = x;
+            b.blind.key = "bl_hook".into();
+            assert_eq!(held_value(&b, &hand, &[0, 1], &pile(&hand)), [2], "×{x}");
+        }
+        // Raised Fist reads the lowest card held: with 3 held and 2 taken, the one that stays is
+        // the one it reads, so the 9 and the King, above a card drawn on average, are worth
+        // holding and the 2 isn't (against a card that adds nothing, all three would be).
+        // Without The Hook none is (left out, the 2 lets the Fist read the 9)
+        let mut b = sample_board(&["j_raised_fist"]);
+        let hand = Card::parse_list("7S 7C 2H 9C KS").unwrap();
+        assert!(held_value(&b, &hand, &[0, 1], &pile(&hand)).is_empty());
+        b.blind.key = "bl_hook".into();
+        assert_eq!(held_value(&b, &hand, &[0, 1], &pile(&hand)), [3, 4]);
+        // with Baron and only two Kings held, the Hook takes both before the hand scores
+        let mut b = sample_board(&["j_baron"]);
+        b.blind.key = "bl_hook".into();
+        let hand = Card::parse_list("7S 7C KD KH").unwrap();
+        assert!(held_value(&b, &hand, &[0, 1], &pile(&hand)).is_empty());
     }
 
     #[test]
@@ -3481,7 +3581,7 @@ mod tests {
             keep: vec![0, 1, 2, 3],
             groups: groups.iter().map(|&n| (standard_deck()[..n].to_vec(), 1)).collect(),
         };
-        let round = |best: f64, need: f64, discards: i64| ChaseRound { pile: 44, size: 8, hands: 4, discards, need, best, later: best, on_pace: best * 4.0 >= need };
+        let round = |best: f64, need: f64, discards: i64| ChaseRound { pile: 44, size: 8, hands: 4, discards, need, best, later: best, on_pace: best * 4.0 >= need, takes: 0, stays: 0 };
         // one card away, 5 fits: one dig makes it 39% of the time, too little on its own to
         // beat playing on, but the policy digs again after a miss, so six digs make it nearly
         // always: worth chasing (a chase decided on one dig's odds would never start)
@@ -3494,6 +3594,16 @@ mod tests {
         // played on worth 2.5 times this one)
         let junk = |later: f64| chase(&one, 20000.0, 74.0, &[], &ChaseRound { later, ..round(3312.0, 21360.0, 0) }).go;
         assert!(junk(3312.0) && !junk(2.5 * 3312.0));
+        // a junk hand is a played hand: The Hook then discards 2 of the 4 cards held, the plan's
+        // own, so with no discard it isn't chased; with discards, the digs after them count less
+        let hook = |discards: i64| chase(&one, 20000.0, 74.0, &[], &ChaseRound { takes: 2, ..round(3312.0, 21360.0, discards) });
+        assert!(!hook(0).go, "{}", hook(0).value);
+        // with 2 cards kept for their held value the junk hand plays 2, so 6 are held and the
+        // plan's 4 are spared 1 time in 15
+        let kept = chase(&one, 20000.0, 74.0, &[], &ChaseRound { takes: 2, stays: 2, ..round(3312.0, 21360.0, 0) });
+        assert!(kept.value > hook(0).value, "{} {}", kept.value, hook(0).value);
+        let plain = chase(&one, 20000.0, 74.0, &[], &round(3312.0, 21360.0, 3));
+        assert!(hook(3).go && hook(3).value < plain.value, "{} {}", hook(3).value, plain.value);
         // two cards away, 3 fits each, with 1 discard: the rule before took every dig left
         // (the discard and 3 junk hands) as spent on it (56%, × score × 2 against the best × 4)
         // and chased it; dig by dig, each junk hand costs a hand and a failed chase leaves only
@@ -3517,7 +3627,7 @@ mod tests {
         let b = sample_board(&["j_baron"]);
         let hand = Card::parse_list("KS KC 2H 5H 9H 3C 4D 8S").unwrap();
         let hearts = [2, 4, 5];
-        let held = held_value(&b, &hand, &[]);
+        let held = held_value(&b, &hand, &[], &[]);
         assert!(held.contains(&0) && held.contains(&1), "{held:?}");
         for discards in [1, 0] {
             let (dig, junk) = dig_for(&HandParts::new(&b, &hand), &hearts, &held, discards).unwrap();
