@@ -36,8 +36,7 @@ sample is fixed.
 | Go 1.22 (installed) | 0.3–1 µs | 1.5–5 s single core | Good option; weaker type modelling for effects |
 | **Rust** | **0.1–0.5 µs** | **0.5–2.5 s single core, <0.3 s on 12 cores** | `rayon` for parallel sampling, enums for effects |
 
-The per-pass costs are estimates. The `bench` command, built in phase 3, will
-replace them with measured numbers. Pruning (below) cuts the pass count by
+The per-pass costs are estimates; the `bench` command measures them. Pruning (below) cuts the pass count by
 another 5–20×, so Rust has headroom and Go would probably also pass. Rust wins
 on three points:
 
@@ -49,17 +48,8 @@ on three points:
   codec, are Rust. Their structure and tests are easier to learn from in the
   same language, even though we are not depending on them (D2).
 
-**Toolchain issue.** The installed `rustc`/`cargo` is 1.75 (Ubuntu apt, Dec
-2023). The official Rust MCP SDK `rmcp` 3.5 needs Rust **1.88** (edition 2024),
-and much of the current crate ecosystem has moved past 1.75. Options:
-
-1. **Install `rustup` (user-local in `~/.rustup` and `~/.cargo`, no sudo, about
-   1 GB)** and pin the toolchain with `rust-toolchain.toml`. *Recommended.*
-2. Stay on 1.75 and pin older crate versions. The MCP server would then be a
-   hand-written JSON-RPC-over-stdio loop, roughly 300 lines. This works, but it
-   means maintaining a protocol implementation ourselves.
-
-→ **Needs owner approval** (this is a heavy toolchain addition).
+**Toolchain.** Rust from a user-local `rustup` (`~/.cargo`); the apt 1.75 was too old for
+much of the crate ecosystem.
 
 **Revisit if** another tool needs in-process calls on a hot path. In that case,
 add a binding crate (e.g. `pyo3`) over the same library and keep the engine as is.
