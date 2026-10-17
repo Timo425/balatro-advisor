@@ -2,10 +2,12 @@
 //! judges the picks a change moved). Uses only long-stable API, so it can be copied into a
 //! `git worktree` of an older base commit and run there:
 //! `BAV_PICKS=/tmp/before cargo test --release --test history_picks -- --ignored history_picks`.
-//! Every state the live page saved in a blind (`~/.local/share/balatro-advisor/history/<seed>/
-//! *.jkr`, never in the repo; `BAV_HISTORY` for another folder), the quick pass as the live page
-//! shows first, 1-60 s a state by the Ante: one state in `BAV_SAMPLE` (default 3, about 120 of
-//! 353 in 20 minutes; 1: all); `BAV_ONLY=text` for states whose path contains it.
+//! A fixed-size sample of the states the live page saved (`~/.local/share/balatro-advisor/
+//! history/<seed>/*.jkr`, never in the repo; `BAV_HISTORY` for another folder), whatever the
+//! history's size: `BAV_SAMPLE` states (default 350, over a third of them in a blind; 0: all,
+//! today's too), the quick pass as the live page shows first on those in a blind, 1-60 s a
+//! state by the Ante, about 15 minutes a run (136 in a blind in 13 min on 2026-10-17);
+//! `BAV_ONLY=text` for the sampled states whose path contains it.
 
 #![allow(dead_code)]
 
@@ -17,19 +19,33 @@ pub fn states() -> Vec<PathBuf> {
     let dir = std::env::var_os("BAV_HISTORY").map(PathBuf::from).or_else(|| calibration::default_dir().map(|d| d.join("history")));
     let Some(dir) = dir else { return vec![] };
     let only = std::env::var("BAV_ONLY").ok();
-    // one state in `BAV_SAMPLE` (default 3; 1: all), by its name, so a state is in or out
-    // whatever else the history holds (states saved between the two runs move nothing)
-    let every: u64 = std::env::var("BAV_SAMPLE").ok().and_then(|s| s.parse().ok()).unwrap_or(3).max(1);
-    let fnv = |s: &str| s.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3));
+    let size: usize = std::env::var("BAV_SAMPLE").ok().and_then(|s| s.parse().ok()).unwrap_or(350);
     let mut out = vec![];
     for run in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
         for f in std::fs::read_dir(run.path()).into_iter().flatten().flatten() {
             let p = f.path();
-            if p.extension().is_some_and(|x| x == "jkr") && only.as_ref().is_none_or(|o| p.to_string_lossy().contains(o.as_str())) && fnv(&name(&p)) % every == 0 {
+            if p.extension().is_some_and(|x| x == "jkr") {
                 out.push(p);
             }
         }
     }
+    if size > 0 {
+        // the `size` states lowest by the hash of their name (FNV-1a) among those saved before
+        // today (UTC, by the time the live page names them with, crates/cli/src/ui.rs
+        // `keep_history`; a name without one counts as old): the cost stays the same however
+        // much is played, and the before and after runs of a check on the same day pick the
+        // same states, since states saved in between aren't candidates yet (a fixed hash
+        // threshold would keep a fixed share, growing with the history; the lowest hashes of
+        // all states would let a new state push one out between the runs)
+        const DAY_MS: u128 = 86_400_000;
+        let today = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis()) / DAY_MS * DAY_MS;
+        let saved = |p: &Path| p.file_name().and_then(|n| n.to_string_lossy().split('-').next()?.parse::<u128>().ok());
+        let fnv = |s: &str| s.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3));
+        out.retain(|p| saved(p).is_none_or(|ms| ms < today));
+        out.sort_by_cached_key(|p| (fnv(&name(p)), name(p)));
+        out.truncate(size);
+    }
+    out.retain(|p| only.as_ref().is_none_or(|o| p.to_string_lossy().contains(o.as_str())));
     out.sort();
     out
 }

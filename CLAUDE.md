@@ -67,8 +67,10 @@ change to how the advice decides or values things follows these steps, in order:
    --release --test replay -- --ignored snapshot` before and `/tmp/after` after, then `diff
    -r` (a pure restructuring leaves it unchanged; a behaviour change: explain every
    difference); and the history check: `tests/history_picks.rs` before (copied into a `git
-   worktree` of the base commit, started while you work) and after, then `history_judge` in
-   `tests/history.rs`: every pick that moved on the owner's saved states, judged against the
+   worktree` of the base commit, started while you work) and after (about 15 minutes each: a
+   fixed sample of 350 saved states, the same for both runs on the same UTC day), then
+   `history_judge` in `tests/history.rs`: every pick that moved on the owner's saved states,
+   judged against the
    old one with the oracle playing on; look at every WORSE, unclear, ? and LOST one and explain
    or fix it (the judge shares the code's valuation and engine, so a change to those is half
    judging itself: say so). Then where it applies: a change to the simulated player, or to the simulated game

@@ -6,7 +6,8 @@
 //! prints. Run on the change:
 //! `BAV_PICKS_BEFORE=/tmp/before BAV_PICKS_AFTER=/tmp/after cargo test --release --test
 //! history -- --ignored history_judge --nocapture` (the same `BAV_SAMPLE`/`BAV_ONLY` as the
-//! picks; `BAV_JUDGE_ROUNDS`, default 400). A pick moves when the cards' places in your hand
+//! picks, on the same UTC day: the sample leaves out that day's states; `BAV_JUDGE_ROUNDS`,
+//! default 400). A pick moves when the cards' places in your hand
 //! change (a new arrangement of the same cards isn't a move), or, with a consumable used first,
 //! the cards it changes or adds. Worst first: BETTER / WORSE: clearly apart and by more than
 //! the search's tie margin (`advise::TIE_MARGIN`); tie: within it both ways; unclear: neither;
