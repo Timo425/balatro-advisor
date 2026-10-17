@@ -263,10 +263,11 @@ the same retriggered ×Mult.
   quick pass ~0.1 s. Pool jokers that grow now carry their measured growth (Obelisk on a run
   whose most played hand is High Card ×1.10 → ×3.34 by Ante 8; Wee and Runner lower, Square
   and Castle higher than the table). Ride the Bus can now be replaced (below).
-- **Next:** the projection's runs played to the round's goals (gap 18: a second pass, so a
-  reset is priced and Ride the Bus isn't replaced for resets the advice would avoid); the
-  rest of gap 18 (the digs weighing growth); a free hand banked before the hand that wins
-  (gap 34); Ceremonial Dagger's value (gap 8).
+- **Next:** the rest of gap 18, the policy's plays that don't win weighing growth (first: a
+  second pass that plays the projection's runs to the round's goals was measured 2026-10-17
+  and changes nothing until then, gap 18), then that second pass, so a reset is priced and
+  Ride the Bus isn't replaced for resets the advice would avoid; a free hand banked before
+  the hand that wins (gap 34); Ceremonial Dagger's value (gap 8).
 - **Not built yet** (ideas, not gaps): a rush check ("skip every small and big blind to Ante
   8", with perishables that age only on played rounds, separate from the options ranking); a
   chance to beat the next boss after the shops before it (a separate forecast line, never part
@@ -895,6 +896,21 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
        is replaced since 2026-10-17, so Best play no longer counts its growth or its reset at
        all (the pick is the same: every move tried reset it anyway), and the fixture's pending
        expectation is further away. The table grew it ~+3 an ante whatever was played.
+       The second pass was tried and measured on that fixture the same day, not kept: the
+       projection with the jokers a round changes kept (never `replaced`, the hypothesis being
+       tested) gives Ride the Bus's worths (+0.011 a Mult); the owned jokers measured again on
+       runs played to `RoundGoals { jokers }`; the projection rebuilt. Two things the shape
+       needs: the joker kept in the first pass (else it's replaced, worth nothing, and the
+       second pass plays as the first), and no `gone` floor from that pass (`JokerWorth::of`
+       floors a fall at losing the joker, +0.20 there: a typical find beats it as the plain
+       player leaves it, so every reset was free and the second pass again played as the
+       first). With the floor lifted the runs left it at +2.5 after 3 rounds and +1.6 by Ante 8
+       (plain: +1.0, +1.1), still replaced (even at about +19 by Ante 8). Of the resets in
+       those 272 rounds (top-level hands), 75% were plays chosen by points with no win on the
+       table (115 plays, 48 digs), 25% finishes with no sure win that spares the face cards
+       (53), none the look-ahead's growth play (127 played). So the second pass waits on the
+       policy's plays that don't win weighing growth (above); then it's a cost of about 120 ms
+       a quick pass (the runs with goals and a second projection).
      - The runs are on your board as it is at this ante's sizes: a later ante's board and
        target change how many hands a round takes. A joker the projection replaces is still
        worth nothing however it grows.
