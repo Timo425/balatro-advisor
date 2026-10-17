@@ -413,7 +413,7 @@ fn arranged(board: &Board, hand: &[Card], idx: &[usize], hand_order: &[usize]) -
         v.sort_by_key(|&i| hand_order.get(i).copied().unwrap_or(usize::MAX));
         v
     };
-    // as they sit, on the same measure (The Hook's pick averaged over every set: D15)
+    // as they sit, on the same measure (The Hook's pick averaged over every set: gap 15)
     let as_they_sit = score_as_played(board, &cards(&on_screen(idx)), &cards(&on_screen(&rest)), &mut Unlucky, false).score;
     let arrange = if as_they_sit < o.score {
         let all: Vec<usize> = play.iter().chain(&keep).copied().collect();

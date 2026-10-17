@@ -230,7 +230,7 @@ pub struct Outcome {
     #[serde(skip)]
     pub eaten: Vec<usize>,
     /// The score with the pick that costs most when the press-play step's pick is averaged
-    /// (`Pick::Average`, D15): what a play surely scores. `score` otherwise
+    /// (`Pick::Average`, gap 15): what a play surely scores. `score` otherwise
     #[serde(skip)]
     pub sure: f64,
 }
@@ -751,7 +751,7 @@ fn discard_counts(b: &Board) -> bool {
 /// The press-play step before `played` scores, then the score (`score_arranged`): The Hook
 /// discards `hook_takes` held cards through `Board::discard_by`. Which ones is a pick
 /// (`Rolls::pick`), asked only when it can change the hand (`hook_pick_matters`): otherwise the
-/// first ones go, as any would do for the hand. An estimate's pick (`Pick::Average`, D15) scores
+/// first ones go, as any would do for the hand. An estimate's pick (`Pick::Average`, gap 15) scores
 /// every set: its `score` and `dollars` are their average, `sure` the score of the set that
 /// costs most, and the rest (jokers, `hooked`, the trace) that set's; `Pick::Best` the set that
 /// costs least; a given pick (`Pick::These`) is scored as it is. The outcome counts the
@@ -942,7 +942,7 @@ impl<R: Rolls + ?Sized> Rolls for Asked<'_, R> {
         self.asked = true;
         self.inner.unit()
     }
-    /// an average is exact, not a roll drawn (D15)
+    /// an average is exact, not a roll drawn (gap 15)
     fn pick(&mut self, n: usize, k: usize) -> Pick {
         let p = self.inner.pick(n, k);
         self.asked |= p != Pick::Average;

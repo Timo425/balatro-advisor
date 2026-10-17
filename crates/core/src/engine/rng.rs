@@ -13,7 +13,7 @@ pub trait Rolls {
 }
 
 /// A random pick of cards (`Rolls::pick`): every set it could take, averaged (each as likely: an
-/// estimate's, D15), the set the hand loses least by (every roll for you), or these (indices,
+/// estimate's, gap 15), the set the hand loses least by (every roll for you), or these (indices,
 /// ascending)
 #[derive(Debug, Clone, PartialEq)]
 pub enum Pick {
@@ -35,7 +35,7 @@ impl Rolls for Unlucky {
     fn unit(&mut self) -> f64 {
         0.0
     }
-    /// a pick isn't a roll that fails: its average (D15; the worst set is `Outcome::sure`)
+    /// a pick isn't a roll that fails: its average (gap 15; the worst set is `Outcome::sure`)
     fn pick(&mut self, _n: usize, _k: usize) -> Pick {
         Pick::Average
     }
@@ -125,7 +125,7 @@ impl Rolls for Rng {
     fn unit(&mut self) -> f64 {
         (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
     }
-    /// every set averaged, the other rolls drawn (D15: an estimate's pace)
+    /// every set averaged, the other rolls drawn (gap 15: an estimate's pace)
     fn pick(&mut self, _n: usize, _k: usize) -> Pick {
         Pick::Average
     }

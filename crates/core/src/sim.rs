@@ -16,7 +16,7 @@ pub struct Play {
     pub cards: Vec<usize>,
     pub hand: HandType,
     /// Score with every random roll failing, and a pick of cards (The Hook's) averaged over what
-    /// it could take (D15): what a play is chosen by.
+    /// it could take (gap 15): what a play is chosen by.
     pub floor: f64,
     /// Score with every roll failing and the pick that costs most (`Outcome::sure`): whether the
     /// play surely wins. The floor when nothing is picked.
@@ -262,7 +262,7 @@ impl<R: crate::engine::Rolls> crate::engine::Rolls for Watched<R> {
         self.asked = true;
         self.rolls.unit()
     }
-    /// an average is exact, not a roll drawn (D15)
+    /// an average is exact, not a roll drawn (gap 15)
     fn pick(&mut self, n: usize, k: usize) -> crate::engine::Pick {
         let p = self.rolls.pick(n, k);
         self.asked |= p != crate::engine::Pick::Average;
@@ -804,7 +804,7 @@ fn finish_among(b: &Board, g: &RoundGoals, hand: &[Card], need: f64, hands: i64,
 
 /// Of `plays` (the hand's plays as `plays_tried` gives them), the one with the highest floor that
 /// surely wins (`Play::sure` ≥ `need`): the finish without the round's goals when the best play
-/// by its floor doesn't surely win (The Hook may take the cards it holds for: D15)
+/// by its floor doesn't surely win (The Hook may take the cards it holds for: gap 15)
 fn surely_winning(hand: &[Card], plays: &[Scored], need: f64) -> Option<Vec<usize>> {
     let mut best: Option<&Scored> = None;
     for s in plays.iter().filter(|s| s.5 >= need) {
@@ -1395,7 +1395,7 @@ fn playing_on_with(b: &Board, hand: &[Card], best: &Play, hands: i64, shortcut: 
 }
 
 /// Whether a play's score follows its chips and Mult (`front_of`): not when The Hook's pick
-/// changes it, which an estimate averages (D15) while the chips and Mult are one pick's; then
+/// changes it, which an estimate averages (gap 15) while the chips and Mult are one pick's; then
 /// every later hand searches in full
 fn front_holds(b: &Board, hand: &[Card]) -> bool {
     !score::hook_pick_matters(b, hand)
@@ -2358,7 +2358,7 @@ fn aim_score(b: &Board, aim: &Aim, hand: &[Card], held: &[usize], ends: Option<E
 /// as many cards either way, and the card counts only when it stays, with the cards it may stay
 /// with (Raised Fist reads the lowest one left). Left out instead, every plain card beside a
 /// Steel one looked worth holding, as a card the Hook might take in its place (4.7-7.7 points
-/// on the enhanced deck's Hook rounds, D15); against a card that adds nothing, any card Raised
+/// on the enhanced deck's Hook rounds, gap 15); against a card that adds nothing, any card Raised
 /// Fist could read. What the step's discard of the card itself does (Castle, Hit the Road)
 /// isn't counted. When the step takes every card held, none is worth holding.
 fn held_value(b: &Board, hand: &[Card], play: &[usize], pile: &[Card]) -> Vec<usize> {
@@ -3395,7 +3395,7 @@ mod tests {
 
     #[test]
     fn under_the_hook_a_play_is_chosen_by_its_average_and_wins_surely_by_its_worst() {
-        // D15: Baron (×1.5 a King held), a Steel King. Played, the Kings score once; held, the
+        // gap 15: Baron (×1.5 a King held), a Steel King. Played, the Kings score once; held, the
         // Hook takes 2 of the 6 cards held, so they stay most of the time: the player holds them.
         // With every pair against you (the old floor) holding them looked worth nothing
         let mut b = crate::bench::sample_board(&["j_baron"]);

@@ -7,7 +7,7 @@ to a decision amends its entry in place (marked amended, with the date), not a n
 
 ---
 
-## D1. Implementation language: Rust (proposed)
+## D1. Implementation language: Rust (accepted)
 
 **Decision.** Write the engine and CLI in Rust as one Cargo workspace. The CLI's
 `--json` output is language-neutral, so other tools need no bindings. (An MCP server
@@ -66,80 +66,33 @@ add a binding crate (e.g. `pyo3`) over the same library and keep the engine as i
 
 ---
 
-## D2. External engines: reference only, no dependency (proposed)
+## D2. External engines: reference only, no dependency (accepted)
 
-### evanofslack/balatro-rs
+**Decision.** No external engine is a dependency; they are read for ideas only, and anything
+ever copied gets an attribution comment (plus the MIT notice in `THIRD_PARTY.md` for MIT code).
 
-- **License.** Every crate's `Cargo.toml` says `license = "MIT"`, but the repo
-  has **no LICENSE file**. Copying code needs the MIT notice text; without the
-  file we would be reconstructing it. That is acceptable, but it is a smell.
-- **Activity.** Active: last push 2026-09-27, 14 stars, not a fork. That is
-  also fast churn for a git-only dependency.
-- **Coverage.** 74/150 jokers (README). No skip tags, alternative decks or
-  alternative stakes.
-- **Fidelity problems for our use**, read from `core/src/game.rs::calc_score_inner`:
-  - chips and mult are `usize`. Polychrome is `mult += mult / 2` and Steel held
-    is the same, so ×1.5 truncates (7 mult → 10, not 10.5). The game uses Lua
-    doubles, and late-game scores depend on those fractions compounding.
-  - Stone cards are scored in a **separate pass after** the other scoring cards.
-    In the game, `evaluate_play` inserts them into `scoring_hand` and then
-    **sorts by screen position** (`table.sort(scoring_hand, … a.T.x < b.T.x)`),
-    so a Stone card sits in play order among the others. That matters when Glass
-    cards or per-card ×Mult are to its left or right.
-  - Scoring mutates game state (`planetarium.play`, The Arm `level_down`) inside
-    the score function. We need a pure function that we can call millions of
-    times on hypothetical states.
-- **What is genuinely valuable:** the `.jkr` codec's edge-case fixture list
-  (escaped strings, numeric keys, negative/float numbers, `inf`/`nan`), and
-  `balatro-seed`, a byte-accurate port of the game RNG. Seed-accurate
-  shop/pack prediction is out of scope, but it is the natural dependency if
-  that ever comes into scope.
-- **Decision:** reference only. Our `.jkr` parser is about 150 lines, and we
-  test it against the same kinds of edge cases (written by us, not copied). If
-  code is ever copied, it gets an attribution comment plus the MIT notice in
-  `THIRD_PARTY.md`.
+**Why.** Surveyed at the start: [evanofslack/balatro-rs](https://github.com/evanofslack/balatro-rs)
+(MIT in `Cargo.toml` but no LICENSE file; 74/150 jokers) scores with `usize` chips and Mult, so
+×1.5 truncates, scores Stone cards in a separate pass instead of in play order
+(`evaluate_play` sorts `scoring_hand` by screen position), and mutates game state inside the
+score function; its `.jkr` codec's edge cases and `balatro-seed` (a byte-accurate port of the
+game RNG, the natural dependency if seed-accurate shop prediction ever comes into scope) are the
+useful parts. [taggarttufte/balatro-rl](https://github.com/taggarttufte/balatro-rl) (no
+license, so nothing can be copied; archived) applies every ×Mult to the final additive Mult,
+which can't represent order effects, and has Lucky at 1 in 4. The ground truth is the game
+itself: `Balatro.exe` is a zip of its Lua source, read locally and cited by file and function,
+never committed (`/game-src/` is gitignored); joker facts (numeric config values, also on the
+wiki) are extracted from the owner's install into the committed `data/game.json`, re-checked
+against the install when present. [`balatro-agent`](https://github.com/Timo425/balatro-agent),
+the owner's separate bot, gave the Lua-table parser idea, blind targets per stake and "what the
+save hides" notes, adapted into Rust with attribution; nothing is imported from it.
 
-### taggarttufte/balatro-rl
-
-- **License.** **None** (no LICENSE file and no license field). By default that
-  means all rights reserved: we **cannot copy or vendor** anything from it.
-- **Activity.** Archived (2026-08-26).
-- **Coverage.** About 200 joker classes across `balatro_sim/jokers/*` (a class
-  count, not verified as distinct jokers), plus a 496-test suite.
-- **Fidelity problems:** the scoring model is
-  `score = (base_chips + chips) × (base_mult + mult) × mult_mult`. That applies
-  every ×Mult to the **final** additive mult, which is wrong for Balatro, where
-  ×Mult multiplies the running mult at the moment it triggers. So "+Mult
-  before ×Mult" order effects, the thing we most need to get right, cannot be
-  represented. It also has Lucky at 1 in 4 (the game uses 1 in 5), and Steel
-  applied as a played-card effect.
-- **Decision:** reference only, for ideas about joker grouping. No code.
-
-### The game itself
-
-`Balatro.exe` is a zip containing the Lua source. It is the ground truth for
-evaluation order, joker configs and save layout. It is proprietary, so:
-
-- we **read it locally** (`unzip -p Balatro.exe functions/state_events.lua`) and
-  cite file and function names in comments and docs;
-- we **never commit** its source (`/game-src/` is gitignored);
-- joker facts (name, rarity, cost, numeric config values) are functional data
-  that is also published on the wiki. A dev script extracts them from the
-  owner's local install into `data/game.json` (planned as `jokers.base.json`),
-  and we commit that generated file (values only, no code). A test re-checks it against the
-  install when one is present.
-
-### Where ideas came from: `balatro-agent`
-
-[`balatro-agent`](https://github.com/Timo425/balatro-agent) is the owner's separate Balatro bot project. Its
-`tools/balatro_state.py` gave us the Lua-table parser idea, the blind targets per
-stake and the "what the save hides" notes, copied and adapted into Rust with an
-attribution comment. Its effect-text scoring was not reused (it estimates rather
-than models the game). Nothing is imported from it, and the advisor works without it.
+**Revisit if** an engine appears that scores in game order with doubles and has a license we
+can depend on.
 
 ---
 
-## D3. Numbers: `f64` everywhere, like the game (proposed)
+## D3. Numbers: `f64` everywhere, like the game (accepted)
 
 Lua numbers are doubles. In vanilla, `mod_mult` is the identity and
 `mod_chips` only clamps for one challenge modifier (`chips_dollar_cap`).
@@ -150,7 +103,7 @@ mirror that: `f64` through the whole pass, and `floor` once at the end.
 
 ---
 
-## D4. Docs and code language: English (proposed)
+## D4. Docs and code language: English (accepted)
 
 The spec is in English, and agents and scripts read the docs and JSON. User-facing CLI
 text is also English. Easy to flip if the owner prefers Estonian comments.
@@ -436,62 +389,8 @@ lose it).
 
 ## D15. The Hook's pick in an estimate: its average to choose by, its worst pair for "surely wins" (accepted)
 
-**What.** The Hook discards 2 held cards at random before a hand scores (blind.lua
-`Blind:press_play`), and the engine's `score` now runs that step (gap 15). Which two it takes
-isn't a roll that fails or succeeds: every pair is as likely. So in every estimate that picks a
-move, the pick is its exact average over the pairs it could take (`Pick::Average`, with every
-other roll still failing for the floor, sampled for `Play::mean`): the play is chosen by that
-floor and pace starts from it, as the register says ("the play itself chosen by its floor").
-Whether a play surely wins reads a second number, the score with the pair whose loss costs most
-(`Outcome::sure`, `Play::sure`): the finish (`finish_play`), the decision's "play it now", the
-seal-keeping win and Best play's "wins now" tie-break. What a held card adds (`held_value`: the cards never
-thrown away) is measured as if it stays: a discard draws back to hand size, so The Hook picks
-from as many cards either way; measured with the pick averaged, every plain card beside a Steel
-one looked worth holding, as a card the Hook might take instead (the enhanced deck's Hook rounds
-4.7-7.7 points below the worst pair's player). Both come from one pass over the pairs;
-other rolls keep their floor as before. The simulated round keeps its own pick (one pair, keyed
-by card).
-
-**Why.** With the worst pair as the floor, a held card worth anything was always the one taken:
-with Baron and a Steel King held the player played both Kings (floor 108) over a Pair of 7s that
-holds them (floor 48, expected 116); with Baron and Shoot the Moon the best floor fell from 960
-to 360, every held-card joker worth nothing; and `held_value` already needed an exception
-(found by the review of the change, 2026-10-15). The worst pair is right only for the question
-"does it surely win". A pick over sets of cards is a kind of randomness the floor's "every roll
-failing" didn't cover; this rule covers any such pick.
-
-**Revisit if** the player benchmark's Hook boards or the gap to the oracle on them get worse
-than with the worst pair, a Hook round is lost on a finish that won only on average, or the
-cost (every pair scored on a Hook board whose jokers read held cards, ~16× per best play) shows
-in the live page's timings.
-
-Approved by the owner 2026-10-15.
-
-**Amendment 2026-10-15 (accepted)** (gap 15): what a held card
-adds is no longer measured as if it stays. Under The Hook, when the score reads held cards, a
-card is measured against a card drawn from the pile in its place, over every set the Hook could
-take (`held_value`): the hand keeps its size, as a discard draws back to it, so the Hook is as
-likely to take the card as what replaced it (no decoys), and the card counts only when it
-stays, with the cards it may stay with, which "as if it stays" missed (Raised Fist reads the
-lowest card left). Against a card that adds nothing instead, every card Raised Fist could read
-was a keeper. Measured over 20,000 rounds: with the chase's count of the Hook (same change),
-held_hook +3.5/+12.0/+13.5 points against the player at 04410bb; this measure's own share,
-against the card that adds nothing, +0.08/−0.47/+2.25 (±0.3-0.4), and as against "as if it
-stays" (both with the chase's count) +3.7/+3.8/+4.8 (±0.4); the enhanced deck's Hook boards unchanged
-by it. Without The Hook the card is still measured left out (a known gap, gap 15). Revisit too
-if the scorings this costs (about C(n,2) + the pile's kinds × C(n,3) for n cards held, on Hook
-boards whose score reads held cards) show in the timings.
-
-Amendment approved by the owner 2026-10-16.
-
-Tried without the Hook as well (2026-10-16, gap 15): the same measure with no set taken, on
-every board whose score reads held cards, lost on the held boards (−2.8/−3.6/−8.0 points over
-20,000 rounds, paired; Raised Fist alone gained 2.5-19 points, Baron with Shoot the Moon and
-Blackboard level), so it stays under the Hook only. Why: a card is measured with the rest held as
-they are, one card replaced, while a dig throws up to 5 and draws them all; beside Kings and
-Queens every card above the one Raised Fist reads became a keeper, which no dig throws. The same
-holds under the Hook, where it still beat the measures before it; a held value weighed against
-what the dig gains instead of a keep would answer both.
+Folded into `docs/design.md` gap 15 on 2026-10-17 (it records what a stage does, which needs no
+entry under D16); kept so older commits and notes resolve.
 
 ## D16. What needs a decision: a change that makes a quoted sentence untrue (accepted, amended 2026-10-17)
 

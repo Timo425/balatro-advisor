@@ -407,7 +407,7 @@ fn the_hook_discards_before_the_hand_scores_and_its_pick_is_a_roll() {
     let mut b = Board::empty();
     b.blind.key = "bl_hook".into();
     let (played, held) = (cards("AS"), cards("KH:steel 2C 3D"));
-    // an estimate averages the pairs it could take (D15): 2 of 3 lose the Steel card, so
+    // an estimate averages the pairs it could take (gap 15): 2 of 3 lose the Steel card, so
     // (16 + 16 + 24) / 3; what it surely scores is the pair that costs most, and the cards it
     // names are that pair's; every roll for you keeps it
     let est = score(&b, &played, &held, &mut Unlucky, false);

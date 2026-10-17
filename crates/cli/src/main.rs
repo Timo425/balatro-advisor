@@ -430,7 +430,7 @@ fn print_score(board: &Board, played: &[Card], held: &[Card], o: &engine::Outcom
         println!("  {:<34} {:>10} × {}", s.source, fmt_num(s.chips), fmt_num(s.mult));
     }
     if o.sure != o.score {
-        // The Hook's pick averaged (D15); the chips, Mult and trace are the costliest pair's
+        // The Hook's pick averaged (gap 15); the chips, Mult and trace are the costliest pair's
         println!("Score: {} on average over the 2 held cards The Hook may take; surely {} ({} × {}, the trace above)", fmt_num(o.score.round()), fmt_num(o.sure), fmt_num(o.chips), fmt_num(o.mult));
     } else {
         println!("Score: {} ({} × {})", fmt_num(o.score), fmt_num(o.chips), fmt_num(o.mult));
