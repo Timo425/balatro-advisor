@@ -904,7 +904,14 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
      whatever they reset; nor the cards that pay at round end, which stay out only while the
      rest keeps pace); a play that gives up pace for growth isn't weighed (with the test at 80%
      of the policy's pace growers gained +0.002 more, and a Square board's quick pass went 6 →
-     16 s); a chance-based growth (Lucky Cat's) isn't seen by the test, which scores every roll
+     16 s; raised in play 2026-10-17, fixture `psychic_kings_zero_score`, pending: Ride the Bus
+     at +33 under The Psychic, hand K♠ K♣ 5♠ 4♠ 4♣ 3♥, Best play spends a hand on K♠ K♣, which
+     scores 0 and leaves Ride the Bus alone (a blocked hand skips the jokers' before step), over
+     the owner's Pair of 4s with a King kicker (+1 Ride the Bus and Green Joker now): after the
+     Pair of 4s the simulated player resets Ride the Bus in 17% of rounds against the oracle's 3%,
+     so the policy's value of that line is 1.001 against the oracle's 1.049 (the Kings' 1.033
+     and 1.041); judged with the oracle playing on, the Pair of 4s is +0.76% ± 0.26% over the
+     Kings); a chance-based growth (Lucky Cat's) isn't seen by the test, which scores every roll
      failing (the futures roll); the futures don't look ahead, so a growth a later play in the
      round would reset is weighed as the policy would reset it; with a win on the table the
      look-ahead tries one growth play, the one that grows most (then keeps the winning play's
