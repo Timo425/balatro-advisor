@@ -21,7 +21,7 @@ Check, with file:line references:
    joker, suit, hand or card (a patch)? Card-specific code is only acceptable as a game fact
    in the engine or `data/`.
 2. **One measure.** Does every new value of money, planets, jokers or cards go through
-   `advise/value.rs` (`Gain`, `LongRun::value`, `LongRun::planet`, `Spending`; deck changes
+   `advise/value.rs` (`Gain`, `LongRun::value`, `LongRun::planet`, `Spending`, `Ahead`; deck changes
    through `LongRun::deck_value`, `deck_value_part`, `deck_rounds`)? Flag any new formula
    elsewhere, and anything valued twice.
 3. **Search, not picks.** Are candidates generated in full and narrowed by simulation, or

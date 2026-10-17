@@ -4,9 +4,9 @@
 //! measure (`sim::RoundGoals`) until the best is clear.
 
 use super::*;
-use super::value::{Gain, LongRun, Spending};
+use super::value::{self, Gain, LongRun, Spending};
 
-pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[TarotValue], hand_order: &[usize]) -> Option<PlayAdvice> {
+pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[TarotValue], hand_order: &[usize], ahead: Option<&value::Ahead>) -> Option<PlayAdvice> {
     let (run, data) = (ctx.run, ctx.data);
     if !(run.screen.in_blind() && !run.hand.is_empty()) {
         return None;
@@ -51,9 +51,15 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
             let quick = par_map(&kinds, |k| val(k, TARGET_SCREEN_ROUNDS).unwrap_or(0.0) - now_q);
             let likely: Vec<Card> = kinds.iter().zip(&quick).filter(|(_, g)| **g > compare::EQUAL).map(|(k, _)| *k).collect();
             let full = par_map(&likely, |k| val(k, value::TAROT_ROUNDS).unwrap_or(0.0) - now_f);
+            // and in the blinds still ahead in this ante (`value::Ahead::deck`), for the cards
+            // whose Ante 8 worth passed (a budget: the screen is by that worth), against the same
+            // deck the Ante 8 part is (its target, or your deck as it is when that's worth more)
+            let than = target.clone().filter(|_| now_f > 1.0).unwrap_or_else(|| deck.clone());
+            let against = ahead.filter(|_| !likely.is_empty()).map(|a| a.deck_runs(&than));
+            let in_ahead = |k: &Card| ahead.zip(idx_of(k)).zip(against.as_ref()).map_or(0.0, |((a, i), r)| a.deck(&consumable::apply(effect, deck, &[i]), r));
             for (k, g) in likely.into_iter().zip(full) {
                 if g > compare::EQUAL {
-                    out.push((held.key.clone(), k, g));
+                    out.push((held.key.clone(), k, g + in_ahead(&k)));
                 }
             }
         }
@@ -61,10 +67,12 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
     };
     // What the jokers a round changes (Square, Green Joker, Ice Cream, …) are left with at its
     // end, in the same long-run measure: per Mult, ×Mult and Chip, and used up
-    // (`LongRun::joker_worth`). A move that grows one is worth that much more.
+    // (`LongRun::joker_worth`). A move that grows one is worth that much more. Each goal also
+    // counts what it does in the blinds still ahead in this ante (`ahead`, `value::Ahead`).
     // The round's goals: those and the planets, a dollar and a hand left (`LongRun::round_goals`)
-    let goals = sim::RoundGoals { seen: seen.clone(), ..lr.round_goals(has_seals, dollar_gain, true, &ctx.base) };
-    let grows: Vec<(String, [f64; 3])> = goals.jokers.iter().map(|w| (data.name(&w.key).to_string(), w.per)).collect();
+    let goals = sim::RoundGoals { seen: seen.clone(), ..lr.round_goals(has_seals, dollar_gain, true, ahead, &ctx.base) };
+    let counts_ahead = ahead.is_some_and(|a| a.dollar > 0.0 || has_seals || !seen.is_empty()) || goals.jokers.iter().any(|w| w.ahead.counts());
+    let grows: Vec<(String, [f64; 3])> = goals.jokers.iter().map(|w| (data.name(&w.key).to_string(), std::array::from_fn(|f| w.per[f] + w.ahead.up[f]))).collect();
     let worth_drawing: Vec<(String, String, f64)> = seen
         .iter()
         .map(|(k, c, g)| (c.label(), run.consumables.iter().find(|x| &x.key == k).map_or(k.clone(), |x| x.name.clone()), *g))
@@ -357,7 +365,7 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
                 let m = format!("Not used in this look-ahead (no modelled effect on this hand): {}", missing.join(", "));
                 Some(m)
             };
-            Some(PlayAdvice { reference, reference_gap, judged, worth_drawing: worth_drawing.clone(), grows: grows.clone(), grown: best.grown, then: best.then.clone(), ties: opts.iter().filter(|o| o.tie).count(), planets: Some(best.planets), use_first: best.use_first, spare_hands: Some(best.spare_hands), round_money: Some(best.round_money), action: best.action, cards: best.cards, arrange: best.arrange, arrange_indices: best.arrange_indices, dig: best.dig, indices: best.indices, hand: best.hand, score: best.score, p_win: Some(best.p_win), alternatives: opts, tip })
+            Some(PlayAdvice { reference, reference_gap, judged, worth_drawing: worth_drawing.clone(), grows: grows.clone(), counts_ahead, grown: best.grown, then: best.then.clone(), ties: opts.iter().filter(|o| o.tie).count(), planets: Some(best.planets), use_first: best.use_first, spare_hands: Some(best.spare_hands), round_money: Some(best.round_money), action: best.action, cards: best.cards, arrange: best.arrange, arrange_indices: best.arrange_indices, dig: best.dig, indices: best.indices, hand: best.hand, score: best.score, p_win: Some(best.p_win), alternatives: opts, tip })
         }
         None => {
             let hand: Vec<Card> = hand_order.iter().map(|&i| run.hand[i]).collect();
@@ -370,6 +378,7 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
             judged: vec![],
             worth_drawing: worth_drawing.clone(),
             grows: grows.clone(),
+            counts_ahead,
             grown: 0.0,
             planets: None,
             then: None,

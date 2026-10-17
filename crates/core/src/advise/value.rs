@@ -167,6 +167,15 @@ impl Growths {
         self.owned.get(i).and_then(|g| g.as_ref()).is_some_and(|g| g.gone.last().is_some_and(|&x| x >= 0.5))
     }
 
+    /// Which of your joker `i`'s numbers (Mult, ×Mult, Chips, as `Joker::lasting` counts them)
+    /// the measured rounds moved (`None`: not measured): the ones its own effect changes, so a
+    /// step on another (Ride the Bus's ×Mult, which the game reads as a ×Mult joker's) measures
+    /// a number no round leaves different
+    pub fn moved(&self, i: usize) -> Option<[bool; 3]> {
+        let g = self.owned.get(i)?.as_ref()?;
+        Some(std::array::from_fn(|f| g.at.iter().any(|a| (a[f] - g.start[f]).abs() > 1e-9)))
+    }
+
     /// Your joker `i` (as `j`: itself, or changed) by Ante 8, if measured
     pub fn owned_by_end(&self, i: usize, j: &Joker) -> Option<Option<Joker>> {
         let g = self.owned.get(i)?.as_ref()?;
@@ -582,7 +591,8 @@ impl<'a> LongRun<'a> {
     }
 
     /// What one more Mult, ×Mult and Chip on joker `i` (the numbers `Joker::lasting` counts,
-    /// stepped from where they are now) is worth by Ante 8 (`value`, less 1), each measured on a
+    /// stepped from where they are now; only those its rounds move, `Growths::moved`, the rest
+    /// nothing) is worth by Ante 8 (`value`, less 1), each measured on a
     /// step of its own (`GROWTH_STEPS`) and never below nothing (more never scores less), and
     /// what losing it is worth: its place to a typical find, the benchmark it's kept against
     /// (`replaced`), so less than nothing for every joker the projection keeps. Nothing for a
@@ -593,7 +603,11 @@ impl<'a> LongRun<'a> {
             return ([0.0; 3], 0.0);
         }
         let j = &self.ctx.base.jokers[i];
+        let fields = self.growths.moved(i).unwrap_or([true; 3]);
         let per = par_map(&[0, 1, 2], |&f| {
+            if !fields[f] {
+                return 0.0;
+            }
             let mut c = j.clone();
             match f {
                 0 => c.mult += GROWTH_STEPS[0],
@@ -616,16 +630,22 @@ impl<'a> LongRun<'a> {
     /// round's: a joker debuffed there changes nothing); a joker worth nothing either way (one the
     /// projection drops or replaces) isn't followed. `floor`: whether a fall costs at most losing
     /// the joker (`JokerWorth::floor`; without it, only what its numbers are worth counts, so one
-    /// worth only its loss, Seltzer, isn't followed)
-    pub fn round_worths(&self, floor: bool, board: &Board) -> Vec<crate::sim::JokerWorth> {
+    /// worth only its loss, Seltzer, isn't followed). With `ahead` (Best play's round), each also
+    /// counts what its numbers and losing it do in the blinds still ahead in this ante
+    /// (`Ahead::joker`, multiplied with its Ante 8 worth): one the projection drops or replaces by
+    /// Ante 8 too, as it's on your board for those blinds
+    pub fn round_worths(&self, floor: bool, ahead: Option<&Ahead>, board: &Board) -> Vec<crate::sim::JokerWorth> {
         let jokers = &self.ctx.base.jokers;
         let changed: Vec<usize> = (0..jokers.len()).filter(|&i| !board.jokers.get(i).is_some_and(|j| j.debuff) && crate::engine::CHANGE_IN_ROUND.contains(&jokers[i].key.as_str())).collect();
-        let worth = par_map(&changed, |&i| self.joker_worth(i));
+        let worth = par_map(&changed, |&i| {
+            let (per, gone) = self.joker_worth(i);
+            (per, gone, ahead.map(|a| a.joker(i, self.growths.moved(i).unwrap_or([true; 3]))).unwrap_or_default())
+        });
         changed
             .iter()
             .zip(worth)
-            .filter(|(_, (per, gone))| per.iter().any(|&x| x > 0.0) || (floor && *gone != 0.0))
-            .map(|(&i, (per, gone))| crate::sim::JokerWorth { id: jokers[i].id, key: jokers[i].key.clone(), start: jokers[i].lasting(), per, gone, floor })
+            .filter(|(_, (per, gone, a))| per.iter().any(|&x| x > 0.0) || a.counts() || (floor && *gone != 0.0))
+            .map(|(&i, (per, gone, ahead))| crate::sim::JokerWorth { id: jokers[i].id, key: jokers[i].key.clone(), start: jokers[i].lasting(), per, gone, floor, ahead })
             .collect()
     }
 
@@ -633,10 +653,18 @@ impl<'a> LongRun<'a> {
     /// rounds and the growth runs played to them (`advise.rs` `played_for`): a Blue Seal's planet
     /// by hand when `planets` (the hand played last: `planet`), a dollar won at `dollar`, a hand
     /// left at the run's money per hand, and the jokers a round changes (`round_worths`, `floor`,
-    /// on `board`). Cards worth drawing (`seen`) are Best play's own.
-    pub fn round_goals(&self, planets: bool, dollar: f64, floor: bool, board: &Board) -> crate::sim::RoundGoals {
-        let planet: Vec<f64> = if planets { HandType::ALL.iter().map(|&h| (self.planet(h) - 1.0).max(0.0)).collect() } else { vec![0.0; 12] };
-        crate::sim::RoundGoals { planet: std::array::from_fn(|i| planet[i]), dollar, per_hand: self.run.money_per_hand, jokers: std::sync::Arc::new(self.round_worths(floor, board)), ..Default::default() }
+    /// on `board`). With `ahead` (Best play's round), each also counts what it does in the blinds
+    /// still ahead in this ante (`Ahead`: a planet's level, a dollar, the jokers' numbers). Cards
+    /// worth drawing (`seen`) are Best play's own.
+    pub fn round_goals(&self, planets: bool, dollar: f64, floor: bool, ahead: Option<&Ahead>, board: &Board) -> crate::sim::RoundGoals {
+        let planet: Vec<f64> = if planets {
+            let ahead_levels = ahead.map_or(vec![0.0; 12], |a| par_map(&HandType::ALL, |&h| a.level(h)));
+            HandType::ALL.iter().zip(&ahead_levels).map(|(&h, a)| (self.planet(h) - 1.0).max(0.0) + a).collect()
+        } else {
+            vec![0.0; 12]
+        };
+        let dollar = dollar + ahead.map_or(0.0, |a| a.dollar);
+        crate::sim::RoundGoals { planet: std::array::from_fn(|i| planet[i]), dollar, per_hand: self.run.money_per_hand, jokers: std::sync::Arc::new(self.round_worths(floor, ahead, board)), ..Default::default() }
     }
 
     /// Your main hand's level by Ante 8 with money held at `dollars`, `to_levels` of the spare
@@ -1307,6 +1335,143 @@ pub(super) fn without_new_glass(yours: &[Card], d: &[Card]) -> Option<Vec<Card>>
         out.remove(i);
     }
     Some(out)
+}
+
+/// The least chance of getting through the blinds ahead a share is taken of (`Ahead`): a board
+/// that would rarely get through them as it is meets them after shops Best play doesn't model,
+/// and against a chance near none a few runs would make any change worth many rounds (with the
+/// rule of three's 3 wins in the runs instead, the same change was worth 9× more on 300 runs than
+/// on 60). Hand-set, in the register.
+pub(super) const AHEAD_FLOOR: f64 = 0.1;
+
+/// What the board a round leaves is worth in the blinds still ahead in this ante (`Ctx::ahead`:
+/// the Big Blind's if it's still to come (taken as played, not skipped), then the boss's), for
+/// Best play's round. A choice is worth its chance to get through times the long-run value of
+/// what it leaves you: each goal's share of that chance (against the chance with your board as
+/// it is) is its factor, a joker's multiplied with its Ante 8 worth (`sim::JokerWorth::of`), a
+/// planet's, a dollar's and a card's added to theirs (small gains, where the product's second
+/// order is negligible). Each board is played through those blinds one after another on the same
+/// runs (`sim::chained_runs`, by the simulated player without goals, as the blind odds), so a
+/// joker's numbers carry from the Big Blind into the boss as its rounds leave them. A share
+/// counts only where the paired runs show it either way (`compare::better_by`: the paired
+/// difference less 2 standard errors), else it's nothing. The next ante isn't counted (your
+/// board meets it after shops Best play doesn't model).
+pub(super) struct Ahead<'a> {
+    ctx: &'a Ctx<'a>,
+    /// Your board's runs (1: got through), once a goal needs them
+    now: OnceLock<Vec<f64>>,
+    /// A dollar more at the round's end, as a share of the chance: what it buys in the shops
+    /// before the boss, as the shop ranking counts money's survival (`advise.rs` `survival_with`)
+    pub dollar: f64,
+}
+
+impl<'a> Ahead<'a> {
+    /// `None` with no blind ahead in this ante (outside a blind, or in the boss). `survival`: the
+    /// boss's chance with the shops before it, by the money you'd hold (`None`: no shop pool
+    /// known, the quick pass: money buys nothing counted there)
+    pub fn new(ctx: &'a Ctx<'a>, survival: Option<&dyn Fn(f64) -> f64>) -> Option<Ahead<'a>> {
+        if ctx.ahead.is_empty() {
+            return None;
+        }
+        let d = ctx.run.dollars;
+        let dollar = survival.map_or(0.0, |with| ((with(d + 10.0) - with(d)) / with(d).max(AHEAD_FLOOR) / 10.0).max(0.0));
+        Some(Ahead { ctx, now: OnceLock::new(), dollar })
+    }
+
+    fn now(&self) -> &[f64] {
+        self.now.get_or_init(|| self.runs(&self.ctx.base, &[], None))
+    }
+
+    /// `b`'s runs through the blinds ahead (`removed`: jokers taken off your board, for the hands
+    /// and discards they bring; `deck`: your deck changed)
+    fn runs(&self, b: &Board, removed: &[&Joker], deck: Option<&[Card]>) -> Vec<f64> {
+        let ctx = self.ctx;
+        let rounds: Vec<(String, RoundStart)> = ctx
+            .ahead
+            .iter()
+            .map(|spec| {
+                let mut sp = spec.clone();
+                if let Some(d) = deck {
+                    sp.start.deck = d.to_vec();
+                }
+                let bb = ctx.board_for(b, &sp);
+                (sp.blind_key.clone(), super::apply_mods(&ctx.start_for(&sp, &bb), &[], removed, true))
+            })
+            .collect();
+        crate::sim::chained_runs(b, &rounds, ctx.opts.sims, ctx.opts.seed).into_iter().map(|w| if w { 1.0 } else { 0.0 }).collect()
+    }
+
+    /// Runs `with` as a share over `against` (the same runs), when the paired runs show them
+    /// apart; nothing otherwise. The chance against is at least `AHEAD_FLOOR`.
+    fn share_of(&self, with: &[f64], against: &[f64]) -> f64 {
+        use super::compare::better_by;
+        if better_by(with, against, false) <= 0.0 && better_by(against, with, false) <= 0.0 {
+            return 0.0;
+        }
+        let mean = |v: &[f64]| v.iter().sum::<f64>() / v.len().max(1) as f64;
+        (mean(with) - mean(against)) / mean(against).max(AHEAD_FLOOR)
+    }
+
+    fn share(&self, b: &Board, removed: &[&Joker]) -> f64 {
+        self.share_of(&self.runs(b, removed, None), self.now())
+    }
+
+    /// Your joker `i`'s Mult, ×Mult and Chips (the numbers `Joker::lasting` counts; only
+    /// `fields`, the ones its rounds move, the rest nothing) in the blinds ahead
+    /// (`sim::AheadWorth`): per unit above where they are, on the steps `joker_worth` takes
+    /// (`GROWTH_STEPS`); below, per unit down a step of the same size and past it down to none
+    /// (Mult 0, ×1, Chips 0: a reset), as a blind's chance isn't linear in them (a flush board
+    /// can take +2 Mult with its boss's chance unmoved and lose a quarter of it without the 7 it
+    /// has); and losing it. Never below nothing per unit, and losing it never a gain.
+    pub fn joker(&self, i: usize, fields: [bool; 3]) -> crate::sim::AheadWorth {
+        let base = &self.ctx.base;
+        let start = base.jokers[i].lasting();
+        let none = [0.0, 1.0, 0.0];
+        let set = |f: usize, to: f64| {
+            let mut b = base.clone();
+            let c = &mut b.jokers[i];
+            match f {
+                0 => c.mult = to,
+                1 => c.x_mult = to,
+                _ => c.extra.chips = to,
+            }
+            b
+        };
+        let mut w = crate::sim::AheadWorth { knot: std::array::from_fn(|f| (start[f] - GROWTH_STEPS[f]).max(none[f])), ..Default::default() };
+        for f in (0..3).filter(|&f| fields[f]) {
+            w.up[f] = (self.share(&set(f, start[f] + GROWTH_STEPS[f]), &[]) / GROWTH_STEPS[f]).max(0.0);
+            if start[f] <= none[f] {
+                continue;
+            }
+            let at_knot = self.share(&set(f, w.knot[f]), &[]);
+            w.near[f] = (at_knot / (w.knot[f] - start[f])).max(0.0);
+            if w.knot[f] > none[f] {
+                w.far[f] = ((self.share(&set(f, none[f]), &[]) - at_knot) / (none[f] - w.knot[f])).max(0.0);
+            }
+        }
+        w.gone = self.share(&super::without(base, i), &[&base.jokers[i]]).min(0.0);
+        w
+    }
+
+    /// One more level of hand `h` (a Blue Seal's planet, used as the simulated round uses one:
+    /// Constellation's ×0.1 with it), never below nothing
+    pub fn level(&self, h: HandType) -> f64 {
+        let mut levels = [0; 12];
+        levels[h as usize] = 1;
+        let planet = crate::sim::Use { levels, planet: true, ..Default::default() };
+        planet.apply(&self.ctx.base, &[]).map_or(0.0, |(b, _)| self.share(&b, &[]).max(0.0))
+    }
+
+    /// The runs with your deck as `deck` (your fresh deck with a consumable used on a card)
+    pub fn deck_runs(&self, deck: &[Card]) -> Vec<f64> {
+        self.runs(&super::board_with_deck(&self.ctx.base, deck), &[], Some(deck))
+    }
+
+    /// Your deck as `deck` against the runs `against` (`deck_runs` of the deck it's weighed
+    /// against: a consumable's card drawn against its target in your hand), never below nothing
+    pub fn deck(&self, deck: &[Card], against: &[f64]) -> f64 {
+        self.share_of(&self.deck_runs(deck), against).max(0.0)
+    }
 }
 
 #[cfg(test)]

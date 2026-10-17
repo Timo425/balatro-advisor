@@ -210,9 +210,14 @@ pub struct PlayAdvice {
     #[serde(skip_serializing_if = "is_zero_f64")]
     pub grown: f64,
     /// The jokers whose numbers a round leaves them with count in its value (`PlayOption::grown`):
-    /// (name, what one more Mult, ×Mult and Chip adds by Ante 8, as a share of your run)
+    /// (name, what one more Mult, ×Mult and Chip adds by Ante 8 and to the chance of getting
+    /// through this ante's blinds still ahead, as a share of your run)
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub grows: Vec<(String, [f64; 3])>,
+    /// Whether a goal counted what it does in this ante's blinds still ahead (`value::Ahead`):
+    /// a joker's share, a Blue Seal's planet, a dollar or a card worth drawing (for the note)
+    #[serde(skip)]
+    pub counts_ahead: bool,
     /// With `Options::reference`: every move considered ("action cards [use first]") and its
     /// value on `compare::MAX` rounds the search didn't use, and how it left the search's race
     /// (`compare::Race::left`), best first
@@ -750,6 +755,9 @@ struct Ctx<'a> {
     data: &'a GameData,
     base: Board,
     specs: Vec<Spec>,
+    /// In a blind, the blinds still ahead in this ante, in order (the Big Blind's, if it's still
+    /// to come, then the boss's): what the board a round leaves gets through (`value::Ahead`)
+    ahead: Vec<Spec>,
     fresh_deck: Vec<Card>,
     opts: Options,
 }
@@ -822,6 +830,18 @@ impl Ctx<'_> {
         }
         with
     }
+}
+
+/// `b` with its counts of your deck's cards from `d` (Steel and Stone cards, enhanced cards,
+/// cards in all): what jokers that read the deck see once it's changed
+fn board_with_deck(b: &Board, d: &[Card]) -> Board {
+    let mut b = b.clone();
+    let tally = |e: crate::model::Enhancement| d.iter().filter(|c| c.enhancement == Some(e)).count() as i64;
+    b.steel_tally = tally(crate::model::Enhancement::Steel);
+    b.stone_tally = tally(crate::model::Enhancement::Stone);
+    b.driver_tally = d.iter().filter(|c| c.enhancement.is_some()).count() as i64;
+    b.playing_cards = d.len() as i64;
+    b
 }
 
 fn with_joker(b: &Board, j: Joker, at: usize) -> Board {
@@ -1019,7 +1039,8 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             horizon: true,
         });
     }
-    let mut ctx = Ctx { run, data, base, specs, fresh_deck, opts: opts.clone(), shares: Vec::new() };
+    let ahead: Vec<Spec> = if specs.iter().any(|s| s.in_progress) { upcoming.iter().map(|bl| blind_spec(bl)).collect() } else { vec![] };
+    let mut ctx = Ctx { run, data, base, specs, ahead, fresh_deck, opts: opts.clone(), shares: Vec::new() };
 
     lap("setup");
     let base_odds = ctx.odds(&ctx.base, &[], &[], opts.sims);
@@ -1928,11 +1949,22 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     let outlook = if quick_blind { None } else { archetype_outlook(&ctx, run, data, &pool_entries, &shares, &hand_mix) };
 
     lap("outlook");
-    let best_play = play::best_play(&ctx, &lr, &spending, &tarots, &hand_order);
+    // What the board a round leaves is worth in this ante's blinds still ahead (`value::Ahead`);
+    // money by what the shops before the boss buy with it, as the shop ranking counts it
+    let ahead = (run.screen.in_blind() && !run.hand.is_empty())
+        .then(|| {
+            let p_now = base_odds.get(key_round).map_or(0.0, |o| o.0);
+            let value = |c: &Candidate| measured_p(&ctx, c, key_round, p_now);
+            let with = |m: f64| survival_with(&ctx, &pool_entries, &value, p_now, m, false);
+            value::Ahead::new(&ctx, (!pool_entries.is_empty()).then_some(&with as &dyn Fn(f64) -> f64))
+        })
+        .flatten();
+    let best_play = play::best_play(&ctx, &lr, &spending, &tarots, &hand_order, ahead.as_ref());
     lap("best play");
 
     let tips = order_tips(run, data, &tarots);
     let grows = best_play.as_ref().is_some_and(|b| !b.grows.is_empty());
+    let counts_ahead = best_play.as_ref().is_some_and(|b| b.counts_ahead);
     Analysis {
         schema_version: 1,
         deck: run.deck.clone(),
@@ -1977,7 +2009,10 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         ]
         .into_iter()
         .chain(grows.then_some(
-            "Best play counts what the round's hands and discards leave the jokers that grow or fade in a round, by what one more Mult, ×Mult or Chip adds by Ante 8 (measured on a step of +2 Mult, +×0.25 or +10 Chips, taken as linear; a fall never costs more than losing the joker); the simulated player aims for it in how it finishes the round (the winning play worth most, or playing on for growth on a few simulated futures) and, with no win on the table, in a play that grows them more while it keeps pace and scores as much over the hands left as its own pick (weighed on 16 simulated futures), not in its digs or discards, and what they do to your cards (Vampire's enhancements, Glass breaking) isn't counted. The blinds ahead still play your jokers as they are now.",
+            "Best play counts what the round's hands and discards leave the jokers that grow or fade in a round, by what one more Mult, ×Mult or Chip adds by Ante 8 (measured on a step of +2 Mult, +×0.25 or +10 Chips, taken as linear; a fall never costs more than losing the joker) and, in this ante, by what they do to the chance of getting through the blinds still ahead (see the note on those); the simulated player aims for it in how it finishes the round (the winning play worth most, or playing on for growth on a few simulated futures) and, with no win on the table, in a play that grows them more while it keeps pace and scores as much over the hands left as its own pick (weighed on 16 simulated futures), not in its digs or discards, and what they do to your cards (Vampire's enhancements, Glass breaking) isn't counted. The blind odds shown still play your jokers as they are now.",
+        ))
+        .chain(counts_ahead.then_some(
+            "Best play also counts what the round leaves (the jokers' numbers, Blue Seal planets, money, cards worth drawing) by what it does to the chance of getting through this ante's blinds still ahead (the Big Blind taken as played, then the boss), each from the board the one before leaves, as a share of that chance with your board as it is (at least 10%: heuristic), counted only where the paired simulated runs show it; a joker's numbers stepped up, a step down and down to none, its share multiplied with its Ante 8 worth (several jokers' shares added); a card worth drawing once its Ante 8 worth passed; money by the shop estimate of what it buys before the boss (the boss's chance with the shops, not the runs; none in the quick pass). Not counted: the next ante, the game's round-end steps between the blinds (Popcorn, Turtle Bean, Gros Michel, perishables, the round's money).",
         ))
         .chain((run.hand.len() > sim::ALL_MOVES_MAX).then_some(
             "A big hand: Best play's moves come from the hand's structure (its plays whose cards can all score, the best few of each kind and then by score now; its structure's discards), not every move; the simulated player's best play looks only at its 16 highest cards.",
@@ -3149,15 +3184,7 @@ fn tarot_values(
     // the race's first batch stays the full one's (a first batch of 8 dropped the best targets:
     // register)
     let screen = TarotBudget { sims: ctx.opts.screen_sims, first: TARGET_FIRST, cap: TAROT_SCREEN_ROUNDS };
-    let board_for_deck = |d: &[Card]| {
-        let mut b = ctx.base.clone();
-        let tally = |e: Enhancement| d.iter().filter(|c| c.enhancement == Some(e)).count() as i64;
-        b.steel_tally = tally(Enhancement::Steel);
-        b.stone_tally = tally(Enhancement::Stone);
-        b.driver_tally = d.iter().filter(|c| c.enhancement.is_some()).count() as i64;
-        b.playing_cards = d.len() as i64;
-        b
-    };
+    let board_for_deck = |d: &[Card]| board_with_deck(&ctx.base, d);
     // A screened change (fewer rounds) counts what it changes on its own rounds against your
     // deck on the same rounds, on top of your deck's value on the full rounds: paired, so how
     // lucky the screen's rounds are moves nothing. (win chance, mean score)
@@ -3666,7 +3693,8 @@ fn growths_for(ctx: &Ctx, keys: &[&str]) -> value::Growths {
 
 /// `growths` with your jokers measured again (their growth and whether they last) on runs played
 /// to the round's goals as Best play's are made (`LongRun::round_goals`: the jokers, Blue Seal
-/// planets, a dollar, a hand left), on the same deals as the plain runs: the jokers' worths by the
+/// planets, a dollar, a hand left; their Ante 8 worths only, not what they do in this ante's
+/// blinds still ahead, `value::Ahead`: the runs' rounds are past those), on the same deals as the plain runs: the jokers' worths by the
 /// projection that keeps them however they project (`LongRun::played_for`; a joker the plain
 /// runs left below a typical find would be replaced there and worth nothing, so nothing would be
 /// played for), linear in their numbers without the floor at losing the joker (else every fall
@@ -3685,7 +3713,7 @@ fn played_for(ctx: &Ctx, hand_mix: &[HandShare], growths: value::Growths, pool_e
         // a dollar as Best play values one, without what money held buys (`Spending` needs the
         // shop and tarot values that come after the projection)
         let dollar = ((lr.value(&value::Gain::money(10.0)) - 1.0) / 10.0).max(0.0);
-        lr.round_goals(planets, dollar, false, &bb)
+        lr.round_goals(planets, dollar, false, None, &bb)
     };
     let mut played = growths.clone();
     // a joker still replaced by the projection built on what the runs leave is worth nothing to
@@ -4707,7 +4735,7 @@ mod tests {
         let data = GameData::bundled();
         let mut fresh_deck = run.full_deck();
         fresh_deck.sort_by_key(Card::order_key);
-        let ctx = Ctx { run, shares: vec![], data, base: Board::from_run(run, data), specs: vec![], fresh_deck, opts: quick() };
+        let ctx = Ctx { run, shares: vec![], data, base: Board::from_run(run, data), specs: vec![], ahead: vec![], fresh_deck, opts: quick() };
         let growths = growths.unwrap_or_else(|| growths_for(&ctx, &[]));
         let lr = value::LongRun::new(&ctx, mix, &growths, &[], [0; 4]);
         f(&lr)

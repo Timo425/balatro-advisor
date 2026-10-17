@@ -316,7 +316,7 @@ fn player_values() {
         for (i, j) in b.jokers.iter_mut().enumerate() {
             j.id = i as u32 + 1;
         }
-        let worth: Vec<sim::JokerWorth> = b.jokers.iter().zip(*jokers).filter(|(_, w)| w.1.iter().any(|&x| x > 0.0)).map(|(j, w)| sim::JokerWorth { id: j.id, key: j.key.clone(), start: j.lasting(), per: w.1, gone: -0.3, floor: true }).collect();
+        let worth: Vec<sim::JokerWorth> = b.jokers.iter().zip(*jokers).filter(|(_, w)| w.1.iter().any(|&x| x > 0.0)).map(|(j, w)| sim::JokerWorth { id: j.id, key: j.key.clone(), start: j.lasting(), per: w.1, gone: -0.3, floor: true, ahead: Default::default() }).collect();
         let goals = sim::RoundGoals { planet, dollar: 0.005, per_hand: 1.0, jokers: std::sync::Arc::new(worth), ..Default::default() };
         let mut deck = bench::standard_deck();
         for t in *cards {

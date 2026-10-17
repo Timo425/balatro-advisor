@@ -80,7 +80,7 @@ fn paired(a: &[f64], b: &[f64], scale: f64, lost_outright: bool) -> (f64, bool) 
 /// How far `a` is shown better than `b` (`paired`'s test: the paired difference less 2
 /// standard errors, with the round not yet seen counted in `b`'s favour where a round can be
 /// lost outright): above 0 is clearly better
-fn better_by(a: &[f64], b: &[f64], lost_outright: bool) -> f64 {
+pub(super) fn better_by(a: &[f64], b: &[f64], lost_outright: bool) -> f64 {
     let mut d: Vec<f64> = a.iter().zip(b).map(|(x, y)| x - y).collect();
     if lost_outright {
         d.push(-a.iter().chain(b).fold(0.0f64, |x, y| x.max(y.abs())));
