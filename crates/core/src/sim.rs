@@ -2892,6 +2892,12 @@ fn use_if_better(b: &mut Board, hand: &mut Vec<Card>, uses: &[Use], used: &mut [
 
 /// `sim_round` with consumables held (see `Use`).
 pub fn sim_round_uses(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[Use]) -> RoundResult {
+    play_round(board, start, rng, uses).0
+}
+
+/// `sim_round_uses`, with the board the round ends on (its jokers as its hands and discards
+/// left them: `grown_over`)
+fn play_round(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[Use]) -> (RoundResult, Board) {
     let mut used = vec![false; uses.len()];
     let mut b = board.clone();
     let mut deck = start.deck.clone();
@@ -2987,7 +2993,8 @@ pub fn sim_round_uses(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[
                 if total >= start.target {
                     money += won_money(&b, &hand);
                     let seen = seen_by.iter().map(|e| e.1).fold(0.0, f64::max);
-                    return RoundResult { total, won: true, saved: false, best_hand, plays, money, hands_left: hands, planets: seal_planets(&b, &hand), seen, grown };
+                    let planets = seal_planets(&b, &hand);
+                    return (RoundResult { total, won: true, saved: false, best_hand, plays, money, hands_left: hands, planets, seen, grown }, b);
                 }
                 draw(&mut hand, &mut deck, size);
                 note_seen(&b, &hand, &mut seen_by);
@@ -3006,7 +3013,85 @@ pub fn sim_round_uses(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[
     // Mr. Bones: a lost round is saved if you reached 25% of the blind (card.lua, game_over)
     let bones = b.jokers.iter().any(|j| j.key == "j_mr_bones" && !j.debuff);
     let won = total >= start.target;
-    RoundResult { total, won, saved: !won && bones && total >= 0.25 * start.target, best_hand, plays, money, hands_left: 0, planets: 0.0, seen: seen_by.iter().map(|e| e.1).fold(0.0, f64::max), grown }
+    let seen = seen_by.iter().map(|e| e.1).fold(0.0, f64::max);
+    (RoundResult { total, won, saved: !won && bones && total >= 0.25 * start.target, best_hand, plays, money, hands_left: 0, planets: 0.0, seen, grown }, b)
+}
+
+/// What rounds played one after another leave of a joker a round changes (`grown_over`): its
+/// key, its numbers (`Joker::lasting`) at the start and, at each checkpoint, their mean over the
+/// runs (a used-up joker counted as none: Mult 0, ×1, Chips 0) and the share of runs it's used
+/// up in by then.
+#[derive(Debug, Clone)]
+pub struct JokerGrowth {
+    pub key: String,
+    pub start: [f64; 3],
+    pub at: Vec<[f64; 3]>,
+    pub gone: Vec<f64>,
+}
+
+impl JokerGrowth {
+    /// At checkpoint `k`, grown from `from` (its numbers, if not the measured start) by what the
+    /// runs added to the start; `None`: used up in most runs. What a reset takes back (Ride the
+    /// Bus, Obelisk) is in what was added, not in a difference at the start, which is kept whole.
+    pub fn numbers(&self, k: usize, from: [f64; 3]) -> Option<[f64; 3]> {
+        (self.gone[k] < 0.5).then(|| std::array::from_fn(|f| from[f] + self.at[k][f] - self.start[f]))
+    }
+}
+
+/// Each joker on `b` whose growth rounds measure (`engine::grows_in_rounds`; `None` for the
+/// others) as rounds played one after another leave it: `chains` runs, each round dealt anew
+/// from `starts` in turn (an ante's blinds) and played by the simulated player, the board
+/// carried from one to the next (its round-end reset, `Board::new_round`, and the round targets
+/// drawn anew from the round's deck, `Board::draw_round_targets`: Castle's suit), read after
+/// `checkpoints` rounds (ascending, from 1). The same seed gives the same runs.
+pub fn grown_over(b: &Board, starts: &[RoundStart], checkpoints: &[usize], chains: usize, seed: u64) -> Vec<Option<JokerGrowth>> {
+    let counted: Vec<bool> = b.jokers.iter().map(|j| crate::engine::grows_in_rounds(&j.key)).collect();
+    if !counted.contains(&true) || checkpoints.is_empty() || starts.is_empty() {
+        return vec![None; b.jokers.len()];
+    }
+    let last = *checkpoints.last().expect("checkpoints");
+    // each run's jokers at each checkpoint (`None`: used up), by place on the board
+    let chain = |c: usize| -> Vec<Vec<Option<[f64; 3]>>> {
+        let mut rng = Rng::new(seed.wrapping_add(c as u64 * 7919) ^ 0x6772_6f77);
+        let mut board = b.clone();
+        let mut out = vec![];
+        for r in 1..=last {
+            let start = &starts[(r - 1) % starts.len()];
+            board = play_round(&board, start, &mut rng, &[]).1;
+            board.new_round(&b.blind.key);
+            board.draw_round_targets(&start.deck, &mut rng);
+            if checkpoints.contains(&r) {
+                out.push(b.jokers.iter().map(|j| board.jokers.iter().find(|n| n.id == j.id).map(Joker::lasting)).collect());
+            }
+        }
+        out
+    };
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(chains).max(1);
+    let per = chains.div_ceil(threads);
+    let p = crate::progress::current();
+    let runs: Vec<Vec<Vec<Option<[f64; 3]>>>> = std::thread::scope(|sc| {
+        let hs: Vec<_> = (0..threads)
+            .map(|t| {
+                let (p, chain) = (p.clone(), &chain);
+                sc.spawn(move || {
+                    let _p = crate::progress::enter(p);
+                    (t * per..((t + 1) * per).min(chains)).map(chain).collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        hs.into_iter().flat_map(|h| crate::progress::joined(h.join())).collect()
+    });
+    let none = |n: Option<[f64; 3]>| n.unwrap_or([0.0, 1.0, 0.0]);
+    let n = runs.len().max(1) as f64;
+    (0..b.jokers.len())
+        .map(|i| {
+            counted[i].then(|| {
+                let at = (0..checkpoints.len()).map(|k| std::array::from_fn(|f| runs.iter().map(|c| none(c[k][i])[f]).sum::<f64>() / n)).collect();
+                let gone = (0..checkpoints.len()).map(|k| runs.iter().filter(|c| c[k][i].is_none()).count() as f64 / n).collect();
+                JokerGrowth { key: b.jokers[i].key.clone(), start: b.jokers[i].lasting(), at, gone }
+            })
+        })
+        .collect()
 }
 
 /// Mean and quantiles of a sample.
@@ -4156,6 +4241,58 @@ mod tests {
         let ace = Card::parse_list("AS 2H 5D 3C").unwrap();
         assert!(score::score(&b, &ace, &[], &mut Unlucky, false).score > score::score(&b, &low, &[], &mut Unlucky, false).score);
         assert!(grow.iter().all(|i| !win.contains(i)), "{grow:?} against {win:?}");
+    }
+
+    #[test]
+    fn growth_over_rounds_is_measured_and_faders_only_fade() {
+        // Green Joker (+1 a hand, −1 a discard) at +10 over 6 rounds at targets out of reach
+        // (every round plays all its hands) grows, and from a start 5 higher ends 5 higher; Ice Cream (−5 Chips a hand),
+        // Ramen (−×0.01 a discarded card) and Seltzer (10 hands) only fade or run out; the plain
+        // Joker isn't one a round changes, nor Vampire (it takes from the cards it grows on)
+        let mut b = sample_board(&["j_green_joker", "j_ice_cream", "j_ramen", "j_selzer", "j_joker", "j_vampire"]);
+        for (i, j) in b.jokers.iter_mut().enumerate() {
+            j.id = i as u32 + 1;
+        }
+        b.jokers[0].mult = 10.0;
+        b.blind.key = "bl_big".into();
+        let start = |target| RoundStart { hand: vec![], deck: standard_deck(), hand_size: 8, hands: 4, discards: 3, scored: 0.0, target };
+        let starts = [start(20000.0), start(30000.0), start(40000.0)];
+        let g = grown_over(&b, &starts, &[3, 6], 16, 1);
+        assert!(g[4].is_none() && g[5].is_none());
+        let green = g[0].as_ref().unwrap();
+        assert_eq!((green.key.as_str(), green.start[0], green.at.len()), ("j_green_joker", 10.0, 2));
+        assert!(green.at[1][0] > green.at[0][0] && green.at[0][0] > 10.0, "{:?}", green.at);
+        let up = green.numbers(1, [15.0, 1.0, 0.0]).unwrap();
+        assert!((up[0] - green.at[1][0] - 5.0).abs() < 1e-9);
+        for f in &g[1..4] {
+            let f = f.as_ref().unwrap();
+            for k in 0..2 {
+                assert!((0..3).all(|n| f.at[k][n] <= f.start[n] + 1e-9), "{} {:?}", f.key, f.at);
+            }
+            assert!(f.gone[1] >= f.gone[0], "{} {:?}", f.key, f.gone);
+        }
+        // Seltzer's 10 hands are gone in 6 rounds of 4 hands
+        assert!(g[3].as_ref().unwrap().gone[1] == 1.0 && g[3].as_ref().unwrap().numbers(1, [0.0, 1.0, 0.0]).is_none(), "{:?}", g[1..4].iter().map(|x| x.as_ref().map(|x| (x.at.clone(), x.gone.clone()))).collect::<Vec<_>>());
+        // the same seed, the same runs
+        assert_eq!(grown_over(&b, &starts, &[3, 6], 16, 1)[0].as_ref().unwrap().at, green.at);
+    }
+
+    #[test]
+    fn a_round_end_draws_the_round_targets_from_the_deck_as_the_game_does() {
+        // common_events.lua `reset_castle_card` and the like: a random card that isn't a Stone
+        // card; Ancient Joker's suit is never the one it had
+        let deck = Card::parse_list("7H 7H:stone 2S:stone").unwrap();
+        let mut b = Board::empty();
+        let mut rng = Rng::new(3);
+        for _ in 0..20 {
+            let was = b.ancient_suit;
+            b.draw_round_targets(&deck, &mut rng);
+            assert_eq!((b.castle_suit, b.mail_rank, b.idol), (Some(Suit::Hearts), Some(7), Some((7, Suit::Hearts))));
+            assert!(b.ancient_suit.is_some() && b.ancient_suit != was);
+        }
+        // no card that isn't Stone: the game's defaults
+        b.draw_round_targets(&Card::parse_list("2S:stone").unwrap(), &mut rng);
+        assert_eq!((b.castle_suit, b.mail_rank, b.idol), (Some(Suit::Spades), Some(14), Some((14, Suit::Spades))));
     }
 
     /// Worth entries for `b`'s jokers as they are now, each given its place as its id

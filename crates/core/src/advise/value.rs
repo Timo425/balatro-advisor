@@ -14,8 +14,8 @@ use crate::engine::HandType;
 use crate::data::GameData;
 use crate::engine::{Board, Joker, Kind, RunEvent};
 use crate::model::Card;
-use crate::save::{JokerCard, RunState};
-use crate::sim::{RoundRules, RoundStart};
+use crate::save::RunState;
+use crate::sim::{JokerGrowth, RoundRules, RoundStart};
 
 /// Deck changes are small, so they get more rounds than the rest (and the same seeds).
 pub(super) const TAROT_ROUNDS: usize = 300;
@@ -70,7 +70,8 @@ pub(super) struct LongRun<'a> {
     pub ctx: &'a Ctx<'a>,
     pub run: &'a RunState,
     pub data: &'a GameData,
-    pub hand_mix: &'a [HandShare],
+    /// Your jokers' growth in rounds, to Ante 8, and a pool joker's (`Growths`)
+    pub growths: &'a Growths,
     pub antes_left: f64,
     /// The interest line (your interest cap in $)
     pub line: f64,
@@ -104,6 +105,77 @@ pub(super) struct LongRun<'a> {
     deck_money: Mutex<std::collections::HashMap<(usize, usize), f64>>,
     /// A joker's decks round by round, by its key (`round_decks`)
     round_decks: Mutex<std::collections::HashMap<String, std::sync::Arc<RoundChange>>>,
+}
+
+/// Antes left to play to the run's end (the one you're in counted half)
+pub(super) fn antes_left(run: &RunState) -> f64 {
+    ((run.win_ante - run.ante) as f64 + 0.5).max(0.5)
+}
+
+/// Simulated runs of rounds a joker's growth in rounds is measured on (`Growths`)
+pub(super) const GROWTH_CHAINS: usize = 16;
+
+/// How the jokers a round changes (`engine::grows_in_rounds`) grow or fade over the run,
+/// measured from the simulated player's rounds (`sim::grown_over`) instead of a table: rounds
+/// dealt anew from your deck at this ante's three plain targets in turn (no boss's rule or
+/// size), 3 an ante, the jokers carried from round to round.
+pub(super) struct Growths {
+    /// The rounds read (`sim::grown_over` checkpoints): one ante (3) and to Ante 8
+    pub checkpoints: Vec<usize>,
+    /// Rounds to Ante 8 (3 an ante left, `antes_left`)
+    pub rounds: usize,
+    /// Your jokers' (by place on your board)
+    pub owned: Vec<Option<JokerGrowth>>,
+    /// A joker the shop could offer, on your board as it is, by key
+    pub pool: std::collections::HashMap<String, JokerGrowth>,
+}
+
+impl Growths {
+    pub fn none() -> Growths {
+        Growths { checkpoints: vec![], rounds: 0, owned: vec![], pool: Default::default() }
+    }
+
+    /// Rounds to Ante 8 and the checkpoints read: one ante (or less, near the end) and the end
+    pub fn plan(antes_left: f64) -> (usize, Vec<usize>) {
+        let rounds = ((3.0 * antes_left).round() as usize).max(1);
+        let mut cps = vec![3.min(rounds), rounds];
+        cps.dedup();
+        (rounds, cps)
+    }
+
+    /// `j` as `g` measured it after `rounds` rounds (a checkpoint read; else `None`): its
+    /// numbers moved by what the runs added (`JokerGrowth::numbers`), `Some(None)` if used up
+    /// (it leaves the board, its slot free). Only for the joker measured (`g.key`): `None` for
+    /// anything else put in its place (a typical find).
+    pub fn grown(&self, j: &Joker, g: &JokerGrowth, rounds: usize) -> Option<Option<Joker>> {
+        if j.key != g.key {
+            return None;
+        }
+        let k = self.checkpoints.iter().position(|&c| c == rounds)?;
+        let mut out = j.clone();
+        Some(g.numbers(k, j.lasting()).map(|n| {
+            out.mult = n[0].max(0.0);
+            out.x_mult = n[1].max(1.0);
+            out.extra.chips = n[2].max(0.0);
+            out
+        }))
+    }
+
+    /// Whether the runs use up your joker `i` by Ante 8 (in at least half of them)
+    pub fn used_up(&self, i: usize) -> bool {
+        self.owned.get(i).and_then(|g| g.as_ref()).is_some_and(|g| g.gone.last().is_some_and(|&x| x >= 0.5))
+    }
+
+    /// Your joker `i` (as `j`: itself, or changed) by Ante 8, if measured
+    pub fn owned_by_end(&self, i: usize, j: &Joker) -> Option<Option<Joker>> {
+        let g = self.owned.get(i)?.as_ref()?;
+        self.grown(j, g, self.rounds)
+    }
+
+    /// A pool joker after `rounds` rounds, if measured
+    pub fn pool_after(&self, j: &Joker, rounds: usize) -> Option<Option<Joker>> {
+        self.grown(j, self.pool.get(&j.key)?, rounds)
+    }
 }
 
 /// The steps a joker's Mult, ×Mult and Chips are valued on (`LongRun::joker_worth`): about what
@@ -281,9 +353,9 @@ impl std::ops::DerefMut for Projected {
 }
 
 impl<'a> LongRun<'a> {
-    pub fn new(ctx: &'a Ctx<'a>, hand_mix: &'a [HandShare], pool_entries: &[Candidate], per_rarity: [usize; 4]) -> LongRun<'a> {
+    pub fn new(ctx: &'a Ctx<'a>, hand_mix: &'a [HandShare], growths: &'a Growths, pool_entries: &[Candidate], per_rarity: [usize; 4]) -> LongRun<'a> {
         let (run, data) = (ctx.run, ctx.data);
-        let antes_left = ((run.win_ante - run.ante) as f64 + 0.5).max(0.5);
+        let antes_left = antes_left(run);
         let top_hand = hand_mix.first().and_then(|h| crate::engine::HandType::from_name(&h.hand));
         // What the empty slots get filled with, in proportion to how often the shop offers
         // each type of joker: weighted by rarity odds (70/25/5 split over each rarity's pool),
@@ -346,7 +418,7 @@ impl<'a> LongRun<'a> {
             ctx,
             run,
             data,
-            hand_mix,
+            growths,
             antes_left,
             line: run.interest_cap as f64,
             top_hand,
@@ -368,12 +440,11 @@ impl<'a> LongRun<'a> {
         {
             let before = lr.long_score(&lr.fill_long(lr.project(&|_| true, run.dollars), None, 0.0));
             let swap: Vec<bool> = par_map(&(0..run.jokers.len()).collect::<Vec<_>>(), |&i| {
-                let sj = &run.jokers[i];
-                if sj.eternal || !lr.lasts(sj) {
+                if run.jokers[i].eternal || !lr.lasts(i) {
                     return false;
                 }
                 let mut b = lr.project(&|_| true, run.dollars);
-                let pos = (0..i).filter(|&k| lr.lasts(&run.jokers[k])).count();
+                let pos = (0..i).filter(|&k| lr.lasts(k)).count();
                 if pos >= b.jokers.len() {
                     return false;
                 }
@@ -386,11 +457,11 @@ impl<'a> LongRun<'a> {
         let start = lr.long_spec_for(&yours, (0, 0, 0)).start;
         let _ = lr.round.set((start.hand_size, start.hands, start.discards));
         lr.l0 = lr.long_score(&yours);
-        let lasting = run.jokers.iter().filter(|sj| lr.lasts(sj)).count() as i64;
+        let lasting = (0..run.jokers.len()).filter(|&i| lr.lasts(i)).count() as i64;
         lr.full = lasting >= ctx.base.joker_slots;
         lr.sell_base = if lr.full {
             par_map(&(0..run.jokers.len()).collect::<Vec<_>>(), |&i| {
-                (!run.jokers[i].eternal && lr.lasts(&run.jokers[i])).then(|| lr.long_score(&lr.fill_long(lr.project(&|k| k != i, run.dollars), None, 0.0)))
+                (!run.jokers[i].eternal && lr.lasts(i)).then(|| lr.long_score(&lr.fill_long(lr.project(&|k| k != i, run.dollars), None, 0.0)))
             })
         } else {
             vec![]
@@ -398,12 +469,14 @@ impl<'a> LongRun<'a> {
         lr
     }
 
-    pub fn lasts(&self, sj: &JokerCard) -> bool {
-        sj.perishable.is_none_or(|r| r as f64 >= 3.0 * self.antes_left)
+    /// Whether your joker `i` is still on your board by Ante 8: not a perishable that runs out
+    /// before then (3 rounds an ante), nor one the rounds measured use up (`Growths::used_up`)
+    pub fn lasts(&self, i: usize) -> bool {
+        self.run.jokers[i].perishable.is_none_or(|r| r as f64 >= 3.0 * self.antes_left) && !self.growths.used_up(i)
     }
 
     pub fn owned_rent(&self, keep: &dyn Fn(usize) -> bool) -> f64 {
-        self.run.jokers.iter().enumerate().filter(|(i, sj)| keep(*i) && self.lasts(sj) && sj.rental).count() as f64 * RENT_PER_ANTE
+        self.run.jokers.iter().enumerate().filter(|(i, sj)| keep(*i) && self.lasts(*i) && sj.rental).count() as f64 * RENT_PER_ANTE
     }
 
     /// Planets on the hand that earns most of your points: half a level per ante as a base,
@@ -434,7 +507,7 @@ impl<'a> LongRun<'a> {
     pub fn owned_income(&self, keep: &dyn Fn(usize) -> bool) -> f64 {
         let run = self.run;
         let replaced = |i: usize| self.replaced.get().is_some_and(|r| r[i]);
-        run.jokers.iter().enumerate().filter(|(i, sj)| keep(*i) && self.lasts(sj) && !sj.debuff && !replaced(*i)).map(|(_, sj)| income_per_ante(&sj.key, &sj.ability, run, self.antes_left)).sum::<f64>()
+        run.jokers.iter().enumerate().filter(|(i, sj)| keep(*i) && self.lasts(*i) && !sj.debuff && !replaced(*i)).map(|(_, sj)| income_per_ante(&sj.key, &sj.ability, run, self.antes_left)).sum::<f64>()
     }
 
     /// Stand-ins for the jokers you'd find over the run: empty slots get alternating ×1.5,
@@ -456,7 +529,8 @@ impl<'a> LongRun<'a> {
         j
     }
 
-    /// The projected board: the jokers kept (by index), grown in rounds (`grow_antes`); what
+    /// The projected board: the jokers kept (by index), grown in rounds (measured, `Growths`;
+    /// else `grow_antes`); what
     /// the money you'd hold buys comes with it (`Projected`). `extra_rent`: more rent per ante
     /// (negative: more income), on top of your jokers'.
     pub fn project_rent(&self, keep: &dyn Fn(usize) -> bool, dollars: f64, extra_rent: f64) -> Projected {
@@ -481,13 +555,14 @@ impl<'a> LongRun<'a> {
             .iter()
             .zip(&run.jokers)
             .enumerate()
-            .filter(|(i, (_, sj))| keep(*i) && self.lasts(sj))
+            .filter(|(i, _)| keep(*i) && self.lasts(*i))
             .map(|(i, (j, _))| {
                 let j = changed.filter(|c| c.0 == i).map_or(j, |c| c.1);
                 if self.replaced.get().is_some_and(|r| r[i]) {
                     self.stand_in(1.25, 0.0, 0.0)
                 } else {
-                    grow_antes(j, self.hand_mix, self.antes_left).map_or_else(|| j.clone(), |g| g.0)
+                    // (one the runs use up doesn't last: left out above, its slot an empty one)
+                    self.growths.owned_by_end(i, j).flatten().or_else(|| grow_antes(j, self.antes_left).map(|g| g.0)).unwrap_or_else(|| j.clone())
                 }
             })
             .collect();
@@ -502,8 +577,7 @@ impl<'a> LongRun<'a> {
     /// joker the projection drops (a perishable that runs out) or replaces (weaker than a
     /// typical find, not eternal).
     pub fn joker_worth(&self, i: usize) -> ([f64; 3], f64) {
-        let run = self.run;
-        if !self.lasts(&run.jokers[i]) || self.replaced.get().is_some_and(|r| r[i]) {
+        if !self.lasts(i) || self.replaced.get().is_some_and(|r| r[i]) {
             return ([0.0; 3], 0.0);
         }
         let j = &self.ctx.base.jokers[i];
@@ -812,8 +886,9 @@ impl<'a> LongRun<'a> {
         let rent = if rental { RENT_PER_ANTE } else { 0.0 };
         let income = income_per_ante(&j.key, &ability, run, self.antes_left);
         let horizon = if j.key == "j_madness" { 1.0 } else { self.antes_left };
-        let g = grow_antes(j, self.hand_mix, horizon).map_or_else(|| j.clone(), |g| g.0);
-        let b = self.fill_long(self.project_rent(&|k| Some(k) != sell, run.dollars, rent - income), Some(g), self.once(back - cost as f64));
+        // used up by Ante 8 (`Growths`): its slot is filled like any empty one
+        let g = self.growths.pool_after(j, self.growths.rounds).unwrap_or_else(|| Some(grow_antes(j, horizon).map_or_else(|| j.clone(), |g| g.0)));
+        let b = self.fill_long(self.project_rent(&|k| Some(k) != sell, run.dollars, rent - income), g, self.once(back - cost as f64));
         self.round_effect_long(b, &j.key)
     }
 

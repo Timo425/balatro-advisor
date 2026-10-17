@@ -373,6 +373,20 @@ impl Joker {
     }
 }
 
+/// The jokers a round changes that grow by taking something from the cards they grow on
+/// (card.lua `Card:calculate_joker`, `before` context: Vampire strips the enhancement of each
+/// scored card it grows from), so their growth over rounds depends on the deck those rounds
+/// leave: rounds dealt anew from the same deck would let them grow on the same card every
+/// round (`sim::grown_over` leaves them out).
+pub const GROWS_BY_TAKING_CARDS: &[&str] = &["j_vampire"];
+
+/// Whether rounds played one after another measure how joker `key` grows (`sim::grown_over`): a
+/// joker a round changes (`CHANGE_IN_ROUND`) that doesn't grow by taking from its cards
+/// (`GROWS_BY_TAKING_CARDS`)
+pub fn grows_in_rounds(key: &str) -> bool {
+    CHANGE_IN_ROUND.contains(&key) && !GROWS_BY_TAKING_CARDS.contains(&key)
+}
+
 /// The jokers whose own numbers (Mult, ×Mult, Chips) a hand played or a discard changes for
 /// longer than the round, or uses up: the arms of card.lua `Card:calculate_joker` that change
 /// `ability` in the `before`, `individual`, `after` and `discard` contexts, as the engine plays

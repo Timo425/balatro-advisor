@@ -626,18 +626,17 @@ fn non_scoring_note(key: &str) -> Option<&'static str> {
     })
 }
 
-/// Jokers that grow over the run from something neither the shop events (`Joker::mult_from`)
-/// nor the per-ante table (`grow_antes`) counts: valued at their size now, and said so (gap 8).
+/// Jokers that grow over the run from something neither the shop events (`Joker::mult_from`),
+/// the rounds measured (`value::Growths`) nor the per-ante table (`grow_antes`) counts: valued
+/// at their size now, and said so (gap 8).
 fn unprojected_growth(key: &str) -> Option<&'static str> {
     Some(match key {
         // card.lua `Card:calculate_joker`, `context.setting_blind`: the joker to its right
         // (not eternal) is destroyed for twice its sell value in Mult
         "j_ceremonial" => "grows by destroying the joker to its right at each blind",
-        "j_lucky_cat" => "grows each time a Lucky card triggers",
         "j_glass" => "grows from each Glass card that breaks",
         "j_hiker" => "adds Chips for good to each card it scores",
         "j_caino" => "grows from each face card destroyed",
-        "j_yorick" => "grows every 23 cards discarded",
         "j_fortune_teller" => "grows from each Tarot used",
         "j_supernova" => "grows each time a hand type is played again",
         _ => return None,
@@ -1160,6 +1159,11 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             c
         })
         .collect();
+    // The jokers a round changes, grown or faded as the simulated player's rounds leave them
+    // (`value::Growths`): yours to Ante 8, and every one the shop could offer or offers now
+    let keys: Vec<&str> = pool_entries.iter().map(|c| c.key.as_str()).chain(offers.iter().map(|o| o.0.key.as_str())).collect();
+    let growths = growths_for(&ctx, &keys);
+    lap("growth");
     // Growing / fading jokers: re-simulated at their size one ante from now
     let growth_models: Vec<(usize, Joker, String, bool)> = pool_entries
         .iter()
@@ -1167,7 +1171,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         .filter_map(|(i, c)| {
             let j = Joker::from_key(&c.key, data)?;
             // Money left after buying it is what could pay for its growth
-            let (grown, label, fades) = grow_one_ante(&j, &hand_mix, run, &ctx.base)?;
+            let (grown, label, fades) = grow_one_ante(&j, &growths, run, &ctx.base)?;
             Some((i, grown, label, fades))
         })
         .collect();
@@ -1234,7 +1238,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     fill(&mut shop);
     fill(&mut rescue);
     // By Ante 8: every board projected to then, valued in one measure (see `value`)
-    let lr = value::LongRun::new(&ctx, &hand_mix, &pool_entries, per_rarity);
+    let lr = value::LongRun::new(&ctx, &hand_mix, &growths, &pool_entries, per_rarity);
     let (antes_left, top_hand, l0, full) = (lr.antes_left, lr.top_hand, lr.l0, lr.full);
     let long_mults: Vec<Option<f64>> = par_map(&pool_entries, |c| {
         let mut j = Joker::from_key(&c.key, data)?;
@@ -1914,7 +1918,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     let (levels_per_ante, planet_levels) = lr.levels_for(run.dollars + flow_now, flow_now);
     let planet_levels = planet_levels.round() as i64;
     let long_note = format!(
-        "Your board projected {antes_left:.1} antes ahead: growing jokers grown (those that grow from shop events, Red Card and Flash Card, by one pack skip and one reroll an ante, plus 1 per pack's or reroll's price above the interest line, at most 5 an ante, all on the one that grows most per dollar), fading ones faded, perishables that run out dropped, {} +{planet_levels} levels (about {levels_per_ante:.1} per ante with your money), empty slots filled with stand-in jokers (×1.5, +60 Chips or +15 Mult, in proportion to how often your shop pool offers each type). Each option is compared with a typical find (×1.25) in its slot, on whole simulated rounds, with the money it leaves you: its price, what selling a joker gives back or a money card gives (spent once: ~$4 a pack skip or a reroll at its cost when a joker grows from them (Red Card, Flash Card), else ~$12 a level of your main hand, and ~$4 a planet for Constellation; money counts for less the more you have (the next dollar is worth about half at $20); interest lost or gained over the next ante included), and $9 less money held every ante per rental; money jokers (Golden, Rocket, Cloud 9, To the Moon, Egg, Mail-In Rebate) add their payout per ante. Your sellable jokers weaker than a typical find are assumed replaced by then, and a sellable option counts at least as a typical find less its price net of what selling it gives back; eternal ones stay, however weak. ×1.00 = as good as a typical find.",
+        "Your board projected {antes_left:.1} antes ahead: growing jokers grown (those that grow from shop events, Red Card and Flash Card, by one pack skip and one reroll an ante, plus 1 per pack's or reroll's price above the interest line, at most 5 an ante, all on the one that grows most per dollar; those a round changes as the simulated player's rounds at this ante's blind sizes leave them), fading ones faded, perishables that run out and jokers those rounds use up dropped, {} +{planet_levels} levels (about {levels_per_ante:.1} per ante with your money), empty slots filled with stand-in jokers (×1.5, +60 Chips or +15 Mult, in proportion to how often your shop pool offers each type). Each option is compared with a typical find (×1.25) in its slot, on whole simulated rounds, with the money it leaves you: its price, what selling a joker gives back or a money card gives (spent once: ~$4 a pack skip or a reroll at its cost when a joker grows from them (Red Card, Flash Card), else ~$12 a level of your main hand, and ~$4 a planet for Constellation; money counts for less the more you have (the next dollar is worth about half at $20); interest lost or gained over the next ante included), and $9 less money held every ante per rental; money jokers (Golden, Rocket, Cloud 9, To the Moon, Egg, Mail-In Rebate) add their payout per ante. Your sellable jokers weaker than a typical find are assumed replaced by then, and a sellable option counts at least as a typical find less its price net of what selling it gives back; eternal ones stay, however weak. ×1.00 = as good as a typical find.",
         top_hand.map_or("your main hand", |h| h.name())
     );
     let shares: Vec<f64> = jokers.iter().map(|j| j.score_share).collect();
@@ -1965,7 +1969,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         heuristics: vec![
             "Blind odds use a simple play/discard policy, not perfect play.",
             "Card order within a play: +Mult cards first, Glass/Polychrome last.",
-            "Scaling jokers keep their current value; growth isn't projected.",
+            "Scaling jokers keep their current value in the blinds ahead. By Ante 8, the ones a round changes grow or fade as the simulated player's rounds at this ante's plain blind sizes leave them (it plays to win, not for their growth); the rest by a table.",
             "Blue Seal planets by Ante 8 assume a consumable held at round end in a measured share of rounds (one run).",
         ]
         .into_iter()
@@ -3637,6 +3641,45 @@ fn blind_from_start(key: &str, target: f64, run: &RunState, deck: &[Card]) -> (R
     (start, rules)
 }
 
+/// The jokers a round changes, grown or faded as the simulated player's rounds leave them
+/// (`value::Growths`): yours to Ante 8, and each of `keys` (the jokers the shop could offer or
+/// offers now) on your board as it is, one ante and to Ante 8
+fn growths_for(ctx: &Ctx, keys: &[&str]) -> value::Growths {
+    let (rounds, checkpoints) = value::Growths::plan(value::antes_left(ctx.run));
+    let Some((bb, starts)) = growth_rounds(ctx) else { return value::Growths::none() };
+    let seed = ctx.opts.seed;
+    let owned = sim::grown_over(&bb, &starts, &checkpoints, value::GROWTH_CHAINS, seed);
+    let mut keys: Vec<&str> = keys.iter().copied().filter(|k| crate::engine::grows_in_rounds(k)).collect();
+    keys.sort_unstable();
+    keys.dedup();
+    let pool = par_map(&keys, |k| {
+        let mut with = bb.clone();
+        with.jokers.push(Joker::from_key(k, ctx.data)?);
+        let at = with.jokers.len() - 1;
+        sim::grown_over(&with, &starts, &checkpoints, value::GROWTH_CHAINS, seed).swap_remove(at).map(|g| (k.to_string(), g))
+    });
+    value::Growths { checkpoints, rounds, owned, pool: pool.into_iter().flatten().collect() }
+}
+
+/// The rounds a joker's growth is measured on (`value::Growths`): this ante's three blinds at
+/// their plain sizes (Small, Big, a boss without its rule: ×1, ×1.5, ×2 the ante's base, as
+/// game.lua `get_blind_amount` scales them), dealt from your full deck, on your board without
+/// the current blind's debuffs (a perishable's that ran out stay). A boss's rule or size isn't
+/// every round's: The Psychic would keep Square from ever growing, The Wall would make every
+/// round play out all its hands. `None` before a round is known (no rounds simulated).
+fn growth_rounds(ctx: &Ctx) -> Option<(Board, Vec<RoundStart>)> {
+    ctx.specs.iter().find(|s| !s.horizon)?;
+    let run = ctx.run;
+    let base = crate::save::blind_amount(run.ante, run.blind_scaling) * run.ante_scaling;
+    let starts = [("bl_small", 1.0), ("bl_big", 1.5), ("bl_big", 2.0)].map(|(key, m)| blind_from_start(key, base * m, run, &ctx.fresh_deck).0).to_vec();
+    let mut b = ctx.base.clone();
+    b.new_round("bl_big");
+    for (j, sj) in b.jokers.iter_mut().zip(&run.jokers) {
+        j.debuff = sj.perishable == Some(0);
+    }
+    Some((b, starts))
+}
+
 /// `spec` played from the start: a round in progress begins again as the blind does
 /// (`blind_from_start`: your whole deck, its rules); one not started is only given `deck`
 fn fresh_round(spec: &Spec, run: &RunState, deck: &[Card]) -> Spec {
@@ -4252,12 +4295,17 @@ fn describe(key: &str, ability: &serde_json::Value, ctx: &crate::describe::DescC
     crate::describe::texts()?.describe(key, ability, ctx)
 }
 
-/// A joker's size one ante (3 rounds, ~12 hands) from now, under a simple stated
-/// assumption; `None` for jokers that don't grow or fade. Labelled everywhere it shows. Growth
-/// from shop events as in the projection (`value::LongRun::fill_long`): one of each kind you'd
-/// do anyway, plus what money held buys when `board` with this joker on it spends it on that
-/// event (`value::bought_event`).
-fn grow_one_ante(j: &Joker, hand_mix: &[HandShare], run: &RunState, board: &Board) -> Option<(Joker, String, bool)> {
+/// A joker's size one ante (3 rounds) from now; `None` for jokers that don't grow or fade.
+/// Labelled everywhere it shows. A joker a round changes: as the simulated player's rounds left
+/// it (`value::Growths`). Growth from shop events as in the projection
+/// (`value::LongRun::fill_long`): one of each kind you'd do anyway, plus what money held buys
+/// when `board` with this joker on it spends it on that event (`value::bought_event`). Else a
+/// simple stated assumption (`grow_antes`).
+fn grow_one_ante(j: &Joker, growths: &value::Growths, run: &RunState, board: &Board) -> Option<(Joker, String, bool)> {
+    let first = growths.checkpoints.first().copied().unwrap_or(0);
+    if let Some(g) = growths.pool_after(j, first) {
+        return Some(measured_label(j, g, first));
+    }
     let mut with = board.clone();
     with.jokers.push(j.clone());
     let bought = value::bought_event(&with, run);
@@ -4283,46 +4331,50 @@ fn grow_one_ante(j: &Joker, hand_mix: &[HandShare], run: &RunState, board: &Boar
     if !labels.is_empty() {
         return Some((g, labels.join("; "), false));
     }
-    grow_antes(j, hand_mix, 1.0)
+    grow_antes(j, 1.0)
 }
 
-/// How a joker grows (or fades) in rounds over `antes` antes (labels describe one ante).
-/// Growth from shop events is the projection's (`value::LongRun::fill_long`).
-fn grow_antes(j: &Joker, hand_mix: &[HandShare], antes: f64) -> Option<(Joker, String, bool)> {
-    let share = |hands: &[&str]| hand_mix.iter().filter(|h| hands.contains(&h.hand.as_str())).map(|h| h.played).sum::<f64>();
-    let hands_per_ante = 12.0;
+/// A pool joker as `rounds` measured rounds leave it (`grown`, from `j`; `None`: used up): its
+/// label and whether it fades. Used up, it's shown with nothing left to score.
+fn measured_label(j: &Joker, grown: Option<Joker>, rounds: usize) -> (Joker, String, bool) {
+    let base = j.lasting();
+    let gone = grown.is_none();
+    let grown = grown.unwrap_or_else(|| {
+        let mut g = j.clone();
+        (g.kind, g.mult, g.x_mult, g.extra.chips) = (Kind::Other, 0.0, 1.0, 0.0);
+        g
+    });
+    let now = grown.lasting();
+    let label = if gone {
+        "used up".to_string()
+    } else {
+        let mut parts = vec![];
+        if (now[0] - base[0]).abs() >= 0.05 {
+            parts.push(format!("{:+.1} Mult", now[0] - base[0]));
+        }
+        if (now[1] - base[1]).abs() >= 0.005 {
+            parts.push(format!("{:+.2}×", now[1] - base[1]));
+        }
+        if (now[2] - base[2]).abs() >= 0.5 {
+            parts.push(format!("{:+.0} Chips", now[2] - base[2]));
+        }
+        if parts.is_empty() {
+            "no change".to_string()
+        } else {
+            parts.join(", ")
+        }
+    };
+    let fades = gone || (0..3).any(|f| now[f] < base[f] - 1e-9);
+    let label = format!("{label} after {rounds} rounds (as the simulated player plays them on your board, mean of {} runs)", value::GROWTH_CHAINS);
+    (grown, label, fades)
+}
+
+/// How a joker grows (or fades) over `antes` antes from what neither a round nor a shop
+/// event changes (labels describe one ante): a table. The jokers a round changes are measured
+/// (`value::Growths`); growth from shop events is the projection's (`value::LongRun::fill_long`).
+fn grow_antes(j: &Joker, antes: f64) -> Option<(Joker, String, bool)> {
     let mut g = j.clone();
     let (label, fades) = match j.key.as_str() {
-        "j_green_joker" => {
-            g.mult += 4.0 * antes;
-            ("+4 Mult after 1 ante (+1 per hand, −1 per discard)".to_string(), false)
-        }
-        "j_ride_the_bus" => {
-            g.mult += 3.0 * antes;
-            ("~+3 Mult after 1 ante (resets whenever a face card scores)".to_string(), false)
-        }
-        "j_trousers" => {
-            let n = (hands_per_ante * share(&["Two Pair", "Full House"])).round();
-            g.mult += 2.0 * n * antes;
-            (format!("+{} Mult after 1 ante (~{n:.0} two pairs/full houses in your hands)", 2.0 * n), false)
-        }
-        "j_runner" => {
-            let n = (hands_per_ante * share(&["Straight", "Straight Flush"])).round();
-            g.extra.chips += 15.0 * n * antes;
-            (format!("+{} Chips after 1 ante (~{n:.0} straights in your hands)", 15.0 * n), false)
-        }
-        "j_square" => {
-            g.extra.chips += 4.0 * 3.0 * antes;
-            ("+12 Chips after 1 ante (3 hands of exactly 4 cards)".to_string(), false)
-        }
-        "j_castle" => {
-            g.extra.chips += 3.0 * 7.0 * antes;
-            ("+21 Chips after 1 ante (~7 discarded cards of its suit)".to_string(), false)
-        }
-        "j_wee" => {
-            g.extra.chips += 8.0 * 4.0 * antes;
-            ("+32 Chips after 1 ante (~4 scored 2s)".to_string(), false)
-        }
         "j_hologram" => {
             g.x_mult += 0.25 * antes;
             ("+×0.25 after 1 ante, if 1 card is added to your deck".to_string(), false)
@@ -4343,18 +4395,6 @@ fn grow_antes(j: &Joker, hand_mix: &[HandShare], antes: f64) -> Option<(Joker, S
             g.mult = (g.mult - 12.0 * antes).max(0.0);
             (format!("fades: {} Mult after 1 ante (−4 per round)", g.mult), true)
         }
-        "j_ice_cream" => {
-            g.extra.chips = (g.extra.chips - 5.0 * hands_per_ante * antes).max(0.0);
-            (format!("fades: {} Chips after 1 ante (−5 per hand)", g.extra.chips), true)
-        }
-        "j_ramen" => {
-            g.x_mult = (g.x_mult - 0.3 * antes).max(1.0);
-            (format!("fades: ×{:.1} after 1 ante (−×0.01 per discarded card)", g.x_mult), true)
-        }
-        "j_selzer" => {
-            g.kind = Kind::Other;
-            ("fades: used up after 10 hands (about 1 ante)".to_string(), true)
-        }
         _ => return None,
     };
     Some((g, label, fades))
@@ -4370,12 +4410,13 @@ mod tests {
 
     #[test]
     fn fading_jokers_only_go_down() {
-        for key in ["j_popcorn", "j_ice_cream", "j_ramen"] {
+        // the table's only fader; the jokers a round changes are measured (`value::Growths`)
+        for key in ["j_popcorn"] {
             let base = j(key);
             let size = |x: &Joker| x.mult + x.extra.chips + x.x_mult;
             let mut last = size(&base);
             for antes in [1.0, 2.0, 4.0, 8.0] {
-                let (g, _, fades) = grow_antes(&base, &[], antes).unwrap();
+                let (g, _, fades) = grow_antes(&base, antes).unwrap();
                 assert!(fades, "{key} should be marked as fading");
                 assert!(size(&g) <= last, "{key} grew after {antes} antes");
                 last = size(&g);
@@ -4391,7 +4432,7 @@ mod tests {
         let base = j("j_red_card");
         let r = shop_run(&[], &[]);
         let b = Board::from_run(&r, GameData::bundled());
-        let (g, label, _) = grow_one_ante(&base, &[], &r, &b).unwrap();
+        let (g, label, _) = grow_one_ante(&base, &value::Growths::none(), &r, &b).unwrap();
         assert!(g.mult == base.mult && label.contains("+3 Mult for each booster pack skipped"), "{label}");
         let owned = shop_run(&[("j_red_card", None, None), ("j_joker", None, None)], &[]);
         let longer = with_long_run(&owned, |lr| mults(&lr.board_with(&Gain::default()), "j_red_card")[0]);
@@ -4608,12 +4649,69 @@ mod tests {
 
     /// `with_long_run` with a hand mix (its first hand is your main hand)
     fn with_long_run_mix<T>(run: &RunState, mix: &[HandShare], f: impl FnOnce(&value::LongRun) -> T) -> T {
+        with_long_run_grown(run, mix, None, f)
+    }
+
+    /// `with_long_run_mix` with growth in rounds as given (else as measured: none, as no round
+    /// is simulated here)
+    fn with_long_run_grown<T>(run: &RunState, mix: &[HandShare], growths: Option<value::Growths>, f: impl FnOnce(&value::LongRun) -> T) -> T {
         let data = GameData::bundled();
         let mut fresh_deck = run.full_deck();
         fresh_deck.sort_by_key(Card::order_key);
         let ctx = Ctx { run, shares: vec![], data, base: Board::from_run(run, data), specs: vec![], fresh_deck, opts: quick() };
-        let lr = value::LongRun::new(&ctx, mix, &[], [0; 4]);
+        let growths = growths.unwrap_or_else(|| growths_for(&ctx, &[]));
+        let lr = value::LongRun::new(&ctx, mix, &growths, &[], [0; 4]);
         f(&lr)
+    }
+
+    #[test]
+    fn a_joker_the_rounds_use_up_is_gone_by_ante_8_and_the_rest_keep_their_places() {
+        // Seltzer used up in every run, before Green Joker (grown +20) and a plain Joker: by
+        // Ante 8 Seltzer is off the board, worth nothing to keep or lose (as a perishable that
+        // runs out), Green Joker grown and itself; the board is the one without Seltzer
+        let r = shop_run(&[("j_selzer", None, None), ("j_green_joker", None, None), ("j_joker", None, None)], &[]);
+        let (rounds, checkpoints) = value::Growths::plan(value::antes_left(&r));
+        let k = checkpoints.len();
+        let gone = crate::sim::JokerGrowth { key: "j_selzer".into(), start: [0.0, 1.0, 0.0], at: vec![[0.0, 1.0, 0.0]; k], gone: vec![1.0; k] };
+        let green = crate::sim::JokerGrowth { key: "j_green_joker".into(), start: [0.0, 1.0, 0.0], at: vec![[20.0, 1.0, 0.0]; k], gone: vec![0.0; k] };
+        let growths = || value::Growths { checkpoints: checkpoints.clone(), rounds, owned: vec![Some(gone.clone()), Some(green.clone()), None], pool: Default::default() };
+        let (lasts, worth, keys, greens) = with_long_run_grown(&r, &[], Some(growths()), |lr| {
+            let b = lr.board_with(&Gain::default());
+            (lr.lasts(0), lr.joker_worth(0), b.jokers.iter().map(|j| j.key.clone()).collect::<Vec<_>>(), mults(&b, "j_green_joker"))
+        });
+        assert!(!lasts);
+        assert_eq!(worth, ([0.0; 3], 0.0));
+        // (the plain Joker, weaker than a typical find, is replaced by one: `replaced`)
+        assert!(!keys.contains(&"j_selzer".to_string()) && keys[0] == "j_green_joker", "{keys:?}");
+        assert_eq!(greens, vec![20.0]);
+        // the same jokers kept as on the board without Seltzer (none replaced by mistake)
+        let without = shop_run(&[("j_green_joker", None, None), ("j_joker", None, None)], &[]);
+        let mut g = growths();
+        g.owned.remove(0);
+        let alone = with_long_run_grown(&without, &[], Some(g), |lr| lr.board_with(&Gain::default()).jokers.iter().map(|j| j.key.clone()).collect::<Vec<_>>());
+        assert_eq!(keys, alone);
+    }
+
+    #[test]
+    fn measured_growth_applies_to_the_joker_measured_and_a_used_up_one_leaves() {
+        // Ramen faded to ×1.4 in one ante and used up by Ante 8 (most runs): at one ante it's
+        // ×1.4 from where it is (×1.6 from ×2.2), by Ante 8 gone; a typical find put in its
+        // place keeps its own numbers; a checkpoint not read gives nothing
+        let (rounds, checkpoints) = value::Growths::plan(2.5);
+        assert_eq!((rounds, checkpoints.as_slice()), (8, &[3, 8][..]));
+        assert_eq!(value::Growths::plan(0.5), (2, vec![2]));
+        let g = crate::sim::JokerGrowth { key: "j_ramen".into(), start: [0.0, 2.0, 0.0], at: vec![[0.0, 1.4, 0.0], [0.0, 1.0, 0.0]], gone: vec![0.0, 0.75] };
+        let growths = value::Growths { checkpoints, rounds, owned: vec![Some(g.clone())], pool: [("j_ramen".to_string(), g)].into() };
+        let ramen = j("j_ramen");
+        assert!((growths.pool_after(&ramen, 3).unwrap().unwrap().x_mult - 1.4).abs() < 1e-9);
+        let mut bigger = ramen.clone();
+        bigger.x_mult = 2.2;
+        assert!((growths.pool_after(&bigger, 3).unwrap().unwrap().x_mult - 1.6).abs() < 1e-9);
+        assert_eq!(growths.owned_by_end(0, &bigger).map(|o| o.is_none()), Some(true));
+        assert!(growths.pool_after(&ramen, 5).is_none());
+        let mut find = j("j_joker");
+        find.key = "stand-in".into();
+        assert!(growths.owned_by_end(0, &find).is_none());
     }
 
     #[test]
@@ -4621,7 +4719,9 @@ mod tests {
         // Square Joker's Chips last the run: one more is worth something by Ante 8, its Mult
         // and ×Mult nothing (Square has none to grow, and the projection's change scores the
         // same); losing it costs. A perishable one gone before Ante 8 leaves nothing to grow.
-        let r = shop_run(&[("j_square", None, None), ("j_joker", None, None)], &[]);
+        // (At +120 Chips: one not grown is weaker than a typical find, which takes its place.)
+        let mut r = shop_run(&[("j_square", None, None), ("j_joker", None, None)], &[]);
+        r.jokers[0].ability["extra"]["chips"] = serde_json::json!(120.0);
         let (per, gone) = with_long_run(&r, |lr| lr.joker_worth(0));
         assert!(per[2] > 0.0 && per[0] == 0.0 && per[1] == 0.0 && gone < 0.0, "{per:?} {gone}");
         let r = shop_run(&[("j_square", None, Some(2)), ("j_joker", None, None)], &[]);
@@ -4776,11 +4876,11 @@ mod tests {
         // your Red Card the spare money would go to Red Card's skips, and the label says so.
         let r = shop_run(&[("j_red_card", None, None)], &[]);
         let b = Board::from_run(&r, GameData::bundled());
-        let (g, label, _) = grow_one_ante(&j("j_flash"), &[], &r, &b).unwrap();
+        let (g, label, _) = grow_one_ante(&j("j_flash"), &value::Growths::none(), &r, &b).unwrap();
         assert_eq!(g.mult, 2.0, "{label}");
         assert!(label.contains("another joker's"), "{label}");
         let alone = Board::from_run(&shop_run(&[("j_joker", None, None)], &[]), GameData::bundled());
-        let (g, label, _) = grow_one_ante(&j("j_flash"), &[], &r, &alone).unwrap();
+        let (g, label, _) = grow_one_ante(&j("j_flash"), &value::Growths::none(), &r, &alone).unwrap();
         assert!(g.mult == 2.0 && label.contains("worth more than planets"), "{label}");
     }
 
@@ -5090,15 +5190,16 @@ mod tests {
 
     #[test]
     fn every_growing_joker_is_grown_or_says_it_isnt() {
-        // A joker that grows over the run is projected (shop events, `grow_antes`) or labelled
-        // (as not modelled, or by what of it is simulated); Hit the Road and Obelisk only grow within a round (reset at its end,
-        // or by the hand they count), which the simulated round plays.
+        // A joker that grows over the run is projected (shop events, `grow_antes`, measured
+        // from rounds: `value::Growths`) or labelled (as not modelled, or by what of it is
+        // simulated); Hit the Road only grows within a round (reset at its end), which the
+        // simulated round plays.
         let data = GameData::bundled();
-        let in_round = ["j_hit_the_road", "j_obelisk"];
+        let in_round = ["j_hit_the_road"];
         for c in data.centers.iter().filter(|c| c.set == "Joker" && scaling_key(&c.key)) {
             let j = Joker::from_key(&c.key, data).unwrap();
             let events = RunEvent::ALL.iter().any(|&ev| j.mult_from(ev) > 0.0 || j.xmult_from(ev) > 0.0);
-            let table = grow_antes(&j, &[], 1.0).is_some();
+            let table = grow_antes(&j, 1.0).is_some() || crate::engine::grows_in_rounds(&c.key);
             // labelled: growth not projected, or a non-score value that says what's simulated
             let said = unprojected_growth(&c.key).is_some() || non_scoring_note(&c.key).is_some();
             assert!(!(unprojected_growth(&c.key).is_some() && non_scoring_note(&c.key).is_some()), "{}: two labels, only the first shows", c.key);

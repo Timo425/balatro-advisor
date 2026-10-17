@@ -110,7 +110,8 @@ vs actual blind results and every shop seen).
 | Spare money (held above the interest line, each ante) and one-off money are one budget: on a board with a joker that grows from shop events, it's split levels first (up to what `levels_per_ante` can use) or events first (up to what the shops hold), the rest on the other, whichever the projection scores higher by more than 1% (else levels first: `spare_to_events`, decided once per set of such jokers, on your projected board with that option, slots filled), each dollar once; one-off money takes the same route (a price takes back events, then levels; Constellation follows the planets bought); levels $20 an ante held (`levels_per_ante`) or $12 once, added to the level already there (`add_levels`, a fraction included); $4 any planet (the same planets both level and grow Constellation) | `value.rs` `fill_long`, `spare_to_events`, `spend_once`, `add_levels`, `event_price` | what spare money buys | logged shops |
 | Rent $9 an ante | `value.rs` `RENT_PER_ANTE` | $3 a round × 3 | exact |
 | 48 rounds per projected board | `value.rs` `long_score` | projection noise | compare against more rounds |
-| Growth by Ante 8: a reroll an ante done anyway; a pack skipped only when the budget buys it (skipping gives up what the pack holds, so it costs a pack: $4), at most the 6 packs an ante's shops hold (2 a shop, game.lua); rerolls at the game's price (+$1 for each before it in a shop; one-off money buys them at the first price), at most 5 bought an ante; packs from skip tags are counted in skip-or-play; every joker that grows from an event grows; 12 hands an ante, per-joker rates for in-round growth. The dig list's growth label (and next-ante reach) counts only the reroll done anyway; what spare money buys is By Ante 8's | `value.rs` `fill_long`, `events_per_ante`, `PACKS_PER_ANTE`; `advise.rs` `grow_antes`, `grow_one_ante` | how growing jokers grow | logged runs |
+| Growth by Ante 8: a reroll an ante done anyway; a pack skipped only when the budget buys it (skipping gives up what the pack holds, so it costs a pack: $4), at most the 6 packs an ante's shops hold (2 a shop, game.lua); rerolls at the game's price (+$1 for each before it in a shop; one-off money buys them at the first price), at most 5 bought an ante; packs from skip tags are counted in skip-or-play; every joker that grows from an event grows; what no round or event changes by a per-joker table (Popcorn, Hologram, Constellation, Madness, Campfire). The dig list's growth label (and next-ante reach) counts only the reroll done anyway; what spare money buys is By Ante 8's | `value.rs` `fill_long`, `events_per_ante`, `PACKS_PER_ANTE`; `advise.rs` `grow_antes`, `grow_one_ante` | how growing jokers grow | logged runs |
+| Growth in rounds (the jokers a round changes) measured on 16 runs of rounds (`GROWTH_CHAINS`), 3 an ante to Ante 8, at this ante's plain blind sizes in turn (×1, ×1.5, ×2 the base: no boss's rule or size), from your board as it is, by the plain player (it plays to win, not to grow them); a joker used up in at least half the runs is gone; a difference now carried whole (resets not priced) | `value.rs` `Growths`, `GROWTH_CHAINS`; `advise.rs` `growths_for`, `growth_rounds`; `sim.rs` `grown_over`, `JokerGrowth::numbers` | how the run's rounds grow them | more runs; the save's own counters (`unused_discards`, rounds played) against the runs' |
 | Madness horizon 1 ante | `value.rs` `long_of` | it eats your jokers | — |
 | Spending: level cap reached at the interest line + $30; packs $4 (`PACK_PRICE`), 2 a shop, each further one ×0.8; typical pack by shop weights (game.lua 4/4/1.2/0.6/4), Standard counted as 0 | `value.rs` `Spending` | money past the cap buys rerolls and packs | logged packs opened and picks |
 | Rerolls: up to 8 a shop; each further joker bought counts ×0.6 | `advise.rs` `money_value_with`, `expected_buys` | joker gains don't simply add up | logged rerolls |
@@ -155,7 +156,7 @@ add to this list's kind; remove from it.
 | Played cards ordered with Glass and Polychrome last (`sim::arrange`), the order the engine's arrangement starts from and falls back to | `sim.rs` `arrange` | the engine's arrangement from the cards in a fixed order (the fallback then matters only where an effect reads a card's place: gap 19) |
 | Constellation grows from planets in several places | `value.rs` `add_planets`, `spend_once`; `advise.rs` Meteor tag, `grow_constellation` | a planet used as an event in `engine::RunEvent`, applied by `Board::after` (`xmult_from`), counted through `Gain::planets`; `bought_event` then compares what money buys by measured value, not Mult per dollar |
 | A short perishable's price dropped from its value | `advise.rs` (`long_mult = 1 + unlock`) | `LongRun::value` with its price |
-| What a joker adds to a round (hand size, hands, discards) as a table, and Turtle Bean's shrink by name; Burglar counted as if it changed the round you start with (it acts when the blind is set: from memory of card.lua, not checked) | `advise.rs` `round_mods`, `value.rs` `long_spec_for` | the center's config in `data/` (`h_size`, `d_size`, `extra`) as game facts; a fading joker's state projected as growth is (`grow_antes`); "set to N" effects (Burglar's discards, The Needle, The Water) applied after the additive ones |
+| What a joker adds to a round (hand size, hands, discards) as a table, and Turtle Bean's shrink by name; Burglar counted as if it changed the round you start with (it acts when the blind is set: from memory of card.lua, not checked) | `advise.rs` `round_mods`, `value.rs` `long_spec_for` | the center's config in `data/` (`h_size`, `d_size`, `extra`) as game facts; a fading joker's state projected as growth is (`value::Growths`, `grow_antes`); "set to N" effects (Burglar's discards, The Needle, The Water) applied after the additive ones |
 
 ## What strong play does
 
@@ -169,8 +170,9 @@ behind it is a blind spot nobody has written down yet.
   state at the round's end in the round's value (since 2026-10-14: Best play plays for it,
   e.g. a 4-card hand that doesn't win yet with Square, a lone card with Green Joker while the
   round stays safe; and the simulated player at its finish and in its look-ahead), and the
-  player's digs playing for it, with growth measured from what it plays. Blocked: gap 18 (the
-  policy's digs, the projection's table, `grow_antes`). Check: on `player_values`' growers board the player
+  player's digs playing for it, with growth measured from what it plays (the projection's, since
+  2026-10-17, from the plain player's rounds). Blocked: gap 18 (the policy's digs, the
+  projection's runs not playing for growth). Check: on `player_values`' growers board the player
   plays more hands with no face card scored than on the same board with Ride the Bus taken off.
 - **Retriggered ×Mult on one card** (Photograph + Hanging Chad, Idol + Sock and Buskin, Baron +
   Mime on Steel Kings, a Red Seal Glass or Polychrome card). Scoring is exact: each trigger
@@ -253,10 +255,18 @@ the same retriggered ×Mult.
   boards lower (Raised Fist 4h1d −1.7, Blackboard 1h3d −0.8: the chase's optimism, gap 6). The
   drawn-card held measure on every board and a keep weighed against the dig were measured and
   rejected.
-- **Next:** the rest of gap 18 (the projection's growth
-  measured from the simulated player's rounds instead of `grow_antes`; its digs weighing
-  growth); a free hand banked before the hand that wins (gap 34); Ceremonial Dagger's value
-  (gap 8).
+- **Done 2026-10-17:** the projection's growth in rounds measured (gap 18): the jokers a
+  round changes grow or fade by Ante 8 as 16 runs of the simulated player's rounds leave them
+  (`value::Growths`), not by a table; a joker the runs use up doesn't last. No fixture's Best
+  play moved; 6 of 136 saved picks moved (1 BETTER, 4 tie, 1
+  unclear within noise; the judge shares the valuation); a shop analysis 0.1-0.4 s slower, a
+  quick pass ~0.1 s. Pool jokers that grow now carry their measured growth (Obelisk on a run
+  whose most played hand is High Card ×1.10 → ×3.34 by Ante 8; Wee and Runner lower, Square
+  and Castle higher than the table). Ride the Bus can now be replaced (below).
+- **Next:** the projection's runs played to the round's goals (gap 18: a second pass, so a
+  reset is priced and Ride the Bus isn't replaced for resets the advice would avoid); the
+  rest of gap 18 (the digs weighing growth); a free hand banked before the hand that wins
+  (gap 34); Ceremonial Dagger's value (gap 8).
 - **Not built yet** (ideas, not gaps): a rush check ("skip every small and big blind to Ante
   8", with perishables that age only on played rounds, separate from the options ranking); a
   chance to beat the next boss after the shops before it (a separate forecast line, never part
@@ -511,16 +521,16 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    −1.7 (its +3 Chips a card set off burns that threw away digs). The general fix: weigh a
    burn by what the round is worth (`RoundGoals`), not by the play's score alone; the same
    holds for Delayed Gratification's money, which spending a discard (paying or digging) gives
-   up and the policy doesn't weigh. What a discard or a hand does to the jokers over the run
-   isn't measured either: growth over antes is a per-joker table (`grow_antes`, e.g. Green
-   Joker, Castle, Ramen, Ice Cream, Seltzer), at fixed rates whatever the run's play: Green
-   Joker's +4 and Ramen's −×0.3 an ante both take about 8 discards (30 cards) an ante. A run
-   played without discards keeps Ramen whole (raised in play 2026-10-11: still ×2 three antes
-   after buying it, Green Joker at +25), yet By Ante 8 faded it to ×1.25 and preferred selling
-   it over Wily Joker (×1.17; turned down only as it cost 58 points now; fixture
-   `shop_keep_unfaded_ramen`). The save counts the run's own discards (`unused_discards`, with
-   the rounds played), a direct source for those rates until the general fix below; the growers in neither it nor the shop events
-   (Ceremonial Dagger, Lucky Cat, Glass Joker, Hiker, Caino, Yorick, Fortune Teller, Supernova)
+   up and the policy doesn't weigh. What a discard or a hand does to the jokers over the run is
+   measured since 2026-10-17 from the simulated player's rounds (`value::Growths`, gap 18:
+   Green Joker, Castle, Ramen, Ice Cream, Seltzer and every joker a round changes), not from
+   the run's own play: before, a table faded Ramen −×0.3 an ante whatever was played, and a
+   run played without discards kept it whole (raised in play 2026-10-11: still ×2 three antes
+   after buying it, Green Joker at +25) while By Ante 8 preferred selling it over Wily Joker
+   (fixture `shop_keep_unfaded_ramen`). The save counts the run's own discards
+   (`unused_discards`, with the rounds played), a direct check on the simulated player's; the
+   growers in neither the rounds nor the shop events (Ceremonial Dagger, Glass Joker, Hiker,
+   Caino, Fortune Teller, Supernova)
    are valued at their size now and labelled so (`unprojected_growth`; a test keeps every
    growing joker in one of the three). Ceremonial Dagger's is a choice: what you put to its
    right (raised in play 2026-10-09: a Dagger read as no better than taking nothing, unlabelled),
@@ -549,8 +559,8 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    pack valuation from the center config (`pack_value`'s rule), used by shop packs, tags and
    the open pack.
 11. **`advise.rs` still holds the shop options, tarot valuation and outlook inline,** and the
-   outlook's heuristics note says growth isn't projected, which is out of date (`grow_antes`
-   projects it).
+   outlook's heuristics note says growth isn't projected, which is out of date (the projection
+   grows jokers: `value::Growths`, `grow_antes`).
 12. **Consumable slots, hands, discards and hand size grow only by a voucher bought now, and a
    slot only counts for Blue Seals.** Your slots and your round (hand size, hands, discards) by
    Ante 8 are projected quantities (`LongRun::consumable_slots`; `long_spec_for` from the
@@ -567,8 +577,8 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    play to an unbounded target, never "on pace", so the simulated player's keep
    (`sim::pays_at_end`, against the board's `planet_slots`) never acts in the projection (deck
    changes, DNA and Crystal Ball alike). A round's extras reach the round and the Blue Seals,
-   not the rest that reads today's round: joker growth in rounds counts 12 hands an ante
-   (`grow_antes`), Mail-In's income today's discards (`income_per_ante`), DNA's opening hand
+   not the rest that reads today's round: joker growth in rounds is measured at this ante's
+   three plain blind sizes with your board as it is (`value::Growths`), Mail-In's income today's discards (`income_per_ante`), DNA's opening hand
    today's hand size (`round_decks`). Projected rounds are played out with no target, so a hand
    more leaves none to pay money at cash-out (`money_per_hand`; said in the note), and a discard
    more is worth what the simulated player makes of it when it's always behind (its dig
@@ -853,14 +863,41 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
      fixture `ride_the_bus_queens_dig`, pending) it digs with a Pair of Queens, as every move it
      tried shows the reset (the rest of the round's digs score a face card in nearly every
      future), so keeping the Queens out of this one gains nothing in its eyes.
-   - The projection grows jokers by a table (`grow_antes`: Square 3 four-card hands an ante,
-     whatever is played) and not at all for Obelisk, Lucky Cat, Vampire and Yorick, so their
-     worth rests on it: an Obelisk reset is priced as lasting the run (up to losing the joker),
-     a joker the projection replaces is worth nothing however Best play could grow it (a fresh
-     Runner on a deck the hand mix says rarely makes straights: never played for, so never
-     grown). The fix: each joker's growth an ante measured from the simulated player's rounds
-     on the projected board instead of a table, so the projection counts what the advice plays
-     for.
+   - Since 2026-10-17 the projection grows the jokers a round changes as the simulated
+     player's rounds leave them, not by a table (`value::Growths`, `sim::grown_over`): 16 runs
+     of rounds played one after another, 3 an ante to Ante 8, at this ante's three plain blind
+     sizes in turn (no boss's rule or size), each round dealt anew from your deck, the board
+     carried from round to round (its round-end reset, and the round targets the game draws anew,
+     `Board::draw_round_targets`: Castle's suit). A pool joker is measured on your board as it
+     is, one ante (its growth label) and to Ante 8. A joker used up in at least half the runs
+     doesn't last to Ante 8 (`LongRun::lasts`, as a perishable that runs out): yours leaves the
+     projected board, its slot filled like any empty one, and is worth nothing to keep or lose
+     there; a shop one is worth what taking nothing is (its slot the typical find an option is
+     compared with). Obelisk, Lucky Cat, Yorick and Ride
+     the Bus's resets are in the projection for the first time; `grow_antes` keeps what no round
+     changes (Popcorn's round end, Hologram, Constellation, Madness, Campfire). Vampire isn't
+     measured (`engine::GROWS_BY_TAKING_CARDS`): each round dealt from the same deck would let
+     it strip the same card every round. What's left:
+     - The runs' player plays to win, not to the round's goals (the plain player), so it grows
+       a joker only by the hands it plays anyway: Square from the 4-card hands it makes, not
+       from Best play's. So a difference now (one more Mult, ×Mult or Chip: `joker_worth`) is
+       carried whole to Ante 8, as with the table: a Ride the Bus or Obelisk reset is still
+       priced as lasting the run. Measuring what a reset takes back from this player was tried
+       the same day and not kept: it never plays to avoid one, so Ride the Bus's worth came out
+       near nothing and Best play would stop sparing it (the price set by a player that doesn't
+       play for it; rule 3). Both need the runs played to the round's goals (`RoundGoals`,
+       whose joker worths come from this projection: a second pass). Meanwhile the level is
+       measured with the plain player's resets and a step on it is carried whole: a Ride the
+       Bus or Obelisk is projected low while one more Mult on it is projected as lasting. And a
+       regression against the table: a joker the plain player keeps resetting can be projected
+       below a typical find, so it's replaced (`replaced`) and loses all its worth in a round:
+       on `ride_the_bus_queens_dig` Ride the Bus (+7, with Hanging Chad, Crafty and Droll)
+       is replaced since 2026-10-17, so Best play no longer counts its growth or its reset at
+       all (the pick is the same: every move tried reset it anyway), and the fixture's pending
+       expectation is further away. The table grew it ~+3 an ante whatever was played.
+     - The runs are on your board as it is at this ante's sizes: a later ante's board and
+       target change how many hands a round takes. A joker the projection replaces is still
+       worth nothing however it grows.
    - The deck isn't counted: a card a play destroys or changes costs nothing in the round's
      value. Vampire is now one-sided (its ×Mult counts, the enhancements it strips don't: Best
      play feeds it Steel or Glass cards freely). A Glass card breaks 1 in 4 each hand it scores
@@ -1088,9 +1125,9 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    Ride the Bus, Runner: an under-count). Raised in play 2026-10-11 (run I6XKKH65, Ante 3 Big
    Blind, Seltzer with 3 hands left, used up by The Wheel): the Ante 4 boss showed 82% with
    Seltzer in every round and 11.5% without it (`whatif`), and Fortune Teller (perishable, 4
-   rounds) is debuffed by then. The long-run projection doesn't have this problem, as it grows
-   and fades jokers by its own table (`grow_antes`, gap 8). The general fix: the rounds ahead
-   chained, each starting from the board the simulated round before it ends with (its jokers'
+   rounds) is debuffed by then. The long-run projection doesn't have this problem for the jokers a
+   round changes: it plays rounds one after another (`sim::grown_over`, gap 18), which is this
+   fix's step for the jokers' numbers. The general fix: the rounds ahead chained, each starting from the board the simulated round before it ends with (its jokers'
    state, the perishables' rounds, its money), the same step the engine takes between hands.
 
 29. **Plays that win the round now and are worth the same are shown as one arbitrary pick.**
@@ -1153,7 +1190,8 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    perishable, debuffed)" ranked first, By Ante 8 ×1.69; selling a real joker for it, simulated
    with `whatif`: Gluttonous Joker The Window 3% → 10%, Misprint, Gros Michel or Green Joker
    lower than not taking it). Not traced: how much of the ×1.69 is the slot, since Runner's own
-   growth is projected from the Straights you play now (`grow_antes`: ~1 an ante, +15 Chips).
+   growth is projected from the Straights the simulated player makes on your board now
+   (`value::Growths`).
    The fix: a Negative joker is never the joker sold to make room (it still can be sold for
    money, or because it's worth less than nothing), in every caller that makes room: shop,
    packs, rescue list, skip-or-play's Buffoon pack, `whatif`.

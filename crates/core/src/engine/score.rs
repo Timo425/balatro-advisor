@@ -602,6 +602,22 @@ impl Board {
         }
     }
 
+    /// The round targets the game draws anew at each round's end (state_events.lua `end_round`;
+    /// common_events.lua `reset_idol_card`, `reset_mail_rank`, `reset_ancient_card`,
+    /// `reset_castle_card`): The Idol's card, Mail-In Rebate's rank and Castle's suit from a
+    /// random card of `deck` that isn't a Stone card (else the game's defaults), Ancient Joker's
+    /// suit any but the one it has.
+    pub fn draw_round_targets(&mut self, deck: &[Card], rng: &mut super::Rng) {
+        let valid: Vec<&Card> = deck.iter().filter(|c| c.enhancement != Some(Enhancement::Stone)).collect();
+        let pick = |rng: &mut super::Rng| (!valid.is_empty()).then(|| valid[rng.below(valid.len())]);
+        let idol = pick(rng);
+        self.idol = Some(idol.map_or((14, Suit::Spades), |c| (c.rank.0, c.suit)));
+        self.mail_rank = Some(pick(rng).map_or(14, |c| c.rank.0));
+        let others: Vec<Suit> = Suit::ALL.into_iter().filter(|s| Some(*s) != self.ancient_suit).collect();
+        self.ancient_suit = Some(others[rng.below(others.len())]);
+        self.castle_suit = Some(pick(rng).map_or(Suit::Spades, |c| c.suit));
+    }
+
     /// What a scored hand (`o`, from `score` on this board) leaves for the next one: the
     /// jokers' state, the hand's level and your money (`Outcome`), the hand counted as played
     /// (The Eye and The Mouth remember it), then the `after` context (card.lua
