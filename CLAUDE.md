@@ -99,24 +99,28 @@ change to how the advice decides or values things follows these steps, in order:
    stage, rule, register entry or known gap changed, and its "Where things stand" lines (top of
    the known gaps: now, next, ideas not built yet) when the work moves on. Then commit and push.
 
-**When the rules don't fit the fix.** Sometimes a correct fix can't be made within
-`docs/design.md` (it needs a new kind of value, a new stage, or breaks a rule). Then:
-1. Stop and say which rule doesn't fit and why. No silent exception in code or docs.
-2. Propose a change to the design itself: a new or wider rule, pattern, `Gain` field or
-   stage, explained by how it serves the question every piece of advice answers ("most
-   likely to win, and stronger") and which other situations it covers.
+**When the rules don't fit the fix.** First ask whether the fix brings the advice closer to
+the question every piece of advice answers (`docs/design.md`, top: a choice is worth its chance
+to get through, times the long-run value of what it leaves you). If it does, it carries out the
+design, not changes it. Only when a correct fix makes a sentence of `docs/design.md`'s stages,
+patterns or numbered rules untrue:
+1. Stop and quote that sentence, and say why the fix can't keep it true. No silent exception
+   in code or docs.
+2. Propose a change to the design itself: a new or wider rule, pattern or stage, explained by
+   how it serves that question and which other situations it covers.
 3. Accept it only if it's general: it widens or replaces a rule. A rule that only one case
    needs, or an exception to a rule, is a patch in the docs and is rejected.
-4. The owner approves; record it in `docs/decisions.md` (next `D` number: what, why, what
-   would make us revisit). Rule changes without an entry don't count, and the reviewer
-   flags them.
+4. The owner approves; record it in `docs/decisions.md` (what, why, what would make us
+   revisit). Rule changes without an entry don't count, and the reviewer flags them.
 
-**What needs a decision.** An entry in `docs/decisions.md` is needed only for a change to how
-the project is built or worked on: the four stages, the patterns or the numbered rules in
-`docs/design.md`, a new kind of value (a `Gain` field), the workflow in this file, or a
-project-wide choice (language, dependencies, scope). What a stage does is never one, however
-large the change: its text, a register value, a retire-list item or a known gap is recorded in
-`docs/design.md`, its evidence in the gap or the register row. This is the one definition; the
+**What needs a decision.** An entry in `docs/decisions.md` is needed only when a change makes a
+sentence untrue in `docs/design.md`'s four stages, patterns or numbered rules, in the workflow in
+this file, or in a project-wide choice (language, dependencies, scope). The test: quote the
+sentence. If there is none, it's `docs/design.md` work however large the change: a fix that
+carries out a rule or extends how the code meets it (a new `Gain` field is rule 1's own path),
+what a stage does, a register value, a retire-list item or a known gap, its evidence in the gap
+or the register row. A change to what an existing decision says amends that entry in place
+(marked amended, with the date), not a new entry on top. This is the one definition; the
 reviewer and `docs/decisions.md` point here.
 
 **Example.** The advice played a junk Spade instead of digging with the off-suit cards,

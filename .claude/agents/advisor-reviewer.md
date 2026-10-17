@@ -37,11 +37,14 @@ Check, with file:line references:
    `tests/history.rs`) ran and every pick it flagged WORSE, unclear, ? or LOST is explained or
    fixed (CLAUDE.md step 4, D12).
 8. **Rule changes.** Does the change need a `docs/decisions.md` entry by `CLAUDE.md`'s
-   definition ("What needs a decision": the stages, patterns or numbered rules of
-   `docs/design.md`, a new `Gain` field, the workflow, a project-wide choice)? If so, is there
-   one, and is it general (widens or replaces a rule) rather than an exception or a rule only
-   one case needs? If not, flag an entry added anyway: what a stage does, a register value or a
-   known gap belongs in `docs/design.md`.
+   definition ("What needs a decision")? Flag a missing entry only by quoting the sentence of
+   `docs/design.md`'s stages, patterns or numbered rules, the workflow or a project-wide choice
+   that the change makes untrue; a change that carries out a rule or the question every piece
+   of advice answers needs none. Never offer "or record a decision" as an alternative fix: say
+   what the general fix inside the design is. If there is an entry, is it general (widens or
+   replaces a rule) rather than an exception or a rule only one case needs, and does it amend
+   the decision it changes in place? Flag an entry added anyway: what a stage does, a register
+   value or a known gap belongs in `docs/design.md`.
 
 Report only the findings, ranked by how likely they are to cause the next "patch on
 patch", each with what a general fix looks like; don't restate the change. Be specific and

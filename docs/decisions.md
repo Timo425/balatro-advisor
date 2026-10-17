@@ -2,7 +2,8 @@
 
 Each entry: what was decided, why, and what would make us revisit it. Status is `proposed`
 until the owner approves it, then `accepted`. What needs an entry: `CLAUDE.md`, "What needs a
-decision" (how the project is built or worked on, not what a stage does).
+decision" (a change that makes a quoted sentence of the design or the workflow untrue). A change
+to a decision amends its entry in place (marked amended, with the date), not a new entry on top.
 
 ---
 
@@ -492,22 +493,35 @@ Queens every card above the one Raised Fist reads became a keeper, which no dig 
 holds under the Hook, where it still beat the measures before it; a held value weighed against
 what the dig gains instead of a keep would answer both.
 
-## D16. What needs a decision: how the project is built or worked on, not what a stage does (accepted)
+## D16. What needs a decision: a change that makes a quoted sentence untrue (accepted, amended 2026-10-17)
 
-**What.** An entry here only for a change to the four stages, the patterns or the numbered rules
-of `docs/design.md`, a new kind of value (a `Gain` field), the workflow in `CLAUDE.md`, or a
-project-wide choice (language, dependencies, scope). A change to what a stage does, however
-large, is recorded in `docs/design.md`: its text, the register, the retire list, the known gaps
-(the evidence there). One definition, in `CLAUDE.md` ("What needs a decision"); the reviewer's
-check 8 and this file's header point to it.
+**What.** An entry here only when a change makes a sentence untrue in `docs/design.md`'s four
+stages, patterns or numbered rules, in the workflow in `CLAUDE.md`, or in a project-wide choice
+(language, dependencies, scope); whoever proposes one quotes that sentence. A fix that carries
+out a rule or extends how the code meets it (a new `Gain` field is rule 1's own path), or brings
+the advice closer to the question every piece of advice answers, needs none, however large: it's
+recorded in `docs/design.md` (its text, the register, the retire list, the known gaps, the
+evidence there). "When the rules don't fit the fix" starts from that question. The reviewer's
+check 8 flags a missing entry only with the quoted sentence and never offers "or record a
+decision" as a fix. A change to a decision amends its entry in place, marked amended with the
+date. One definition, in `CLAUDE.md` ("What needs a decision"); the reviewer's check 8 and this
+file's header point to it.
 
-**Why.** The bar was set in two places that disagreed: `CLAUDE.md` asked for an entry when a fix
-can't be made within the design's rules, the reviewer whenever a change edits `docs/design.md`,
-which nearly every fix does; and this file's header still spoke of phases, retired in D6. Entries
-drifted from how the project works (D1-D14) toward single behaviours (D15, an amendment to it, and
-a dig-plan change filed as a decision and folded back into gap 15 on 2026-10-16).
+**Why.** First (2026-10-16): the bar was set in two places that disagreed: `CLAUDE.md` asked for
+an entry when a fix can't be made within the design's rules, the reviewer whenever a change edits
+`docs/design.md`, which nearly every fix does; and this file's header still spoke of phases,
+retired in D6. Entries drifted from how the project works (D1-D14) toward single behaviours (D15,
+an amendment to it, and a dig-plan change filed as a decision and folded back into gap 15).
+Amended (2026-10-17): one definition wasn't enough, as it was a list of topics (the stages, the
+rules, a `Gain` field) that nearly every fix touches, so a fix extending how the code meets a rule
+read as a change to the rule. Twice in a day a fix was escalated: counting the blinds ahead in
+Best play's round value was proposed as a new decision, though the founding question already
+values a choice by its chance to get through times the long run, after the reviewer offered "or
+record a decision" as an alternative. And the list contradicted rule 1, whose own path for a new
+kind of gain (a `Gain` field) needed an entry. A quoted sentence is a test, not a topic.
 
 **Revisit if** a behaviour recorded only in `docs/design.md` gets reverted or re-argued because
-no one could find why it was chosen.
+no one could find why it was chosen, or a fix that broke a rule went ahead because no single
+sentence was quoted.
 
-Accepted by the owner 2026-10-16.
+Accepted by the owner 2026-10-16; amended with the owner's approval 2026-10-17.
