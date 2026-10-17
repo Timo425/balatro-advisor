@@ -1542,7 +1542,13 @@ fn oracle_decide(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: 
         Move::Play(v) => (0, { let mut v = v.clone(); v.sort(); v }),
         Move::Discard(v) => (1, { let mut v = v.clone(); v.sort(); v }),
     };
-    for m in oracle_moves(b, hand, deck, discards) {
+    // with goals that count jokers, the play the policy's look-ahead would weigh for growth
+    // (`sparing_play`), as the policy's own rounds do
+    let spare = match (&base, b.goals.as_ref()) {
+        (Action::Play(v, _), Some(g)) => g.jokers_now(b).and_then(|was| sparing_play(b, g, &was, hand, &plays_tried(b, hand), v, hands)).map(|s| Move::Play(s.1)),
+        _ => None,
+    };
+    for m in oracle_moves(b, hand, deck, discards).into_iter().chain(spare) {
         if !cands.iter().any(|x| norm(x) == norm(&m)) {
             cands.push(m);
         }
@@ -2485,9 +2491,10 @@ pub struct RoundGoals {
 
 /// What a joker's numbers left at a round's end are worth (`RoundGoals::jokers`), against its
 /// numbers when the analysis started (`start`, as `Joker::lasting` counts them): one more
-/// Mult, ×Mult and Chip each (`per`), never less than the joker used up (`gone`: Ice Cream,
-/// Seltzer, Ramen), so a fall costs at most what losing it does (`JokerWorth::of`)
-#[derive(Debug, Clone, Default)]
+/// Mult, ×Mult and Chip each (`per`), and the joker used up (`gone`: Ice Cream, Seltzer, Ramen);
+/// with `floor`, never less than that, so a fall costs at most what losing it does
+/// (`JokerWorth::of`)
+#[derive(Debug, Clone)]
 pub struct JokerWorth {
     /// The joker (`Joker::id`: its place on your board, not 0) and its key
     pub id: u32,
@@ -2495,12 +2502,24 @@ pub struct JokerWorth {
     pub start: [f64; 3],
     pub per: [f64; 3],
     pub gone: f64,
+    /// Whether a fall is floored at `gone`: not in the projection that asks what a joker kept
+    /// and played for is worth (`LongRun::played_for`), where the floor would make every fall
+    /// below a typical find free; there it's linear in its numbers, used up as its numbers at
+    /// none (Mult 0, ×1, Chips 0, as `grown_over` counts it), so using up one that already fell
+    /// earns nothing (and one worth only its loss, Seltzer, counts nothing: `round_worths` drops it)
+    pub floor: bool,
 }
 
 impl JokerWorth {
     /// What the joker with these numbers (`None`: used up) is worth against its start
     fn of(&self, now: Option<[f64; 3]>) -> f64 {
-        now.map_or(self.gone, |n| (0..3).map(|f| self.per[f] * (n[f] - self.start[f])).sum::<f64>().max(self.gone))
+        let linear = |n: [f64; 3]| (0..3).map(|f| self.per[f] * (n[f] - self.start[f])).sum::<f64>();
+        match (now, self.floor) {
+            (Some(n), true) => linear(n).max(self.gone),
+            (None, true) => self.gone,
+            (Some(n), false) => linear(n),
+            (None, false) => linear([0.0, 1.0, 0.0]),
+        }
     }
 }
 
@@ -2644,6 +2663,12 @@ fn lookahead_seed(rng: &Rng, hands: i64, discards: i64) -> u64 {
 /// board has used up).
 #[allow(clippy::type_complexity)]
 fn lookahead_values(moves: &[(&Board, &RoundStart, Move, &[Use])], seen_by: &[(String, f64)], seed: u64) -> Vec<Vec<f64>> {
+    lookahead_values_in(moves, seen_by, seed, 0..LOOKAHEAD_ROLLOUTS)
+}
+
+/// `lookahead_values` on the futures numbered `range`
+#[allow(clippy::type_complexity)]
+fn lookahead_values_in(moves: &[(&Board, &RoundStart, Move, &[Use])], seen_by: &[(String, f64)], seed: u64, range: std::ops::Range<usize>) -> Vec<Vec<f64>> {
     moves
         .iter()
         .map(|(b, start, m, uses)| {
@@ -2657,7 +2682,7 @@ fn lookahead_values(moves: &[(&Board, &RoundStart, Move, &[Use])], seen_by: &[(S
             if let Some(pg) = fb.goals.as_mut() {
                 pg.carried = carried;
             }
-            policy_outcomes(&fb, start, m, 0..LOOKAHEAD_ROLLOUTS, seed, uses).iter().map(|o| g.value(o)).collect()
+            policy_outcomes(&fb, start, m, range.clone(), seed, uses).iter().map(|o| g.value(o)).collect()
         })
         .collect()
 }
@@ -2695,12 +2720,7 @@ fn growth_play(b: &Board, g: &RoundGoals, hand: &[Card], need: f64, win: &[usize
     let mut best: Option<(f64, bool, f64, Vec<usize>)> = None;
     for &(mask, _, _, _, floor, _) in plays_tried(b, hand).iter().filter(|s| s.5 < need) {
         let idx = play_of(hand, mask);
-        let played: Vec<Card> = idx.iter().map(|&i| hand[i]).collect();
-        let held: Vec<Card> = (0..hand.len()).filter(|i| !idx.contains(i)).map(|i| hand[i]).collect();
-        let s = score::score(b, &played, &held, &mut Unlucky, false);
-        let mut after = b.clone();
-        let _ = after.after_hand(&s);
-        let grown = g.grown(&was, &after);
+        let grown = play_growth(b, g, &was, hand, &idx);
         let keeps = !idx.iter().any(|i| win.contains(i));
         let better = best.as_ref().is_none_or(|(bg, bk, bf, _)| {
             if (grown - bg).abs() > 1e-12 {
@@ -2720,14 +2740,108 @@ fn growth_play(b: &Board, g: &RoundGoals, hand: &[Card], need: f64, win: &[usize
     // grows the jokers as much and leaves the winning play in hand as the play did
     let filled = with_fillers(b, hand, &idx);
     let keeps_too = |v: &[usize]| !keeps || !v.iter().any(|i| win.contains(i));
-    let grows = |v: &[usize]| {
-        let played: Vec<Card> = v.iter().map(|&i| hand[i]).collect();
-        let held: Vec<Card> = (0..hand.len()).filter(|i| !v.contains(i)).map(|i| hand[i]).collect();
-        let mut after = b.clone();
-        let _ = after.after_hand(&score::score(b, &played, &held, &mut Unlucky, false));
-        g.grown(&was, &after)
-    };
-    Some(if filled.len() > idx.len() && keeps_too(&filled) && grows(&filled) >= grown - 1e-12 { filled } else { idx })
+    Some(if filled.len() > idx.len() && keeps_too(&filled) && play_growth(b, g, &was, hand, &filled) >= grown - 1e-12 { filled } else { idx })
+}
+
+/// What playing `idx` (cards of `hand`) changes on the jokers the round's goals count
+/// (`RoundGoals::grown` from `was`, `jokers_now`): the hand scored with every roll failing and
+/// stepped (`Board::after_hand`)
+fn play_growth(b: &Board, g: &RoundGoals, was: &[Option<[f64; 3]>], hand: &[Card], idx: &[usize]) -> f64 {
+    let played: Vec<Card> = idx.iter().map(|&i| hand[i]).collect();
+    let held: Vec<Card> = (0..hand.len()).filter(|i| !idx.contains(i)).map(|i| hand[i]).collect();
+    let mut after = b.clone();
+    let _ = after.after_hand(&score::score(b, &played, &held, &mut Unlucky, false));
+    g.grown(was, &after)
+}
+
+/// Simulated futures per choice when a play that doesn't win is weighed for growth
+/// (`spare_instead`): twice the look-ahead's, as 8 took Square's 4-card play on noise
+/// (`player_values` against the player before, before the pace screen: the Square board −0.0026
+/// ± 0.0016 of a round with 8, −0.0008 ± 0.0007 with 16; Spare Trousers +0.0067 and +0.0104 with
+/// 8, +0.0132 and +0.0183 with 16); the second half only when the first shows a gain (a budget:
+/// it only ever rejects)
+const SPARE_ROLLOUTS: usize = 16;
+
+/// No win on the table: is a play that grows the jokers the round's goals count clearly more
+/// worth more than the policy's `chosen` play (chosen by points: the best play, or a junk hand
+/// that digs)? The play `sparing_play` gives (Ride the Bus spared a scored face card, Obelisk its
+/// reset, Square's 4 cards, Spare Trousers' Two Pair), looked at only when played every hand
+/// left it keeps pace and scores at least what `chosen` would (`line_pace`, both alike: what a
+/// reset or a growth does to this round's later hands is in it; a budget, in the register: a play
+/// that gives up points by the policy's own measure isn't weighed), then weighed against
+/// `chosen` as `play_on_instead` weighs a finish: by `RoundGoals::value` on the same futures
+/// (`SPARE_ROLLOUTS`, `lookahead_values_in`: they play on by the policy without looking ahead, so
+/// a growth a later play would reset is weighed as the policy would reset it), taken only when
+/// clearly better (`paired_pick`). None without goals that count jokers, inside a future, or
+/// without such a play.
+#[allow(clippy::too_many_arguments)]
+fn spare_instead(b: &Board, parts: &HandParts, deck: &[Card], hands: i64, discards: i64, scored: f64, target: f64, size: usize, chosen: &[usize], seen_by: &[(String, f64)], uses: &[Use], rng: &Rng) -> Option<Vec<usize>> {
+    let g = b.goals.as_ref().filter(|g| !g.no_lookahead)?;
+    let was = g.jokers_now(b)?;
+    let hand = parts.hand;
+    if chosen.is_empty() {
+        return None;
+    }
+    let (idx, spare) = sparing_play(b, g, &was, hand, &parts.plays(), chosen, hands)?;
+    let pace = line_pace(b, hand, &idx, hands);
+    if pace < target - scored || pace < line_pace(b, hand, chosen, hands) {
+        return None;
+    }
+    // the second half of the futures only when the first shows a gain
+    let round = RoundStart { hand: hand.to_vec(), deck: deck.to_vec(), hand_size: size as i64, hands, discards, scored, target };
+    let moves = [(b, &round, Move::Play(chosen.to_vec()), uses), (b, &round, Move::Play(spare.clone()), uses)];
+    let seed = lookahead_seed(rng, hands, discards);
+    let half = SPARE_ROLLOUTS / 2;
+    let mut vals = lookahead_values_in(&moves, seen_by, seed, 0..half);
+    if vals[1].iter().sum::<f64>() <= vals[0].iter().sum::<f64>() {
+        return None;
+    }
+    for (v, more) in vals.iter_mut().zip(lookahead_values_in(&moves, seen_by, seed, half..SPARE_ROLLOUTS)) {
+        v.extend(more);
+    }
+    paired_pick(&vals).map(|_| spare)
+}
+
+/// The play `spare_instead` weighs against `chosen` (and the oracle tries): of `plays` (the
+/// hand's, as `best_play` tries them; cards that pay at the end of the round left out while a
+/// hand is left after it, as the policy keeps them), the one with the highest floor among those
+/// that grow the jokers the goals count (`play_growth`, from `was`) by at least `LOOKAHEAD_MIN`
+/// more than `chosen` does (one tried: a budget). The play, and the play topped up with the
+/// cards it can spare (`with_fillers`) when that grows the jokers as much.
+fn sparing_play(b: &Board, g: &RoundGoals, was: &[Option<[f64; 3]>], hand: &[Card], plays: &[Scored], chosen: &[usize], hands: i64) -> Option<(Vec<usize>, Vec<usize>)> {
+    let base = play_growth(b, g, was, hand, chosen);
+    // (a play covers the first `SUBSETS_MAX` cards, as `play_of`)
+    let keep: u32 = if hands > 1 { pays_at_end(b, hand).iter().filter(|&&i| i < SUBSETS_MAX).fold(0, |m, &i| m | 1 << i) } else { 0 };
+    let mut order: Vec<&Scored> = plays.iter().filter(|s| s.0 & keep == 0).collect();
+    order.sort_by(|x, y| y.4.total_cmp(&x.4).then(x.0.cmp(&y.0)));
+    let (idx, grown) = order.iter().find_map(|s| {
+        let idx = play_of(hand, s.0);
+        let grown = play_growth(b, g, was, hand, &idx);
+        (grown >= base + LOOKAHEAD_MIN).then_some((idx, grown))
+    })?;
+    let filled = with_fillers(b, hand, &idx);
+    let spare = if filled.len() > idx.len() && filled.iter().all(|&i| i >= SUBSETS_MAX || keep & (1 << i) == 0) && play_growth(b, g, was, hand, &filled) >= grown - 1e-12 { filled } else { idx.clone() };
+    Some((idx, spare))
+}
+
+/// What playing `idx` (cards of `hand`) every hand of `hands` scores: its average now, then the
+/// same cards again on the board each hand leaves (`Board::after_hand`), each at its average, as
+/// `playing_on` takes the cards held to come back (and, as there, without The Eye's ban)
+fn line_pace(b: &Board, hand: &[Card], idx: &[usize], hands: i64) -> f64 {
+    let played: Vec<Card> = idx.iter().map(|&i| hand[i]).collect();
+    let held: Vec<Card> = (0..hand.len()).filter(|i| !idx.contains(i)).map(|i| hand[i]).collect();
+    let mut board = b.clone();
+    board.hands_left = hands;
+    let mut o = score::score(&board, &played, &held, &mut Unlucky, false);
+    let mut total = mean_score(&board, hand, idx, o.score);
+    for _ in 1..hands {
+        let eye = board.blind.eye_seen;
+        let _ = board.after_hand(&o);
+        board.blind.eye_seen = eye;
+        o = score::score(&board, &played, &held, &mut Unlucky, false);
+        total += mean_score(&board, hand, idx, o.score);
+    }
+    total
 }
 
 /// What winning now with `win` is worth (`RoundGoals::value`, the measure every move is ranked
@@ -2967,8 +3081,19 @@ fn play_round(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[Use]) ->
                         oracle_decide(&b, &hand, &deck, hands, discards, total, start.target, size, &unused, rng)
                     })
                     .flatten();
-                // without goals the search wasn't made: the decision makes it, as before
-                oracle.unwrap_or_else(|| decide_with(&b, &hand, &deck, hands, discards, start.target - total, size, b.goals.is_some().then_some(&parts)))
+                // without goals the search wasn't made: the decision makes it, as before; with
+                // them, a play that grows the jokers less than another that keeps pace may give
+                // way to it (`spare_instead`)
+                oracle.unwrap_or_else(|| {
+                    let need = start.target - total;
+                    match decide_with(&b, &hand, &deck, hands, discards, need, size, b.goals.is_some().then_some(&parts)) {
+                        Action::Play(v, dig) if b.goals.as_ref().is_some_and(|g| !g.no_lookahead && !g.jokers.is_empty()) => {
+                            let unused: Vec<Use> = uses.iter().zip(&used).filter(|(_, u)| !**u).map(|(x, _)| x.clone()).collect();
+                            spare_instead(&b, &parts, &deck, hands, discards, total, start.target, size, &v, &seen_by, &unused, rng).map_or(Action::Play(v, dig), |s| Action::Play(s, false))
+                        }
+                        a => a,
+                    }
+                })
             }
         };
         match act {
@@ -4300,7 +4425,7 @@ mod tests {
         for (i, j) in b.jokers.iter_mut().enumerate() {
             j.id = i as u32 + 1;
         }
-        let jokers = b.jokers.iter().zip(each).map(|(j, &(per, gone))| JokerWorth { id: j.id, key: j.key.clone(), start: j.lasting(), per, gone }).collect();
+        let jokers = b.jokers.iter().zip(each).map(|(j, &(per, gone))| JokerWorth { id: j.id, key: j.key.clone(), start: j.lasting(), per, gone, floor: true }).collect();
         RoundGoals { jokers: std::sync::Arc::new(jokers), ..Default::default() }
     }
 
@@ -4357,6 +4482,49 @@ mod tests {
         b.jokers[0].mult = 20.0;
         let g = worths(&mut b, &[([0.01, 0.0, 0.0], -0.1)]);
         assert!((play_grown(&g, &mut b, "KS") + 0.1).abs() < 1e-12);
+    }
+
+    #[test]
+    fn without_the_floor_a_fall_is_linear_and_using_up_a_fallen_joker_earns_nothing() {
+        // The growth runs' second pass (`JokerWorth::floor` off): an Ice Cream from 100 Chips that
+        // fell to 5 in earlier rounds melts: used up counts as its numbers at none (0 Chips), so
+        // the melt costs its last 5 Chips, not a gain back up to `gone`
+        let mut b = sample_board(&["j_ice_cream"]);
+        b.jokers[0].extra.chips = 100.0;
+        let mut g = worths(&mut b, &[([0.0, 0.0, 0.01], -0.3)]);
+        let free = |g: &mut RoundGoals| std::sync::Arc::make_mut(&mut g.jokers).iter_mut().for_each(|w| w.floor = false);
+        free(&mut g);
+        b.jokers[0].extra.chips = 5.0;
+        assert!((play_grown(&g, &mut b, "2S") + 0.05).abs() < 1e-12);
+        assert!(b.jokers.is_empty());
+        // Ride the Bus at +20 Mult reset: all 20 Mult, past what losing the joker is worth
+        let mut b = sample_board(&["j_ride_the_bus"]);
+        b.jokers[0].mult = 20.0;
+        let mut g = worths(&mut b, &[([0.01, 0.0, 0.0], -0.1)]);
+        free(&mut g);
+        assert!((play_grown(&g, &mut b, "KS") + 0.2).abs() < 1e-12);
+    }
+
+    #[test]
+    fn the_sparing_play_is_the_best_one_that_grows_the_jokers_clearly_more() {
+        // Ride the Bus at +10 (0.01 a Mult): the policy's Pair of Kings scores face cards and
+        // resets it; of the plays that don't, the Pair of Nines scores most, and the lone 2 and
+        // 3 it can spare go with it (Ride the Bus reads only the cards that score)
+        let mut b = sample_board(&["j_ride_the_bus"]);
+        b.jokers[0].mult = 10.0;
+        let g = worths(&mut b, &[([0.01, 0.0, 0.0], -0.1)]);
+        let hand = Card::parse_list("KS KH 9S 9D 2C 3H").unwrap();
+        let was = g.jokers_now(&b).unwrap();
+        let (idx, spare) = sparing_play(&b, &g, &was, &hand, &plays_tried(&b, &hand), &[0, 1], 3).unwrap();
+        let named = |v: &[usize]| {
+            let mut v: Vec<String> = v.iter().map(|&i| hand[i].label()).collect();
+            v.sort();
+            v
+        };
+        assert_eq!(named(&idx), named(&[2, 3]));
+        assert!(spare.len() > idx.len() && spare.iter().all(|&i| i >= 2), "{:?}", named(&spare));
+        // a play that already grows it has nothing clearly better beside it
+        assert!(sparing_play(&b, &g, &was, &hand, &plays_tried(&b, &hand), &[2, 3], 3).is_none());
     }
 
     #[test]

@@ -119,6 +119,7 @@ pub(super) const GROWTH_CHAINS: usize = 16;
 /// measured from the simulated player's rounds (`sim::grown_over`) instead of a table: rounds
 /// dealt anew from your deck at this ante's three plain targets in turn (no boss's rule or
 /// size), 3 an ante, the jokers carried from round to round.
+#[derive(Clone)]
 pub(super) struct Growths {
     /// The rounds read (`sim::grown_over` checkpoints): one ante (3) and to Ante 8
     pub checkpoints: Vec<usize>,
@@ -354,6 +355,17 @@ impl std::ops::DerefMut for Projected {
 
 impl<'a> LongRun<'a> {
     pub fn new(ctx: &'a Ctx<'a>, hand_mix: &'a [HandShare], growths: &'a Growths, pool_entries: &[Candidate], per_rarity: [usize; 4]) -> LongRun<'a> {
+        Self::build(ctx, hand_mix, growths, pool_entries, per_rarity, false)
+    }
+
+    /// `new` with your jokers whose growth rounds measure (`engine::grows_in_rounds`) kept
+    /// however they project, never `replaced`: what they'd be worth if kept and played for, the
+    /// round's goals the growth runs are played to again (`advise.rs` `played_for`)
+    pub fn played_for(ctx: &'a Ctx<'a>, hand_mix: &'a [HandShare], growths: &'a Growths, pool_entries: &[Candidate], per_rarity: [usize; 4]) -> LongRun<'a> {
+        Self::build(ctx, hand_mix, growths, pool_entries, per_rarity, true)
+    }
+
+    fn build(ctx: &'a Ctx<'a>, hand_mix: &'a [HandShare], growths: &'a Growths, pool_entries: &[Candidate], per_rarity: [usize; 4], keep_growers: bool) -> LongRun<'a> {
         let (run, data) = (ctx.run, ctx.data);
         let antes_left = antes_left(run);
         let top_hand = hand_mix.first().and_then(|h| crate::engine::HandType::from_name(&h.hand));
@@ -440,7 +452,7 @@ impl<'a> LongRun<'a> {
         {
             let before = lr.long_score(&lr.fill_long(lr.project(&|_| true, run.dollars), None, 0.0));
             let swap: Vec<bool> = par_map(&(0..run.jokers.len()).collect::<Vec<_>>(), |&i| {
-                if run.jokers[i].eternal || !lr.lasts(i) {
+                if run.jokers[i].eternal || !lr.lasts(i) || (keep_growers && crate::engine::grows_in_rounds(&ctx.base.jokers[i].key)) {
                     return false;
                 }
                 let mut b = lr.project(&|_| true, run.dollars);
@@ -592,6 +604,39 @@ impl<'a> LongRun<'a> {
         });
         let gone = self.value(&Gain { joker: Some((i, self.stand_in(1.25, 0.0, 0.0))), ..Default::default() }) - 1.0;
         ([per[0], per[1], per[2]], gone)
+    }
+
+    /// Whether your joker `i` is replaced by a typical find by Ante 8 (`replaced`)
+    pub fn is_replaced(&self, i: usize) -> bool {
+        self.replaced.get().is_some_and(|r| r[i])
+    }
+
+    /// What the numbers your jokers a round changes (`engine::CHANGE_IN_ROUND`) are left with at a
+    /// round's end are worth (`joker_worth`), for `sim::RoundGoals::jokers`, on `board` (the
+    /// round's: a joker debuffed there changes nothing); a joker worth nothing either way (one the
+    /// projection drops or replaces) isn't followed. `floor`: whether a fall costs at most losing
+    /// the joker (`JokerWorth::floor`; without it, only what its numbers are worth counts, so one
+    /// worth only its loss, Seltzer, isn't followed)
+    pub fn round_worths(&self, floor: bool, board: &Board) -> Vec<crate::sim::JokerWorth> {
+        let jokers = &self.ctx.base.jokers;
+        let changed: Vec<usize> = (0..jokers.len()).filter(|&i| !board.jokers.get(i).is_some_and(|j| j.debuff) && crate::engine::CHANGE_IN_ROUND.contains(&jokers[i].key.as_str())).collect();
+        let worth = par_map(&changed, |&i| self.joker_worth(i));
+        changed
+            .iter()
+            .zip(worth)
+            .filter(|(_, (per, gone))| per.iter().any(|&x| x > 0.0) || (floor && *gone != 0.0))
+            .map(|(&i, (per, gone))| crate::sim::JokerWorth { id: jokers[i].id, key: jokers[i].key.clone(), start: jokers[i].lasting(), per, gone, floor })
+            .collect()
+    }
+
+    /// The round's goals as this projection values them (`sim::RoundGoals`), for Best play's
+    /// rounds and the growth runs played to them (`advise.rs` `played_for`): a Blue Seal's planet
+    /// by hand when `planets` (the hand played last: `planet`), a dollar won at `dollar`, a hand
+    /// left at the run's money per hand, and the jokers a round changes (`round_worths`, `floor`,
+    /// on `board`). Cards worth drawing (`seen`) are Best play's own.
+    pub fn round_goals(&self, planets: bool, dollar: f64, floor: bool, board: &Board) -> crate::sim::RoundGoals {
+        let planet: Vec<f64> = if planets { HandType::ALL.iter().map(|&h| (self.planet(h) - 1.0).max(0.0)).collect() } else { vec![0.0; 12] };
+        crate::sim::RoundGoals { planet: std::array::from_fn(|i| planet[i]), dollar, per_hand: self.run.money_per_hand, jokers: std::sync::Arc::new(self.round_worths(floor, board)), ..Default::default() }
     }
 
     /// Your main hand's level by Ante 8 with money held at `dollars`, `to_levels` of the spare

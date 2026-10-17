@@ -16,7 +16,6 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
     // (card.lua): that hand +1 level and Constellation ×0.1, as its gain in the same
     // long-run projection everything else is valued by. One value per hand type.
     let has_seals = run.hand.iter().chain(&run.draw_pile).any(|c| c.seal == Some(crate::model::Seal::Blue));
-    let planet_gain_by: Vec<f64> = if has_seals { crate::engine::HandType::ALL.iter().map(|&h| (lr.planet(h) - 1.0).max(0.0)).collect() } else { vec![0.0; 12] };
     // A dollar won this round, in the same long-run measure: what +$10 does, spent once and
     // held (rerolls and packs, `Spending`)
     let dollar_gain = ((lr.value(&Gain::money(10.0)) * spending.factor(run.dollars + 10.0) / spending.factor(run.dollars).max(1e-9) - 1.0) / 10.0).max(0.0);
@@ -63,19 +62,9 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
     // What the jokers a round changes (Square, Green Joker, Ice Cream, …) are left with at its
     // end, in the same long-run measure: per Mult, ×Mult and Chip, and used up
     // (`LongRun::joker_worth`). A move that grows one is worth that much more.
-    let joker_worth: Vec<sim::JokerWorth> = {
-        let jokers = &ctx.base.jokers;
-        let changed: Vec<usize> = (0..jokers.len()).filter(|&i| !jokers[i].debuff && crate::engine::CHANGE_IN_ROUND.contains(&jokers[i].key.as_str())).collect();
-        let worth = par_map(&changed, |&i| lr.joker_worth(i));
-        // a joker worth nothing either way (one the projection drops or replaces) isn't followed
-        changed
-            .iter()
-            .zip(worth)
-            .filter(|(_, (per, gone))| per.iter().any(|&x| x > 0.0) || *gone != 0.0)
-            .map(|(&i, (per, gone))| sim::JokerWorth { id: jokers[i].id, key: jokers[i].key.clone(), start: jokers[i].lasting(), per, gone })
-            .collect()
-    };
-    let grows: Vec<(String, [f64; 3])> = joker_worth.iter().map(|w| (data.name(&w.key).to_string(), w.per)).collect();
+    // The round's goals: those and the planets, a dollar and a hand left (`LongRun::round_goals`)
+    let goals = sim::RoundGoals { seen: seen.clone(), ..lr.round_goals(has_seals, dollar_gain, true, &ctx.base) };
+    let grows: Vec<(String, [f64; 3])> = goals.jokers.iter().map(|w| (data.name(&w.key).to_string(), w.per)).collect();
     let worth_drawing: Vec<(String, String, f64)> = seen
         .iter()
         .map(|(k, c, g)| (c.label(), run.consumables.iter().find(|x| &x.key == k).map_or(k.clone(), |x| x.name.clone()), *g))
@@ -84,7 +73,6 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
     let look = ctx.specs.iter().find(|x| x.in_progress).map(|spec| {
         let mut bb = ctx.board_for(&b, spec);
         // The simulated player plays toward the same measure the advice ranks by
-        let goals = sim::RoundGoals { planet: std::array::from_fn(|i| planet_gain_by[i]), dollar: dollar_gain, per_hand: run.money_per_hand, seen: seen.clone(), jokers: std::sync::Arc::new(joker_worth.clone()), ..Default::default() };
         bb.goals = Some(goals.clone());
         let start = ctx.start_for(spec, &bb);
         let seed = ctx.opts.seed;

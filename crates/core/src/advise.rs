@@ -1237,6 +1237,9 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     fill(&mut pool_entries);
     fill(&mut shop);
     fill(&mut rescue);
+    // Your jokers' growth measured again on runs played to the round's goals (`played_for`)
+    let growths = played_for(&ctx, &hand_mix, growths, &pool_entries, per_rarity);
+    lap("growth played for");
     // By Ante 8: every board projected to then, valued in one measure (see `value`)
     let lr = value::LongRun::new(&ctx, &hand_mix, &growths, &pool_entries, per_rarity);
     let (antes_left, top_hand, l0, full) = (lr.antes_left, lr.top_hand, lr.l0, lr.full);
@@ -1969,12 +1972,12 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         heuristics: vec![
             "Blind odds use a simple play/discard policy, not perfect play.",
             "Card order within a play: +Mult cards first, Glass/Polychrome last.",
-            "Scaling jokers keep their current value in the blinds ahead. By Ante 8, the ones a round changes grow or fade as the simulated player's rounds at this ante's plain blind sizes leave them (it plays to win, not for their growth); the rest by a table.",
+            "Scaling jokers keep their current value in the blinds ahead. By Ante 8, the ones a round changes grow or fade as the simulated player's rounds at this ante's plain blind sizes leave them (yours by a player that plays to the round's goals, their worths from a projection that keeps them; a shop joker's by a player that plays only to win); the rest by a table.",
             "Blue Seal planets by Ante 8 assume a consumable held at round end in a measured share of rounds (one run).",
         ]
         .into_iter()
         .chain(grows.then_some(
-            "Best play counts what the round's hands and discards leave the jokers that grow or fade in a round, by what one more Mult, ×Mult or Chip adds by Ante 8 (measured on a step of +2 Mult, +×0.25 or +10 Chips, taken as linear; a fall never costs more than losing the joker); the simulated player aims for it only in how it finishes the round (the winning play worth most, or playing on for growth on a few simulated futures), not in its digs, and what they do to your cards (Vampire's enhancements, Glass breaking) isn't counted. The blinds ahead still play your jokers as they are now.",
+            "Best play counts what the round's hands and discards leave the jokers that grow or fade in a round, by what one more Mult, ×Mult or Chip adds by Ante 8 (measured on a step of +2 Mult, +×0.25 or +10 Chips, taken as linear; a fall never costs more than losing the joker); the simulated player aims for it in how it finishes the round (the winning play worth most, or playing on for growth on a few simulated futures) and, with no win on the table, in a play that grows them more while it keeps pace and scores as much over the hands left as its own pick (weighed on 16 simulated futures), not in its digs or discards, and what they do to your cards (Vampire's enhancements, Glass breaking) isn't counted. The blinds ahead still play your jokers as they are now.",
         ))
         .chain((run.hand.len() > sim::ALL_MOVES_MAX).then_some(
             "A big hand: Best play's moves come from the hand's structure (its plays whose cards can all score, the best few of each kind and then by score now; its structure's discards), not every move; the simulated player's best play looks only at its 16 highest cards.",
@@ -3659,6 +3662,52 @@ fn growths_for(ctx: &Ctx, keys: &[&str]) -> value::Growths {
         sim::grown_over(&with, &starts, &checkpoints, value::GROWTH_CHAINS, seed).swap_remove(at).map(|g| (k.to_string(), g))
     });
     value::Growths { checkpoints, rounds, owned, pool: pool.into_iter().flatten().collect() }
+}
+
+/// `growths` with your jokers measured again (their growth and whether they last) on runs played
+/// to the round's goals as Best play's are made (`LongRun::round_goals`: the jokers, Blue Seal
+/// planets, a dollar, a hand left), on the same deals as the plain runs: the jokers' worths by the
+/// projection that keeps them however they project (`LongRun::played_for`; a joker the plain
+/// runs left below a typical find would be replaced there and worth nothing, so nothing would be
+/// played for), linear in their numbers without the floor at losing the joker (else every fall
+/// below a typical find would be free there too: `JokerWorth::floor`); a dollar without what
+/// money held buys. A joker the projection on the result still replaces is dropped from the goals
+/// and the runs played once more (not iterated further). The shop's jokers keep the plain runs'
+/// growth (no goals of theirs are known). Unchanged without such jokers.
+fn played_for(ctx: &Ctx, hand_mix: &[HandShare], growths: value::Growths, pool_entries: &[Candidate], per_rarity: [usize; 4]) -> value::Growths {
+    if !growths.owned.iter().any(Option::is_some) {
+        return growths;
+    }
+    let Some((mut bb, starts)) = growth_rounds(ctx) else { return growths };
+    let mut goals = {
+        let lr = value::LongRun::played_for(ctx, hand_mix, &growths, pool_entries, per_rarity);
+        let planets = ctx.fresh_deck.iter().any(|c| c.seal == Some(crate::model::Seal::Blue));
+        // a dollar as Best play values one, without what money held buys (`Spending` needs the
+        // shop and tarot values that come after the projection)
+        let dollar = ((lr.value(&value::Gain::money(10.0)) - 1.0) / 10.0).max(0.0);
+        lr.round_goals(planets, dollar, false, &bb)
+    };
+    let mut played = growths.clone();
+    // a joker still replaced by the projection built on what the runs leave is worth nothing to
+    // Best play: it's dropped from the goals and the runs played once more without it, so the
+    // others aren't measured by a player that gives things up for it (once, not to a fixed point)
+    for again in [false, true] {
+        if goals.jokers.is_empty() {
+            return growths;
+        }
+        bb.goals = Some(goals.clone());
+        played.owned = sim::grown_over(&bb, &starts, &growths.checkpoints, value::GROWTH_CHAINS, ctx.opts.seed);
+        if again {
+            break;
+        }
+        let lr = value::LongRun::new(ctx, hand_mix, &played, pool_entries, per_rarity);
+        let replaced: Vec<u32> = ctx.base.jokers.iter().enumerate().filter(|(i, _)| lr.is_replaced(*i)).map(|(_, j)| j.id).collect();
+        if !goals.jokers.iter().any(|w| replaced.contains(&w.id)) {
+            break;
+        }
+        std::sync::Arc::make_mut(&mut goals.jokers).retain(|w| !replaced.contains(&w.id));
+    }
+    played
 }
 
 /// The rounds a joker's growth is measured on (`value::Growths`): this ante's three blinds at
