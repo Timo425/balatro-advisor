@@ -1379,9 +1379,9 @@ const FIND_MAX: f64 = 1000.0;
 /// 18). Each board is played through
 /// those blinds one after another on the same runs (`sim::chained_runs`, by the simulated
 /// player without goals, as the blind odds), so a joker's numbers carry from the Big Blind into
-/// the boss as its rounds leave them. A change counts only where the paired runs show it
-/// either way (`compare::better_by`: the paired difference less 2 standard errors), else it's
-/// nothing. The next ante isn't counted (your board meets it after shops Best play doesn't
+/// the boss as its rounds leave them. A change of your board counts only where the paired runs
+/// show it either way (`compare::better_by`: the paired difference less 2 standard errors), else
+/// it's nothing; money's is the shops' estimate's, which the runs size (`dollar`). The next ante isn't counted (your board meets it after shops Best play doesn't
 /// model).
 pub(super) struct Ahead<'a> {
     ctx: &'a Ctx<'a>,
@@ -1389,22 +1389,75 @@ pub(super) struct Ahead<'a> {
     plain: OnceLock<Vec<f64>>,
     /// The shops' find and your board's runs carrying it (`find`)
     find: OnceLock<Find>,
-    /// What the shops before the boss add to its chance with the money you hold, and with $10
-    /// more (the shop ranking's survival, `advise.rs` `survival_with`: all the shops before the
-    /// boss, against its chance as it is); none where no shop pool is known (the quick pass)
-    shops: f64,
-    shops_10: f64,
+    /// A dollar's shift (`dollar`), once a goal needs it
+    dollar: OnceLock<f64>,
     /// For each blind ahead, what the shops before it add to the boss's chance with the money you
-    /// hold (the same estimate with that many shops: one before the first blind ahead, one more
-    /// before each after it; the last is `shops`), never less than the blind's before
+    /// hold (the shop ranking's survival, `advise.rs` `survival_with`, against the boss's chance
+    /// as it is, with that many shops: one before the first blind ahead, one more before each
+    /// after it), never less than the blind's before; none where no shop pool is known (the
+    /// quick pass)
     lifts: Vec<f64>,
+    /// The same with $10 more (`dollar`)
+    lifts_10: Vec<f64>,
 }
 
-/// The shops' find (`Ahead::find`): what it multiplies each blind's scores by (`at`), and your
-/// board's runs through the blinds ahead carrying it (`runs`)
+/// The shops' find (`Ahead::find`): what it multiplies each blind's scores by (`at`), your
+/// board's runs through the blinds ahead carrying it (`runs`), for each blind the boss's runs
+/// carrying the find for the shops before it and the points the search that put them there
+/// tried (`stages`; a shop that adds nothing keeps the one before's), and the multiplier the
+/// floor added on every blind and its search's points (`floor`, `floor_curve`): where the find
+/// for $10 more starts (`find_10`)
 struct Find {
     at: Vec<f64>,
     runs: Vec<f64>,
+    stages: Vec<(Vec<f64>, Option<Curve>)>,
+    floor: f64,
+    floor_curve: Option<Curve>,
+}
+
+/// The points a search (`size_find`) tried, each (log of the multiplier, log-odds of the chance)
+/// from where it started, the one it kept (`kept`, its log) and the log-odds it was after (`goal`)
+#[derive(Clone, Debug)]
+struct Curve {
+    tried: Vec<(f64, f64)>,
+    kept: f64,
+    goal: f64,
+}
+
+impl Curve {
+    /// The slope of the log-odds against the log of the multiplier across the search's last
+    /// bracket (the highest tried short of its goal and the lowest past it); none without one
+    fn bracket(&self) -> Option<f64> {
+        let short = self.tried.iter().filter(|t| t.1 < self.goal).max_by(|a, b| a.0.total_cmp(&b.0))?;
+        let past = self.tried.iter().filter(|t| t.1 >= self.goal && t.0 > short.0).min_by(|a, b| a.0.total_cmp(&b.0))?;
+        Some((past.1 - short.1) / (past.0 - short.0)).filter(|s| *s > 1e-9)
+    }
+
+    /// `bracket`, else the slope between the one kept and the one tried nearest it (a seed for a
+    /// search, not a reading); none where they show no rise
+    fn slope(&self) -> Option<f64> {
+        self.bracket().or_else(|| {
+            let kept = self.tried.iter().find(|t| t.0 == self.kept)?;
+            let near = self.tried.iter().filter(|t| t.0 != self.kept).min_by(|a, b| (a.0 - self.kept).abs().total_cmp(&(b.0 - self.kept).abs()))?;
+            Some((near.1 - kept.1) / (near.0 - kept.0)).filter(|s| *s > 1e-9)
+        })
+    }
+
+    /// How much further (in the log of the multiplier) than the one kept, at log-odds `from`
+    /// there, the log-odds reach `goal`, read off the points tried: between the one kept and the
+    /// first tried past `goal` (so never past a multiplier the search saw get there), else by the
+    /// slope across its last bracket; none where neither is there (it stopped short of its goal
+    /// or on flat ground: what's read past its points then rests on a run or two)
+    fn raise(&self, from: f64, goal: f64) -> Option<f64> {
+        if goal <= from {
+            return Some(0.0);
+        }
+        let past = self.tried.iter().filter(|t| t.0 > self.kept && t.1 >= goal).min_by(|a, b| a.0.total_cmp(&b.0));
+        match past {
+            Some(&(u, l)) => Some((goal - from) / (l - from) * (u - self.kept)),
+            None => self.bracket().map(|s| (goal - from) / s),
+        }
+    }
 }
 
 /// The boss's chance as it is, and its chance by the money you'd hold with that many shops
@@ -1422,59 +1475,127 @@ impl<'a> Ahead<'a> {
         }
         let d = ctx.run.dollars;
         let k = ctx.ahead.len();
-        let lift = |m: f64, j: usize| shops.map_or(0.0, |(p, with)| (with(m, j) - p).max(0.0));
-        let mut lifts: Vec<f64> = (1..=k).map(|j| lift(d, j)).collect();
-        for j in 1..k {
-            lifts[j] = lifts[j].max(lifts[j - 1]);
-        }
-        Some(Ahead { ctx, plain: OnceLock::new(), find: OnceLock::new(), shops: lift(d, k), shops_10: lift(d + 10.0, k), lifts })
+        let lifts = |m: f64| {
+            let mut l: Vec<f64> = (1..=k).map(|j| shops.map_or(0.0, |(p, with)| (with(m, j) - p).max(0.0))).collect();
+            for j in 1..k {
+                l[j] = l[j].max(l[j - 1]);
+            }
+            l
+        };
+        Some(Ahead { ctx, plain: OnceLock::new(), find: OnceLock::new(), dollar: OnceLock::new(), lifts: lifts(d), lifts_10: lifts(d + 10.0) })
     }
 
     fn plain(&self) -> &[f64] {
         self.plain.get_or_init(|| self.runs_at(&self.ctx.base, &[], None, &vec![1.0; self.ctx.ahead.len()]))
     }
 
-    /// The shops' find: what the shops before each blind add to the boss's chance (`lifts`, the
-    /// shop ranking's estimate, as it adds money's survival to an option's chance: `advise.rs`
-    /// `rank_options`), put on the board as a multiplier on every score in the blinds after
-    /// those shops (each blind's target divided by it: every score ×x, which takes no slot and
-    /// no joker reads), sized shop by shop where the estimate is measured, on the boss alone
-    /// from your board as it is (`boss_runs`): the first shop's on every blind ahead, so the
-    /// boss carrying it gets through as often as with the first shop's lift, then each next
-    /// shop's on top of it from the blind after that shop on, to that many shops' lift (at most
-    /// what the runs can tell from a sure pass, `shops_target`): a search over its log against
-    /// the chance's log-odds (`size_find`), none where the boss already gets through that
-    /// often, and none for a shop that adds nothing to the ones before it. So a Small Blind's
-    /// Big Blind carries one shop's find and the boss two, and a Big Blind that holds the chain
-    /// back doesn't push the boss's find up. Then, where your board carrying them gets through
-    /// these blinds less often than `AHEAD_FLOOR`, every blind's find is raised by one more
-    /// multiplier so it does
+    /// The shops' find: what the shops before each blind add to the boss's chance with the money
+    /// you hold (`lifts`, the shop ranking's estimate, as it adds money's survival to an option's
+    /// chance: `advise.rs` `rank_options`), put on the board as a multiplier on every score in
+    /// the blinds after those shops (each blind's target divided by it: every score ×x, which
+    /// takes no slot and no joker reads), sized shop by shop where the estimate is measured, on
+    /// the boss alone from your board as it is (`boss_runs`): the first shop's on every blind
+    /// ahead, so the boss carrying it gets through as often as with the first shop's lift, then
+    /// each next shop's on top of it from the blind after that shop on, to that many shops' lift
+    /// (at most what the runs can tell from a sure pass, `shops_target`): a search over its log
+    /// against the chance's log-odds (`size_find`, within 2 standard errors of the chance), none
+    /// where the boss already gets through that often, and none for a shop that adds nothing to
+    /// the ones before it. So a Small Blind's Big Blind carries one shop's find and the boss
+    /// two, and a Big Blind that holds the chain back doesn't push the boss's find up. Then,
+    /// where your board carrying them gets through these blinds less often than `AHEAD_FLOOR`,
+    /// every blind's find is raised by one more multiplier so it does
     fn find(&self) -> &Find {
         self.find.get_or_init(|| {
             let (n, k) = (self.n(), self.ctx.ahead.len());
             let base = &self.ctx.base;
             let mut at = vec![1.0; k];
             // the boss alone from your board as it is (with one blind ahead, the same runs as
-            // the chain's); not needed where the shops add nothing counted (the quick pass)
-            let counted = self.lifts.iter().any(|&l| l > 0.0);
+            // the chain's); not needed where the shops add nothing counted, with the money held
+            // or $10 more (the quick pass)
+            let counted = self.lifts.iter().chain(&self.lifts_10).any(|&l| l > 0.0);
             let mut boss = if !counted { vec![] } else if k == 1 { self.plain().to_vec() } else { self.boss_runs(1.0) };
             let alone = mean(&boss);
-            for j in (0..k).filter(|&j| counted && (j == 0 || self.lifts[j] > self.lifts[j - 1])) {
-                let (x, r) = size_find(shops_target(alone, self.lifts[j], n), n, boss, &|x| self.boss_runs(at[k - 1] * x));
-                at[j..].iter_mut().for_each(|m| *m *= x);
-                boss = r;
+            let mut stages = Vec::with_capacity(k);
+            // the points of the search that put the boss's runs where they are (a search that
+            // found it there already, or none, leaves them as they were)
+            let mut curve = None;
+            for j in 0..k {
+                if counted && (j == 0 || self.lifts[j] > self.lifts[j - 1]) {
+                    let t = shops_target(alone, self.lifts[j], n);
+                    let (x, r, c) = size_find(t, 2.0 * se(t, n), n, None, boss, &|x| self.boss_runs(at[k - 1] * x));
+                    at[j..].iter_mut().for_each(|m| *m *= x);
+                    boss = r;
+                    curve = c.or(curve);
+                }
+                stages.push((boss.clone(), curve.clone()));
             }
             let chain = if at.iter().all(|&m| m == 1.0) {
                 self.plain().to_vec()
             } else if k == 1 {
-                boss.clone()
+                boss
             } else {
                 self.runs_at(base, &[], None, &at)
             };
-            let (x, runs) = size_find(AHEAD_FLOOR, n, chain, &|x| self.runs_at(base, &[], None, &at.iter().map(|m| m * x).collect::<Vec<f64>>()));
-            at.iter_mut().for_each(|m| *m *= x);
-            Find { at, runs }
+            let (floor, runs, floor_curve) = size_find(AHEAD_FLOOR, 2.0 * se(AHEAD_FLOOR, n), n, None, chain, &|x| self.runs_at(base, &[], None, &at.iter().map(|m| m * x).collect::<Vec<f64>>()));
+            at.iter_mut().for_each(|m| *m *= floor);
+            Find { at, runs, stages, floor, floor_curve }
         })
+    }
+
+    /// The multipliers on two or more blinds ahead of the shops' find with $10 more (`dollar`),
+    /// and your board's runs carrying them, from the money held's (`find`): each blind's
+    /// multiplier raised so the boss, carrying the money held's find for as many shops as come
+    /// before that blind, would get through as much more often as $10 more adds to those shops'
+    /// lift (`lifts_10` less `lifts`, the shop ranking's estimate) from where that find put it
+    /// (the boss's chance it landed at: the difference of the lifts, not the lift with $10 more
+    /// on its own, which against the search's 2 standard errors takes a typical $10 lift of
+    /// 0.03-0.05 to nothing or twice over), at most what the runs tell from a sure pass
+    /// (`shops_target`); never less on a blind than on the one before it (it carries every shop
+    /// before it). Each read off the points the search that put the boss there tried
+    /// (`Curve::raise`: up to the first past that chance, else the slope across its last
+    /// bracket), so the find for $10 more comes from the same search; where they don't reach it
+    /// (none tried, as the boss already got through that often, or no bracket) or `AHEAD_FLOOR`
+    /// raised the find, by a search of its own (`size_find`, within one standard error of the
+    /// difference on the same runs, at least a run; from those points' slope, or the floor's
+    /// where it binds, unseeded where there are none) on the boss carrying the money held's
+    /// find, the floor's too (a board the shops' find left near none barely moves on the boss
+    /// alone: the multiplier that moves it a little there moves the floor's board a lot)
+    fn find_10(&self) -> (Vec<f64>, Vec<f64>) {
+        let f = self.find();
+        let n = self.n();
+        let lo = |p: f64| crate::sim::log_odds(p, n);
+        let mut at = f.at.clone();
+        for (j, m) in at.iter_mut().enumerate() {
+            let d = self.lifts_10[j] - self.lifts[j];
+            if d <= 0.0 {
+                continue;
+            }
+            let (runs, curve) = &f.stages[j];
+            let p = mean(runs);
+            let read = curve.as_ref().filter(|_| f.floor == 1.0).and_then(|c| c.raise(lo(p), lo(shops_target(p, d, n).max(p))));
+            *m *= match read {
+                Some(u) => u.max(0.0).exp(),
+                None => {
+                    let start = if f.floor == 1.0 { runs.clone() } else { self.boss_runs(f.at[j]) };
+                    let target = shops_target(mean(&start), d, n);
+                    let seed = if f.floor == 1.0 { curve.as_ref() } else { f.floor_curve.as_ref() }.and_then(Curve::slope);
+                    size_find(target, se(d.min(1.0), n).max(1.0 / n.max(1) as f64), n, seed, start, &|x| self.boss_runs(f.at[j] * x)).0
+                }
+            };
+        }
+        for j in 1..at.len() {
+            at[j] = at[j].max(at[j - 1]);
+        }
+        let runs = if at == f.at { f.runs.clone() } else { self.runs_at(&self.ctx.base, &[], None, &at) };
+        (at, runs)
+    }
+
+    /// The multipliers of the shops' find with $10 more (`find_10`) and your board's chance
+    /// through the blinds ahead carrying them
+    #[cfg(test)]
+    pub(super) fn find_10_at(&self) -> (Vec<f64>, f64) {
+        let (at, runs) = self.find_10();
+        (at, mean(&runs))
     }
 
     /// The multipliers the shops' find puts on each blind ahead (`find`), and your board's
@@ -1511,13 +1632,29 @@ impl<'a> Ahead<'a> {
         crate::sim::chance_ratio(self.base(), shift, 0.0) - 1.0
     }
 
-    /// A dollar more at the round's end: the shift what it buys in the shops before the boss
-    /// gives (`dollar_shift`, read off the shops' estimate, not measured on the find: gap 18)
+    /// A dollar more at the round's end: what $10 more buys in the shops before each blind
+    /// (`lifts_10` against `lifts`), as the shift of the log-odds through the blinds ahead between
+    /// your board carrying the shops' find for $10 more and the money held's (`find`), a tenth of
+    /// it; never below nothing. With one blind ahead, the boss's chance with $10 more is where
+    /// the find put it plus what $10 more adds to the shops' lift (at most what the runs tell
+    /// from a sure pass), as a find sized to that would get through (a search for it only adds
+    /// its tolerance); with two, measured on the runs (`find_10`), as the Big Blind's find is sized
+    /// on the boss. Not gated by the paired runs (`shift_of`): that $10 adds to the shops' lift
+    /// is the shop ranking's estimate, gated by its own rule of three (`advise.rs`
+    /// `measured_p`), and the runs measure how much it moves the blinds ahead where it's placed
+    /// (on the same runs, a lift of 0.04 the find put on the boss was taken to nothing about half
+    /// the time, as the simulated player's runs part both ways)
     pub fn dollar(&self) -> f64 {
-        if self.shops_10 <= self.shops {
-            return 0.0;
-        }
-        dollar_shift(mean(self.plain()), self.shops, self.shops_10, self.n())
+        *self.dollar.get_or_init(|| {
+            if self.lifts_10.iter().zip(&self.lifts).all(|(t, l)| t <= l) {
+                return 0.0;
+            }
+            let (n, k) = (self.n(), self.ctx.ahead.len());
+            let lo = |p: f64| crate::sim::log_odds(p, n);
+            let now = self.reference();
+            let with = if k == 1 { shops_target(now, self.lifts_10[0] - self.lifts[0], n).max(now) } else { mean(&self.find_10().1) };
+            ((lo(with) - lo(now)) / 10.0).max(0.0)
+        })
     }
 
     /// `b`'s runs through the blinds ahead carrying the shops' find (`find`; `removed`: jokers
@@ -1648,17 +1785,20 @@ fn shops_target(alone: f64, lift: f64, n: usize) -> f64 {
 
 /// The multiplier on every score (at least 1, at most `FIND_MAX`) whose runs (`runs_at(x)`,
 /// `n` of them; `plain` at 1) get through closest to `target` (the smallest of those as close),
-/// and those runs: none (1) when `plain` is already within two standard errors of it or past
-/// it; else its log searched against the log-odds of the chance, a step past the last one
-/// tried while none reached `target` (from ×2, then each step's slope, at most ×10 a step, ×10
-/// where the step before moved nothing; two steps in a row that move nothing end it), then
-/// between the two either side of it (the secant, kept a tenth inside them), at most
-/// `FIND_STEPS` sets of runs, stopping once within two standard errors
-fn size_find(target: f64, n: usize, plain: Vec<f64>, runs_at: &dyn Fn(f64) -> Vec<f64>) -> (f64, Vec<f64>) {
-    let close = |p: f64| (p - target).abs() <= 2.0 * (target * (1.0 - target) / n.max(1) as f64).sqrt();
+/// those runs, and the points it tried (`Curve`): none (1, no points) when `plain` is already
+/// within `tol` of it or past it; else its log searched against the log-odds of the chance, a
+/// step past the last one tried while none reached `target` (from ×2, or from the slope `seed`
+/// (`Ahead::find_10`: the floor's), then each step's slope, at most ×10 a step and, unseeded, at
+/// least ×1.1, ×10 where the step before moved nothing, two such steps ending it; seeded, a step
+/// that moves nothing keeps the slope), then between the two either side of it (the secant, kept
+/// a tenth inside them), at most `FIND_STEPS` sets of runs, stopping once within `tol`
+/// (`Ahead::find`: two standard errors of the chance; `find_10`: one of a difference on paired
+/// runs)
+fn size_find(target: f64, tol: f64, n: usize, seed: Option<f64>, plain: Vec<f64>, runs_at: &dyn Fn(f64) -> Vec<f64>) -> (f64, Vec<f64>, Option<Curve>) {
+    let close = |p: f64| (p - target).abs() <= tol;
     let p0 = mean(&plain);
     if p0 >= target || close(p0) {
-        return (1.0, plain);
+        return (1.0, plain, None);
     }
     let lo = |p: f64| crate::sim::log_odds(p, n);
     let goal = lo(target);
@@ -1667,8 +1807,10 @@ fn size_find(target: f64, n: usize, plain: Vec<f64>, runs_at: &dyn Fn(f64) -> Ve
     let mut below = (0.0, lo(p0));
     let mut above: Option<(f64, f64)> = None;
     let mut best = (0.0, plain);
-    let mut slope: Option<f64> = None;
+    let mut slope = seed.filter(|&s| s > 1e-9);
     let mut flat = 0;
+    // every (log of the multiplier, log-odds) tried, for where it landed (`Curve`)
+    let mut tried = vec![below];
     for _ in 0..FIND_STEPS {
         let u = match above {
             Some(a) => {
@@ -1676,13 +1818,17 @@ fn size_find(target: f64, n: usize, plain: Vec<f64>, runs_at: &dyn Fn(f64) -> Ve
                 below.0 + t * (a.0 - below.0)
             }
             None => {
-                let step = slope.map_or(2f64.ln(), |s| if s > 1e-9 { (goal - below.1) / s } else { 10f64.ln() }).clamp(0.1, 10f64.ln());
+                // a seeded search's steps may be as small as their slope says (a $10 move is
+                // often less than ×1.1)
+                let least = if seed.is_some() { 0.0 } else { 0.1 };
+                let step = slope.map_or(2f64.ln(), |s| if s > 1e-9 { (goal - below.1) / s } else { 10f64.ln() }).clamp(least, 10f64.ln());
                 (below.0 + step).min(FIND_MAX.ln())
             }
         };
         let runs = runs_at(u.exp());
         let p = mean(&runs);
         let l = lo(p);
+        tried.push((u, l));
         let (d, d_best) = ((p - target).abs(), (mean(&best.1) - target).abs());
         let done = close(p);
         if d < d_best || (d == d_best && u < best.0) {
@@ -1694,29 +1840,26 @@ fn size_find(target: f64, n: usize, plain: Vec<f64>, runs_at: &dyn Fn(f64) -> Ve
         if p >= target {
             above = Some((u, l));
         } else {
-            flat = if l <= below.1 && above.is_none() { flat + 1 } else { 0 };
-            if u > below.0 {
+            // a seeded search's small steps often move no run: its slope stands and it steps
+            // again, where an unseeded one takes ×10 and stops after two
+            let rose = l > below.1;
+            flat = if !rose && above.is_none() { flat + 1 } else { 0 };
+            if u > below.0 && (rose || seed.is_none()) {
                 slope = Some((l - below.1) / (u - below.0));
             }
             let top = u >= FIND_MAX.ln();
             below = (u, l);
-            if top || flat >= 2 {
+            if top || (flat >= 2 && seed.is_none()) {
                 break;
             }
         }
     }
-    (best.0.exp(), best.1)
+    (best.0.exp(), best.1, Some(Curve { tried, kept: best.0, goal }))
 }
 
-/// `Ahead::dollar`: what the shops add with $10 more (`shops_10`) against with the money held
-/// (`shops`), on the chance through the blinds ahead `chain`, as a shift of the log-odds a
-/// dollar, measured at that chance itself (not floored, so money that lifts a board below the
-/// floor counts; not at the boss's chance with the shops, which in a Small Blind is past the
-/// chain's and counted it several times more), linear in the log-odds; at a sure pass, past
-/// what half a run tells (`sim::log_odds`)
-fn dollar_shift(chain: f64, shops: f64, shops_10: f64, n: usize) -> f64 {
-    let lo = |s: f64| crate::sim::log_odds((chain + s).min(1.0), n);
-    ((lo(shops_10) - lo(shops)) / 10.0).max(0.0)
+/// The standard error of a chance `p` measured on `n` runs
+fn se(p: f64, n: usize) -> f64 {
+    (p * (1.0 - p) / n.max(1) as f64).sqrt()
 }
 
 #[cfg(test)]
@@ -1738,11 +1881,6 @@ mod tests {
         assert!((crate::sim::chance_ratio(lo(0.9), s, 0.0) * 0.9 - 0.6).abs() < 1e-9);
         assert!(crate::sim::chance_ratio(lo(0.9), 50.0, 0.0) <= 1.0 / 0.9 + 1e-12);
         assert!((lo(0.0) - lo(0.5)).is_finite());
-        // a dollar: $10 more lifts the chance from 0.6 to 0.7, a tenth of that shift a dollar;
-        // below the floor it still counts (0.05 to 0.07), and nothing when money adds nothing
-        assert!((dollar_shift(0.4, 0.2, 0.3, 300) - (lo(0.7) - lo(0.6)) / 10.0).abs() < 1e-12);
-        assert!(dollar_shift(0.02, 0.03, 0.05, 300) > 0.0);
-        assert_eq!(dollar_shift(0.4, 0.2, 0.2, 300), 0.0);
     }
 
     #[test]
@@ -1759,18 +1897,17 @@ mod tests {
             runs(x)
         };
         // already there or past it: no find, no runs
-        let (x, r) = size_find(0.04, n, runs(1.0), &counted);
+        let (x, r, _) = size_find(0.04, 2.0 * se(0.04, n), n, None, runs(1.0), &counted);
         assert_eq!((x, tries.get()), (1.0, 0));
         assert_eq!(r, runs(1.0));
         // a find that lifts 4.7% to 60%: within two standard errors, in a few sets of runs
-        let (x, r) = size_find(0.6, n, runs(1.0), &counted);
-        let se = (0.6f64 * 0.4 / n as f64).sqrt();
-        assert!((mean(&r) - 0.6).abs() <= 2.0 * se, "{x} {}", mean(&r));
+        let (x, r, _) = size_find(0.6, 2.0 * se(0.6, n), n, None, runs(1.0), &counted);
+        assert!((mean(&r) - 0.6).abs() <= 2.0 * se(0.6, n), "{x} {}", mean(&r));
         assert!(tries.get() <= FIND_STEPS && x > 1.0);
         assert_eq!(r, runs(x));
         // a board no find lifts: two steps that move nothing, and no find
         tries.set(0);
-        let (x, r) = size_find(0.5, n, vec![0.0; n], &|x| {
+        let (x, r, _) = size_find(0.5, 2.0 * se(0.5, n), n, None, vec![0.0; n], &|x| {
             tries.set(tries.get() + 1);
             vec![0.0; n].into_iter().map(|v| v + 0.0 * x).collect()
         });
@@ -1780,7 +1917,7 @@ mod tests {
             let won = (crate::sim::chance_at(-3.0 + 1.5 * x.ln()).min(0.3) * n as f64).round() as usize;
             (0..n).map(|i| if i < won { 1.0 } else { 0.0 }).collect::<Vec<f64>>()
         };
-        let (x, r) = size_find(0.8, n, capped(1.0), &capped);
+        let (x, r, _) = size_find(0.8, 2.0 * se(0.8, n), n, None, capped(1.0), &capped);
         assert!(mean(&r) == 0.3 && x < 100.0, "{x}");
         // a steep board, past the chance at ×2 (from 2.5% to 90%): back between the two, the
         // closest kept
@@ -1789,7 +1926,7 @@ mod tests {
             (0..n).map(|i| if i < won { 1.0 } else { 0.0 }).collect::<Vec<f64>>()
         };
         tries.set(0);
-        let (x, r) = size_find(0.3, n, steep(1.0), &|x| {
+        let (x, r, _) = size_find(0.3, 2.0 * se(0.3, n), n, None, steep(1.0), &|x| {
             tries.set(tries.get() + 1);
             steep(x)
         });
@@ -1798,7 +1935,7 @@ mod tests {
         assert_eq!(r, steep(x));
         // a board that gets through every run already, sized to a sure pass: no find
         tries.set(0);
-        let (x, _) = size_find(shops_target(0.9, 0.5, n), n, vec![1.0; n], &counted);
+        let (x, _, _) = size_find(shops_target(0.9, 0.5, n), 2.0 * se(0.99, n), n, None, vec![1.0; n], &counted);
         assert_eq!((x, tries.get()), (1.0, 0));
         // noisy runs that don't rise steadily: still within the budget, the runs at the one kept
         let noisy = |x: f64| {
@@ -1807,12 +1944,38 @@ mod tests {
             (0..n).map(|i| if i < won { 1.0 } else { 0.0 }).collect::<Vec<f64>>()
         };
         tries.set(0);
-        let (x, r) = size_find(0.5, n, noisy(1.0), &|x| {
+        let (x, r, _) = size_find(0.5, 2.0 * se(0.5, n), n, None, noisy(1.0), &|x| {
             tries.set(tries.get() + 1);
             noisy(x)
         });
         assert!(tries.get() <= FIND_STEPS && (1.0..=FIND_MAX).contains(&x));
         assert_eq!(r, noisy(x));
+        // a $10 move from where a find landed (30%, 4% more), seeded with the slope there: a
+        // step of ×1.13 (unseeded, the first step would be ×2, to 55%), within one standard error
+        // of the difference in a try or two
+        let x0 = ((crate::sim::log_odds(0.3, n) + 3.0) / 1.5).exp();
+        let start = runs(x0);
+        let target = mean(&start) + 0.04;
+        tries.set(0);
+        let (x, r, curve) = size_find(target, se(0.04, n), n, Some(1.5), start, &|x| {
+            tries.set(tries.get() + 1);
+            runs(x0 * x)
+        });
+        assert!((mean(&r) - target).abs() <= se(0.04, n) && x > 1.0 && x < 1.2 && tries.get() <= 2, "{x} {} {}", mean(&r), tries.get());
+        let slope = curve.as_ref().and_then(Curve::slope);
+        assert!(slope.is_some_and(|s| (s - 1.5).abs() < 0.5), "{slope:?}");
+        // and a $10 move read off where the search landed: the multiplier that model needs for
+        // 4% more there, from the points either side of it
+        let (c, p) = (curve.unwrap(), mean(&r));
+        let want = (crate::sim::log_odds(p + 0.04, n) - crate::sim::log_odds(p, n)) / 1.5;
+        let got = c.raise(crate::sim::log_odds(p, n), crate::sim::log_odds(p + 0.04, n)).unwrap();
+        assert!((got - want).abs() < 0.5 * want, "{got} {want}");
+        // a search's points past the chance asked for bound how far it's read (the point tried
+        // at 0.7, where the slope across its last bracket would read 0.42)
+        let c = Curve { tried: vec![(0.0, -1.0), (0.3, -0.5), (0.7, 0.2)], kept: 0.3, goal: -0.5 };
+        assert!((c.raise(-0.5, 0.2).unwrap() - 0.4).abs() < 1e-12);
+        assert!((c.raise(-0.5, -0.15).unwrap() - 0.2).abs() < 1e-12);
+        assert_eq!(c.raise(-0.5, -0.6), Some(0.0));
     }
 
     #[test]
