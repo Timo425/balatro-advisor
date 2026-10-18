@@ -25,7 +25,8 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
     // your hand (the one its search chose: `tarot_values`), by `LongRun::deck_value` (quick
     // projection, then the full one; Blue Seal planets counted). A
     // simulated round that draws one is worth that much more (`RoundGoals::seen`).
-    let seen: Vec<(String, Card, f64)> = {
+    // (and whether any counted something in the blinds still ahead)
+    let (seen, seen_ahead): (Vec<(String, Card, f64)>, bool) = {
         use crate::engine::consumable;
         let deck = &ctx.fresh_deck;
         let idx_of = |c: &Card| deck.iter().position(|d| d.same_kind(c));
@@ -36,6 +37,7 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
             }
         }
         let mut out: Vec<(String, Card, f64)> = vec![];
+        let mut any_ahead = false;
         for held in &run.consumables {
             if out.iter().any(|(k, _, _)| k == &held.key) {
                 continue;
@@ -59,11 +61,13 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
             let in_ahead = |k: &Card| ahead.zip(idx_of(k)).zip(against.as_ref()).map_or(0.0, |((a, i), r)| a.deck(&consumable::apply(effect, deck, &[i]), r));
             for (k, g) in likely.into_iter().zip(full) {
                 if g > compare::EQUAL {
-                    out.push((held.key.clone(), k, g + in_ahead(&k)));
+                    let a = in_ahead(&k);
+                    any_ahead |= a > 0.0;
+                    out.push((held.key.clone(), k, g + a));
                 }
             }
         }
-        out
+        (out, any_ahead)
     };
     // What the jokers a round changes (Square, Green Joker, Ice Cream, …) are left with at its
     // end, in the same long-run measure: per Mult, ×Mult and Chip, and used up
@@ -71,8 +75,10 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
     // counts what it does in the blinds still ahead in this ante (`ahead`, `value::Ahead`).
     // The round's goals: those and the planets, a dollar and a hand left (`LongRun::round_goals`)
     let goals = sim::RoundGoals { seen: seen.clone(), ..lr.round_goals(has_seals, dollar_gain, true, ahead, &ctx.base) };
-    let counts_ahead = ahead.is_some_and(|a| a.dollar > 0.0 || has_seals || !seen.is_empty()) || goals.jokers.iter().any(|w| w.ahead.counts());
-    let grows: Vec<(String, [f64; 3])> = goals.jokers.iter().map(|w| (data.name(&w.key).to_string(), std::array::from_fn(|f| w.per[f] + w.ahead.up[f]))).collect();
+    let counts_ahead = goals.dollar_ahead > 0.0 || goals.planet_ahead.iter().any(|&x| x > 0.0) || seen_ahead || goals.jokers.iter().any(|w| w.ahead.counts());
+    // one more of each, by what it adds to a won round in both parts (`RoundGoals::value`)
+    let one_more = |w: &sim::JokerWorth, f: usize| goals.value(&sim::Outcome { won: 1.0, grown: sim::Grown { long: (1.0 + w.per[f]).ln(), ahead: w.ahead.up[f] }, ..Default::default() }) - 1.0;
+    let grows: Vec<(String, [f64; 3])> = goals.jokers.iter().map(|w| (data.name(&w.key).to_string(), std::array::from_fn(|f| one_more(w, f)))).collect();
     let worth_drawing: Vec<(String, String, f64)> = seen
         .iter()
         .map(|(k, c, g)| (c.label(), run.consumables.iter().find(|x| &x.key == k).map_or(k.clone(), |x| x.name.clone()), *g))
@@ -221,7 +227,10 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
                 let k = v.len().max(1) as f64;
                 let avg = |f: fn(&sim::Outcome) -> f64| v.iter().map(f).sum::<f64>() / k;
                 let (m, b, st, _, use_first) = &cands[c];
-                let mut o = to_opt(m, &st.hand, b, (avg(|o| o.won), avg(|o| o.total), avg(|o| o.spare), avg(|o| o.cash), avg(|o| o.planets), avg(|o| o.won * o.grown)), use_first.clone());
+                // what the jokers' numbers add to the round's value (`RoundGoals::value` with them
+                // against without), a lost round nothing
+                let grown = v.iter().map(|o| goals.value(o) - goals.value(&sim::Outcome { grown: sim::Grown::default(), ..*o })).sum::<f64>() / k;
+                let mut o = to_opt(m, &st.hand, b, (avg(|o| o.won), avg(|o| o.total), avg(|o| o.spare), avg(|o| o.cash), avg(|o| o.planets), grown), use_first.clone());
                 o.tie = tied[c];
                 if matches!(m, sim::Move::Discard(_)) {
                     let mut by: std::collections::HashMap<crate::engine::HandType, (usize, f64)> = std::collections::HashMap::new();

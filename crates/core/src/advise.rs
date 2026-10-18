@@ -1949,14 +1949,14 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     let outlook = if quick_blind { None } else { archetype_outlook(&ctx, run, data, &pool_entries, &shares, &hand_mix) };
 
     lap("outlook");
-    // What the board a round leaves is worth in this ante's blinds still ahead (`value::Ahead`);
-    // money by what the shops before the boss buy with it, as the shop ranking counts it
+    // What the board a round leaves is worth in this ante's blinds still ahead (`value::Ahead`),
+    // with the shops before the boss as the shop ranking counts them: what the money held buys
     let ahead = (run.screen.in_blind() && !run.hand.is_empty())
         .then(|| {
             let p_now = base_odds.get(key_round).map_or(0.0, |o| o.0);
             let value = |c: &Candidate| measured_p(&ctx, c, key_round, p_now);
             let with = |m: f64| survival_with(&ctx, &pool_entries, &value, p_now, m, false);
-            value::Ahead::new(&ctx, (!pool_entries.is_empty()).then_some(&with as &dyn Fn(f64) -> f64))
+            value::Ahead::new(&ctx, (!pool_entries.is_empty()).then_some((p_now, &with as &dyn Fn(f64) -> f64)))
         })
         .flatten();
     let best_play = play::best_play(&ctx, &lr, &spending, &tarots, &hand_order, ahead.as_ref());
@@ -2009,10 +2009,10 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         ]
         .into_iter()
         .chain(grows.then_some(
-            "Best play counts what the round's hands and discards leave the jokers that grow or fade in a round, by what one more Mult, ×Mult or Chip adds by Ante 8 (measured on a step of +2 Mult, +×0.25 or +10 Chips, taken as linear; a fall never costs more than losing the joker) and, in this ante, by what they do to the chance of getting through the blinds still ahead (see the note on those); the simulated player aims for it in how it finishes the round (the winning play worth most, or playing on for growth on a few simulated futures) and, with no win on the table, in a play that grows them more while it keeps pace and scores as much over the hands left as its own pick (weighed on 16 simulated futures), not in its digs or discards, and what they do to your cards (Vampire's enhancements, Glass breaking) isn't counted. The blind odds shown still play your jokers as they are now.",
+            "Best play counts what the round's hands and discards leave the jokers that grow or fade in a round, by what one more Mult, ×Mult or Chip adds by Ante 8 (measured on a step of +2 Mult, +×0.25 or +10 Chips, taken as linear; a fall never costs more than losing the joker; several jokers' factors multiplied, heuristic) and, in this ante, by what they do to the chance of getting through the blinds still ahead (see the note on those); the simulated player aims for it in how it finishes the round (the winning play worth most, or playing on for growth on a few simulated futures) and, with no win on the table, in a play that grows them more while it keeps pace and scores as much over the hands left as its own pick (weighed on 16 simulated futures), not in its digs or discards, and what they do to your cards (Vampire's enhancements, Glass breaking) isn't counted. The blind odds shown still play your jokers as they are now.",
         ))
         .chain(counts_ahead.then_some(
-            "Best play also counts what the round leaves (the jokers' numbers, Blue Seal planets, money, cards worth drawing) by what it does to the chance of getting through this ante's blinds still ahead (the Big Blind taken as played, then the boss), each from the board the one before leaves, as a share of that chance with your board as it is (at least 10%: heuristic), counted only where the paired simulated runs show it; a joker's numbers stepped up, a step down and down to none, its share multiplied with its Ante 8 worth (several jokers' shares added); a card worth drawing once its Ante 8 worth passed; money by the shop estimate of what it buys before the boss (the boss's chance with the shops, not the runs; none in the quick pass). Not counted: the next ante, the game's round-end steps between the blinds (Popcorn, Turtle Bean, Gros Michel, perishables, the round's money).",
+            "Best play also counts what the round leaves (the jokers' numbers, Blue Seal planets, money, cards worth drawing) by what it does to the chance of getting through this ante's blinds still ahead (the Big Blind taken as played, then the boss), each from the board the one before leaves: each change counted only where the paired simulated runs show it, as the change of the odds it was measured at, placed at your board's chance with what the shops before the boss add to it, as the shop ranking counts them (none in the quick pass; at least 10%: heuristic), and the changes combined in the odds, so together they stay between none and a sure pass; a joker's numbers stepped up, a step down and down to none (linear in the odds between the steps), apart from its Ante 8 worth (the two multiplied); a card worth drawing once its Ante 8 worth passed; money by the shop estimate of what it buys before the boss (none in the quick pass). Not counted: the next ante, the game's round-end steps between the blinds (Popcorn, Turtle Bean, Gros Michel, perishables, the round's money).",
         ))
         .chain((run.hand.len() > sim::ALL_MOVES_MAX).then_some(
             "A big hand: Best play's moves come from the hand's structure (its plays whose cards can all score, the best few of each kind and then by score now; its structure's discards), not every move; the simulated player's best play looks only at its 16 highest cards.",

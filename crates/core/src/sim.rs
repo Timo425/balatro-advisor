@@ -598,7 +598,63 @@ pub struct Outcome {
     pub last: Option<HandType>,
     /// What the round's hands and discards changed on the jokers, in the round's value
     /// (`RoundGoals::grown`)
-    pub grown: f64,
+    pub grown: Grown,
+}
+
+/// What a round's hands and discards changed on the jokers its goals count, in two parts that
+/// add up over a round's steps (`RoundGoals::grown`) and combine in its value
+/// (`RoundGoals::value`): `long`, the log of the factor they leave the run's value by Ante 8 at
+/// (each joker's own factor, multiplied: `JokerWorth::of`), and `ahead`, the shift they give the
+/// log-odds of getting through this ante's blinds still ahead (each joker's, added: odds
+/// multiply, so the chance stays between none and a sure pass)
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Grown {
+    pub long: f64,
+    pub ahead: f64,
+}
+
+impl std::ops::Add for Grown {
+    type Output = Grown;
+    fn add(self, o: Grown) -> Grown {
+        Grown { long: self.long + o.long, ahead: self.ahead + o.ahead }
+    }
+}
+
+impl std::ops::Sub for Grown {
+    type Output = Grown;
+    fn sub(self, o: Grown) -> Grown {
+        Grown { long: self.long - o.long, ahead: self.ahead - o.ahead }
+    }
+}
+
+impl std::ops::AddAssign for Grown {
+    fn add_assign(&mut self, o: Grown) {
+        *self = *self + o;
+    }
+}
+
+/// The log-odds of chance `p` (`ln(p / (1 − p))`), for a chance measured on `n` runs or rounds:
+/// none and all are taken half a run in, so a shift stays finite and a measured chance of none
+/// or all isn't taken as certain
+pub fn log_odds(p: f64, n: usize) -> f64 {
+    let e = 0.5 / n.max(1) as f64;
+    let p = p.clamp(e, 1.0 - e);
+    (p / (1.0 - p)).ln()
+}
+
+/// The chance at log-odds `x` (`log_odds`' inverse)
+pub fn chance_at(x: f64) -> f64 {
+    1.0 / (1.0 + (-x).exp())
+}
+
+/// The chance at log-odds `base` shifted by `by` against shifted by `from` (between none and
+/// what a sure pass gives): what a goal's shifts in the blinds still ahead multiply a round by
+/// (`RoundGoals::value`, `value::Ahead::share`)
+pub fn chance_ratio(base: f64, by: f64, from: f64) -> f64 {
+    if by == from {
+        return 1.0;
+    }
+    chance_at(base + by) / chance_at(base + from)
 }
 
 /// The rounds numbered `range` after `first` (round i always draws the same cards, whatever
@@ -616,7 +672,8 @@ pub fn outcomes_after(b: &Board, start: &RoundStart, first: &Move, range: std::o
             bb.hands_left = start.hands;
             bb.discards_left = start.discards;
             bb.deck_remaining = deck.len() as i64;
-            let mut o = Outcome::default();
+            // valued against the analysis start: the jokers' numbers as the round so far left them
+            let mut o = Outcome { grown: bb.goals.as_ref().map_or(Grown::default(), |g| g.at(&bb)), ..Default::default() };
             let next = match first {
                 Move::Play(idx) => {
                     let played: Vec<Card> = idx.iter().filter_map(|&k| hand.get(k).copied()).collect();
@@ -940,7 +997,7 @@ pub struct RoundResult {
     /// The most a card drawn this round adds (`RoundGoals::seen`)
     pub seen: f64,
     /// What its hands and discards changed on the jokers (`RoundGoals::grown`)
-    pub grown: f64,
+    pub grown: Grown,
 }
 
 fn draw(hand: &mut Vec<Card>, deck: &mut Vec<Card>, size: usize) {
@@ -2474,8 +2531,17 @@ impl Use {
 /// The round simulation uses it to choose between winning now and playing on for more.
 #[derive(Debug, Clone, Default)]
 pub struct RoundGoals {
+    /// By Ante 8: a planet of each hand, a dollar (as a share of the run's value)
     pub planet: [f64; 12],
     pub dollar: f64,
+    /// In this ante's blinds still ahead (`value::Ahead`): the shift a planet of each hand and a
+    /// dollar give the log-odds of getting through them, from `ahead`
+    pub planet_ahead: [f64; 12],
+    pub dollar_ahead: f64,
+    /// The log-odds of getting through this ante's blinds still ahead with your board as it is
+    /// (with the shops before them, `value::Ahead::base`), where the shifts are taken from;
+    /// nothing counted there: every shift none
+    pub ahead: f64,
     pub per_hand: f64,
     /// Cards worth drawing this round, and by how much: (the held consumable's key, the card,
     /// how much more it's worth used on that card than on the best card in your hand). Gone
@@ -2493,9 +2559,9 @@ pub struct RoundGoals {
 
 /// What a joker's numbers left at a round's end are worth (`RoundGoals::jokers`), against its
 /// numbers when the analysis started (`start`, as `Joker::lasting` counts them), in two parts
-/// combined as a product, as a choice is worth its chance to get through times the long-run
-/// value of what it leaves (`JokerWorth::of`): by Ante 8, one more Mult, ×Mult and Chip each
-/// (`per`, taken as linear) and the joker used up (`gone`: Ice Cream, Seltzer, Ramen), with
+/// kept apart, as a choice is worth its chance to get through times the long-run value of what
+/// it leaves (`JokerWorth::of`, `RoundGoals::value`): by Ante 8, one more Mult, ×Mult and Chip
+/// each (`per`, taken as linear) and the joker used up (`gone`: Ice Cream, Seltzer, Ramen), with
 /// `floor` never less than that, so a fall costs at most what losing it does; and in this ante's
 /// blinds still ahead (`ahead`, Best play's round only)
 #[derive(Debug, Clone)]
@@ -2516,11 +2582,15 @@ pub struct JokerWorth {
 }
 
 /// What a joker's numbers do to the chance of getting through this ante's blinds still ahead,
-/// as a share of that chance (`value::Ahead::joker`): per unit above `start` (`up`); below it,
-/// per unit down to `knot` (a step below, `near`) and past it down to none (`far`), as a blind's
-/// chance isn't linear in them (a fall of a step on a board on pace may move nothing where a
-/// reset loses the boss); and the joker used up (`gone`), never less than that. All nothing: not
-/// counted (the growth runs' goals).
+/// as a shift of its log-odds (`value::Ahead::joker`; linear in the log-odds, not in the chance,
+/// so many steps never pass a sure pass: measured 2026-10-18, below): per unit above `start`
+/// (`up`); below it, per unit down to `knot` (a step below, `near`) and past it down to none
+/// (`far`), as a blind's chance isn't linear in them (a fall of a step on a board on pace may
+/// move nothing where a reset loses the boss); and the joker used up (`gone`), never less than
+/// that. All nothing: not counted (the growth runs' goals). On 31 joker steps of 43 saved Small
+/// and Big Blind states (2026-10-18), 5 and 10 steps up measured against one step extended:
+/// extended in the log-odds, off by 0.12 and 0.14 of the chance's share on average; extended
+/// linearly in the share, by 0.51 and 1.05.
 #[derive(Debug, Clone, Default)]
 pub struct AheadWorth {
     pub up: [f64; 3],
@@ -2536,7 +2606,21 @@ impl AheadWorth {
         self.up.iter().chain(&self.near).chain(&self.far).any(|&x| x > 0.0) || self.gone != 0.0
     }
 
-    /// The joker with these numbers (`None`: used up), against `start`
+    /// Its numbers at none (Mult 0, ×1, Chips 0) against `start`, before the floor at `gone`:
+    /// what losing it costs at least (`value::Ahead::joker`)
+    pub fn at_none(&self, start: &[f64; 3]) -> f64 {
+        let none = [0.0, 1.0, 0.0];
+        (0..3).filter(|&f| start[f] > none[f]).map(|f| self.near[f] * (self.knot[f] - start[f]) + self.far[f] * (none[f] - self.knot[f])).sum()
+    }
+
+    /// Losing it, from the shift measured without it (`shift`, nothing where the runs didn't
+    /// show it): never a gain, and at least what its numbers at none cost (`at_none`), so a fall
+    /// the runs showed isn't floored away where its loss alone wasn't shown
+    pub fn loss(&self, shift: f64, start: &[f64; 3]) -> f64 {
+        shift.min(0.0).min(self.at_none(start))
+    }
+
+    /// The joker with these numbers (`None`: used up), against `start`: the log-odds' shift
     fn of(&self, start: &[f64; 3], now: Option<[f64; 3]>) -> f64 {
         let Some(n) = now else { return self.gone };
         let at = |f: usize| {
@@ -2553,11 +2637,16 @@ impl AheadWorth {
     }
 }
 
+/// The least factor a joker's fall leaves the run's value by Ante 8 at (`JokerWorth::of`): its
+/// log stays finite where a fall (without the floor) or a loss is worth the whole run
+const LEAST_FACTOR: f64 = 1e-6;
+
 impl JokerWorth {
-    /// What the joker with these numbers (`None`: used up) is worth against its start: the two
-    /// parts as a product, (1 + by Ante 8)(1 + in the blinds ahead) − 1, so losing it costs at
-    /// most a round, whatever both parts would add up to
-    fn of(&self, now: Option<[f64; 3]>) -> f64 {
+    /// What the joker with these numbers (`None`: used up) is worth against its start, in the
+    /// two parts `Grown` keeps: by Ante 8 the log of 1 + its worth there (so several jokers'
+    /// falls multiply the run's value, each at most to nothing, where added they'd pass it), and
+    /// its shift in the blinds ahead
+    fn of(&self, now: Option<[f64; 3]>) -> Grown {
         let linear = |n: [f64; 3]| (0..3).map(|f| self.per[f] * (n[f] - self.start[f])).sum::<f64>();
         let long = match (now, self.floor) {
             (Some(n), true) => linear(n).max(self.gone),
@@ -2565,7 +2654,7 @@ impl JokerWorth {
             (Some(n), false) => linear(n),
             (None, false) => linear([0.0, 1.0, 0.0]),
         };
-        (1.0 + long) * (1.0 + self.ahead.of(&self.start, now)) - 1.0
+        Grown { long: (1.0 + long).max(LEAST_FACTOR).ln(), ahead: self.ahead.of(&self.start, now) }
     }
 }
 
@@ -2579,20 +2668,62 @@ fn jokers_now(b: &Board) -> Option<JokersNow> {
 }
 
 /// `RoundGoals::grown` since `was` (`jokers_now`)
-fn grown_since(b: &Board, was: &Option<JokersNow>) -> f64 {
+fn grown_since(b: &Board, was: &Option<JokersNow>) -> Grown {
     match (&b.goals, was) {
         (Some(g), Some(w)) => g.grown(w, b),
-        _ => 0.0,
+        _ => Grown::default(),
     }
 }
 
 impl RoundGoals {
-    /// A simulated round's value: 0 if lost, else 1 plus what it leaves you.
-    /// Never below a lost round's nothing: what a won round leaves can cost the run's value at
-    /// most, not more (several jokers' falls, each at most a round, could add up past it).
+    /// A simulated round's value: 0 if lost, else what it leaves you as a choice is worth (the
+    /// chance to get through, times the long-run value of what it leaves): 1 plus its planets,
+    /// money and the card it drew by Ante 8, times the factor the jokers' numbers leave the run's
+    /// value at by Ante 8 (`Grown::long`), times the chance of getting through this ante's blinds
+    /// still ahead with what it leaves against the chance with your board as it is (`ahead`
+    /// shifted by the jokers', the planets' and the money's shifts: `chance_ratio`). Each part is
+    /// at least nothing, so a won round is never worth less than a lost one (money a boss takes,
+    /// The Tooth, the only part that could pass it, is floored). `o.grown` is against the
+    /// analysis start (an outcome from a board mid-round starts at `at` of it), so outcomes from
+    /// any point of a round are valued alike.
     pub fn value(&self, o: &Outcome) -> f64 {
-        let planet = o.last.map_or(0.0, |h| self.planet[h as usize]);
-        o.won * (1.0 + planet * o.planets + self.dollar * (o.spare * self.per_hand + o.cash) + o.seen + o.grown).max(0.0)
+        let (planet, planet_ahead) = o.last.map_or((0.0, 0.0), |h| (self.planet[h as usize], self.planet_ahead[h as usize]));
+        let money = o.spare * self.per_hand + o.cash;
+        let long = (1.0 + planet * o.planets + self.dollar * money + o.seen).max(0.0) * o.grown.long.exp();
+        o.won * long * chance_ratio(self.ahead, o.grown.ahead + planet_ahead * o.planets + self.dollar_ahead * money, 0.0)
+    }
+
+    /// What `add` adds to a won round (`value`) where the jokers' numbers are at `at` (`at`, as
+    /// a round so far left them): the one measure for the simulated player's thresholds
+    fn gain(&self, at: Grown, add: Outcome) -> f64 {
+        let won = Outcome { won: 1.0, grown: at, ..Default::default() };
+        self.value(&Outcome { won: 1.0, grown: at + add.grown, ..add }) - self.value(&won)
+    }
+
+    /// What a dollar more adds to a won round (`gain`), the jokers at `at`
+    pub fn dollar_worth(&self, at: Grown) -> f64 {
+        self.gain(at, Outcome { cash: 1.0, ..Default::default() })
+    }
+
+    /// What a planet of hand `h` adds to a won round whose last hand is `h` (`gain`), the jokers
+    /// at `at`
+    pub fn planet_worth(&self, h: HandType, at: Grown) -> f64 {
+        let last = Outcome { won: 1.0, grown: at, last: Some(h), ..Default::default() };
+        self.value(&Outcome { planets: 1.0, ..last }) - self.value(&last)
+    }
+
+    /// What the counted jokers' numbers on `b` are worth against the analysis start
+    /// (`JokerWorth::of`, both parts): where a round's outcome starts from, so every outcome is
+    /// valued against the same start
+    pub fn at(&self, b: &Board) -> Grown {
+        self.jokers_now(b).map_or(Grown::default(), |now| self.at_now(&now))
+    }
+
+    fn at_now(&self, now: &[Option<[f64; 3]>]) -> Grown {
+        // against each joker at its start, so the analysis start is none in both parts (a joker
+        // the projection keeps though weaker than a typical find, an eternal one, has a floor,
+        // `gone` by Ante 8, above nothing)
+        self.jokers.iter().zip(now).fold(Grown::default(), |s, (w, n)| s + (w.of(*n) - w.of(Some(w.start))))
     }
 
     /// The counted jokers' numbers now (`None`: used up), by entry, for `grown`; `None` when none
@@ -2604,9 +2735,14 @@ impl RoundGoals {
     /// What a hand or a discard changed on the counted jokers since `was` (`jokers_now` before
     /// it), by what each is worth before and after it (`JokerWorth::of`), each found by its
     /// place on your board (`Joker::id`, kept through the round's steps)
-    pub fn grown(&self, was: &[Option<[f64; 3]>], b: &Board) -> f64 {
+    pub fn grown(&self, was: &[Option<[f64; 3]>], b: &Board) -> Grown {
         let now = self.jokers_now(b).unwrap_or_default();
-        self.jokers.iter().zip(was).zip(&now).map(|((w, before), after)| w.of(*after) - w.of(*before)).sum()
+        self.jokers.iter().zip(was).zip(&now).fold(Grown::default(), |s, ((w, before), after)| s + (w.of(*after) - w.of(*before)))
+    }
+
+    /// `grown` as what it adds to a won round (`gain`), from the jokers at `was`
+    pub fn grown_worth(&self, was: &[Option<[f64; 3]>], b: &Board) -> f64 {
+        self.gain(self.at_now(was), Outcome { grown: self.grown(was, b), ..Default::default() })
     }
 
     /// The most a card in `cards` adds (`seen`)
@@ -2649,10 +2785,12 @@ fn play_on_instead(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards
     // the most a different finish could add by the cards that pay at round end: every one in
     // hand kept, a Blue Seal's planet the best one, against what this finish keeps
     let paying: Vec<Card> = pays_at_end(b, hand).into_iter().map(|i| hand[i]).collect();
-    let best = g.planet.iter().copied().fold(0.0, f64::max);
-    let most = best * seal_planets(b, &paying) + g.dollar * held_dollars(&paying);
+    let at = g.at(b);
+    let best = HandType::ALL.iter().map(|&h| g.planet_worth(h, at)).fold(0.0, f64::max);
+    let dollar = g.dollar_worth(at);
+    let most = best * seal_planets(b, &paying) + dollar * held_dollars(&paying);
     // what this finish keeps of them once the press-play step went (The Hook), on average
-    let kept = over_hook_sets(fb, &held, |left| (g.planet[h as usize] * seal_planets(fb, left) + g.dollar * held_dollars(left), 0.0)).0;
+    let kept = over_hook_sets(fb, &held, |left| (g.planet_worth(h, g.at(fb)) * seal_planets(fb, left) + dollar * held_dollars(left), 0.0)).0;
     let for_held = most - kept >= LOOKAHEAD_MIN;
     let for_growth = growth_play(b, g, hand, target - scored, win);
     if !for_held && for_growth.is_none() {
@@ -2783,7 +2921,7 @@ fn growth_play(b: &Board, g: &RoundGoals, hand: &[Card], need: f64, win: &[usize
             best = Some((grown, keeps, floor, idx));
         }
     }
-    let (grown, keeps, _, idx) = best.filter(|x| x.0 - g.dollar * g.per_hand >= LOOKAHEAD_MIN)?;
+    let (grown, keeps, _, idx) = best.filter(|x| x.0 - g.dollar_worth(g.at_now(&was)) * g.per_hand >= LOOKAHEAD_MIN)?;
     // topped up with the cards a play can spare (`with_fillers`: more drawn next hand) when that
     // grows the jokers as much and leaves the winning play in hand as the play did
     let filled = with_fillers(b, hand, &idx);
@@ -2799,7 +2937,7 @@ fn play_growth(b: &Board, g: &RoundGoals, was: &[Option<[f64; 3]>], hand: &[Card
     let held: Vec<Card> = (0..hand.len()).filter(|i| !idx.contains(i)).map(|i| hand[i]).collect();
     let mut after = b.clone();
     let _ = after.after_hand(&score::score(b, &played, &held, &mut Unlucky, false));
-    g.grown(was, &after)
+    g.grown_worth(was, &after)
 }
 
 /// Simulated futures per choice when a play that doesn't win is weighed for growth
@@ -2900,11 +3038,12 @@ fn finish_value(b: &Board, g: &RoundGoals, hand: &[Card], win: &[usize], hands: 
     let played: Vec<Card> = win.iter().map(|&i| hand[i]).collect();
     let held: Vec<Card> = (0..hand.len()).filter(|i| !win.contains(i)).map(|i| hand[i]).collect();
     let value = |s: &crate::engine::Outcome, money: f64, planets: f64| {
-        let grown = g.jokers_now(b).map_or(0.0, |was| {
+        // the jokers as the hand leaves them, against the analysis start
+        let grown = {
             let mut after = b.clone();
             let _ = after.after_hand(s);
-            g.grown(&was, &after)
-        });
+            g.at(&after)
+        };
         let o = Outcome { won: 1.0, spare: (hands - 1) as f64, cash: s.dollars + money, planets, last: Some(s.hand), seen, grown, ..Default::default() };
         g.value(&o)
     };
@@ -3072,7 +3211,7 @@ fn play_round(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[Use]) ->
     let mut best_hand: f64 = 0.0;
     let mut plays = Vec::new();
     let mut money = 0.0;
-    let mut grown = 0.0;
+    let mut grown = Grown::default();
     // Cards worth drawing (`RoundGoals::seen`), per consumable: the best gain drawn so far. A
     // consumable used during the round (on its own fixed targets) takes its gain with it.
     let mut seen_by: Vec<(String, f64)> = b.goals.as_ref().map_or(vec![], |g| g.carried.clone());
@@ -4381,7 +4520,7 @@ mod tests {
         assert!((four - five - 0.04).abs() < 1e-9, "{four} vs {five}");
         // nothing counted without the goal: the same value
         b.goals = Some(RoundGoals::default());
-        let plain = |m: Move| outcomes_after(&b, &start, &m, 0..20, 7, &[]).iter().map(|o| o.grown).sum::<f64>();
+        let plain = |m: Move| outcomes_after(&b, &start, &m, 0..20, 7, &[]).iter().map(|o| o.grown.long.abs() + o.grown.ahead.abs()).sum::<f64>();
         assert_eq!((plain(Move::Play(vec![0, 1, 2, 3])), plain(Move::Play(vec![0, 1, 2, 3, 4]))), (0.0, 0.0));
     }
 
@@ -4523,7 +4662,7 @@ mod tests {
     }
 
     /// Plays `cards` on `b` and returns what the step left the jokers (`RoundGoals::grown`)
-    fn play_grown(g: &RoundGoals, b: &mut Board, cards: &str) -> f64 {
+    fn play_grown(g: &RoundGoals, b: &mut Board, cards: &str) -> Grown {
         let was = g.jokers_now(b).unwrap();
         let o = score::score(b, &Card::parse_list(cards).unwrap(), &[], &mut Unlucky, false);
         b.after_hand(&o);
@@ -4540,13 +4679,13 @@ mod tests {
         b.jokers[0].extra.chips = 5.0;
         b.jokers[1].mult = 5.0;
         let g = worths(&mut b, &[([0.0, 0.0, 0.01], -0.3), ([0.02, 0.0, 0.0], -0.5), ([1.0, 1.0, 1.0], -1.0)]);
-        // Green Joker +1 for the hand, Ice Cream gone
-        assert!((play_grown(&g, &mut b, "2S") - (-0.3 + 0.02)).abs() < 1e-12);
+        // Green Joker +1 for the hand, Ice Cream gone: the run's value by Ante 8 at 1.02 × 0.7
+        assert!((play_grown(&g, &mut b, "2S").long - (1.02f64 * 0.7).ln()).abs() < 1e-12);
         assert_eq!(b.jokers.len(), 2);
         let was = g.jokers_now(&b).unwrap();
         b.discard(&Card::parse_list("JS JH").unwrap());
         assert!(b.jokers[1].x_mult > 1.0);
-        assert!((g.grown(&was, &b) + 0.02).abs() < 1e-12, "the discard's −1 Green Joker Mult only");
+        assert!((g.grown(&was, &b).long + 1.02f64.ln()).abs() < 1e-12, "the discard's −1 Green Joker Mult only");
     }
 
     #[test]
@@ -4558,52 +4697,116 @@ mod tests {
         b.jokers[0].extra.chips = 5.0;
         b.jokers[1].extra.chips = 30.0;
         let g = worths(&mut b, &[([0.0, 0.0, 0.01], -0.3), ([0.0, 0.0, 0.01], -0.4)]);
-        assert!((play_grown(&g, &mut b, "2S") - (-0.3 - 0.05)).abs() < 1e-12);
+        assert!((play_grown(&g, &mut b, "2S").long - (0.7f64 * 0.95).ln()).abs() < 1e-12);
         // and in the hands after it the survivor is still itself: 5 more hands take its other
         // 25 Chips, −0.25, then it melts: in all its own −0.4 (never below losing it)
-        let rest: f64 = (0..6).map(|_| play_grown(&g, &mut b, "2S")).sum();
-        assert!(b.jokers.is_empty() && (rest - (-0.4 + 0.05)).abs() < 1e-12, "{rest}");
+        let rest: f64 = (0..6).map(|_| play_grown(&g, &mut b, "2S").long).sum();
+        assert!(b.jokers.is_empty() && (rest - (0.6f64 / 0.95).ln()).abs() < 1e-12, "{rest}");
         // An Ice Cream that fades over a round and then melts adds up to losing it, once
         let mut b = sample_board(&["j_ice_cream"]);
         b.jokers[0].extra.chips = 15.0;
         let g = worths(&mut b, &[([0.0, 0.0, 0.01], -0.3)]);
-        let total: f64 = (0..3).map(|_| play_grown(&g, &mut b, "2S")).sum();
-        assert!(b.jokers.is_empty() && (total + 0.3).abs() < 1e-12, "{total}");
+        let total: f64 = (0..3).map(|_| play_grown(&g, &mut b, "2S").long).sum();
+        assert!(b.jokers.is_empty() && (total - 0.7f64.ln()).abs() < 1e-12, "{total}");
         // Ride the Bus at +20 Mult reset by a face card: worth 0.01 a Mult, but losing it all
         // costs no more than losing the joker (0.1)
         let mut b = sample_board(&["j_ride_the_bus"]);
         b.jokers[0].mult = 20.0;
         let g = worths(&mut b, &[([0.01, 0.0, 0.0], -0.1)]);
-        assert!((play_grown(&g, &mut b, "KS") + 0.1).abs() < 1e-12);
+        assert!((play_grown(&g, &mut b, "KS").long - 0.9f64.ln()).abs() < 1e-12);
     }
 
     #[test]
     fn in_the_blinds_ahead_a_fall_is_priced_near_and_far_and_the_parts_multiply() {
         // Ride the Bus at +7, worth 0.001 a Mult by Ante 8, losing it −0.05 there; in the blinds
-        // ahead one more Mult worth nothing, the step below (to +5) nothing, past it to none 0.03
-        // a Mult (its reset loses the boss's flushes: `value::Ahead::joker`), losing it −0.4.
+        // ahead (80% to get through as it is) one more Mult shifts nothing, the step below (to
+        // +5) nothing, past it to none −0.3 of the log-odds a Mult (its reset loses the boss's
+        // flushes: `value::Ahead::joker`), losing it −2.
         let mut b = sample_board(&["j_ride_the_bus"]);
         b.jokers[0].mult = 7.0;
         let mut g = worths(&mut b, &[([0.001, 0.0, 0.0], -0.05)]);
-        std::sync::Arc::make_mut(&mut g.jokers)[0].ahead = AheadWorth { far: [0.03, 0.0, 0.0], knot: [5.0, 1.0, 0.0], gone: -0.4, ..Default::default() };
-        // a hand without a face card grows it: Ante 8's +0.001 only
-        assert!((play_grown(&g, &mut b, "2S") - 0.001).abs() < 1e-12);
-        // a face card's reset: (1 − 0.007)(1 − 5 × 0.03) − 1
+        g.ahead = log_odds(0.8, 300);
+        std::sync::Arc::make_mut(&mut g.jokers)[0].ahead = AheadWorth { far: [0.3, 0.0, 0.0], knot: [5.0, 1.0, 0.0], gone: -2.0, ..Default::default() };
+        // a hand without a face card grows it: Ante 8's ×1.001 only
+        let up = play_grown(&g, &mut b, "2S");
+        assert!((up.long - 1.001f64.ln()).abs() < 1e-12 && up.ahead == 0.0);
+        // a face card's reset: ×0.993 by Ante 8, and the log-odds 5 × 0.3 lower
         let mut b = sample_board(&["j_ride_the_bus"]);
         b.jokers[0].mult = 7.0;
         b.jokers[0].id = g.jokers[0].id;
-        let reset = (1.0 - 0.007) * (1.0 - 0.15) - 1.0;
-        assert!((play_grown(&g, &mut b, "KS") - reset).abs() < 1e-12);
-        // losing it in both parts costs at most a round: (1 − 0.9)(1 − 0.95) − 1 > −1, where
-        // the two added would be −1.85
+        let reset = play_grown(&g, &mut b, "KS");
+        assert!((reset.long - 0.993f64.ln()).abs() < 1e-12 && (reset.ahead + 1.5).abs() < 1e-12);
+        // the round's value: the two parts multiplied, the chance ahead from 80% to σ(ln 4 − 1.5)
+        let o = Outcome { won: 1.0, grown: reset, ..Default::default() };
+        let ahead = chance_at(4f64.ln() - 1.5) / 0.8;
+        assert!((g.value(&o) - 0.993 * ahead).abs() < 1e-9, "{}", g.value(&o));
+        // losing it in both parts costs at most a round
         let w = &mut std::sync::Arc::make_mut(&mut g.jokers)[0];
         w.gone = -0.9;
-        w.ahead.gone = -0.95;
         let gone = w.of(None);
-        assert!((gone - (0.1 * 0.05 - 1.0)).abs() < 1e-12 && gone > -1.0);
-        // and a won round is never worth less than a lost one
-        let o = Outcome { won: 1.0, grown: -1.5, ..Default::default() };
-        assert_eq!(g.value(&o), 0.0);
+        assert!((gone.long - 0.1f64.ln()).abs() < 1e-12 && gone.ahead == -2.0);
+    }
+
+    #[test]
+    fn losing_a_joker_ahead_costs_at_least_its_numbers_at_none() {
+        // Ride the Bus at +7: nothing a step down, −0.3 of the log-odds a Mult past +5. Where its
+        // loss alone wasn't shown (`gone` 0) the reset still counts, floored at its numbers at
+        // none (`value::Ahead::joker` takes the lower of the two)
+        let mut w = AheadWorth { far: [0.3, 0.0, 0.0], knot: [5.0, 1.0, 0.0], ..Default::default() };
+        let start = [7.0, 1.0, 0.0];
+        assert_eq!(w.of(&start, Some([0.0, 1.0, 0.0])), 0.0);
+        w.gone = w.loss(0.0, &start);
+        assert!((w.at_none(&start) + 1.5).abs() < 1e-12);
+        assert!((w.of(&start, Some([0.0, 1.0, 0.0])) + 1.5).abs() < 1e-12 && (w.of(&start, None) + 1.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn several_falls_multiply_and_growth_never_passes_a_sure_pass() {
+        // Three jokers each reset: by Ante 8 each leaves the run at ×0.5, in the blinds ahead
+        // (60% as it is) each shifts the log-odds by −1. Added as shares they'd cost more than a
+        // round (−1.5 by Ante 8 alone), floored at a lost round's nothing; as the parts combine,
+        // the won round keeps ×0.125 of its value by Ante 8 and the chance σ(ln 1.5 − 3) / 0.6
+        let g = RoundGoals { ahead: log_odds(0.6, 300), ..Default::default() };
+        let o = Outcome { won: 1.0, grown: Grown { long: 3.0 * 0.5f64.ln(), ahead: -3.0 }, ..Default::default() };
+        let v = g.value(&o);
+        assert!(v > 0.0 && (v - 0.125 * chance_at(1.5f64.ln() - 3.0) / 0.6).abs() < 1e-9, "{v}");
+        // however much the jokers grow, getting through counts at most as a sure pass: 1 / 0.6
+        let big = Outcome { won: 1.0, grown: Grown { long: 0.0, ahead: 50.0 }, ..Default::default() };
+        assert!(g.value(&big) <= 1.0 / 0.6 + 1e-12 && g.value(&big) > 1.0 / 0.6 - 1e-9);
+        // and a lost round is nothing
+        assert_eq!(g.value(&Outcome { won: 0.0, ..big }), 0.0);
+    }
+
+    #[test]
+    fn an_outcome_from_mid_round_is_valued_against_the_analysis_start() {
+        // Ride the Bus at +7 (0.001 a Mult by Ante 8; in the blinds ahead, 80% as it is, 0.2 of
+        // the log-odds a Mult up, 0.3 down past +5), reset by a King earlier in the round. An
+        // outcome from that board starts where the reset left the jokers (`at`), so a later
+        // hand's +1 is valued where the chance now is, not as if from the start
+        let mut b = sample_board(&["j_ride_the_bus"]);
+        b.jokers[0].mult = 7.0;
+        let mut g = worths(&mut b, &[([0.001, 0.0, 0.0], -0.05)]);
+        g.ahead = log_odds(0.8, 300);
+        std::sync::Arc::make_mut(&mut g.jokers)[0].ahead = AheadWorth { up: [0.2, 0.0, 0.0], far: [0.3, 0.0, 0.0], knot: [5.0, 1.0, 0.0], gone: -2.0, ..Default::default() };
+        let reset = play_grown(&g, &mut b, "KS");
+        assert_eq!(g.at(&b), reset);
+        // a hand of no face card from there: +1 Mult, from none
+        let was = g.jokers_now(&b).unwrap();
+        let mut after = b.clone();
+        let o = score::score(&after, &Card::parse_list("2S").unwrap(), &[], &mut Unlucky, false);
+        after.after_hand(&o);
+        let step = g.grown(&was, &after);
+        assert!((step.ahead - 0.3).abs() < 1e-12, "{step:?}");
+        let v = |gr: Grown| g.value(&Outcome { won: 1.0, grown: gr, ..Default::default() });
+        assert!((g.grown_worth(&was, &after) - (v(reset + step) - v(reset))).abs() < 1e-12);
+        // the same step from the start would be worth another amount: the chance isn't linear
+        assert!((g.grown_worth(&was, &after) - (v(step) - v(Grown::default()))).abs() > 1e-3);
+        // and an outcome played on from that board starts at it
+        let deck: Vec<Card> = standard_deck();
+        let start = RoundStart { hand: Card::parse_list("2S 3H").unwrap(), deck, hand_size: 2, hands: 1, discards: 0, scored: 0.0, target: 1.0 };
+        b.goals = Some(g.clone());
+        let outs = outcomes_after(&b, &start, &Move::Play(vec![0]), 0..1, 7, &[]);
+        assert!(outs[0].won == 1.0 && (outs[0].grown.ahead - (reset.ahead + 0.3)).abs() < 1e-12, "{:?}", outs[0].grown);
     }
 
     #[test]
@@ -4613,18 +4816,18 @@ mod tests {
         // the melt costs its last 5 Chips, not a gain back up to `gone`
         let mut b = sample_board(&["j_ice_cream"]);
         b.jokers[0].extra.chips = 100.0;
-        let mut g = worths(&mut b, &[([0.0, 0.0, 0.01], -0.3)]);
+        let mut g = worths(&mut b, &[([0.0, 0.0, 0.001], -0.3)]);
         let free = |g: &mut RoundGoals| std::sync::Arc::make_mut(&mut g.jokers).iter_mut().for_each(|w| w.floor = false);
         free(&mut g);
         b.jokers[0].extra.chips = 5.0;
-        assert!((play_grown(&g, &mut b, "2S") + 0.05).abs() < 1e-12);
+        assert!((play_grown(&g, &mut b, "2S").long - (0.9f64 / 0.905).ln()).abs() < 1e-12);
         assert!(b.jokers.is_empty());
         // Ride the Bus at +20 Mult reset: all 20 Mult, past what losing the joker is worth
         let mut b = sample_board(&["j_ride_the_bus"]);
         b.jokers[0].mult = 20.0;
         let mut g = worths(&mut b, &[([0.01, 0.0, 0.0], -0.1)]);
         free(&mut g);
-        assert!((play_grown(&g, &mut b, "KS") + 0.2).abs() < 1e-12);
+        assert!((play_grown(&g, &mut b, "KS").long - 0.8f64.ln()).abs() < 1e-12);
     }
 
     #[test]
