@@ -1950,13 +1950,15 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
 
     lap("outlook");
     // What the board a round leaves is worth in this ante's blinds still ahead (`value::Ahead`),
-    // with the shops before the boss as the shop ranking counts them: what the money held buys
+    // with the shops before each blind as the shop ranking counts them: what the money held buys
     let ahead = (run.screen.in_blind() && !run.hand.is_empty())
         .then(|| {
             let p_now = base_odds.get(key_round).map_or(0.0, |o| o.0);
             let value = |c: &Candidate| measured_p(&ctx, c, key_round, p_now);
-            let with = |m: f64| survival_with(&ctx, &pool_entries, &value, p_now, m, false);
-            value::Ahead::new(&ctx, (!pool_entries.is_empty()).then_some((p_now, &with as &dyn Fn(f64) -> f64)))
+            // the boss's chance with `shops` shops before it (in a blind, all the shops before the
+            // boss are `survival_with`'s, as many as the blinds ahead)
+            let with = |m: f64, shops: usize| money_value_with(&ctx, &pool_entries, &value, p_now, m, false, shops, true).min(1.0);
+            value::Ahead::new(&ctx, (!pool_entries.is_empty()).then_some((p_now, &with as &dyn Fn(f64, usize) -> f64)))
         })
         .flatten();
     let best_play = play::best_play(&ctx, &lr, &spending, &tarots, &hand_order, ahead.as_ref());
@@ -2012,7 +2014,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             "Best play counts what the round's hands and discards leave the jokers that grow or fade in a round, by what one more Mult, ×Mult or Chip adds by Ante 8 (measured on a step of +2 Mult, +×0.25 or +10 Chips, taken as linear; a fall never costs more than losing the joker; several jokers' factors multiplied, heuristic) and, in this ante, by what they do to the chance of getting through the blinds still ahead (see the note on those); the simulated player aims for it in how it finishes the round (the winning play worth most, or playing on for growth on a few simulated futures) and, with no win on the table, in a play that grows them more while it keeps pace and scores as much over the hands left as its own pick (weighed on 16 simulated futures), not in its digs or discards, and what they do to your cards (Vampire's enhancements, Glass breaking) isn't counted. The blind odds shown still play your jokers as they are now.",
         ))
         .chain(counts_ahead.then_some(
-            "Best play also counts what the round leaves (the jokers' numbers, Blue Seal planets, money, cards worth drawing) by what it does to the chance of getting through this ante's blinds still ahead (the Big Blind taken as played, then the boss), each from the board the one before leaves: each change counted only where the paired simulated runs show it, as the change of the odds it was measured at, placed at your board's chance with what the shops before the boss add to it, as the shop ranking counts them (none in the quick pass; at least 10%: heuristic), and the changes combined in the odds, so together they stay between none and a sure pass; a joker's numbers stepped up, a step down and down to none (linear in the odds between the steps), apart from its Ante 8 worth (the two multiplied); a card worth drawing once its Ante 8 worth passed; money by the shop estimate of what it buys before the boss (none in the quick pass). Not counted: the next ante, the game's round-end steps between the blinds (Popcorn, Turtle Bean, Gros Michel, perishables, the round's money).",
+            "Best play also counts what the round leaves (the jokers' numbers, Blue Seal planets, money, cards worth drawing) by what it does to the chance of getting through this ante's blinds still ahead (the Big Blind taken as played, then the boss), each from the board the one before leaves: each change counted only where the paired simulated runs show it, measured on your board carrying what the shops before each blind find, as the shop ranking counts them for the boss (none in the quick pass), put on as a multiplier on every score sized so the boss gets through that often (heuristic), and raised where your board gets through these blinds less than 10% of the time (heuristic); each sized by a search of at most 6 sets of runs, ×1000 at most, ended by two steps that change nothing (a budget), and where that falls short, measured at the chance it reaches, as the change of the odds there, and the changes combined in the odds, so together they stay between none and a sure pass; a joker's numbers stepped up, a step down and down to none (linear in the odds between the steps), apart from its Ante 8 worth (the two multiplied); a card worth drawing once its Ante 8 worth passed; money by the shop estimate of what it buys before the boss (none in the quick pass). Not counted: the next ante, the game's round-end steps between the blinds (Popcorn, Turtle Bean, Gros Michel, perishables, the round's money).",
         ))
         .chain((run.hand.len() > sim::ALL_MOVES_MAX).then_some(
             "A big hand: Best play's moves come from the hand's structure (its plays whose cards can all score, the best few of each kind and then by score now; its structure's discards), not every move; the simulated player's best play looks only at its 16 highest cards.",
@@ -4739,6 +4741,79 @@ mod tests {
         let growths = growths.unwrap_or_else(|| growths_for(&ctx, &[]));
         let lr = value::LongRun::new(&ctx, mix, &growths, &[], [0; 4]);
         f(&lr)
+    }
+
+    #[test]
+    fn a_reset_ahead_counts_where_the_shops_lift_a_board_from_near_none() {
+        // Ride the Bus at +30 before a blind past nearly every round the board plays as it is,
+        // and shops before it that find enough to get through 60% of the time: on the runs as
+        // the board is, a reset loses nothing it had; on the board carrying the shops' find, it
+        // loses most of what the find gets through
+        let data = GameData::bundled();
+        let r = shop_run(&[("j_ride_the_bus", None, None)], &[]);
+        let mut base = Board::from_run(&r, data);
+        base.jokers[0].mult = 30.0;
+        let mut fresh_deck = r.full_deck();
+        fresh_deck.sort_by_key(Card::order_key);
+        let spec = |target: f64| {
+            let (start, rules) = blind_from_start("bl_big", target, &r, &fresh_deck);
+            Spec { label: "Next: Big".into(), blind_key: "bl_big".into(), blind_name: "Big Blind".into(), start, rules, in_progress: false, horizon: false }
+        };
+        let mut ctx = Ctx { run: &r, shares: vec![], data, base, specs: vec![], ahead: vec![], fresh_deck: fresh_deck.clone(), opts: Options { sims: 120, ..quick() } };
+        // the board's whole rounds (a target no round reaches): past most of them
+        let (_, all) = ctx.odds_one(&ctx.base, &spec(1e15), 120);
+        let target = all.p90 * 1.5;
+        let (p0, _) = ctx.odds_one(&ctx.base, &spec(target), 120);
+        assert!(p0 <= 0.05, "{p0}");
+        ctx.ahead = vec![spec(target)];
+        let shops = |_: f64, _: usize| 0.6;
+        let a = value::Ahead::new(&ctx, Some((0.0, &shops as &dyn Fn(f64, usize) -> f64))).unwrap();
+        let w = a.joker(0, [true, false, false]);
+        let reset = a.share(w.at_none(&ctx.base.jokers[0].lasting()));
+        assert!(reset < -0.5, "{reset} {w:?}");
+        // and a step up counts there too
+        assert!(w.up[0] > 0.0, "{w:?}");
+    }
+
+    #[test]
+    fn the_shops_find_is_sized_shop_by_shop_on_the_boss() {
+        // a Small Blind's blinds ahead: the Big Blind, which the board gets through most of the
+        // time, then a boss past nearly every round it plays as it is
+        let data = GameData::bundled();
+        let r = shop_run(&[("j_ride_the_bus", None, None)], &[]);
+        let mut base = Board::from_run(&r, data);
+        base.jokers[0].mult = 30.0;
+        let mut fresh_deck = r.full_deck();
+        fresh_deck.sort_by_key(Card::order_key);
+        let spec = |key: &str, target: f64| {
+            let (start, rules) = blind_from_start(key, target, &r, &fresh_deck);
+            Spec { label: key.into(), blind_key: key.into(), blind_name: key.into(), start, rules, in_progress: false, horizon: false }
+        };
+        let mut ctx = Ctx { run: &r, shares: vec![], data, base, specs: vec![], ahead: vec![], fresh_deck: fresh_deck.clone(), opts: Options { sims: 120, ..quick() } };
+        let (_, all) = ctx.odds_one(&ctx.base, &spec("bl_big", 1e15), 120);
+        ctx.ahead = vec![spec("bl_big", all.p10 * 0.9), spec("bl_big", all.p90 * 1.5)];
+        let find = |ctx: &Ctx, lifts: [f64; 2]| {
+            let with = move |_: f64, k: usize| lifts[k - 1];
+            value::Ahead::new(ctx, Some((0.0, &with as &dyn Fn(f64, usize) -> f64))).unwrap().find_at()
+        };
+        // a second shop that finds more: more on the boss than on the Big Blind
+        let (two, _) = find(&ctx, [0.3, 0.6]);
+        assert!(two[0] > 1.0 && two[1] > two[0], "{two:?}");
+        // one that finds nothing more: the first shop's find on both
+        let (same, _) = find(&ctx, [0.5, 0.5]);
+        assert!(same[0] > 1.0 && same[0] == same[1], "{same:?}");
+        // the Big Blind made the one that holds the chain back (the chain short of the boss's
+        // 60% with the find): the boss's find is still sized on the boss, not pushed up by a
+        // chain it can't lift
+        ctx.ahead[0] = spec("bl_big", all.p90 * 1.4);
+        let (held, chain) = find(&ctx, [0.3, 0.6]);
+        assert!((value::AHEAD_FLOOR - 0.04..0.5).contains(&chain), "{chain}");
+        assert!(held[1] == two[1], "{held:?} {two:?}");
+        // no shops counted (the quick pass) and a board that gets through less than the floor:
+        // every blind raised alike until it gets through about that often
+        ctx.ahead = vec![spec("bl_big", all.p90 * 1.5)];
+        let (floor, chain) = value::Ahead::new(&ctx, None).unwrap().find_at();
+        assert!(floor[0] > 1.0 && (chain - value::AHEAD_FLOOR).abs() < 0.06, "{floor:?} {chain}");
     }
 
     #[test]
