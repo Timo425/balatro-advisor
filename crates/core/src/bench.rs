@@ -43,7 +43,7 @@ pub fn run() -> Vec<Timing> {
     time("typical_hands 1000 samples", 1000, &mut || {
         std::hint::black_box(sim::typical_hands(&b, &deck, 8, 1000, 1));
     });
-    let start = RoundStart { hand: vec![], deck: deck.clone(), hand_size: 8, hands: 4, discards: 3, scored: 0.0, target: 3000.0 };
+    let start = RoundStart { hand: vec![], deck: deck.clone(), hand_size: 8, hands: 4, discards: 3, scored: 0.0, target: 3000.0, fresh: true };
     time("round_odds 200 sims", 200, &mut || {
         std::hint::black_box(sim::round_odds(&b, &start, 200, 1));
     });

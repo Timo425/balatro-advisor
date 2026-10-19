@@ -87,4 +87,11 @@ impl RunState {
     pub fn round_hand_size(&self) -> i64 {
         self.hand_size + self.round_hand_size_delta
     }
+
+    /// The hands and discards a fresh round is played with: `round_hands` and `round_discards`
+    /// as the blind is set on the jokers you own (`Board::at_blind_set`: Burglar's)
+    pub fn round_at_blind_set(&self) -> (i64, i64) {
+        let jokers = self.jokers.iter().map(|j| Joker { debuff: j.debuff, ..Joker::from_ability(&j.key, &j.ability, 0) }).collect();
+        Board { jokers, ..Board::empty() }.at_blind_set(self.round_hands, self.round_discards)
+    }
 }

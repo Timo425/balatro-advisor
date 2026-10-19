@@ -204,6 +204,7 @@ pub fn run(run: &RunState, data: &GameData, plan: &Plan, sims: usize, seed: u64)
                     discards: run.discards_left,
                     scored: cb.map_or(0.0, |c| c.scored),
                     target: cb.map_or(bl.target, |c| c.target),
+                    fresh: false,
                 }
             } else {
                 b.new_round(&bl.key);
@@ -218,6 +219,7 @@ pub fn run(run: &RunState, data: &GameData, plan: &Plan, sims: usize, seed: u64)
                     discards: run.round_discards,
                     scored: 0.0,
                     target: bl.target,
+                    fresh: true,
                 };
                 // the plan's jokers, then the blind's own rule on hands and discards
                 let mut start = crate::advise::apply_mods(&start, added, removed, true);
@@ -247,7 +249,7 @@ pub fn run(run: &RunState, data: &GameData, plan: &Plan, sims: usize, seed: u64)
         let mut b = board_with(js, full);
         // a round of its own: not the blind in progress (the board from the save has its rules)
         b.new_round("");
-        let start = RoundStart { hand: vec![], deck: full.to_vec(), hand_size: run.hand_size, hands: run.round_hands, discards: run.round_discards, scored: 0.0, target };
+        let start = RoundStart { hand: vec![], deck: full.to_vec(), hand_size: run.hand_size, hands: run.round_hands, discards: run.round_discards, scored: 0.0, target, fresh: true };
         let start = crate::advise::apply_mods(&start, added, removed, true);
         let (p, st) = sim::round_odds(&b, &start, sims, seed);
         out.push(BlindOdds { label: format!("Ante {ante} plain boss"), target, p_win: p, p_with_bones: None, reach: st.mean / target.max(1.0), round_money: st.money });

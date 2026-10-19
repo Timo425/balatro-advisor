@@ -154,7 +154,7 @@ fn rounds() -> Vec<(String, Board, sim::RoundStart)> {
         for (hands, discards) in [(4, 3), (4, 1), (1, 3)] {
             let key = format!("{name}_{hands}h{discards}d");
             let target = TARGETS.iter().find(|t| t.0 == key).map_or(0.0, |t| t.1);
-            out.push((key, b.clone(), sim::RoundStart { hand: vec![], deck: deck.clone(), hand_size: 8 + rules.hand_size_delta, hands, discards, scored: 0.0, target }));
+            out.push((key, b.clone(), sim::RoundStart { hand: vec![], deck: deck.clone(), hand_size: 8 + rules.hand_size_delta, hands, discards, scored: 0.0, target, fresh: true }));
         }
     }
     out
@@ -238,7 +238,7 @@ fn player_against_oracle() {
         let run: RunState = serde_json::from_value(v["state"].clone()).unwrap();
         let b = Board::from_run(&run, GameData::bundled());
         if let (true, Some(cb)) = (run.screen.in_blind(), &run.current_blind) {
-            cases.push((format!("{name} live"), b.clone(), sim::RoundStart { hand: run.hand.clone(), deck: run.draw_pile.clone(), hand_size: run.round_hand_size(), hands: run.hands_left, discards: run.discards_left, scored: cb.scored, target: cb.target }));
+            cases.push((format!("{name} live"), b.clone(), sim::RoundStart { hand: run.hand.clone(), deck: run.draw_pile.clone(), hand_size: run.round_hand_size(), hands: run.hands_left, discards: run.discards_left, scored: cb.scored, target: cb.target, fresh: false }));
         }
         let mut fresh = b.clone();
         fresh.blind = Default::default();
@@ -248,7 +248,7 @@ fn player_against_oracle() {
             c.debuff = false;
         }
         deck.sort_by_key(|c| c.order_key());
-        let mut start = sim::RoundStart { hand: vec![], deck, hand_size: run.hand_size, hands: run.round_hands, discards: run.round_discards, scored: 0.0, target: 1.0 };
+        let mut start = sim::RoundStart { hand: vec![], deck, hand_size: run.hand_size, hands: run.round_hands, discards: run.round_discards, scored: 0.0, target: 1.0, fresh: true };
         start.target = half_point(&fresh, &start, 200, 7);
         cases.push((format!("{name} fresh"), fresh, start));
     }
@@ -324,7 +324,7 @@ fn player_values() {
             *deck.iter_mut().find(|d| d.rank == c.rank && d.suit == c.suit).unwrap() = c;
         }
         for (hands, discards) in [(4, 3), (4, 1)] {
-            let mut start = sim::RoundStart { hand: vec![], deck: deck.clone(), hand_size: 8, hands, discards, scored: 0.0, target: 1.0 };
+            let mut start = sim::RoundStart { hand: vec![], deck: deck.clone(), hand_size: 8, hands, discards, scored: 0.0, target: 1.0, fresh: true };
             start.target = half_point(&b, &start, 400, 7);
             let mut gb = b.clone();
             gb.goals = Some(goals.clone());

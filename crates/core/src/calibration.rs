@@ -127,7 +127,7 @@ impl Tracker {
             // A blind that has just started: first hand, nothing scored
             if let (true, Some(cb), Some(p)) = (r.screen.in_blind(), &r.current_blind, p_current) {
                 let slot = r.blinds.iter().find(|b| b.state == "Current").map(|b| b.slot.clone()).unwrap_or_default();
-                let fresh = cb.scored == 0.0 && r.hands_left == r.round_hands;
+                let fresh = cb.scored == 0.0 && r.hands_left == r.round_at_blind_set().0;
                 let id = format!("{}-{}-{}", r.seed, r.ante, slot);
                 let known = self.open.iter().any(|o| o.0 == id) || read(&self.dir).iter().any(|e| matches!(e, Entry::Prediction { id: i, .. } if *i == id));
                 if fresh && !slot.is_empty() && !known {

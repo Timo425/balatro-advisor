@@ -654,7 +654,10 @@ fn joker_note(key: &str) -> Option<String> {
     non_scoring_note(key).map(str::to_string).or_else(|| unprojected_growth(key).map(|g| format!("{g}: not modelled, valued at its size now")))
 }
 
-/// Hand size / hands / discards a joker adds while owned (its `add_to_deck` effects).
+/// Hand size / hands / discards a joker adds while owned (its `add_to_deck` effects, card.lua
+/// `Card:add_to_deck`: in the save's `round_resets` and hand size once it's yours, so they
+/// count for a joker added or removed; Turtle Bean's at its size now). Burglar's act as each
+/// blind is set instead, from the board played (`Board::at_blind_set`).
 fn round_mods(j: &Joker) -> (i64, i64, i64) {
     match j.key.as_str() {
         "j_juggler" => (1, 0, 0),
@@ -663,7 +666,6 @@ fn round_mods(j: &Joker) -> (i64, i64, i64) {
         "j_stuntman" => (-2, 0, 0),
         "j_merry_andy" => (-1, 0, 3),
         "j_drunkard" => (0, 0, 1),
-        "j_burglar" => (0, 3, -99),
         _ => (0, 0, 0),
     }
 }
@@ -689,7 +691,9 @@ struct Spec {
 
 /// `start` with the hand size, hands and discards that `added` jokers bring and `removed`
 /// ones take away (`round_mods`), for a round not yet started (`fresh`; the round in progress
-/// keeps its own: a gap, see design.md)
+/// keeps its own: a gap, see design.md). The jokers' `setting_blind` effects aren't these: the
+/// simulation sets them on a fresh start as it's played, from the board played
+/// (`RoundStart::hands_on`).
 pub(crate) fn apply_mods(start: &RoundStart, added: &[&Joker], removed: &[&Joker], fresh: bool) -> RoundStart {
     let mut s = start.clone();
     if !fresh {
@@ -699,13 +703,7 @@ pub(crate) fn apply_mods(start: &RoundStart, added: &[&Joker], removed: &[&Joker
         let (h, hands, d) = round_mods(j);
         s.hand_size += sign * h;
         s.hands += sign * hands;
-        if d == -99 {
-            if sign > 0 {
-                s.discards = 0;
-            }
-        } else {
-            s.discards += sign * d;
-        }
+        s.discards += sign * d;
     }
     s.hand_size = s.hand_size.max(1);
     s.hands = s.hands.max(1);
@@ -803,20 +801,22 @@ impl Ctx<'_> {
 
     /// Deals used by the quick screen (the first `SCREEN_DEALS` of the same sequence).
     fn typical_n(&self, b: &Board, added: &[&Joker], removed: &[&Joker], samples: usize) -> Stats {
-        let size = apply_mods(
-            &RoundStart { hand: vec![], deck: vec![], hand_size: self.run.hand_size, hands: 1, discards: 0, scored: 0.0, target: 0.0 },
+        // a fresh round on `b`: its jokers' hand size, hands and discards, the blind set on it
+        let start = apply_mods(
+            &RoundStart { hand: vec![], deck: vec![], hand_size: self.run.hand_size, hands: self.run.round_hands, discards: self.run.round_discards, scored: 0.0, target: 0.0, fresh: true },
             added,
             removed,
             true,
-        )
-        .hand_size as usize;
+        );
+        let size = start.hand_size as usize;
+        let (hands, discards) = start.hands_on(b);
         let mut bb = b.clone();
         bb.blind = Default::default();
-        bb.hands_left = self.run.round_hands.max(1);
+        bb.hands_left = hands.max(1);
         // With jokers that pay by discards left you'd keep or burn them, whichever scores
         // more: when discards left change the score at all (checked on a reference pair),
         // hands are scored both ways and the better counts.
-        bb.discards_left = self.run.round_discards;
+        bb.discards_left = discards;
         let mut none = bb.clone();
         none.discards_left = 0;
         let pair = Card::parse_list("AS AH").unwrap_or_default();
@@ -990,6 +990,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                 discards: run.discards_left,
                 scored: cb.scored,
                 target: cb.target,
+                fresh: false,
             },
             rules: RoundRules::default(),
             in_progress: true,
@@ -1033,6 +1034,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                 discards: run.round_discards,
                 scored: 0.0,
                 target,
+                fresh: true,
             },
             rules: RoundRules::default(),
             in_progress: false,
@@ -2247,8 +2249,9 @@ fn best_order(ctx: &Ctx, base_mean: f64) -> Option<OrderAdvice> {
     let size = (ctx.run.hand_size.max(1) as usize).min(deck.len());
     let mut b0 = ctx.base.clone();
     b0.blind = Default::default();
-    b0.hands_left = ctx.run.round_hands.max(1);
-    b0.discards_left = ctx.run.round_discards;
+    let (hands, discards) = b0.at_blind_set(ctx.run.round_hands, ctx.run.round_discards);
+    b0.hands_left = hands.max(1);
+    b0.discards_left = discards;
     b0.deck_remaining = (deck.len() - size) as i64;
     let samples = ctx.opts.hand_samples.min(200);
     let mut plays: Vec<(Vec<Card>, Vec<Card>)> = Vec::with_capacity(samples);
@@ -2629,14 +2632,7 @@ fn shop_options(
     // Playing cards in an open Standard pack: the round re-simulated with the card in your deck.
     for c in run.open_pack.iter() {
         let Some(card) = c.card else { continue };
-        let mut sp = spec.clone();
-        if sp.in_progress {
-            sp.start.hand.clear();
-            sp.start.scored = 0.0;
-            sp.start.hands = run.round_hands;
-            sp.start.discards = run.round_discards;
-            sp.start.deck = ctx.fresh_deck.clone();
-        }
+        let mut sp = fresh_round(spec, run, &ctx.fresh_deck);
         sp.start.deck.push(card);
         let p = ctx.odds_one(&ctx.base, &sp, ctx.opts.sims).0;
         out.push(ShopOption {
@@ -2789,7 +2785,7 @@ pub(crate) fn income_per_ante(key: &str, ability: &serde_json::Value, run: &RunS
         "j_egg" => num(extra, 3.0),
         // $5 per discarded card of a rank that changes every round: ~4 cards a discard, the
         // rank about 1 in 13 of them
-        "j_mail" => num(extra, 5.0) * run.round_discards.max(0) as f64 * 4.0 / 13.0,
+        "j_mail" => num(extra, 5.0) * run.round_at_blind_set().1.max(0) as f64 * 4.0 / 13.0,
         _ => 0.0,
     };
     per_round * 3.0
@@ -2839,9 +2835,11 @@ fn voucher_gain(before: &RunState, after: &RunState, cost: i64) -> Option<Gain> 
     (g.consumable_slots != 0 || g.round() != (0, 0, 0)).then_some(g)
 }
 
-/// A run's round as it starts now: (hand size, hands, discards)
+/// A run's round as it's played now: (hand size, hands, discards), the blind set on it
+/// (`RunState::round_at_blind_set`)
 fn round_now(run: &RunState) -> (i64, i64, i64) {
-    (run.hand_size, run.round_hands, run.round_discards)
+    let (hands, discards) = run.round_at_blind_set();
+    (run.hand_size, hands, discards)
 }
 
 /// The chance a Blue Seal card is drawn at some point in a round (then you keep it to the
@@ -3664,6 +3662,7 @@ fn blind_from_start(key: &str, target: f64, run: &RunState, deck: &[Card]) -> (R
         discards: run.round_discards,
         scored: 0.0,
         target,
+        fresh: true,
     };
     match key {
         "bl_needle" => start.hands = 1,
@@ -4249,6 +4248,7 @@ fn archetype_outlook(
             discards: run.round_discards,
             scored: 0.0,
             target,
+            fresh: true,
         },
         rules: RoundRules::default(),
         in_progress: false,
@@ -4534,6 +4534,50 @@ mod tests {
         for (now, plan) in same.now.iter().zip(&same.plan) {
             assert_eq!(plan.reach, now.reach, "{}", now.label);
         }
+    }
+
+    #[test]
+    fn an_owned_burglar_sets_every_fresh_blind_from_the_board_played() {
+        // card.lua `calculate_joker`, `setting_blind`: Burglar takes every discard and adds 3
+        // hands as each blind is set, which the save's `round_resets` (4 hands, 3 discards here)
+        // never holds. Owned: every fresh round is 7 hands, 0 discards, so Banner (+Chips per
+        // discard left) adds nothing; removed: the round the game resets to, not 1 hand.
+        let r = shop_run(&[("j_burglar", None, None), ("j_banner", None, None), ("j_joker", None, None)], &[]);
+        let data = GameData::bundled();
+        let mut fresh_deck = r.full_deck();
+        fresh_deck.sort_by_key(Card::order_key);
+        let ctx = Ctx { run: &r, shares: vec![], data, base: Board::from_run(&r, data), specs: vec![], ahead: vec![], fresh_deck, opts: quick() };
+        let fresh = RoundStart { hand: vec![], deck: ctx.fresh_deck.clone(), hand_size: r.hand_size, hands: r.round_hands, discards: r.round_discards, scored: 0.0, target: 1.0, fresh: true };
+        let no_burglar = without(&ctx.base, 0);
+        assert_eq!(fresh.hands_on(&ctx.base), (7, 0));
+        assert_eq!(apply_mods(&fresh, &[], &[&ctx.base.jokers[0]], true).hands_on(&no_burglar), (4, 3));
+        assert_eq!(round_now(&r), (8, 7, 0));
+        // a round in progress was set when it started, its first cards dealt or not yet
+        let playing = RoundStart { hand: fresh.deck[..8].to_vec(), fresh: false, ..fresh.clone() };
+        assert_eq!(playing.hands_on(&ctx.base), (4, 3));
+        assert_eq!(RoundStart { fresh: false, ..fresh.clone() }.hands_on(&ctx.base), (4, 3));
+        // each copy of it takes the discards and adds its hands too
+        let mut copied = ctx.base.clone();
+        copied.jokers.insert(0, Joker::from_key("j_blueprint", data).unwrap());
+        assert_eq!(fresh.hands_on(&copied), (10, 0));
+        // Banner's share of the typical hand: none with Burglar, some without it
+        let no_banner = without(&ctx.base, 1);
+        let all = ctx.typical(&ctx.base, &[], &[]).mean;
+        assert_eq!(ctx.typical(&no_banner, &[], &[&ctx.base.jokers[1]]).mean, all);
+        let both_gone = without(&no_burglar, 0);
+        assert!(ctx.typical(&both_gone, &[], &[&ctx.base.jokers[0], &ctx.base.jokers[1]]).mean < ctx.typical(&no_burglar, &[], &[&ctx.base.jokers[0]]).mean);
+        // the projection's round: 7 hands, 0 discards with it, the reset round without it
+        with_long_run(&r, |lr| {
+            let b = lr.board_with(&Gain::default());
+            assert!(b.jokers.iter().any(|j| j.key == "j_burglar"));
+            assert_eq!(lr.long_spec_for(&b, (0, 0, 0)).start.hands_on(&b), (7, 0));
+            let sold = Board { jokers: b.jokers.iter().filter(|j| j.key != "j_burglar").cloned().collect(), ..b.clone() };
+            assert_eq!(lr.long_spec_for(&sold, (0, 0, 0)).start.hands_on(&sold), (4, 3));
+        });
+        // Mail-In Rebate pays by discards: none with Burglar
+        let mail = shop_run(&[("j_burglar", None, None), ("j_mail", None, None)], &[]);
+        assert_eq!(income_per_ante("j_mail", &mail.jokers[1].ability, &mail, 1.0), 0.0);
+        assert!(income_per_ante("j_mail", &mail.jokers[1].ability, &shop_run(&[("j_mail", None, None)], &[]), 1.0) > 0.0);
     }
 
     #[test]

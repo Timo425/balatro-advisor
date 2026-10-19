@@ -602,6 +602,22 @@ impl Board {
         }
     }
 
+    /// The hands and discards a round is played with, from those it starts with before the
+    /// blind is set (`round_resets`, with the boss's own rule already applied by the caller when
+    /// the boss is known: The Needle's one hand, The Water's no discards): state_events.lua
+    /// `new_round` asks each joker in the `setting_blind` context after the blind's `set_blind`
+    /// (card.lua `Card:calculate_joker`), where Burglar
+    /// takes every discard left and adds `extra` hands, and so does each copy of it (Blueprint,
+    /// Brainstorm: `effective_joker`). None of that is in `round_resets`, unlike what a joker
+    /// gives when it's added (`add_to_deck`: Troubadour's hand a round, Merry Andy's and Drunkard's
+    /// discards), which the save's numbers already hold.
+    pub fn at_blind_set(&self, hands: i64, discards: i64) -> (i64, i64) {
+        (0..self.jokers.len()).filter_map(|j| effective_joker(self, j)).fold((hands, discards), |(h, d), jk| match jk.key.as_str() {
+            "j_burglar" => (h + jk.extra.n as i64, 0),
+            _ => (h, d),
+        })
+    }
+
     /// The round targets the game draws anew at each round's end (state_events.lua `end_round`;
     /// common_events.lua `reset_idol_card`, `reset_mail_rank`, `reset_ancient_card`,
     /// `reset_castle_card`): The Idol's card, Mail-In Rebate's rank and Castle's suit from a

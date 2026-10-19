@@ -427,14 +427,17 @@ impl<'a> LongRun<'a> {
                 discards: run.round_discards,
                 scored: 0.0,
                 target: 1e300,
+                fresh: true,
             },
             rules: RoundRules::default(),
             in_progress: false,
             horizon: true,
         };
         // Hand size, hands and discards from the jokers on the projected board: the game's
-        // numbers already include the jokers you own now, so only the difference counts.
-        let mods_now: (i64, i64, i64) = ctx.base.jokers.iter().map(round_mods).fold((0, 0, 0), |a, m| (a.0 + m.0, a.1 + m.1, a.2 + m.2.max(-run.round_discards)));
+        // numbers already include what the jokers you own now gave when added (`round_mods`),
+        // so only the difference counts; Burglar's comes as each blind is set, from the board
+        // played (`RoundStart::hands_on`).
+        let mods_now: (i64, i64, i64) = ctx.base.jokers.iter().map(round_mods).fold((0, 0, 0), |a, m| (a.0 + m.0, a.1 + m.1, a.2 + m.2));
         let mut lr = LongRun {
             ctx,
             run,
@@ -476,7 +479,8 @@ impl<'a> LongRun<'a> {
         }
         let yours = lr.fill_long(lr.project(&|_| true, run.dollars), None, 0.0);
         let start = lr.long_spec_for(&yours, (0, 0, 0)).start;
-        let _ = lr.round.set((start.hand_size, start.hands, start.discards));
+        let (hands, discards) = start.hands_on(&yours);
+        let _ = lr.round.set((start.hand_size, hands, discards));
         lr.l0 = lr.long_score(&yours);
         let lasting = (0..run.jokers.len()).filter(|&i| lr.lasts(i)).count() as i64;
         lr.full = lasting >= ctx.base.joker_slots;
@@ -805,11 +809,10 @@ impl<'a> LongRun<'a> {
     }
 
     /// Hand size, hands and discards from the jokers on the projected board, `more` (hand
-    /// size, hands, discards: a `Gain`'s) added. Turtle Bean has shrunk away by then (−1 hand
-    /// size a round).
+    /// size, hands, discards: a `Gain`'s) added, before the blind is set (`RoundStart::hands_on`
+    /// on `b`). Turtle Bean has shrunk away by then (−1 hand size a round).
     pub fn long_spec_for(&self, b: &Board, more: (i64, i64, i64)) -> Spec {
-        let run = self.run;
-        let later = b.jokers.iter().map(|j| if j.key == "j_turtle_bean" { (0, 0, 0) } else { round_mods(j) }).fold((0, 0, 0), |a, m| (a.0 + m.0, a.1 + m.1, a.2 + m.2.max(-run.round_discards)));
+        let later = b.jokers.iter().map(|j| if j.key == "j_turtle_bean" { (0, 0, 0) } else { round_mods(j) }).fold((0, 0, 0), |a, m| (a.0 + m.0, a.1 + m.1, a.2 + m.2));
         let mut sp = self.long_spec.clone();
         sp.start.hand_size = (sp.start.hand_size + later.0 - self.mods_now.0 + more.0).max(1);
         sp.start.hands = (sp.start.hands + later.1 - self.mods_now.1 + more.1).max(1);
@@ -828,7 +831,7 @@ impl<'a> LongRun<'a> {
     /// slots more (a `Gain`'s)
     fn long_score_more(&self, b: &Board, more: (i64, i64, i64), slots: i64) -> f64 {
         let sp = self.long_spec_for(b, more);
-        let seal = self.seal_planets_in_round(slots, &sp);
+        let seal = self.seal_planets_in_round(slots, &sp, b);
         let score = |b: &Board| self.ctx.odds_one(b, &sp, 48).1.mean.max(1.0);
         if seal == 0.0 {
             return score(b);
@@ -1195,13 +1198,14 @@ impl<'a> LongRun<'a> {
     /// board: a board whose jokers make the round bigger or smaller (Juggler, Stuntman…) sees
     /// them in more or fewer cards (3 rounds an ante; 0 when the round and slots are yours)
     pub(super) fn seal_planets_for(&self, b: &Board, more: (i64, i64, i64), slots: i64) -> f64 {
-        self.seal_planets_in_round(slots, &self.long_spec_for(b, more))
+        self.seal_planets_in_round(slots, &self.long_spec_for(b, more), b)
     }
 
-    /// `seal_planets_for` on the round `sp` starts with
-    fn seal_planets_in_round(&self, slots: i64, sp: &Spec) -> f64 {
+    /// `seal_planets_for` on the round `sp` starts with, played on `b`
+    fn seal_planets_in_round(&self, slots: i64, sp: &Spec, b: &Board) -> f64 {
         let Some(&yours) = self.round.get() else { return 0.0 };
-        let round = (sp.start.hand_size, sp.start.hands, sp.start.discards);
+        let (hands, discards) = sp.start.hands_on(b);
+        let round = (sp.start.hand_size, hands, discards);
         if slots == 0 && round == yours {
             return 0.0;
         }
