@@ -125,9 +125,11 @@ impl Tracker {
 
         if let Some(r) = run {
             // A blind that has just started: first hand, nothing scored
-            if let (true, Some(cb), Some(p)) = (r.screen.in_blind(), &r.current_blind, p_current) {
+            if let (Some(cb), Some(p)) = (r.blind_in_play(), p_current) {
                 let slot = r.blinds.iter().find(|b| b.state == "Current").map(|b| b.slot.clone()).unwrap_or_default();
-                let fresh = cb.scored == 0.0 && r.hands_left == r.round_at_blind_set().0;
+                // the hands it was set with: the boss's rule (unless disabled), then the jokers'
+                let set = crate::engine::score::BlindRules { key: cb.key.clone(), disabled: cb.disabled, ..Default::default() };
+                let fresh = cb.scored == 0.0 && r.hands_left == r.round_at_blind_set(set).0;
                 let id = format!("{}-{}-{}", r.seed, r.ante, slot);
                 let known = self.open.iter().any(|o| o.0 == id) || read(&self.dir).iter().any(|e| matches!(e, Entry::Prediction { id: i, .. } if *i == id));
                 if fresh && !slot.is_empty() && !known {
@@ -310,6 +312,20 @@ mod tests {
         assert!(t2.observe(Some(&run_at("Current", Screen::SelectingHand, 0.0)), Some(0.8)).is_empty());
         let b = report(&read(&dir));
         assert_eq!(b.iter().map(|b| b.n).sum::<usize>(), 1);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_needle_round_is_predicted_from_the_one_hand_its_blind_leaves() {
+        // blind.lua `Blind:set_blind`: The Needle starts the round with one hand, so the save's
+        // 1 hand left with nothing scored is a blind that has just started
+        let dir = std::env::temp_dir().join(format!("bav-cal3-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut t = Tracker::new(dir.clone());
+        let mut r = run_at("Current", Screen::SelectingHand, 0.0);
+        r.hands_left = 1;
+        r.current_blind.as_mut().unwrap().key = "bl_needle".into();
+        assert!(matches!(t.observe(Some(&r), Some(0.5)).as_slice(), [Entry::Prediction { .. }]));
         std::fs::remove_dir_all(dir).ok();
     }
 

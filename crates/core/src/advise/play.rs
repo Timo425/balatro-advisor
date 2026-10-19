@@ -84,7 +84,7 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
         .map(|(k, c, g)| (c.label(), run.consumables.iter().find(|x| &x.key == k).map_or(k.clone(), |x| x.name.clone()), *g))
         .collect();
     // Look-ahead: each candidate first move is simulated through the rest of the round.
-    let look = ctx.specs.iter().find(|x| x.in_progress).map(|spec| {
+    let look = ctx.specs.iter().find(|x| x.in_progress()).map(|spec| {
         let mut bb = ctx.board_for(&b, spec);
         // The simulated player plays toward the same measure the advice ranks by
         bb.goals = Some(goals.clone());

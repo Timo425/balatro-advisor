@@ -603,15 +603,22 @@ impl Board {
     }
 
     /// The hands and discards a round is played with, from those it starts with before the
-    /// blind is set (`round_resets`, with the boss's own rule already applied by the caller when
-    /// the boss is known: The Needle's one hand, The Water's no discards): state_events.lua
-    /// `new_round` asks each joker in the `setting_blind` context after the blind's `set_blind`
-    /// (card.lua `Card:calculate_joker`), where Burglar
-    /// takes every discard left and adds `extra` hands, and so does each copy of it (Blueprint,
-    /// Brainstorm: `effective_joker`). None of that is in `round_resets`, unlike what a joker
-    /// gives when it's added (`add_to_deck`: Troubadour's hand a round, Merry Andy's and Drunkard's
-    /// discards), which the save's numbers already hold.
+    /// blind is set (`round_resets`): state_events.lua `new_round` sets the board's blind first
+    /// (`self.blind`, which must be the round's: `new_round`, or none for a round with no boss
+    /// rule), where blind.lua `Blind:set_blind` takes `round_resets.hands` − 1 hands for The
+    /// Needle (from at least 1: one hand left, two from none) and every discard for The Water;
+    /// then it asks each joker in the `setting_blind` context (card.lua `Card:calculate_joker`),
+    /// where Burglar takes every discard left and adds `extra` hands, and so does each copy of it
+    /// (Blueprint, Brainstorm: `effective_joker`). None of that is in `round_resets`, unlike what
+    /// a joker gives when it's added (`add_to_deck`: Troubadour's hand a round, Merry Andy's and
+    /// Drunkard's discards), which the save's numbers already hold.
+    /// A disabled blind (the save's, after Chicot's `setting_blind` or Luchador's sale) takes
+    /// nothing, as `Blind:disable` gives back what it took: exact for hands; under The Water with
+    /// Burglar the game's discards depend on whether Chicot sits before Burglar (none) or after
+    /// it (all back), and this gives none. Not modelled: Chicot itself (gap 15).
     pub fn at_blind_set(&self, hands: i64, discards: i64) -> (i64, i64) {
+        let hands = if self.blind.active("bl_needle") { hands.max(1) - (hands - 1) } else { hands };
+        let discards = if self.blind.active("bl_water") { 0 } else { discards };
         (0..self.jokers.len()).filter_map(|j| effective_joker(self, j)).fold((hands, discards), |(h, d), jk| match jk.key.as_str() {
             "j_burglar" => (h + jk.extra.n as i64, 0),
             _ => (h, d),

@@ -685,18 +685,25 @@ struct Spec {
     blind_name: String,
     start: RoundStart,
     rules: RoundRules,
-    in_progress: bool,
     horizon: bool,
 }
 
+impl Spec {
+    /// The round in play: its blind was set when it started (`RoundStart::fresh`, the one place
+    /// that says whether a round has started)
+    fn in_progress(&self) -> bool {
+        !self.start.fresh
+    }
+}
+
 /// `start` with the hand size, hands and discards that `added` jokers bring and `removed`
-/// ones take away (`round_mods`), for a round not yet started (`fresh`; the round in progress
-/// keeps its own: a gap, see design.md). The jokers' `setting_blind` effects aren't these: the
-/// simulation sets them on a fresh start as it's played, from the board played
-/// (`RoundStart::hands_on`).
-pub(crate) fn apply_mods(start: &RoundStart, added: &[&Joker], removed: &[&Joker], fresh: bool) -> RoundStart {
+/// ones take away (`round_mods`), for a round not yet started (`RoundStart::fresh`; the round
+/// in progress keeps its own: a gap, see design.md). The blind's and the jokers' rules as it's
+/// set (The Needle, The Water, Burglar) aren't these: the simulation sets them on a fresh start
+/// as it's played, from the board played (`RoundStart::hands_on`).
+pub(crate) fn apply_mods(start: &RoundStart, added: &[&Joker], removed: &[&Joker]) -> RoundStart {
     let mut s = start.clone();
-    if !fresh {
+    if !s.fresh {
         return s;
     }
     for (j, sign) in added.iter().map(|j| (j, 1)).chain(removed.iter().map(|j| (j, -1))) {
@@ -763,7 +770,7 @@ struct Ctx<'a> {
 impl Ctx<'_> {
     fn board_for(&self, b: &Board, spec: &Spec) -> Board {
         let mut b = b.clone();
-        if !spec.in_progress {
+        if !spec.in_progress() {
             b.new_round(&spec.blind_key);
         }
         b
@@ -771,7 +778,7 @@ impl Ctx<'_> {
 
     fn start_for(&self, spec: &Spec, b: &Board) -> RoundStart {
         let mut s = spec.start.clone();
-        if !spec.in_progress {
+        if !spec.in_progress() {
             let f = b.rule_flags();
             spec.rules.apply(&mut s.deck, f.smeared, f.pareidolia);
         }
@@ -784,7 +791,7 @@ impl Ctx<'_> {
             .iter()
             .map(|spec| {
                 let bb = self.board_for(b, spec);
-                let start = apply_mods(&self.start_for(spec, &bb), added, removed, !spec.in_progress);
+                let start = apply_mods(&self.start_for(spec, &bb), added, removed);
                 sim::round_odds(&bb, &start, spec_rounds(spec, sims), self.opts.seed)
             })
             .collect()
@@ -801,17 +808,17 @@ impl Ctx<'_> {
 
     /// Deals used by the quick screen (the first `SCREEN_DEALS` of the same sequence).
     fn typical_n(&self, b: &Board, added: &[&Joker], removed: &[&Joker], samples: usize) -> Stats {
-        // a fresh round on `b`: its jokers' hand size, hands and discards, the blind set on it
+        // a fresh round on `b` with no boss rule (`b` may still carry the blind in play): its
+        // jokers' hand size, hands and discards, the blind set on it
         let start = apply_mods(
             &RoundStart { hand: vec![], deck: vec![], hand_size: self.run.hand_size, hands: self.run.round_hands, discards: self.run.round_discards, scored: 0.0, target: 0.0, fresh: true },
             added,
             removed,
-            true,
         );
         let size = start.hand_size as usize;
-        let (hands, discards) = start.hands_on(b);
         let mut bb = b.clone();
         bb.blind = Default::default();
+        let (hands, discards) = start.hands_on(&bb);
         bb.hands_left = hands.max(1);
         // With jokers that pay by discards left you'd keep or burn them, whichever scores
         // more: when discards left change the score at all (checked on a reference pair),
@@ -977,7 +984,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
 
     // Which rounds to simulate: the one in progress (or the next blind), and the boss.
     let mut specs = Vec::new();
-    if let (true, Some(cb)) = (run.screen.in_blind(), &run.current_blind) {
+    if let Some(cb) = run.blind_in_play() {
         specs.push(Spec {
             label: "This blind".into(),
             blind_key: cb.key.clone(),
@@ -993,7 +1000,6 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                 fresh: false,
             },
             rules: RoundRules::default(),
-            in_progress: true,
             horizon: false,
         });
     }
@@ -1005,7 +1011,6 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             blind_name: bl.name.clone(),
             start,
             rules,
-            in_progress: false,
             horizon: false,
         }
     };
@@ -1037,11 +1042,10 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                 fresh: true,
             },
             rules: RoundRules::default(),
-            in_progress: false,
             horizon: true,
         });
     }
-    let ahead: Vec<Spec> = if specs.iter().any(|s| s.in_progress) { upcoming.iter().map(|bl| blind_spec(bl)).collect() } else { vec![] };
+    let ahead: Vec<Spec> = if specs.iter().any(|s| s.in_progress()) { upcoming.iter().map(|bl| blind_spec(bl)).collect() } else { vec![] };
     let mut ctx = Ctx { run, data, base, specs, ahead, fresh_deck, opts: opts.clone(), shares: Vec::new() };
 
     lap("setup");
@@ -1057,7 +1061,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             target: s.start.target,
             p_win: *p,
             total: *st,
-            in_progress: s.in_progress,
+            in_progress: s.in_progress(),
             horizon: s.horizon,
             reach: st.mean / s.start.target.max(1.0),
             unmodelled: unmodelled_boss(&s.blind_key),
@@ -1217,13 +1221,13 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             let spec = overview_specs.iter().find(|(slot, _)| *slot == bl.slot).map(|(_, s)| s);
             let odds: Option<(f64, Stats)> = if bl.state == "Current" {
                 // In progress: the simulation that starts from the real hand, draw pile and score so far
-                ctx.specs.iter().position(|m| m.in_progress).map(|i| base_odds[i])
+                ctx.specs.iter().position(|m| m.in_progress()).map(|i| base_odds[i])
             } else {
                 spec.map(|s| {
                     // reuse the main simulation where it's the same round
                     ctx.specs
                         .iter()
-                        .position(|m| !m.horizon && !m.in_progress && m.blind_key == s.blind_key && m.start.target == s.start.target)
+                        .position(|m| !m.horizon && !m.in_progress() && m.blind_key == s.blind_key && m.start.target == s.start.target)
                         .map_or_else(|| ctx.odds_one(&ctx.base, s, opts.sims), |i| base_odds[i])
                 })
             };
@@ -2509,17 +2513,16 @@ fn shop_options(
         }
         for v in shop.vouchers.iter().filter(|v| !matches!(v.key.as_str(), "v_directors_cut" | "v_retcon")) {
             // what it changes in a round (`plan::apply_voucher`): this round played with it, the
-            // blind's own rules on top (The Needle's one hand, The Water's no discards)
+            // blind's own rules on top as it's set (`RoundStart::hands_on`: The Needle's one hand,
+            // The Water's no discards), simulated only when the round it's played with changes
             let mut after = run.clone();
             crate::plan::apply_voucher(&mut after, &v.key, data);
-            let start = |r: &RunState| blind_from_start(&spec.blind_key, spec.start.target, r, &spec.start.deck).0;
-            let (with, without) = (start(&after), start(run));
-            let more = (with.hand_size - without.hand_size, with.hands - without.hands, with.discards - without.discards);
             let mut sp = spec.clone();
-            sp.start.hand_size += more.0;
-            sp.start.hands += more.1;
-            sp.start.discards += more.2;
-            let sim = more != (0, 0, 0);
+            sp.start.hand_size += after.hand_size - run.hand_size;
+            sp.start.hands += after.round_hands - run.round_hands;
+            sp.start.discards += after.round_discards - run.round_discards;
+            let bb = ctx.board_for(&ctx.base, &sp);
+            let sim = sp.start.hand_size != spec.start.hand_size || sp.start.hands_on(&bb) != spec.start.hands_on(&bb);
             let note: String = match v.key.as_str() {
                 "v_grabber" | "v_nacho_tong" => "+1 hand every round".into(),
                 "v_wasteful" | "v_recyclomancy" => "+1 discard every round".into(),
@@ -2785,7 +2788,7 @@ pub(crate) fn income_per_ante(key: &str, ability: &serde_json::Value, run: &RunS
         "j_egg" => num(extra, 3.0),
         // $5 per discarded card of a rank that changes every round: ~4 cards a discard, the
         // rank about 1 in 13 of them
-        "j_mail" => num(extra, 5.0) * run.round_at_blind_set().1.max(0) as f64 * 4.0 / 13.0,
+        "j_mail" => num(extra, 5.0) * run.round_at_blind_set(Default::default()).1.max(0) as f64 * 4.0 / 13.0,
         _ => 0.0,
     };
     per_round * 3.0
@@ -2835,10 +2838,10 @@ fn voucher_gain(before: &RunState, after: &RunState, cost: i64) -> Option<Gain> 
     (g.consumable_slots != 0 || g.round() != (0, 0, 0)).then_some(g)
 }
 
-/// A run's round as it's played now: (hand size, hands, discards), the blind set on it
-/// (`RunState::round_at_blind_set`)
+/// A run's round as it's played now: (hand size, hands, discards), a blind with no boss rule
+/// set on it (`RunState::round_at_blind_set`)
 fn round_now(run: &RunState) -> (i64, i64, i64) {
-    let (hands, discards) = run.round_at_blind_set();
+    let (hands, discards) = run.round_at_blind_set(Default::default());
     (run.hand_size, hands, discards)
 }
 
@@ -3018,11 +3021,9 @@ fn boss_reroll_option(ctx: &Ctx, run: &RunState, data: &GameData, spec: &Spec, n
         let mut sp = spec.clone();
         sp.blind_key = b.key.clone();
         sp.blind_name = b.name.clone();
-        sp.rules = RoundRules::for_blind(&b.key);
-        sp.start.target = base_target * b.mult;
-        sp.start.hand_size = run.hand_size + sp.rules.hand_size_delta;
-        sp.start.hands = if b.key == "bl_needle" { 1 } else { run.round_hands };
-        sp.start.discards = if b.key == "bl_water" { 0 } else { run.round_discards };
+        let (start, rules) = blind_from_start(&b.key, base_target * b.mult, run, &spec.start.deck);
+        sp.start = start;
+        sp.rules = rules;
         ctx.odds_one(&ctx.base, &sp, (ctx.opts.sims / 2).max(50)).0
     });
     let avg = odds.iter().sum::<f64>() / odds.len() as f64;
@@ -3195,7 +3196,7 @@ fn tarot_values(
         if sims >= full.sims {
             return (p, st.mean);
         }
-        let (k, base) = if sp.horizon { (2, horizon.as_ref().unwrap_or(sp)) } else if sp.in_progress { (1, spec) } else { (0, &fresh) };
+        let (k, base) = if sp.horizon { (2, horizon.as_ref().unwrap_or(sp)) } else if sp.in_progress() { (1, spec) } else { (0, &fresh) };
         let (dp, dm) = *offsets[k].get_or_init(|| {
             let (pf, sf) = ctx.odds_one(&unchanged, base, full.sims);
             let (ps, ss) = ctx.odds_one(&unchanged, base, sims);
@@ -3215,7 +3216,7 @@ fn tarot_values(
     let simulate = |d: Vec<Card>, sims: usize| -> (f64, f64) {
         let mut sp = fresh.clone();
         sp.start.deck = d.clone();
-        if spec.in_progress && d.len() == deck.len() && hand_idx.iter().all(|i| i.is_some()) {
+        if spec.in_progress() && d.len() == deck.len() && hand_idx.iter().all(|i| i.is_some()) {
             let mut live = spec.clone();
             live.start.hand = hand_idx.iter().map(|i| d[i.unwrap()]).collect();
             sp = live;
@@ -3239,7 +3240,7 @@ fn tarot_values(
     };
     // A changed board (Black Hole, Ankh, Hex, a new joker) on the round and the next ante
     let sim_board = |b: &Board, sims: usize| -> (f64, f64) {
-        let sp = if spec.in_progress { spec.clone() } else { fresh.clone() };
+        let sp = if spec.in_progress() { spec.clone() } else { fresh.clone() };
         let r = horizon.as_ref().map_or(0.0, |h| odds_at(b, h, sims).1 / h.start.target.max(1.0));
         (odds_at(b, &sp, sims).0, r)
     };
@@ -3299,7 +3300,7 @@ fn tarot_values(
                     *l = l.with_level(l.level + 1);
                 }
                 let (p, r) = sim_board(&b, sims);
-                let use_effect = spec.in_progress.then(|| sim::Use { levels: [1; 12], ..Default::default() });
+                let use_effect = spec.in_progress().then(|| sim::Use { levels: [1; 12], ..Default::default() });
                 TarotValue { use_effect, ..tv(p, r, "+1 level to every poker hand".into(), true, None, 0.0) }
             }
             "c_familiar" | "c_grim" | "c_incantation" => {
@@ -3509,7 +3510,7 @@ fn tarot_values(
         let odds = |v: &[usize]| -> (f64, f64) {
             outcomes.iter().fold((0.0, 0.0), |(p, r), &(w, effect)| {
                 let d = consumable::apply(effect, deck, v);
-                let (pp, rr) = if let (CardEffect::Copies(k), true) = (effect, spec.in_progress && real) {
+                let (pp, rr) = if let (CardEffect::Copies(k), true) = (effect, spec.in_progress() && real) {
                     let mut live = spec.clone();
                     live.start.hand.extend(std::iter::repeat_n(deck[v[0]], k));
                     (odds_at(&board_for_deck(&d), &live, sims).0, reach_of(&d, sims))
@@ -3594,7 +3595,7 @@ fn tarot_values(
     // changed, or copies of one added to it). Random or destroying effects aren't turned into
     // moves (not modelled in the Best play look-ahead).
 
-    if spec.in_progress && from_hand {
+    if spec.in_progress() && from_hand {
         for t in out.iter_mut().filter(|t| usable_now(&t.key)) {
             t.use_effect = t.use_effect.take().or_else(|| {
                 let d = t.deck.as_ref()?;
@@ -3649,12 +3650,14 @@ fn valued_singly(run: &RunState, key: &str) -> bool {
     offered(run, key) || (offered(run, "c_fool") && run.last_tarot_planet.as_deref() == Some(key))
 }
 
-/// Blind `key` played from the start with `deck`: a round's hands, discards and hand size, and
-/// the blind's own rules (blind.lua: The Needle's one hand, The Water's no discards, a hand-size
-/// change, debuffs)
+/// Blind `key` played from the start with `deck`: a round's hands, discards and hand size before
+/// the blind is set (`round_resets`), and the blind's own rules on the cards (blind.lua: a
+/// hand-size change, debuffs). Its rules on hands and discards (The Needle's one hand, The
+/// Water's no discards) come as the round is played on a board carrying it (`Board::new_round`,
+/// `RoundStart::hands_on`), before the jokers' (Burglar's).
 fn blind_from_start(key: &str, target: f64, run: &RunState, deck: &[Card]) -> (RoundStart, RoundRules) {
     let rules = RoundRules::for_blind(key);
-    let mut start = RoundStart {
+    let start = RoundStart {
         hand: vec![],
         deck: deck.to_vec(),
         hand_size: run.hand_size + rules.hand_size_delta,
@@ -3664,11 +3667,6 @@ fn blind_from_start(key: &str, target: f64, run: &RunState, deck: &[Card]) -> (R
         target,
         fresh: true,
     };
-    match key {
-        "bl_needle" => start.hands = 1,
-        "bl_water" => start.discards = 0,
-        _ => {}
-    }
     (start, rules)
 }
 
@@ -3762,9 +3760,8 @@ fn growth_rounds(ctx: &Ctx) -> Option<(Board, Vec<RoundStart>)> {
 /// (`blind_from_start`: your whole deck, its rules); one not started is only given `deck`
 fn fresh_round(spec: &Spec, run: &RunState, deck: &[Card]) -> Spec {
     let mut fresh = spec.clone();
-    if fresh.in_progress {
+    if fresh.in_progress() {
         let (start, rules) = blind_from_start(&spec.blind_key, spec.start.target, run, deck);
-        fresh.in_progress = false;
         // the hand size in play already has the blind's change (The Manacle)
         fresh.start = RoundStart { hand_size: spec.start.hand_size, ..start };
         fresh.rules = rules;
@@ -4251,7 +4248,6 @@ fn archetype_outlook(
             fresh: true,
         },
         rules: RoundRules::default(),
-        in_progress: false,
         horizon: true,
     };
     // Comparing styles on means, not win odds, so fewer simulations are enough.
@@ -4550,7 +4546,7 @@ mod tests {
         let fresh = RoundStart { hand: vec![], deck: ctx.fresh_deck.clone(), hand_size: r.hand_size, hands: r.round_hands, discards: r.round_discards, scored: 0.0, target: 1.0, fresh: true };
         let no_burglar = without(&ctx.base, 0);
         assert_eq!(fresh.hands_on(&ctx.base), (7, 0));
-        assert_eq!(apply_mods(&fresh, &[], &[&ctx.base.jokers[0]], true).hands_on(&no_burglar), (4, 3));
+        assert_eq!(apply_mods(&fresh, &[], &[&ctx.base.jokers[0]]).hands_on(&no_burglar), (4, 3));
         assert_eq!(round_now(&r), (8, 7, 0));
         // a round in progress was set when it started, its first cards dealt or not yet
         let playing = RoundStart { hand: fresh.deck[..8].to_vec(), fresh: false, ..fresh.clone() };
@@ -4578,6 +4574,52 @@ mod tests {
         let mail = shop_run(&[("j_burglar", None, None), ("j_mail", None, None)], &[]);
         assert_eq!(income_per_ante("j_mail", &mail.jokers[1].ability, &mail, 1.0), 0.0);
         assert!(income_per_ante("j_mail", &mail.jokers[1].ability, &shop_run(&[("j_mail", None, None)], &[]), 1.0) > 0.0);
+    }
+
+    #[test]
+    fn the_bosss_rule_on_hands_and_discards_is_set_on_the_board_the_round_is_played_on() {
+        // blind.lua `Blind:set_blind`: The Needle leaves one hand as it's set, then Burglar's
+        // `setting_blind` adds 3 and takes the discards (state_events.lua `new_round`). A blind's
+        // start holds the run's `round_resets`; the board it's played on carries the blind
+        // (`Ctx::board_for`) and sets both. A typical hand is a round with no boss rule, even on
+        // a board still carrying The Needle in play (Acrobat's ×3 on the last hand would show
+        // its one hand).
+        let r = shop_run(&[("j_burglar", None, None), ("j_acrobat", None, None)], &[]);
+        let data = GameData::bundled();
+        let mut fresh_deck = r.full_deck();
+        fresh_deck.sort_by_key(Card::order_key);
+        let ctx = Ctx { run: &r, shares: vec![], data, base: Board::from_run(&r, data), specs: vec![], ahead: vec![], fresh_deck, opts: quick() };
+        let set = |b: &Board, key: &str| {
+            let (start, rules) = blind_from_start(key, 1.0, &r, &ctx.fresh_deck);
+            assert_eq!((start.hands, start.discards), (4, 3), "{key}: the run's round_resets");
+            let sp = Spec { label: key.into(), blind_key: key.into(), blind_name: key.into(), start, rules, horizon: false };
+            let bb = ctx.board_for(b, &sp);
+            ctx.start_for(&sp, &bb).hands_on(&bb)
+        };
+        let no_burglar = without(&ctx.base, 0);
+        assert_eq!(set(&no_burglar, "bl_needle"), (1, 3));
+        assert_eq!(set(&no_burglar, "bl_water"), (4, 0));
+        assert_eq!(set(&no_burglar, "bl_big"), (4, 3));
+        assert_eq!(set(&ctx.base, "bl_needle"), (4, 0));
+        let mut needle = no_burglar.clone();
+        needle.new_round("bl_needle");
+        assert_eq!(ctx.typical(&needle, &[], &[&ctx.base.jokers[0]]).mean, ctx.typical(&no_burglar, &[], &[&ctx.base.jokers[0]]).mean);
+    }
+
+    #[test]
+    fn whatif_plays_the_blind_in_play_as_it_stands_before_its_cards_are_dealt() {
+        // DrawToHand: the round has started (its blind set, a hand played, 300 scored) but no
+        // cards are in hand yet. It's the round in progress, as in advise, not a fresh one.
+        let mut r = shop_run(&[("j_joker", None, None)], &[]);
+        r.screen = crate::save::Screen::DrawToHand;
+        r.shop = None;
+        r.blinds[0].state = "Current".into();
+        r.hands_left = 3;
+        r.current_blind = Some(crate::save::CurrentBlind {
+            key: "bl_small".into(), name: "Small Blind".into(), target: 800.0, scored: 300.0, disabled: false, hands_seen: vec![], only_hand: None,
+        });
+        let o = crate::whatif::run(&r, GameData::bundled(), &crate::whatif::Plan::default(), 50, 3).unwrap();
+        assert_eq!(o.now[0].label, "Small Blind (in progress)");
     }
 
     #[test]
@@ -4801,7 +4843,7 @@ mod tests {
         fresh_deck.sort_by_key(Card::order_key);
         let spec = |target: f64| {
             let (start, rules) = blind_from_start("bl_big", target, &r, &fresh_deck);
-            Spec { label: "Next: Big".into(), blind_key: "bl_big".into(), blind_name: "Big Blind".into(), start, rules, in_progress: false, horizon: false }
+            Spec { label: "Next: Big".into(), blind_key: "bl_big".into(), blind_name: "Big Blind".into(), start, rules, horizon: false }
         };
         let mut ctx = Ctx { run: &r, shares: vec![], data, base, specs: vec![], ahead: vec![], fresh_deck: fresh_deck.clone(), opts: Options { sims: 120, ..quick() } };
         // the board's whole rounds (a target no round reaches): past most of them
@@ -4831,7 +4873,7 @@ mod tests {
         fresh_deck.sort_by_key(Card::order_key);
         let spec = |key: &str, target: f64| {
             let (start, rules) = blind_from_start(key, target, &r, &fresh_deck);
-            Spec { label: key.into(), blind_key: key.into(), blind_name: key.into(), start, rules, in_progress: false, horizon: false }
+            Spec { label: key.into(), blind_key: key.into(), blind_name: key.into(), start, rules, horizon: false }
         };
         let mut ctx = Ctx { run: &r, shares: vec![], data, base, specs: vec![], ahead: vec![], fresh_deck: fresh_deck.clone(), opts: Options { sims: 120, ..quick() } };
         let (_, all) = ctx.odds_one(&ctx.base, &spec("bl_big", 1e15), 120);
@@ -4872,7 +4914,7 @@ mod tests {
         fresh_deck.sort_by_key(Card::order_key);
         let spec = |key: &str, target: f64| {
             let (start, rules) = blind_from_start(key, target, &r, &fresh_deck);
-            Spec { label: key.into(), blind_key: key.into(), blind_name: key.into(), start, rules, in_progress: false, horizon: false }
+            Spec { label: key.into(), blind_key: key.into(), blind_name: key.into(), start, rules, horizon: false }
         };
         let mut ctx = Ctx { run: &r, shares: vec![], data, base, specs: vec![], ahead: vec![], fresh_deck: fresh_deck.clone(), opts: Options { sims: 300, ..quick() } };
         let (_, all) = ctx.odds_one(&ctx.base, &spec("bl_big", 1e15), 120);

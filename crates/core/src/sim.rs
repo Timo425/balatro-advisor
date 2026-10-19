@@ -973,7 +973,8 @@ pub struct RoundStart {
     /// The draw pile (shuffled by the simulation).
     pub deck: Vec<Card>,
     pub hand_size: i64,
-    /// Hands and discards left; a fresh round's before its blind is set (`hands_on`)
+    /// Hands and discards left; a fresh round's before its blind is set (the run's
+    /// `round_resets` and what jokers added or removed change there: `hands_on` sets the rest)
     pub hands: i64,
     pub discards: i64,
     pub scored: f64,
@@ -985,9 +986,9 @@ pub struct RoundStart {
 }
 
 impl RoundStart {
-    /// The hands and discards the round is played with on `b`: a fresh round's as the blind is
-    /// set on it (`Board::at_blind_set`: Burglar's), a round in progress its own, set when it
-    /// started.
+    /// The hands and discards the round is played with on `b`: a fresh round's as its blind is
+    /// set on it (`Board::at_blind_set`: the boss's rule from `b`'s blind, then Burglar's), a
+    /// round in progress its own, set when it started.
     pub fn hands_on(&self, b: &Board) -> (i64, i64) {
         if self.fresh {
             b.at_blind_set(self.hands, self.discards)
@@ -4947,6 +4948,34 @@ mod tests {
         let start = RoundStart { hand: pair.clone(), deck: standard_deck().into_iter().filter(|c| !pair.iter().any(|p| p.same_kind(c))).collect(), hand_size: 2, target: 1.0, ..fresh };
         let o = &outcomes_after(&b, &start, &Move::Play(vec![0, 1]), 0..1, 3, &[])[0];
         assert_eq!((o.won, o.spare), (1.0, 6.0));
+    }
+
+    #[test]
+    fn a_fresh_round_takes_its_bosss_rule_on_hands_and_discards_before_the_jokers() {
+        // state_events.lua `new_round`: blind.lua `Blind:set_blind` first (The Needle leaves one
+        // hand, The Water no discards), then each joker's `setting_blind` (Burglar: +3 hands, no
+        // discards), from the board's blind; a disabled boss takes nothing, and a round in
+        // progress keeps what it was set with.
+        let fresh = RoundStart { hand: vec![], deck: standard_deck(), hand_size: 8, hands: 4, discards: 3, scored: 0.0, target: 1e12, fresh: true };
+        let on = |keys: &[&str], blind: &str| {
+            let mut b = sample_board(keys);
+            b.new_round(blind);
+            b
+        };
+        assert_eq!(fresh.hands_on(&on(&[], "bl_needle")), (1, 3));
+        assert_eq!(fresh.hands_on(&on(&[], "bl_water")), (4, 0));
+        assert_eq!(fresh.hands_on(&on(&[], "bl_big")), (4, 3));
+        assert_eq!(fresh.hands_on(&on(&["j_burglar"], "bl_needle")), (4, 0));
+        assert_eq!(fresh.hands_on(&on(&["j_burglar"], "bl_water")), (7, 0));
+        let mut disabled = on(&[], "bl_needle");
+        disabled.blind.disabled = true;
+        assert_eq!(fresh.hands_on(&disabled), (4, 3));
+        let needle = on(&[], "bl_needle");
+        assert_eq!(RoundStart { fresh: false, ..fresh.clone() }.hands_on(&needle), (4, 3));
+        assert_eq!(sim_round(&needle, &fresh, &mut Rng::new(3)).plays.len(), 1);
+        // from no hands a round (Black Deck, Hieroglyph, two Troubadours) the game's max(1, 0)
+        // less −1: two
+        assert_eq!(RoundStart { hands: 0, ..fresh.clone() }.hands_on(&needle), (2, 3));
     }
 
     #[test]

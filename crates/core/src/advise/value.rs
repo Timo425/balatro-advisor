@@ -430,7 +430,6 @@ impl<'a> LongRun<'a> {
                 fresh: true,
             },
             rules: RoundRules::default(),
-            in_progress: false,
             horizon: true,
         };
         // Hand size, hands and discards from the jokers on the projected board: the game's
@@ -1689,7 +1688,7 @@ impl<'a> Ahead<'a> {
             sp.start.deck = d.to_vec();
         }
         let bb = ctx.board_for(b, &sp);
-        let mut start = super::apply_mods(&ctx.start_for(&sp, &bb), &[], removed, true);
+        let mut start = super::apply_mods(&ctx.start_for(&sp, &bb), &[], removed);
         start.target /= find;
         (sp.blind_key.clone(), start)
     }

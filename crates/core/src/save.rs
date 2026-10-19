@@ -64,7 +64,7 @@ pub struct RunState {
     #[serde(default)]
     pub discards_used: i64,
     /// Hands and discards a fresh round starts with before its blind is set (`round_resets`:
-    /// Burglar's change comes then, `round_at_blind_set`).
+    /// the boss's rule and Burglar's change come then, `round_at_blind_set`).
     pub round_hands: i64,
     pub round_discards: i64,
     /// A fresh round's hand size: the hand size now without what only the round in play has

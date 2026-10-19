@@ -190,11 +190,13 @@ pub fn run(run: &RunState, data: &GameData, plan: &Plan, sims: usize, seed: u64)
         let mut out = Vec::new();
         let upcoming = run.blinds.iter().filter(|bl| matches!(bl.state.as_str(), "Select" | "Upcoming" | "Current"));
         for bl in upcoming {
-            let current = bl.state == "Current" && !hand.is_empty();
+            // the blind in play, its first cards dealt or not (DrawToHand): its blind was set
+            // when it started, as advise's round in progress
+            let current = bl.state == "Current" && run.blind_in_play().is_some();
             let mut b = board_with(js, full);
             let rules = RoundRules::for_blind(&bl.key);
             let start = if current {
-                let cb = run.current_blind.as_ref();
+                let cb = run.blind_in_play();
                 b.deck_remaining = pile.len() as i64;
                 RoundStart {
                     hand: hand.to_vec(),
@@ -221,15 +223,9 @@ pub fn run(run: &RunState, data: &GameData, plan: &Plan, sims: usize, seed: u64)
                     target: bl.target,
                     fresh: true,
                 };
-                // the plan's jokers, then the blind's own rule on hands and discards
-                let mut start = crate::advise::apply_mods(&start, added, removed, true);
-                if bl.key == "bl_needle" {
-                    start.hands = 1;
-                }
-                if bl.key == "bl_water" {
-                    start.discards = 0;
-                }
-                start
+                // the plan's jokers; the blind's rules on hands and discards, then the jokers',
+                // come as it's set on the board (`RoundStart::hands_on`)
+                crate::advise::apply_mods(&start, added, removed)
             };
             let (p, st) = sim::round_odds(&b, &start, sims, seed);
             let bones = js.iter().any(|j| j.key == "j_mr_bones" && !j.debuff);
@@ -250,7 +246,7 @@ pub fn run(run: &RunState, data: &GameData, plan: &Plan, sims: usize, seed: u64)
         // a round of its own: not the blind in progress (the board from the save has its rules)
         b.new_round("");
         let start = RoundStart { hand: vec![], deck: full.to_vec(), hand_size: run.hand_size, hands: run.round_hands, discards: run.round_discards, scored: 0.0, target, fresh: true };
-        let start = crate::advise::apply_mods(&start, added, removed, true);
+        let start = crate::advise::apply_mods(&start, added, removed);
         let (p, st) = sim::round_odds(&b, &start, sims, seed);
         out.push(BlindOdds { label: format!("Ante {ante} plain boss"), target, p_win: p, p_with_bones: None, reach: st.mean / target.max(1.0), round_money: st.money });
         out

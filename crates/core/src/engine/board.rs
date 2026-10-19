@@ -77,6 +77,13 @@ impl Board {
 }
 
 impl RunState {
+    /// The blind being played, from the moment it's set (its first cards dealt or not) until
+    /// it's won: the screen is in a blind and the save has one. The one test of "a round in
+    /// progress" for the advice, whatif and calibration.
+    pub fn blind_in_play(&self) -> Option<&crate::save::CurrentBlind> {
+        self.current_blind.as_ref().filter(|_| self.screen.in_blind())
+    }
+
     /// Every playing card the run owns (draw pile, hand, discard).
     pub fn full_deck(&self) -> Vec<Card> {
         self.draw_pile.iter().chain(&self.hand).chain(&self.discard_pile).copied().collect()
@@ -89,9 +96,10 @@ impl RunState {
     }
 
     /// The hands and discards a fresh round is played with: `round_hands` and `round_discards`
-    /// as the blind is set on the jokers you own (`Board::at_blind_set`: Burglar's)
-    pub fn round_at_blind_set(&self) -> (i64, i64) {
+    /// as `blind` is set (`BlindRules::default()`: a round with no boss rule) and then the jokers
+    /// you own (`Board::at_blind_set`: The Needle's, Burglar's)
+    pub fn round_at_blind_set(&self, blind: BlindRules) -> (i64, i64) {
         let jokers = self.jokers.iter().map(|j| Joker { debuff: j.debuff, ..Joker::from_ability(&j.key, &j.ability, 0) }).collect();
-        Board { jokers, ..Board::empty() }.at_blind_set(self.round_hands, self.round_discards)
+        Board { jokers, blind, ..Board::empty() }.at_blind_set(self.round_hands, self.round_discards)
     }
 }
