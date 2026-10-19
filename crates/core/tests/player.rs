@@ -1,6 +1,7 @@
 //! How strong the simulated player is (`sim::decide`, the policy every simulated round plays
-//! by). Both tests are slow and print; they assert nothing. Run:
+//! by). These tests are slow and print; they assert nothing. Run:
 //! `cargo test --release --test player -- --ignored --nocapture` (`BAV_N`: rounds per board).
+//! Each board's rounds play across all cores (`play`), with the same results as one by one.
 
 use balatro_advisor::{bench, data::GameData, engine::score::Board, model::Card, save::RunState, sim};
 use serde_json::Value;
@@ -160,13 +161,41 @@ fn rounds() -> Vec<(String, Board, sim::RoundStart)> {
     out
 }
 
+/// Rounds `range` as `sim::round_results` plays them (round i from its own seed), spread over
+/// all cores: each worker takes the next round in turn, with the oracle (`sim::set_oracle`, set
+/// per thread) at `oracle` futures, so the results are one thread's, in the same order.
+fn play(b: &Board, start: &sim::RoundStart, range: std::ops::Range<usize>, seed: u64, oracle: usize) -> Vec<sim::RoundResult> {
+    let next = std::sync::atomic::AtomicUsize::new(range.start);
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(range.len()).max(1);
+    let mut out: Vec<(usize, sim::RoundResult)> = std::thread::scope(|s| {
+        let hs: Vec<_> = (0..threads)
+            .map(|_| {
+                s.spawn(|| {
+                    sim::set_oracle(oracle);
+                    let mut mine = vec![];
+                    loop {
+                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if i >= range.end {
+                            break mine;
+                        }
+                        mine.extend(sim::round_results(b, start, i..i + 1, seed).into_iter().map(|r| (i, r)));
+                    }
+                })
+            })
+            .collect();
+        hs.into_iter().flat_map(|h| h.join().unwrap()).collect()
+    });
+    out.sort_by_key(|x| x.0);
+    out.into_iter().map(|x| x.1).collect()
+}
+
 /// The score the player wins about half the time at, over rounds `0..n` from `seed`.
 fn half_point(b: &Board, start: &sim::RoundStart, n: usize, seed: u64) -> f64 {
     let mut start = start.clone();
     let (mut lo, mut hi) = (1.0f64, 1e12f64);
     for _ in 0..30 {
         start.target = (lo * hi).sqrt();
-        let w = sim::round_results(b, &start, 0..n, seed).iter().filter(|r| r.won).count();
+        let w = play(b, &start, 0..n, seed, 0).iter().filter(|r| r.won).count();
         if 2 * w > n { lo = start.target } else { hi = start.target }
     }
     (lo * hi).sqrt()
@@ -198,7 +227,7 @@ fn player_win_rates() {
     let mut wins = vec![];
     for (key, b, start) in &all {
         let t = std::time::Instant::now();
-        let w = sim::round_results(b, start, 0..n, 42).iter().filter(|r| r.won).count() as f64 / n as f64;
+        let w = play(b, start, 0..n, 42, 0).iter().filter(|r| r.won).count() as f64 / n as f64;
         wins.push(w);
         println!("{key}: {:.1}% ({:.2?})", 100.0 * w, t.elapsed());
     }
@@ -258,13 +287,11 @@ fn player_against_oracle() {
             continue;
         }
         let t0 = std::time::Instant::now();
-        let a = sim::round_results(&b, &start, 0..n, 42);
+        let a = play(&b, &start, 0..n, 42, 0);
         let ta = t0.elapsed();
-        sim::set_oracle(r);
         let t1 = std::time::Instant::now();
-        let o = sim::round_results(&b, &start, 0..n, 42);
+        let o = play(&b, &start, 0..n, 42, r);
         let to = t1.elapsed();
-        sim::set_oracle(0);
         let d: Vec<f64> = a.iter().zip(&o).map(|(x, y)| y.won as u8 as f64 - x.won as u8 as f64).collect();
         let m = d.iter().sum::<f64>() / n as f64;
         let se = (d.iter().map(|x| (x - m).powi(2)).sum::<f64>() / (n - 1) as f64).sqrt() / (n as f64).sqrt();
@@ -329,7 +356,7 @@ fn player_values() {
             let mut gb = b.clone();
             gb.goals = Some(goals.clone());
             let t = std::time::Instant::now();
-            let rs = sim::round_results(&gb, &start, 0..n, 42);
+            let rs = play(&gb, &start, 0..n, 42, 0);
             let v: Vec<f64> = rs
                 .iter()
                 .map(|r| {
