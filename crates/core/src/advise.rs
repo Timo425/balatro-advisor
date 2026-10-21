@@ -753,10 +753,51 @@ fn is_zero_f64(x: &f64) -> bool {
 }
 
 
+/// What removing a joker leaves of the run, for the sell screen.
+#[derive(Clone, Debug, Default)]
+struct JokerRemoval {
+    /// Joker key for deterministic tie-breaking.
+    key: String,
+    /// Win probability on key round when this joker is removed.
+    p_key: f64,
+    /// Survival probability (wins + Mr. Bones save) on key round when removed.
+    p_saved_key: f64,
+    /// Win probability on horizon round (next ante plain boss) when removed.
+    p_hz: f64,
+    /// Mean score on key round when removed.
+    score_key: f64,
+    /// Mean score on horizon round when removed.
+    score_hz: f64,
+    /// Typical per-hand score when removed.
+    typical_mean: f64,
+}
+
+impl JokerRemoval {
+    /// Orders jokers by how safe/good they are to sell: Greater means weaker (leaves more remaining strength).
+    fn compare_to_sell(&self, other: &Self) -> std::cmp::Ordering {
+        // Quantize win probabilities into 0.5% buckets (200 buckets from 0 to 1) so comparisons
+        // form a transitive total order immune to Monte Carlo noise within 0.5%.
+        let p_bucket = |p: f64| (p.clamp(0.0, 1.0) * 200.0).round() as i64;
+        // Quantize score into ~1% relative buckets using natural log (ln(1.01) ~= 0.01).
+        let score_bucket = |s: f64| if s <= 0.0 { 0i64 } else { (s.ln() * 100.0).round() as i64 };
+
+        p_bucket(self.p_saved_key)
+            .cmp(&p_bucket(other.p_saved_key))
+            .then_with(|| p_bucket(self.p_key).cmp(&p_bucket(other.p_key)))
+            .then_with(|| p_bucket(self.p_hz).cmp(&p_bucket(other.p_hz)))
+            .then_with(|| score_bucket(self.score_key).cmp(&score_bucket(other.score_key)))
+            .then_with(|| score_bucket(self.score_hz).cmp(&score_bucket(other.score_hz)))
+            .then_with(|| score_bucket(self.typical_mean).cmp(&score_bucket(other.typical_mean)))
+            .then_with(|| self.key.cmp(&other.key))
+    }
+}
+
 struct Ctx<'a> {
     run: &'a RunState,
     /// Current jokers' share of the best-hand score (filled after the contribution pass).
     shares: Vec<f64>,
+    /// Removal values for owned jokers (filled after the contribution pass).
+    removals: Vec<JokerRemoval>,
     data: &'a GameData,
     base: Board,
     specs: Vec<Spec>,
@@ -1046,7 +1087,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         });
     }
     let ahead: Vec<Spec> = if specs.iter().any(|s| s.in_progress()) { upcoming.iter().map(|bl| blind_spec(bl)).collect() } else { vec![] };
-    let mut ctx = Ctx { run, data, base, specs, ahead, fresh_deck, opts: opts.clone(), shares: Vec::new() };
+    let mut ctx = Ctx { run, data, base, specs, ahead, fresh_deck, opts: opts.clone(), shares: Vec::new(), removals: Vec::new() };
 
     lap("setup");
     let base_odds = ctx.odds(&ctx.base, &[], &[], opts.sims);
@@ -1105,7 +1146,22 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         .collect();
 
     lap("contributions");
+    let key_round = ctx.specs.iter().rposition(|s| !s.horizon).unwrap_or(0);
+    let hz_idx = ctx.specs.iter().position(|x| x.horizon);
     ctx.shares = jokers.iter().map(|j| j.score_share).collect();
+    ctx.removals = (0..n)
+        .map(|i| {
+            let (t, o) = &contrib[i];
+            let p_key = o.get(key_round).map_or(0.0, |(p, _)| *p);
+            let p_saved_key = o.get(key_round).map_or(p_key, |(_, st)| st.p_saved);
+            let p_hz = hz_idx.and_then(|h| o.get(h)).map_or(0.0, |(p, _)| *p);
+            let score_key = o.get(key_round).map_or(0.0, |(_, st)| st.mean);
+            let score_hz = hz_idx.and_then(|h| o.get(h)).map_or(0.0, |(_, st)| st.mean);
+            let typical_mean = t.mean;
+            let key = jokers[i].key.clone();
+            JokerRemoval { key, p_key, p_saved_key, p_hz, score_key, score_hz, typical_mean }
+        })
+        .collect();
     let ctx = ctx;
     let order = best_order(&ctx, base_typical.mean);
     // Which hands carry the points, from the hardest round (usually the boss), played from the
@@ -2109,23 +2165,16 @@ fn evaluate_candidate(ctx: &Ctx, j: Joker, cost: i64, base_odds: &[(f64, Stats)]
         // A perished joker (debuffed, 0 rounds left) is dead weight: it's the one to sell.
         let perished = ctx.run.jokers.iter().position(|sj| sj.perishable == Some(0) && !sj.eternal);
         // Screening only tries the weakest non-eternal joker; the full pass tries every swap.
-        // Ties in score go against jokers that don't score but do something else (Mr. Bones).
-        // Jokers whose value isn't in the score (Mr. Bones' save, money jokers' income) aren't
-        // "weakest" just because they score nothing.
+        // Jokers whose value isn't per-hand score (Mr. Bones, economy, utility) are picked by
+        // measured value of removal: survival, win probability and reach on the key and horizon
+        // rounds, not per-hand score share.
         let protected = |k: &str| k == "j_mr_bones" || economy_key(k) || k == "j_mail";
         let keeps_value = |i: usize| base.jokers.get(i).is_some_and(|j| protected(&j.key)) as u8;
-        let weakest = perished.or_else(|| {
-            ctx.shares.iter().enumerate()
-                .filter(|(i, _)| ctx.run.jokers.get(*i).is_some_and(|sj| !sj.eternal))
-                .min_by(|a, b| a.1.total_cmp(b.1).then(keeps_value(a.0).cmp(&keeps_value(b.0))))
-                .map(|(i, _)| i)
-        });
-        // Mr. Bones scores nothing but saves a run: he's only sold when nothing else can be.
         let others = ctx.run.jokers.iter().zip(&base.jokers).filter(|(sj, j)| !sj.eternal && !protected(&j.key)).count();
-        let weakest = weakest.filter(|&i| others == 0 || keeps_value(i) == 0).or_else(|| {
-            ctx.shares.iter().enumerate()
-                .filter(|(i, _)| ctx.run.jokers.get(*i).is_some_and(|sj| !sj.eternal) && keeps_value(*i) == 0)
-                .min_by(|a, b| a.1.total_cmp(b.1))
+        let weakest = perished.or_else(|| {
+            ctx.removals.iter().enumerate()
+                .filter(|(i, _)| ctx.run.jokers.get(*i).is_some_and(|sj| !sj.eternal) && (others == 0 || keeps_value(*i) == 0))
+                .max_by(|a, b| a.1.compare_to_sell(b.1))
                 .map(|(i, _)| i)
         });
         for (i, (cur, sj)) in base.jokers.iter().zip(&ctx.run.jokers).enumerate() {
@@ -4542,7 +4591,7 @@ mod tests {
         let data = GameData::bundled();
         let mut fresh_deck = r.full_deck();
         fresh_deck.sort_by_key(Card::order_key);
-        let ctx = Ctx { run: &r, shares: vec![], data, base: Board::from_run(&r, data), specs: vec![], ahead: vec![], fresh_deck, opts: quick() };
+        let ctx = Ctx { run: &r, shares: vec![], removals: vec![], data, base: Board::from_run(&r, data), specs: vec![], ahead: vec![], fresh_deck, opts: quick() };
         let fresh = RoundStart { hand: vec![], deck: ctx.fresh_deck.clone(), hand_size: r.hand_size, hands: r.round_hands, discards: r.round_discards, scored: 0.0, target: 1.0, fresh: true };
         let no_burglar = without(&ctx.base, 0);
         assert_eq!(fresh.hands_on(&ctx.base), (7, 0));
@@ -4588,7 +4637,7 @@ mod tests {
         let data = GameData::bundled();
         let mut fresh_deck = r.full_deck();
         fresh_deck.sort_by_key(Card::order_key);
-        let ctx = Ctx { run: &r, shares: vec![], data, base: Board::from_run(&r, data), specs: vec![], ahead: vec![], fresh_deck, opts: quick() };
+        let ctx = Ctx { run: &r, shares: vec![], removals: vec![], data, base: Board::from_run(&r, data), specs: vec![], ahead: vec![], fresh_deck, opts: quick() };
         let set = |b: &Board, key: &str| {
             let (start, rules) = blind_from_start(key, 1.0, &r, &ctx.fresh_deck);
             assert_eq!((start.hands, start.discards), (4, 3), "{key}: the run's round_resets");
@@ -4710,6 +4759,76 @@ mod tests {
     }
 
     #[test]
+    fn sell_screen_picks_weakest_by_measured_value_not_score_share() {
+        let burglar = JokerRemoval {
+            key: "j_burglar".into(),
+            p_saved_key: 0.2,
+            p_key: 0.2,
+            p_hz: 0.0,
+            score_key: 1500.0,
+            score_hz: 1000.0,
+            typical_mean: 800.0,
+        };
+        let weak_scoring = JokerRemoval {
+            key: "j_half".into(),
+            p_saved_key: 0.95,
+            p_key: 0.95,
+            p_hz: 0.1,
+            score_key: 8000.0,
+            score_hz: 3000.0,
+            typical_mean: 1200.0,
+        };
+        // compare_to_sell: Greater means weaker (leaves more remaining strength).
+        // weak_scoring leaves 95% win chance vs burglar leaving only 20%,
+        // so weak_scoring is safer to sell despite having a higher score_share.
+        assert_eq!(weak_scoring.compare_to_sell(&burglar), std::cmp::Ordering::Greater);
+        assert_eq!(burglar.compare_to_sell(&weak_scoring), std::cmp::Ordering::Less);
+
+        // Within 0.5% win rate and 1% score, buckets tie and fall through to deterministic key order:
+        let close_a = JokerRemoval {
+            key: "j_alpha".into(),
+            p_saved_key: 0.952, // 95.2% vs 95.0%: within 0.5% bucket
+            p_key: 0.952,
+            p_hz: 0.101,        // within 0.5% bucket
+            score_key: 8020.0,  // within 1% bucket of 8000
+            score_hz: 3010.0,   // within 1% bucket of 3000
+            typical_mean: 1205.0,
+        };
+        let close_b = JokerRemoval {
+            key: "j_beta".into(),
+            p_saved_key: 0.950,
+            p_key: 0.950,
+            p_hz: 0.100,
+            score_key: 8000.0,
+            score_hz: 3000.0,
+            typical_mean: 1200.0,
+        };
+        // Metrics tie in discrete buckets: "j_beta" > "j_alpha" by key
+        assert_eq!(close_a.compare_to_sell(&close_b), std::cmp::Ordering::Less);
+        assert_eq!(close_b.compare_to_sell(&close_a), std::cmp::Ordering::Greater);
+
+        let data = GameData::bundled();
+        let r = shop_run(&[("j_burglar", None, None), ("j_half", None, None)], &[]);
+        let mut fresh_deck = r.full_deck();
+        fresh_deck.sort_by_key(Card::order_key);
+        let ctx = Ctx {
+            run: &r,
+            data,
+            base: Board::from_run(&r, data),
+            specs: vec![],
+            ahead: vec![],
+            fresh_deck,
+            opts: quick(),
+            shares: vec![-0.45, 0.15],
+            removals: vec![burglar, weak_scoring],
+        };
+        let cand = Joker::from_key("j_joker", data).unwrap();
+        // Screen with low sims (screen_sims < opts.sims):
+        let screened = evaluate_candidate(&ctx, cand, 2, &[], 0.0, ctx.opts.screen_sims, false, None);
+        assert_eq!(screened.action, "replace Half Joker");
+    }
+
+    #[test]
     fn options_rank_by_surviving_times_the_long_run() {
         let opt = |label: &str, p: f64, long: Option<f64>| ShopOption {
             tied: false, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None,
@@ -4823,7 +4942,7 @@ mod tests {
         let data = GameData::bundled();
         let mut fresh_deck = run.full_deck();
         fresh_deck.sort_by_key(Card::order_key);
-        let ctx = Ctx { run, shares: vec![], data, base: Board::from_run(run, data), specs: vec![], ahead: vec![], fresh_deck, opts: quick() };
+        let ctx = Ctx { run, shares: vec![], removals: vec![], data, base: Board::from_run(run, data), specs: vec![], ahead: vec![], fresh_deck, opts: quick() };
         let growths = growths.unwrap_or_else(|| growths_for(&ctx, &[]));
         let lr = value::LongRun::new(&ctx, mix, &growths, &[], [0; 4]);
         f(&lr)
@@ -4845,7 +4964,7 @@ mod tests {
             let (start, rules) = blind_from_start("bl_big", target, &r, &fresh_deck);
             Spec { label: "Next: Big".into(), blind_key: "bl_big".into(), blind_name: "Big Blind".into(), start, rules, horizon: false }
         };
-        let mut ctx = Ctx { run: &r, shares: vec![], data, base, specs: vec![], ahead: vec![], fresh_deck: fresh_deck.clone(), opts: Options { sims: 120, ..quick() } };
+        let mut ctx = Ctx { run: &r, shares: vec![], removals: vec![], data, base, specs: vec![], ahead: vec![], fresh_deck: fresh_deck.clone(), opts: Options { sims: 120, ..quick() } };
         // the board's whole rounds (a target no round reaches): past most of them
         let (_, all) = ctx.odds_one(&ctx.base, &spec(1e15), 120);
         let target = all.p90 * 1.5;
@@ -4875,7 +4994,7 @@ mod tests {
             let (start, rules) = blind_from_start(key, target, &r, &fresh_deck);
             Spec { label: key.into(), blind_key: key.into(), blind_name: key.into(), start, rules, horizon: false }
         };
-        let mut ctx = Ctx { run: &r, shares: vec![], data, base, specs: vec![], ahead: vec![], fresh_deck: fresh_deck.clone(), opts: Options { sims: 120, ..quick() } };
+        let mut ctx = Ctx { run: &r, shares: vec![], removals: vec![], data, base, specs: vec![], ahead: vec![], fresh_deck: fresh_deck.clone(), opts: Options { sims: 120, ..quick() } };
         let (_, all) = ctx.odds_one(&ctx.base, &spec("bl_big", 1e15), 120);
         ctx.ahead = vec![spec("bl_big", all.p10 * 0.9), spec("bl_big", all.p90 * 1.5)];
         let find = |ctx: &Ctx, lifts: [f64; 2]| {
@@ -4916,7 +5035,7 @@ mod tests {
             let (start, rules) = blind_from_start(key, target, &r, &fresh_deck);
             Spec { label: key.into(), blind_key: key.into(), blind_name: key.into(), start, rules, horizon: false }
         };
-        let mut ctx = Ctx { run: &r, shares: vec![], data, base, specs: vec![], ahead: vec![], fresh_deck: fresh_deck.clone(), opts: Options { sims: 300, ..quick() } };
+        let mut ctx = Ctx { run: &r, shares: vec![], removals: vec![], data, base, specs: vec![], ahead: vec![], fresh_deck: fresh_deck.clone(), opts: Options { sims: 300, ..quick() } };
         let (_, all) = ctx.odds_one(&ctx.base, &spec("bl_big", 1e15), 120);
         ctx.ahead = vec![spec("bl_big", all.p90 * 1.5)];
         let dollar = |ctx: &Ctx, lifts: [f64; 2], more: f64| {
