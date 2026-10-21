@@ -341,12 +341,12 @@ pub(super) fn add_levels(l: crate::engine::Level, n: f64) -> crate::engine::Leve
 /// which buys its shop events once its jokers are all in (`LongRun::fill_long`).
 #[derive(Clone)]
 pub(super) struct Projected {
-    board: Board,
-    dollars: f64,
+    pub(super) board: Board,
+    pub(super) dollars: f64,
     /// Money per ante from money jokers minus rent (in `dollars`), and your main hand's level
     /// before the projection's levels: `fill_long` decides what the spare money buys
-    flow: f64,
-    top_base: Option<crate::engine::Level>,
+    pub(super) flow: f64,
+    pub(super) top_base: Option<crate::engine::Level>,
 }
 
 impl std::ops::Deref for Projected {
@@ -528,10 +528,15 @@ impl<'a> LongRun<'a> {
 
     /// Money jokers you keep pay every ante, like rent in reverse; one the projection replaces
     /// (`replaced`) isn't on the board it pays for.
-    pub fn owned_income(&self, keep: &dyn Fn(usize) -> bool) -> f64 {
+    pub fn owned_income(&self, keep: &dyn Fn(usize) -> bool, b: &Board) -> f64 {
         let run = self.run;
         let replaced = |i: usize| self.replaced.get().is_some_and(|r| r[i]);
-        run.jokers.iter().enumerate().filter(|(i, sj)| keep(*i) && self.lasts(*i) && !sj.debuff && !replaced(*i)).map(|(_, sj)| income_per_ante(&sj.key, &sj.ability, run, self.antes_left)).sum::<f64>()
+        run.jokers
+            .iter()
+            .enumerate()
+            .filter(|(i, sj)| keep(*i) && self.lasts(*i) && !sj.debuff && !replaced(*i))
+            .map(|(_, sj)| income_per_ante(&sj.key, &sj.ability, b, run, self.antes_left))
+            .sum::<f64>()
     }
 
     /// Stand-ins for the jokers you'd find over the run: empty slots get alternating ×1.5,
@@ -558,21 +563,21 @@ impl<'a> LongRun<'a> {
     /// the money you'd hold buys comes with it (`Projected`). `extra_rent`: more rent per ante
     /// (negative: more income), on top of your jokers'.
     pub fn project_rent(&self, keep: &dyn Fn(usize) -> bool, dollars: f64, extra_rent: f64) -> Projected {
-        self.project_as(keep, dollars, extra_rent, None)
+        self.project_as(keep, dollars, extra_rent, None, None)
     }
 
-    /// `project_rent` with joker `i` as `j` now (`changed`), grown from there
-    fn project_as(&self, keep: &dyn Fn(usize) -> bool, dollars: f64, extra_rent: f64, changed: Option<(usize, &Joker)>) -> Projected {
+    /// `project_rent` with joker `i` as `j` now (`changed`), grown from there, and an added joker (`added`)
+    pub(crate) fn project_as(
+        &self,
+        keep: &dyn Fn(usize) -> bool,
+        dollars: f64,
+        extra_rent: f64,
+        changed: Option<(usize, &Joker)>,
+        added: Option<&Joker>,
+    ) -> Projected {
         let (ctx, run) = (self.ctx, self.run);
-        let rent = self.owned_rent(keep) + extra_rent;
-        let flow = self.owned_income(keep) - rent;
-        let dollars = dollars + flow;
         let mut b = ctx.base.clone();
         b.blind = Default::default();
-        let top_base = self.top_hand.map(|top| b.levels[top as usize]);
-        if let (Some(top), Some(l)) = (self.top_hand, top_base) {
-            b.levels[top as usize] = self.top_level(l, dollars, flow, (dollars - self.line).max(0.0));
-        }
         b.jokers = ctx
             .base
             .jokers
@@ -590,6 +595,25 @@ impl<'a> LongRun<'a> {
                 }
             })
             .collect();
+        let eval_board = match added {
+            Some(j) => {
+                let mut eb = b.clone();
+                eb.jokers.push(j.clone());
+                eb
+            }
+            None => b.clone(),
+        };
+        let added_income = added.map_or(0.0, |j| {
+            let ability = self.data.center(&j.key).map(|c| crate::engine::joker::ability_from_config(&c.config)).unwrap_or_default();
+            income_per_ante(&j.key, &ability, &eval_board, run, self.antes_left)
+        });
+        let rent = self.owned_rent(keep) + extra_rent;
+        let flow = self.owned_income(keep, &eval_board) + added_income - rent;
+        let dollars = dollars + flow;
+        let top_base = self.top_hand.map(|top| b.levels[top as usize]);
+        if let (Some(top), Some(l)) = (self.top_hand, top_base) {
+            b.levels[top as usize] = self.top_level(l, dollars, flow, (dollars - self.line).max(0.0));
+        }
         Projected { board: b, dollars, flow, top_base }
     }
 
@@ -871,8 +895,9 @@ impl<'a> LongRun<'a> {
         let sell = if rental { 1 } else { (cost / 2).max(1) };
         let rent = if rental { RENT_PER_ANTE } else { 0.0 };
         let ability = data.center(key).map(|c| crate::engine::joker::ability_from_config(&c.config)).unwrap_or_default();
-        let earns = income_per_ante(key, &ability, run, self.antes_left.min(1.0));
-        self.long_score(&self.fill_long(self.project(&|_| true, run.dollars), None, self.once(earns - ((cost - sell) as f64) - rent))) / self.l0
+        let p = self.project(&|_| true, run.dollars);
+        let earns = income_per_ante(key, &ability, &p.board, run, self.antes_left.min(1.0));
+        self.long_score(&self.fill_long(p, None, self.once(earns - ((cost - sell) as f64) - rent))) / self.l0
     }
 
     /// What a joker that changes a card you pick each round (`consumable::round_card_effect`;
@@ -969,15 +994,15 @@ impl<'a> LongRun<'a> {
     /// A joker's projected score: bought for `cost` (selling `sell`, if any), rent paid if
     /// rental, grown with the money you'd hold.
     pub fn long_of(&self, j: &Joker, sell: Option<usize>, cost: i64, rental: bool) -> f64 {
-        let (run, data) = (self.run, self.data);
+        let run = self.run;
         let back = sell.map_or(0, |i| run.jokers[i].sell_value) as f64;
-        let ability = data.center(&j.key).map(|c| crate::engine::joker::ability_from_config(&c.config)).unwrap_or_default();
         let rent = if rental { RENT_PER_ANTE } else { 0.0 };
-        let income = income_per_ante(&j.key, &ability, run, self.antes_left);
         let horizon = if j.key == "j_madness" { 1.0 } else { self.antes_left };
         // used up by Ante 8 (`Growths`): its slot is filled like any empty one
         let g = self.growths.pool_after(j, self.growths.rounds).unwrap_or_else(|| Some(grow_antes(j, horizon).map_or_else(|| j.clone(), |g| g.0)));
-        let b = self.fill_long(self.project_rent(&|k| Some(k) != sell, run.dollars, rent - income), g, self.once(back - cost as f64));
+        let added = g.as_ref().unwrap_or(j);
+        let p = self.project_as(&|k| Some(k) != sell, run.dollars, rent, None, Some(added));
+        let b = self.fill_long(p, g, self.once(back - cost as f64));
         self.round_effect_long(b, &j.key)
     }
 
@@ -996,7 +1021,7 @@ impl<'a> LongRun<'a> {
     /// Your projected board with `g` added (what it adds to a round, `Gain::round`, and its
     /// consumable slots are in the round it's played in: `value`)
     pub fn board_with(&self, g: &Gain) -> Board {
-        let p = self.project_as(&|_| true, self.run.dollars + g.held, 0.0, g.joker.as_ref().map(|(i, j)| (*i, j)));
+        let p = self.project_as(&|_| true, self.run.dollars + g.held, 0.0, g.joker.as_ref().map(|(i, j)| (*i, j)), None);
         let mut b = self.fill_long(p, None, self.once(g.money));
         if g.all_levels != 0 {
             for l in b.levels.iter_mut() {

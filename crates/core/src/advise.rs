@@ -1778,12 +1778,12 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         let rent_now = run.jokers.iter().filter(|j| j.rental).count() as f64 * 3.0;
         // Only a played round has an end: money jokers pay (a third of an ante's income) and
         // a Blue Seal held then makes a planet (and grows Constellation)
-        let round_income: f64 = run.jokers.iter().filter(|j| !j.debuff).map(|j| income_per_ante(&j.key, &j.ability, run, 1.0) / 3.0).sum();
+        let round_income: f64 = run.jokers.iter().filter(|j| !j.debuff).map(|j| income_per_ante(&j.key, &j.ability, &ctx.base, run, 1.0) / 3.0).sum();
         let blue = run.full_deck().iter().filter(|c| c.seal == Some(crate::model::Seal::Blue)).count();
         // the money cards counted as used either way (above) don't hold a slot at round end
         let used = run.consumables.iter().filter(|c| tarots.iter().any(|t| t.key == c.key && t.money_gain > 0.0)).count() as i64;
         let free = (run.consumable_slots - run.consumables.len() as i64 + used).max(0) as usize;
-        let seal_planets = seal_planets_a_round(round_now(run), blue, run.full_deck().len(), free);
+        let seal_planets = seal_planets_a_round(round_now(&ctx.base, run), blue, run.full_deck().len(), free);
         let gain = held + bv.reward as f64 + interest(run.dollars + held, run.interest_amount, run.interest_cap) as f64 + run.money_per_hand - rent_now + round_income;
         let play_survive = p_blind * survive_with(run.dollars + gain, k, p_boss);
         let mut play_long = money_long(gain);
@@ -1944,7 +1944,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         let verdict = if (pv - sv).abs() <= 0.03 * pv.max(sv) { "close" } else if sv > pv { "skip" } else { "play" };
         blind_views[bi].skip = Some(SkipCompare { play_survive, play_next, play_long, skip_survive, skip_next, skip_long, verdict: verdict.into(), tag: what, valued, grows });
     }
-    let flow_now = lr.owned_income(&|_| true) - lr.owned_rent(&|_| true);
+    let flow_now = lr.project(&|_| true, run.dollars).flow;
     let (levels_per_ante, planet_levels) = lr.levels_for(run.dollars + flow_now, flow_now);
     let planet_levels = planet_levels.round() as i64;
     let long_note = format!(
@@ -2774,7 +2774,7 @@ fn glass_presence(antes_left: f64) -> f64 {
 /// Money a joker pays per ante (3 rounds), averaged over the antes left, for jokers with
 /// a fixed payout (card.lua `calculate_dollar_bonus` and end-of-round effects). Counted
 /// as money you hold every ante in the By Ante 8 projection.
-pub(crate) fn income_per_ante(key: &str, ability: &serde_json::Value, run: &RunState, antes_left: f64) -> f64 {
+pub(crate) fn income_per_ante(key: &str, ability: &serde_json::Value, b: &Board, run: &RunState, antes_left: f64) -> f64 {
     let extra = ability.get("extra");
     let num = |v: Option<&serde_json::Value>, d: f64| v.and_then(|x| x.as_f64()).unwrap_or(d);
     let per_round = match key {
@@ -2787,8 +2787,8 @@ pub(crate) fn income_per_ante(key: &str, ability: &serde_json::Value, run: &RunS
         // sell value grows $3 a round
         "j_egg" => num(extra, 3.0),
         // $5 per discarded card of a rank that changes every round: ~4 cards a discard, the
-        // rank about 1 in 13 of them
-        "j_mail" => num(extra, 5.0) * run.round_at_blind_set(Default::default()).1.max(0) as f64 * 4.0 / 13.0,
+        // rank about 1 in 13 of them, on the discards of the board valued (`board_round`)
+        "j_mail" => num(extra, 5.0) * board_round(b, run).2.max(0) as f64 * 4.0 / 13.0,
         _ => 0.0,
     };
     per_round * 3.0
@@ -2838,11 +2838,22 @@ fn voucher_gain(before: &RunState, after: &RunState, cost: i64) -> Option<Gain> 
     (g.consumable_slots != 0 || g.round() != (0, 0, 0)).then_some(g)
 }
 
-/// A run's round as it's played now: (hand size, hands, discards), a blind with no boss rule
-/// set on it (`RunState::round_at_blind_set`)
-fn round_now(run: &RunState) -> (i64, i64, i64) {
-    let (hands, discards) = run.round_at_blind_set(Default::default());
-    (run.hand_size, hands, discards)
+/// A board's round as it's played: (hand size, hands, discards), on the board played.
+/// Accounts for round modifiers from jokers (`round_mods`, Merry Andy, Drunkard, Troubadour,
+/// Juggler, Stuntman) and effects applied as the blind is set (`Board::at_blind_set`, Burglar,
+/// The Water, The Needle).
+pub(crate) fn board_round(b: &Board, run: &RunState) -> (i64, i64, i64) {
+    let mods_now = run.jokers.iter().filter(|j| !j.debuff).map(|sj| round_mods(&Joker::from_ability(&sj.key, &sj.ability, 0))).fold((0, 0, 0), |a, m| (a.0 + m.0, a.1 + m.1, a.2 + m.2));
+    let mods_b = b.jokers.iter().filter(|j| !j.debuff).map(round_mods).fold((0, 0, 0), |a, m| (a.0 + m.0, a.1 + m.1, a.2 + m.2));
+    let hand_size = (run.hand_size - mods_now.0 + mods_b.0).max(1);
+    let hands = (run.round_hands - mods_now.1 + mods_b.1).max(1);
+    let discards = (run.round_discards - mods_now.2 + mods_b.2).max(0);
+    let (hands, discards) = b.at_blind_set(hands, discards);
+    (hand_size, hands, discards)
+}
+
+fn round_now(b: &Board, run: &RunState) -> (i64, i64, i64) {
+    board_round(b, run)
 }
 
 /// The chance a Blue Seal card is drawn at some point in a round (then you keep it to the
@@ -4547,7 +4558,7 @@ mod tests {
         let no_burglar = without(&ctx.base, 0);
         assert_eq!(fresh.hands_on(&ctx.base), (7, 0));
         assert_eq!(apply_mods(&fresh, &[], &[&ctx.base.jokers[0]]).hands_on(&no_burglar), (4, 3));
-        assert_eq!(round_now(&r), (8, 7, 0));
+        assert_eq!(round_now(&ctx.base, &r), (8, 7, 0));
         // a round in progress was set when it started, its first cards dealt or not yet
         let playing = RoundStart { hand: fresh.deck[..8].to_vec(), fresh: false, ..fresh.clone() };
         assert_eq!(playing.hands_on(&ctx.base), (4, 3));
@@ -4570,10 +4581,15 @@ mod tests {
             let sold = Board { jokers: b.jokers.iter().filter(|j| j.key != "j_burglar").cloned().collect(), ..b.clone() };
             assert_eq!(lr.long_spec_for(&sold, (0, 0, 0)).start.hands_on(&sold), (4, 3));
         });
-        // Mail-In Rebate pays by discards: none with Burglar
+        // Mail-In Rebate pays by discards: none with Burglar on the board, discards without it
         let mail = shop_run(&[("j_burglar", None, None), ("j_mail", None, None)], &[]);
-        assert_eq!(income_per_ante("j_mail", &mail.jokers[1].ability, &mail, 1.0), 0.0);
-        assert!(income_per_ante("j_mail", &mail.jokers[1].ability, &shop_run(&[("j_mail", None, None)], &[]), 1.0) > 0.0);
+        let b_mail = Board::from_run(&mail, data);
+        assert_eq!(income_per_ante("j_mail", &mail.jokers[1].ability, &b_mail, &mail, 1.0), 0.0);
+        let b_sold = without(&b_mail, 0);
+        assert!(income_per_ante("j_mail", &mail.jokers[1].ability, &b_sold, &mail, 1.0) > 0.0);
+        let plain = shop_run(&[("j_mail", None, None)], &[]);
+        let b_plain = Board::from_run(&plain, data);
+        assert!(income_per_ante("j_mail", &plain.jokers[0].ability, &b_plain, &plain, 1.0) > 0.0);
     }
 
     #[test]
@@ -4635,6 +4651,78 @@ mod tests {
         assert_eq!(o.money.dollars_after, 30.0 + 2.0 - price);
         assert_eq!(o.money.per_round, 1.0);
         assert_eq!(o.money.per_round_after, 0.0);
+
+        // Selling Burglar gives Mail-In Rebate its discards and money; adding Burglar zeroes it
+        let with_burglar = shop_run(&[("j_burglar", None, None), ("j_mail", None, None)], &[]);
+        let sell_burglar = crate::whatif::Plan { sell: vec!["burglar".into()], ..Default::default() };
+        let o_sold = crate::whatif::run(&with_burglar, GameData::bundled(), &sell_burglar, 50, 3).unwrap();
+        assert_eq!(o_sold.money.per_round, 0.0);
+        assert!(o_sold.money.per_round_after > 0.0);
+
+        let with_mail = shop_run(&[("j_mail", None, None)], &["j_burglar"]);
+        let add_burglar = crate::whatif::Plan { add: vec!["burglar".into()], ..Default::default() };
+        let o_added = crate::whatif::run(&with_mail, GameData::bundled(), &add_burglar, 50, 3).unwrap();
+        assert!(o_added.money.per_round > 0.0);
+        assert_eq!(o_added.money.per_round_after, 0.0);
+
+        // Adding Merry Andy (+3 discards) increases Mail-In's per-round money
+        let with_mail_andy = shop_run(&[("j_mail", None, None)], &["j_merry_andy"]);
+        let add_andy = crate::whatif::Plan { add: vec!["merry_andy".into()], ..Default::default() };
+        let o_andy = crate::whatif::run(&with_mail_andy, GameData::bundled(), &add_andy, 50, 3).unwrap();
+        assert!(o_andy.money.per_round_after > o_andy.money.per_round);
+    }
+
+    #[test]
+    fn mail_in_rebate_income_reads_discards_from_board_valued() {
+        // 1. Perishable Burglar (runs out in 2 rounds, before Ante 8):
+        // It drops from the projected board to Ante 8, so Mail-In Rebate earns its full income by Ante 8
+        let mut r_perishable = shop_run(&[("j_burglar", None, Some(2)), ("j_mail", None, None)], &[]);
+        r_perishable.jokers[1].eternal = true;
+        with_long_run(&r_perishable, |lr| {
+            let p = lr.project(&|_| true, r_perishable.dollars);
+            assert!(p.flow > 0.0, "perishable Burglar drops by Ante 8, leaving Mail-In's discards");
+        });
+
+        // 2. Eternal Burglar:
+        // Stays on the projected board to Ante 8, so discards = 0 and Mail-In Rebate earns $0
+        let r_eternal = shop_run(&[("j_burglar", None, None), ("j_mail", None, None)], &[]);
+        with_long_run(&r_eternal, |lr| {
+            let flow = lr.project(&|_| true, r_eternal.dollars).flow;
+            assert_eq!(flow, 0.0, "eternal Burglar zeroes Mail-In's income to Ante 8");
+        });
+
+        // 3. Selling Burglar restores Mail-In's income flow
+        let mut r_both = shop_run(&[("j_burglar", None, None), ("j_mail", None, None)], &[]);
+        r_both.jokers[1].eternal = true;
+        with_long_run(&r_both, |lr| {
+            let p_sell = lr.project(&|k| k != 0, r_both.dollars);
+            let p_keep = lr.project(&|_| true, r_both.dollars);
+            assert_eq!(p_keep.flow, 0.0, "keeping Burglar leaves 0 discards, so 0 flow");
+            assert!(p_sell.flow > 0.0, "selling Burglar restores discards, so Mail-In earns flow");
+        });
+
+        // 4. Merry Andy (+3 discards) increases Mail-In's flow; selling it lowers it
+        let mut r_andy = shop_run(&[("j_merry_andy", None, None), ("j_mail", None, None)], &[]);
+        r_andy.round_discards = 6; // 3 base + 3 Merry Andy
+        r_andy.jokers[0].eternal = true;
+        r_andy.jokers[1].eternal = true;
+        with_long_run(&r_andy, |lr| {
+            let p_keep = lr.project(&|_| true, r_andy.dollars);
+            let p_sell = lr.project(&|k| k != 0, r_andy.dollars);
+            assert!(p_keep.flow > p_sell.flow, "Merry Andy's +3 discards increase Mail-In flow ({:.2} vs {:.2})", p_keep.flow, p_sell.flow);
+        });
+
+        // 5. Perishable Merry Andy (runs out by Ante 8) drops off, lowering Mail-In's flow by Ante 8
+        let mut r_perish_andy = shop_run(&[("j_merry_andy", None, Some(2)), ("j_mail", None, None)], &[]);
+        r_perish_andy.round_discards = 6;
+        r_perish_andy.jokers[1].eternal = true;
+        let mut r_eternal_andy = shop_run(&[("j_merry_andy", None, None), ("j_mail", None, None)], &[]);
+        r_eternal_andy.round_discards = 6;
+        r_eternal_andy.jokers[0].eternal = true;
+        r_eternal_andy.jokers[1].eternal = true;
+        let flow_perish = with_long_run(&r_perish_andy, |lr| lr.project(&|_| true, r_perish_andy.dollars).flow);
+        let flow_eternal = with_long_run(&r_eternal_andy, |lr| lr.project(&|_| true, r_eternal_andy.dollars).flow);
+        assert!(flow_eternal > flow_perish, "perishable Merry Andy drops before Ante 8, giving fewer discards than eternal ({:.2} vs {:.2})", flow_eternal, flow_perish);
     }
 
     fn shop_run(owned: &[(&str, Option<Edition>, Option<i64>)], for_sale: &[&str]) -> RunState {
@@ -5749,11 +5837,12 @@ mod tests {
         // n Blue Seals each drawn with chance c: n·c while they always fit, E[min(drawn, slots)]
         // past that (less than min(n·c, slots): some rounds draw more than fit, some fewer)
         let r = shop_run(&[("j_joker", None, None)], &[]);
-        let c = seal_round_chance(round_now(&r), 52);
-        assert!((seal_planets_a_round(round_now(&r), 2, 52, 2) - 2.0 * c).abs() < 1e-12);
-        let three = seal_planets_a_round(round_now(&r), 3, 52, 2);
+        let b = Board::from_run(&r, GameData::bundled());
+        let c = seal_round_chance(round_now(&b, &r), 52);
+        assert!((seal_planets_a_round(round_now(&b, &r), 2, 52, 2) - 2.0 * c).abs() < 1e-12);
+        let three = seal_planets_a_round(round_now(&b, &r), 3, 52, 2);
         assert!(three < (3.0 * c).min(2.0) && three > 2.0 * c, "{three} with c {c}");
-        assert_eq!(seal_planets_a_round(round_now(&r), 5, 52, 0), 0.0);
+        assert_eq!(seal_planets_a_round(round_now(&b, &r), 5, 52, 0), 0.0);
     }
 
     #[test]

@@ -275,7 +275,16 @@ pub fn run(run: &RunState, data: &GameData, plan: &Plan, sims: usize, seed: u64)
         }
     }
     let per_round = |js: &[(String, serde_json::Value, bool, bool)]| -> f64 {
-        js.iter().filter(|j| !j.3).map(|j| crate::advise::income_per_ante(&j.0, &j.1, run, 1.0) / 3.0).sum::<f64>() - js.iter().filter(|j| j.2).count() as f64 * 3.0
+        let b = Board {
+            jokers: js.iter().map(|(key, ability, _, debuff)| Joker { debuff: *debuff, ..Joker::from_ability(key, ability, 0) }).collect(),
+            blind: run.current_blind.as_ref().map_or_else(crate::engine::BlindRules::default, |b| crate::engine::BlindRules {
+                key: b.key.clone(),
+                disabled: b.disabled,
+                ..crate::engine::BlindRules::default()
+            }),
+            ..Board::empty()
+        };
+        js.iter().filter(|j| !j.3).map(|j| crate::advise::income_per_ante(&j.0, &j.1, &b, run, 1.0) / 3.0).sum::<f64>() - js.iter().filter(|j| j.2).count() as f64 * 3.0
     };
     let now_js: Vec<_> = run.jokers.iter().map(|sj| (sj.key.clone(), sj.ability.clone(), sj.rental, sj.debuff)).collect();
     let money = Money { dollars: run.dollars, dollars_after: run.dollars + (sold - bought) as f64, per_round: per_round(&now_js), per_round_after: per_round(&kept) };

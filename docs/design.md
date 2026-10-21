@@ -155,7 +155,7 @@ add to this list's kind; remove from it.
 
 | Rule | Where | General replacement |
 |---|---|---|
-| Suit-joker map, `kickers_matter` list, `income_per_ante` per joker (it reads the run, not the board valued: Mail-In Rebate's discards are the jokers you own's, `RunState::round_at_blind_set`, so a plan that sells or buys Burglar doesn't move them) | `sim.rs` `keep_suit`, `advise.rs` | game facts: move to `data/` or the engine; or work out what to keep by scoring with and without a card |
+| Suit-joker map, `kickers_matter` list, `income_per_ante` per joker | `sim.rs` `keep_suit`, `advise.rs` | game facts: move to `data/` or the engine; or work out what to keep by scoring with and without a card |
 | Played cards ordered with Glass and Polychrome last (`sim::arrange`), the order the engine's arrangement starts from and falls back to | `sim.rs` `arrange` | the engine's arrangement from the cards in a fixed order (the fallback then matters only where an effect reads a card's place: gap 19) |
 | Constellation grows from planets in several places | `value.rs` `add_planets`, `spend_once`; `advise.rs` Meteor tag, `grow_constellation` | a planet used as an event in `engine::RunEvent`, applied by `Board::after` (`xmult_from`), counted through `Gain::planets`; `bought_event` then compares what money buys by measured value, not Mult per dollar |
 | A short perishable's price dropped from its value | `advise.rs` (`long_mult = 1 + unlock`) | `LongRun::value` with its price |
@@ -629,7 +629,7 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    (`sim::pays_at_end`, against the board's `planet_slots`) never acts in the projection (deck
    changes, DNA and Crystal Ball alike). A round's extras reach the round and the Blue Seals,
    not the rest that reads today's round: joker growth in rounds is measured at this ante's
-   three plain blind sizes with your board as it is (`value::Growths`), Mail-In's income today's discards (`income_per_ante`), DNA's opening hand
+   three plain blind sizes with your board as it is (`value::Growths`), Mail-In's income the discards of the board valued (`income_per_ante`), DNA's opening hand
    today's hand size (`round_decks`). Projected rounds are played out with no target, so a hand
    more leaves none to pay money at cash-out (`money_per_hand`; said in the note), and a discard
    more is worth what the simulated player makes of it when it's always behind (its dig

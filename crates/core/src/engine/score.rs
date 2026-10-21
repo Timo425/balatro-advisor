@@ -104,13 +104,13 @@ pub struct Board {
     pub ancient_suit: Option<Suit>,
     pub most_played: Option<HandType>,
     pub blind: BlindRules,
-    /// Mail-In Rebate's rank this round (it pays $5 per discarded card of it).
     /// Consumable slots free for the planets Blue Seal cards held at round end make.
     pub planet_slots: i64,
     /// What a round is worth beyond winning it, for the round simulation's own choices
     /// (none: it just plays to win).
     #[serde(skip)]
     pub goals: Option<crate::sim::RoundGoals>,
+    /// Mail-In Rebate's rank this round (it pays $5 per discarded card of it).
     pub mail_rank: Option<u8>,
     /// Castle's suit this round (it grows from discarded cards of it).
     #[serde(default)]
