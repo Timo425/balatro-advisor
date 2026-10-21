@@ -660,8 +660,9 @@ pub fn chance_ratio(base: f64, by: f64, from: f64) -> f64 {
 /// The rounds numbered `range` after `first` (round i always draws the same cards, whatever
 /// the move, so moves compare on the same draws and more rounds can be added later).
 pub fn outcomes_after(b: &Board, start: &RoundStart, first: &Move, range: std::ops::Range<usize>, seed: u64, uses: &[Use]) -> Vec<Outcome> {
+    let (b, start) = b.at_blind_set(start);
     let size = start.hand_size.max(1) as usize;
-    let (hands, discards) = start.hands_on(b);
+    let (hands, discards) = (start.hands, start.discards);
     range
         .map(|i| {
             let mut rng = Rng::new(seed.wrapping_add(i as u64 * 7919));
@@ -928,45 +929,8 @@ pub fn shuffle<T>(v: &mut [T], rng: &mut Rng) {
     }
 }
 
-/// Boss effects on a round simulation that the scoring engine doesn't cover.
-#[derive(Debug, Clone, Default)]
-pub struct RoundRules {
-    /// Cards of this suit are debuffed (The Club/Goad/Window/Head).
-    pub debuff_suit: Option<Suit>,
-    /// Face cards are debuffed (The Plant).
-    pub debuff_faces: bool,
-    pub hand_size_delta: i64,
-}
-
-impl RoundRules {
-    pub fn for_blind(key: &str) -> RoundRules {
-        let mut r = RoundRules::default();
-        match key {
-            "bl_club" => r.debuff_suit = Some(Suit::Clubs),
-            "bl_goad" => r.debuff_suit = Some(Suit::Spades),
-            "bl_window" => r.debuff_suit = Some(Suit::Diamonds),
-            "bl_head" => r.debuff_suit = Some(Suit::Hearts),
-            "bl_plant" => r.debuff_faces = true,
-            "bl_manacle" => r.hand_size_delta = -1,
-            _ => {}
-        }
-        r
-    }
-
-    /// `Blind:debuff_card` for suit/face bosses.
-    pub fn apply(&self, cards: &mut [Card], smeared: bool, pareidolia: bool) {
-        for (i, c) in cards.iter_mut().enumerate() {
-            let by_suit = self.debuff_suit.is_some_and(|s| hand::is_suit(c, s, true, false, smeared));
-            let by_face = self.debuff_faces && hand::is_face(c, i, pareidolia, true);
-            if by_suit || by_face {
-                c.debuff = true;
-            }
-        }
-    }
-}
-
 /// Where a round starts.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RoundStart {
     /// Cards already in hand (empty for a fresh round).
     pub hand: Vec<Card>,
@@ -974,27 +938,28 @@ pub struct RoundStart {
     pub deck: Vec<Card>,
     pub hand_size: i64,
     /// Hands and discards left; a fresh round's before its blind is set (the run's
-    /// `round_resets` and what jokers added or removed change there: `hands_on` sets the rest)
+    /// `round_resets` and what jokers added or removed change there: `at_blind_set` sets the rest)
     pub hands: i64,
     pub discards: i64,
     pub scored: f64,
     pub target: f64,
-    /// The round hasn't started: its blind is set as it's played (`hands_on`). A round in
+    /// The round hasn't started: its blind is set as it's played (`Board::at_blind_set`). A round in
     /// progress had it set when it started, its hand empty or not (the save's while the first
     /// cards are dealt).
     pub fresh: bool,
+    /// The blind key (e.g. "bl_needle", "bl_small", "" for plain).
+    pub blind: String,
+    /// Whether the blind is disabled (Luchador, Chicot).
+    pub disabled: bool,
 }
 
 impl RoundStart {
     /// The hands and discards the round is played with on `b`: a fresh round's as its blind is
-    /// set on it (`Board::at_blind_set`: the boss's rule from `b`'s blind, then Burglar's), a
+    /// set on it (`Board::at_blind_set`: all of blind.lua `Blind:set_blind`, then Burglar's), a
     /// round in progress its own, set when it started.
     pub fn hands_on(&self, b: &Board) -> (i64, i64) {
-        if self.fresh {
-            b.at_blind_set(self.hands, self.discards)
-        } else {
-            (self.hands, self.discards)
-        }
+        let (_, s) = b.at_blind_set(self);
+        (s.hands, s.discards)
     }
 }
 
@@ -1635,7 +1600,7 @@ fn oracle_decide(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: 
     }
     #[cfg(test)]
     ORACLE_DECISIONS.with(|x| x.set(x.get() + 1));
-    let start = RoundStart { hand: hand.to_vec(), deck: deck.to_vec(), hand_size: size as i64, hands, discards, scored, target, fresh: false };
+    let start = RoundStart { hand: hand.to_vec(), deck: deck.to_vec(), hand_size: size as i64, hands, discards, scored, target, fresh: false, ..Default::default() };
     let seed = rng.next_u64();
     let g = b.goals.clone();
     let vals: Vec<Vec<f64>> = cands
@@ -2844,7 +2809,7 @@ fn play_on_instead(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards
         return None;
     }
     // winning now (with its uses) and each way of playing on, on the same futures
-    let start = RoundStart { hand: hand.to_vec(), deck: deck.to_vec(), hand_size: size as i64, hands, discards, scored, target, fresh: false };
+    let start = RoundStart { hand: hand.to_vec(), deck: deck.to_vec(), hand_size: size as i64, hands, discards, scored, target, fresh: false, ..Default::default() };
     let fstart = RoundStart { hand: fh.to_vec(), ..start.clone() };
     let mut moves: Vec<(&Board, &RoundStart, Move, &[Use])> = vec![(fb, &fstart, Move::Play(fw.to_vec()), fu)];
     moves.extend(alts.iter().map(|m| (b, &start, m.clone(), uses)));
@@ -2994,7 +2959,7 @@ fn spare_instead(b: &Board, parts: &HandParts, deck: &[Card], hands: i64, discar
         return None;
     }
     // the second half of the futures only when the first shows a gain
-    let round = RoundStart { hand: hand.to_vec(), deck: deck.to_vec(), hand_size: size as i64, hands, discards, scored, target, fresh: false };
+    let round = RoundStart { hand: hand.to_vec(), deck: deck.to_vec(), hand_size: size as i64, hands, discards, scored, target, fresh: false, ..Default::default() };
     let moves = [(b, &round, Move::Play(chosen.to_vec()), uses), (b, &round, Move::Play(spare.clone()), uses)];
     let seed = lookahead_seed(rng, hands, discards);
     let half = SPARE_ROLLOUTS / 2;
@@ -3220,13 +3185,13 @@ pub fn sim_round_uses(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[
 /// left them: `grown_over`)
 fn play_round(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[Use]) -> (RoundResult, Board) {
     let mut used = vec![false; uses.len()];
-    let mut b = board.clone();
-    let mut deck = start.deck.clone();
+    let (mut b, mut start) = board.at_blind_set(start);
+    let mut deck = std::mem::take(&mut start.deck);
     shuffle(&mut deck, rng);
     let size = start.hand_size.max(1) as usize;
-    let mut hand = start.hand.clone();
+    let mut hand = std::mem::take(&mut start.hand);
     draw(&mut hand, &mut deck, size);
-    let (mut hands, mut discards) = start.hands_on(board);
+    let (mut hands, mut discards) = (start.hands, start.discards);
     let mut total = start.scored;
     let mut best_hand: f64 = 0.0;
     let mut plays = Vec::new();
@@ -3390,7 +3355,6 @@ pub fn grown_over(b: &Board, starts: &[RoundStart], checkpoints: &[usize], chain
         for r in 1..=last {
             let start = &starts[(r - 1) % starts.len()];
             board = play_round(&board, start, &mut rng, &[]).1;
-            board.new_round(&b.blind.key);
             board.draw_round_targets(&start.deck, &mut rng);
             if checkpoints.contains(&r) {
                 out.push(b.jokers.iter().map(|j| board.jokers.iter().find(|n| n.id == j.id).map(Joker::lasting)).collect());
@@ -3426,7 +3390,7 @@ pub fn grown_over(b: &Board, starts: &[RoundStart], checkpoints: &[usize], chain
         .collect()
 }
 
-/// Whether each of `sims` runs gets through `rounds` (blind key, start) one after another, each
+/// Whether each of `sims` runs gets through `rounds` one after another, each
 /// from the board the one before ends with (its jokers' state as its hands and discards left
 /// them; then the round-end reset and the round targets drawn anew, as the game does at a round's
 /// end and `grown_over` carries it; the first from `b`, whose round is the one being played), a
@@ -3436,12 +3400,11 @@ pub fn grown_over(b: &Board, starts: &[RoundStart], checkpoints: &[usize], chain
 /// game's other round-end steps (card.lua `end_of_round`: Popcorn, Turtle Bean, Gros Michel, a
 /// perishable's rounds, rent, the round's money) and what a round does to your deck (Vampire's
 /// stripped cards are whole again).
-pub fn chained_runs(b: &Board, rounds: &[(String, RoundStart)], sims: usize, seed: u64) -> Vec<bool> {
+pub fn chained_runs(b: &Board, rounds: &[RoundStart], sims: usize, seed: u64) -> Vec<bool> {
     let run_one = |i: usize| {
         let mut board = b.clone();
-        for (k, (key, start)) in rounds.iter().enumerate() {
+        for (k, start) in rounds.iter().enumerate() {
             let mut rng = Rng::new(seed.wrapping_add(i as u64 * 7919).wrapping_add(k as u64 * 0x9e37_79b9) ^ 0x6168_6561);
-            board.new_round(key);
             board.draw_round_targets(&start.deck, &mut rng);
             let (r, end) = play_round(&board, start, &mut rng, &[]);
             if !r.won {
@@ -3527,16 +3490,18 @@ pub fn typical_hands_detail(b: &Board, deck: &[Card], hand_size: usize, samples:
 
 /// Rounds `range` one by one, each drawing the same cards as round i of `round_odds`.
 pub fn round_results(b: &Board, start: &RoundStart, range: std::ops::Range<usize>, seed: u64) -> Vec<RoundResult> {
-    range.map(|i| sim_round(b, start, &mut Rng::new(seed.wrapping_add(i as u64 * 7919)))).collect()
+    let (b, start) = b.at_blind_set(start);
+    range.map(|i| sim_round(&b, &start, &mut Rng::new(seed.wrapping_add(i as u64 * 7919)))).collect()
 }
 
 /// Chance of beating a round, from `sims` simulations (same seed → same deals across boards).
 /// Simulations run in parallel; each has its own seed, so the result doesn't depend on
 /// how they're split across threads.
 pub fn round_odds(b: &Board, start: &RoundStart, sims: usize, seed: u64) -> (f64, Stats) {
+    let (b, start) = b.at_blind_set(start);
     let run_one = |i: usize| {
         let mut rng = Rng::new(seed.wrapping_add(i as u64 * 7919));
-        sim_round(b, start, &mut rng)
+        sim_round(&b, &start, &mut rng)
     };
     let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(sims / 8).max(1);
     let results: Vec<RoundResult> = if threads <= 1 {
@@ -3572,11 +3537,12 @@ pub fn round_odds(b: &Board, start: &RoundStart, sims: usize, seed: u64) -> (f64
 /// Which hands score the points in simulated rounds: (hand, share of points, share of
 /// hands played, mean score). Junk hands played to dig are left out.
 pub fn round_hand_mix(b: &Board, start: &RoundStart, sims: usize, seed: u64) -> Vec<(HandType, f64, f64, f64)> {
+    let (b, start) = b.at_blind_set(start);
     let mut pts = [0.0f64; 12];
     let mut cnt = [0usize; 12];
     for i in 0..sims {
         let mut rng = Rng::new(seed.wrapping_add(i as u64 * 7919));
-        for (h, s, dig) in sim_round(b, start, &mut rng).plays {
+        for (h, s, dig) in sim_round(&b, &start, &mut rng).plays {
             if !dig {
                 pts[h as usize] += s;
                 cnt[h as usize] += 1;
@@ -3627,7 +3593,7 @@ mod tests {
         // blind.lua `Blind:press_play`: once the played cards leave the hand, 2 held cards are
         // discarded, before scoring, so held Steel cards count two fewer
         let hand = Card::parse_list("AS KH:steel KD:steel KC:steel KS:steel QH:steel QD:steel QC:steel").unwrap();
-        let start = RoundStart { hand: hand.clone(), deck: standard_deck(), hand_size: 8, hands: 1, discards: 0, scored: 0.0, target: 1e12, fresh: false };
+        let start = RoundStart { hand: hand.clone(), deck: standard_deck(), hand_size: 8, hands: 1, discards: 0, scored: 0.0, target: 1e12, fresh: false, ..Default::default() };
         let first = |key: &str| {
             let mut b = Board::empty();
             b.blind.key = key.into();
@@ -3711,7 +3677,7 @@ mod tests {
         // the rest of the round (`sim_round`) too: Four of a Kind played, the Queens held are
         // Steel, and the Hook takes at least one of them every time (2 of AS QH QD QC)
         let hand = Card::parse_list("KH KD KC KS AS QH:steel QD:steel QC:steel").unwrap();
-        let start = RoundStart { hand, deck: vec![], hand_size: 8, hands: 1, discards: 0, scored: 0.0, target: 1e12, fresh: false };
+        let start = RoundStart { hand, deck: vec![], hand_size: 8, hands: 1, discards: 0, scored: 0.0, target: 1e12, fresh: false, ..Default::default() };
         for seed in 0..8 {
             let plain = sim_round(&Board::empty(), &start, &mut Rng::new(seed));
             let mut b = Board::empty();
@@ -3723,7 +3689,7 @@ mod tests {
         // Burnt Joker doesn't level the Hook's discard on the way (a High Card of 16, not 42)
         let mut b = crate::bench::sample_board(&["j_burnt"]);
         hook(&mut b);
-        let start = RoundStart { hand: Card::parse_list("AS KH QD JC 9S 7H 5D 3C").unwrap(), deck: standard_deck(), hand_size: 8, hands: 1, discards: 0, scored: 0.0, target: 1e12, fresh: false };
+        let start = RoundStart { hand: Card::parse_list("AS KH QD JC 9S 7H 5D 3C").unwrap(), deck: standard_deck(), hand_size: 8, hands: 1, discards: 0, scored: 0.0, target: 1e12, fresh: false, ..Default::default() };
         assert!(outcomes_after(&b, &start, &Move::Play(vec![0]), 0..8, 3, &[]).iter().all(|o| o.total == 16.0));
         // what goes depends on the cards, not on how they sit; a move holding one more card that
         // stays loses the same two; and over many rounds every card goes about as often
@@ -4508,7 +4474,7 @@ mod tests {
         deck.push(seal);
         let mut b = sample_board(&["j_joker"]);
         b.goals = Some(RoundGoals { seen: vec![("c_cryptid".into(), seal, 0.5)], ..Default::default() });
-        let start = RoundStart { hand: hand.clone(), deck, hand_size: 8, hands: 4, discards: 3, scored: 0.0, target: 1.0, fresh: false };
+        let start = RoundStart { hand: hand.clone(), deck, hand_size: 8, hands: 4, discards: 3, scored: 0.0, target: 1.0, fresh: false, ..Default::default() };
         let outs = outcomes_after(&b, &start, &Move::Discard(vec![4, 5, 6, 7]), 0..400, 7, &[]);
         let g = b.goals.clone().unwrap();
         let drew = outs.iter().filter(|o| o.seen > 0.0).count();
@@ -4527,7 +4493,7 @@ mod tests {
         // the joker: what one more Chip is worth is the round's goal (`RoundGoals::jokers`).
         let hand = Card::parse_list("AS AH 10S 10H KD 8C 7S 5C").unwrap();
         let deck: Vec<Card> = standard_deck().into_iter().filter(|c| !hand.iter().any(|h| h.rank == c.rank && h.suit == c.suit)).collect();
-        let start = RoundStart { hand, deck, hand_size: 8, hands: 4, discards: 3, scored: 0.0, target: 1.0, fresh: false };
+        let start = RoundStart { hand, deck, hand_size: 8, hands: 4, discards: 3, scored: 0.0, target: 1.0, fresh: false, ..Default::default() };
         let mut b = sample_board(&["j_square"]);
         b.goals = Some(worths(&mut b, &[([0.0, 0.0, 0.01], -1.0)]));
         let g = b.goals.clone().unwrap();
@@ -4632,7 +4598,7 @@ mod tests {
         }
         b.jokers[0].mult = 10.0;
         b.blind.key = "bl_big".into();
-        let start = |target| RoundStart { hand: vec![], deck: standard_deck(), hand_size: 8, hands: 4, discards: 3, scored: 0.0, target, fresh: true };
+        let start = |target| RoundStart { hand: vec![], deck: standard_deck(), hand_size: 8, hands: 4, discards: 3, scored: 0.0, target, fresh: true, ..Default::default() };
         let starts = [start(20000.0), start(30000.0), start(40000.0)];
         let g = grown_over(&b, &starts, &[3, 6], 16, 1);
         assert!(g[4].is_none() && g[5].is_none());
@@ -4823,7 +4789,7 @@ mod tests {
         assert!((g.grown_worth(&was, &after) - (v(step) - v(Grown::default()))).abs() > 1e-3);
         // and an outcome played on from that board starts at it
         let deck: Vec<Card> = standard_deck();
-        let start = RoundStart { hand: Card::parse_list("2S 3H").unwrap(), deck, hand_size: 2, hands: 1, discards: 0, scored: 0.0, target: 1.0, fresh: false };
+        let start = RoundStart { hand: Card::parse_list("2S 3H").unwrap(), deck, hand_size: 2, hands: 1, discards: 0, scored: 0.0, target: 1.0, fresh: false, ..Default::default() };
         b.goals = Some(g.clone());
         let outs = outcomes_after(&b, &start, &Move::Play(vec![0]), 0..1, 7, &[]);
         assert!(outs[0].won == 1.0 && (outs[0].grown.ahead - (reset.ahead + 0.3)).abs() < 1e-12, "{:?}", outs[0].grown);
@@ -4878,7 +4844,7 @@ mod tests {
         // hands after that discard score with it, on the same draws
         let hand = Card::parse_list("JS JH JD JC 2S 3H 5D 7C").unwrap();
         let deck: Vec<Card> = standard_deck().into_iter().filter(|c| !hand.iter().any(|h| h.rank == c.rank && h.suit == c.suit)).collect();
-        let start = RoundStart { hand, deck, hand_size: 8, hands: 2, discards: 1, scored: 0.0, target: 1e12, fresh: false };
+        let start = RoundStart { hand, deck, hand_size: 8, hands: 2, discards: 1, scored: 0.0, target: 1e12, fresh: false, ..Default::default() };
         let b = sample_board(&["j_hit_the_road"]);
         let mut off = b.clone();
         off.jokers[0].debuff = true;
@@ -4914,7 +4880,7 @@ mod tests {
         let mut b = sample_board(&["j_joker"]);
         b.goals = Some(RoundGoals { seen: vec![("c_test".into(), seal, 0.5)], ..Default::default() });
         let used = Use { key: "c_test".into(), levels: [1; 12], ..Default::default() };
-        let start = RoundStart { hand, deck, hand_size: 8, hands: 4, discards: 3, scored: 0.0, target: 1e9, fresh: false };
+        let start = RoundStart { hand, deck, hand_size: 8, hands: 4, discards: 3, scored: 0.0, target: 1e9, fresh: false, ..Default::default() };
         let held = outcomes_after(&b, &start, &Move::Discard(vec![4, 5, 6, 7]), 0..200, 7, &[]);
         let spent = outcomes_after(&b, &start, &Move::Discard(vec![4, 5, 6, 7]), 0..200, 7, &[used]);
         assert!(held.iter().any(|o| o.seen > 0.0), "held: the card counts when drawn");
@@ -4926,7 +4892,7 @@ mod tests {
         // Round i draws the same cards either way, so a slice of rounds compared one by one
         // (the target search's race) is the same measure as the projection's mean.
         let b = sample_board(&["j_joker", "j_greedy_joker"]);
-        let start = RoundStart { hand: vec![], deck: standard_deck(), hand_size: 8, hands: 4, discards: 3, scored: 0.0, target: 900.0, fresh: true };
+        let start = RoundStart { hand: vec![], deck: standard_deck(), hand_size: 8, hands: 4, discards: 3, scored: 0.0, target: 900.0, fresh: true, ..Default::default() };
         let (_, st) = round_odds(&b, &start, 64, 11u64.wrapping_add(16 * 7919));
         let one = round_results(&b, &start, 16..80, 11);
         assert!((one.iter().map(|r| r.total).sum::<f64>() / 64.0 - st.mean).abs() < 1e-6);
@@ -4938,7 +4904,7 @@ mod tests {
         // 3 discards is played with 7 hands and none; a round in progress keeps its own, even
         // while its first cards aren't dealt yet (empty hand, nothing scored).
         let b = sample_board(&["j_burglar"]);
-        let fresh = RoundStart { hand: vec![], deck: standard_deck(), hand_size: 8, hands: 4, discards: 3, scored: 0.0, target: 1e12, fresh: true };
+        let fresh = RoundStart { hand: vec![], deck: standard_deck(), hand_size: 8, hands: 4, discards: 3, scored: 0.0, target: 1e12, fresh: true, ..Default::default() };
         let r = sim_round(&b, &fresh, &mut Rng::new(3));
         assert_eq!(r.plays.len(), 7);
         let dealt = RoundStart { fresh: false, ..fresh.clone() };
@@ -4953,29 +4919,53 @@ mod tests {
     #[test]
     fn a_fresh_round_takes_its_bosss_rule_on_hands_and_discards_before_the_jokers() {
         // state_events.lua `new_round`: blind.lua `Blind:set_blind` first (The Needle leaves one
-        // hand, The Water no discards), then each joker's `setting_blind` (Burglar: +3 hands, no
-        // discards), from the board's blind; a disabled boss takes nothing, and a round in
-        // progress keeps what it was set with.
-        let fresh = RoundStart { hand: vec![], deck: standard_deck(), hand_size: 8, hands: 4, discards: 3, scored: 0.0, target: 1e12, fresh: true };
-        let on = |keys: &[&str], blind: &str| {
-            let mut b = sample_board(keys);
-            b.new_round(blind);
-            b
+        // hand, The Water no discards, The Manacle -1 hand size, suit/face debuffs), then each
+        // joker's `setting_blind` (Burglar: +3 hands, no discards); a disabled boss takes nothing,
+        // and a round in progress keeps what it was set with.
+        let fresh = RoundStart { hand: vec![], deck: standard_deck(), hand_size: 8, hands: 4, discards: 3, scored: 0.0, target: 1e12, fresh: true, ..Default::default() };
+        let for_blind = |keys: &[&str], blind: &str| {
+            let b = sample_board(keys);
+            let start = RoundStart { blind: blind.to_string(), ..fresh.clone() };
+            (b, start)
         };
-        assert_eq!(fresh.hands_on(&on(&[], "bl_needle")), (1, 3));
-        assert_eq!(fresh.hands_on(&on(&[], "bl_water")), (4, 0));
-        assert_eq!(fresh.hands_on(&on(&[], "bl_big")), (4, 3));
-        assert_eq!(fresh.hands_on(&on(&["j_burglar"], "bl_needle")), (4, 0));
-        assert_eq!(fresh.hands_on(&on(&["j_burglar"], "bl_water")), (7, 0));
-        let mut disabled = on(&[], "bl_needle");
-        disabled.blind.disabled = true;
-        assert_eq!(fresh.hands_on(&disabled), (4, 3));
-        let needle = on(&[], "bl_needle");
-        assert_eq!(RoundStart { fresh: false, ..fresh.clone() }.hands_on(&needle), (4, 3));
-        assert_eq!(sim_round(&needle, &fresh, &mut Rng::new(3)).plays.len(), 1);
+        let (b, start) = for_blind(&[], "bl_needle");
+        assert_eq!(start.hands_on(&b), (1, 3));
+        let (b, start) = for_blind(&[], "bl_water");
+        assert_eq!(start.hands_on(&b), (4, 0));
+        let (b, start) = for_blind(&[], "bl_big");
+        assert_eq!(start.hands_on(&b), (4, 3));
+        let (b, start) = for_blind(&["j_burglar"], "bl_needle");
+        assert_eq!(start.hands_on(&b), (4, 0));
+        let (b, start) = for_blind(&["j_burglar"], "bl_water");
+        assert_eq!(start.hands_on(&b), (7, 0));
+
+        // disabled blind takes nothing
+        let (b, mut start) = for_blind(&[], "bl_needle");
+        start.disabled = true;
+        assert_eq!(start.hands_on(&b), (4, 3));
+
+        // round in progress keeps what it had
+        let (b, needle_start) = for_blind(&[], "bl_needle");
+        assert_eq!(RoundStart { fresh: false, ..needle_start.clone() }.hands_on(&b), (4, 3));
+        assert_eq!(sim_round(&b, &needle_start, &mut Rng::new(3)).plays.len(), 1);
+
+        // Manacle reduces hand size by 1 (unless disabled)
+        let (b, manacle) = for_blind(&[], "bl_manacle");
+        let (_, s) = b.at_blind_set(&manacle);
+        assert_eq!(s.hand_size, 7);
+        let (_, s) = b.at_blind_set(&RoundStart { disabled: true, ..manacle });
+        assert_eq!(s.hand_size, 8);
+
+        // Debuffs: The Club debuffs clubs, Pareidolia + The Plant debuffs faces
+        let (b, club) = for_blind(&[], "bl_club");
+        let (_, s) = b.at_blind_set(&club);
+        assert!(s.deck.iter().any(|c| c.suit == Suit::Clubs && c.debuff));
+        assert!(!s.deck.iter().any(|c| c.suit != Suit::Clubs && c.debuff));
+
         // from no hands a round (Black Deck, Hieroglyph, two Troubadours) the game's max(1, 0)
         // less −1: two
-        assert_eq!(RoundStart { hands: 0, ..fresh.clone() }.hands_on(&needle), (2, 3));
+        let (b, needle_zero) = for_blind(&[], "bl_needle");
+        assert_eq!(RoundStart { hands: 0, ..needle_zero }.hands_on(&b), (2, 3));
     }
 
     #[test]
@@ -4991,7 +4981,7 @@ mod tests {
         b.planet_slots = 2;
         b.goals = Some(RoundGoals { planet: [0.1; 12], ..Default::default() });
         let copies = Use { key: "c_test".into(), swap: vec![(seal, seal)], add: vec![seal, seal], ..Default::default() };
-        let start = RoundStart { hand, deck, hand_size: 8, hands: 4, discards: 3, scored: 0.0, target: 100.0, fresh: false };
+        let start = RoundStart { hand, deck, hand_size: 8, hands: 4, discards: 3, scored: 0.0, target: 100.0, fresh: false, ..Default::default() };
         let r = sim_round_uses(&b, &start, &mut Rng::new(3), &[copies]);
         assert!(r.won && r.planets >= 3.0, "planets {}", r.planets);
     }
@@ -5017,7 +5007,7 @@ mod tests {
         let before = decisions();
         let on = play_on_instead(&b, &hand, &deck, 4, 3, 0.0, target, 8, &win, None, &[], &[], &Rng::new(3));
         let during = decisions() - before;
-        let start = RoundStart { hand: hand.clone(), deck: deck.clone(), hand_size: 8, hands: 4, discards: 3, scored: 0.0, target, fresh: false };
+        let start = RoundStart { hand: hand.clone(), deck: deck.clone(), hand_size: 8, hands: 4, discards: 3, scored: 0.0, target, fresh: false, ..Default::default() };
         outcomes_after(&b, &start, &Move::Discard(vec![0, 1, 6, 7]), 0..8, 3, &[]);
         let met = decisions() - before - during;
         let flag = IN_ROLLOUT.with(|x| x.get());
@@ -5045,7 +5035,7 @@ mod tests {
             let mut levels = [0; 12];
             levels[HandType::Pair as usize] = 3;
             let planet = Use { key: "c_test".into(), levels, planet: true, ..Default::default() };
-            let start = RoundStart { hand, deck, hand_size: 8, hands: 4, discards: 0, scored: 0.0, target: pair * 2.5, fresh: false };
+            let start = RoundStart { hand, deck, hand_size: 8, hands: 4, discards: 0, scored: 0.0, target: pair * 2.5, fresh: false, ..Default::default() };
             let with = sim_round_uses(&b, &start, &mut Rng::new(5), &[planet]);
             let without = sim_round_uses(&b, &start, &mut Rng::new(5), &[]);
             // the first hand already has the lift

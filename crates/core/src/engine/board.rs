@@ -100,6 +100,16 @@ impl RunState {
     /// you own (`Board::at_blind_set`: The Needle's, Burglar's)
     pub fn round_at_blind_set(&self, blind: BlindRules) -> (i64, i64) {
         let jokers = self.jokers.iter().map(|j| Joker { debuff: j.debuff, ..Joker::from_ability(&j.key, &j.ability, 0) }).collect();
-        Board { jokers, blind, ..Board::empty() }.at_blind_set(self.round_hands, self.round_discards)
+        let b = Board { jokers, ..Board::empty() };
+        let start = crate::sim::RoundStart {
+            hands: self.round_hands,
+            discards: self.round_discards,
+            fresh: true,
+            blind: blind.key,
+            disabled: blind.disabled,
+            ..Default::default()
+        };
+        let (_, s) = b.at_blind_set(&start);
+        (s.hands, s.discards)
     }
 }

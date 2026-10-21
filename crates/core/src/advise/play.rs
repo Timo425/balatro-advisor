@@ -85,10 +85,10 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
         .collect();
     // Look-ahead: each candidate first move is simulated through the rest of the round.
     let look = ctx.specs.iter().find(|x| x.in_progress()).map(|spec| {
-        let mut bb = ctx.board_for(&b, spec);
+        let mut bb = b.clone();
         // The simulated player plays toward the same measure the advice ranks by
         bb.goals = Some(goals.clone());
-        let start = ctx.start_for(spec, &bb);
+        let start = spec.start.clone();
         let seed = ctx.opts.seed;
         // Consumables you hold, as the round can use them: tarots and spectral cards by
         // what they do to your hand, planets by the level they add. Every move is simulated
