@@ -1622,7 +1622,7 @@ fn oracle_decide(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: 
     // with goals that count jokers, the play the policy's look-ahead would weigh for growth
     // (`sparing_play`), as the policy's own rounds do
     let spare = match (&base, b.goals.as_ref()) {
-        (Action::Play(v, _), Some(g)) => g.jokers_now(b).and_then(|was| sparing_play(b, g, &was, hand, &plays_tried(b, hand), v, hands)).map(|s| Move::Play(s.1)),
+        (Action::Play(v, _), Some(g)) => g.jokers_now(b).and_then(|was| sparing_play(b, g, &was, hand, &plays_tried(b, hand), v, hands)).map(|(s, _)| Move::Play(s)),
         _ => None,
     };
     for m in oracle_moves(b, hand, deck, discards).into_iter().chain(spare) {
@@ -2812,7 +2812,9 @@ fn play_on_instead(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards
     // what this finish keeps of them once the press-play step went (The Hook), on average
     let kept = over_hook_sets(fb, &held, |left| (g.planet_worth(h, g.at(fb)) * seal_planets(fb, left) + dollar * held_dollars(left), 0.0)).0;
     let for_held = most - kept >= LOOKAHEAD_MIN;
-    let for_growth = growth_play(b, g, hand, target - scored, win);
+    let was = g.jokers_now(b);
+    let win_growth = was.as_ref().map_or(0.0, |w| play_growth(fb, g, w, fh, fw));
+    let for_growth = growth_play(b, g, hand, target - scored, win, win_growth);
     if !for_held && for_growth.is_none() {
         return None;
     }
@@ -2918,10 +2920,10 @@ fn paired_pick(vals: &[Vec<f64>]) -> Option<usize> {
 /// The play to grow the jokers a round changes before winning (`play_on_instead`): of the plays
 /// `best_play` tries in `hand` that don't surely win yet (floor below `need`), the one that
 /// grows them most (`RoundGoals::grown`), then one that leaves the winning play `win` in hand,
-/// then the highest floor; only when its growth is worth more than the hand it spends (a spare
-/// hand's money) by `LOOKAHEAD_MIN`, the most playing on could add; topped up with fillers
+/// then the highest floor; only when its growth over `win`'s is worth more than the hand it spends
+/// (a spare hand's money) by `LOOKAHEAD_MIN`, the most playing on could add; topped up with fillers
 /// (`with_fillers`) when they leave its growth as it is. None without such jokers.
-fn growth_play(b: &Board, g: &RoundGoals, hand: &[Card], need: f64, win: &[usize]) -> Option<Vec<usize>> {
+fn growth_play(b: &Board, g: &RoundGoals, hand: &[Card], need: f64, win: &[usize], win_growth: f64) -> Option<Vec<usize>> {
     let was = g.jokers_now(b)?;
     let mut best: Option<(f64, bool, f64, Vec<usize>)> = None;
     for &(mask, _, _, _, floor, _) in plays_tried(b, hand).iter().filter(|s| s.5 < need) {
@@ -2941,7 +2943,7 @@ fn growth_play(b: &Board, g: &RoundGoals, hand: &[Card], need: f64, win: &[usize
             best = Some((grown, keeps, floor, idx));
         }
     }
-    let (grown, keeps, _, idx) = best.filter(|x| x.0 - g.dollar_worth(g.at_now(&was)) * g.per_hand >= LOOKAHEAD_MIN)?;
+    let (grown, keeps, _, idx) = best.filter(|x| x.0 - win_growth - g.dollar_worth(g.at_now(&was)) * g.per_hand >= LOOKAHEAD_MIN)?;
     // topped up with the cards a play can spare (`with_fillers`: more drawn next hand) when that
     // grows the jokers as much and leaves the winning play in hand as the play did
     let filled = with_fillers(b, hand, &idx);
@@ -2972,9 +2974,8 @@ const SPARE_ROLLOUTS: usize = 16;
 /// worth more than the policy's `chosen` play (chosen by points: the best play, or a junk hand
 /// that digs)? The play `sparing_play` gives (Ride the Bus spared a scored face card, Obelisk its
 /// reset, Square's 4 cards, Spare Trousers' Two Pair), looked at only when played every hand
-/// left it keeps pace and scores at least what `chosen` would (`line_pace`, both alike: what a
-/// reset or a growth does to this round's later hands is in it; a budget, in the register: a play
-/// that gives up points by the policy's own measure isn't weighed), then weighed against
+/// left it keeps pace within the growth it adds (`line_pace`: at least what `chosen` or `need`
+/// demands scaled by `(1.0 - diff).max(0.0)`; a budget, in the register), then weighed against
 /// `chosen` as `play_on_instead` weighs a finish: by `RoundGoals::value` on the same futures
 /// (`SPARE_ROLLOUTS`, `lookahead_values_in`: they play on by the policy without looking ahead, so
 /// a growth a later play would reset is weighed as the policy would reset it), taken only when
@@ -2988,9 +2989,11 @@ fn spare_instead(b: &Board, parts: &HandParts, deck: &[Card], hands: i64, discar
     if chosen.is_empty() {
         return None;
     }
-    let (idx, spare) = sparing_play(b, g, &was, hand, &parts.plays(), chosen, hands)?;
-    let pace = line_pace(b, hand, &idx, hands);
-    if pace < target - scored || pace < line_pace(b, hand, chosen, hands) {
+    let (spare, diff) = sparing_play(b, g, &was, hand, &parts.plays(), chosen, hands)?;
+    let pace = line_pace(b, hand, &spare, hands);
+    let chosen_pace = line_pace(b, hand, chosen, hands);
+    let need = target - scored;
+    if pace < chosen_pace.min(need) * (1.0 - diff).max(0.0) {
         return None;
     }
     // the second half of the futures only when the first shows a gain
@@ -3013,8 +3016,9 @@ fn spare_instead(b: &Board, parts: &HandParts, deck: &[Card], hands: i64, discar
 /// hand is left after it, as the policy keeps them), the one with the highest floor among those
 /// that grow the jokers the goals count (`play_growth`, from `was`) by at least `LOOKAHEAD_MIN`
 /// more than `chosen` does (one tried: a budget). The play, and the play topped up with the
-/// cards it can spare (`with_fillers`) when that grows the jokers as much.
-fn sparing_play(b: &Board, g: &RoundGoals, was: &[Option<[f64; 3]>], hand: &[Card], plays: &[Scored], chosen: &[usize], hands: i64) -> Option<(Vec<usize>, Vec<usize>)> {
+/// cards it can spare (`with_fillers`) when that grows the jokers as much, and its growth
+/// difference from `chosen`.
+fn sparing_play(b: &Board, g: &RoundGoals, was: &[Option<[f64; 3]>], hand: &[Card], plays: &[Scored], chosen: &[usize], hands: i64) -> Option<(Vec<usize>, f64)> {
     let base = play_growth(b, g, was, hand, chosen);
     // (a play covers the first `SUBSETS_MAX` cards, as `play_of`)
     let keep: u32 = if hands > 1 { pays_at_end(b, hand).iter().filter(|&&i| i < SUBSETS_MAX).fold(0, |m, &i| m | 1 << i) } else { 0 };
@@ -3026,8 +3030,13 @@ fn sparing_play(b: &Board, g: &RoundGoals, was: &[Option<[f64; 3]>], hand: &[Car
         (grown >= base + LOOKAHEAD_MIN).then_some((idx, grown))
     })?;
     let filled = with_fillers(b, hand, &idx);
-    let spare = if filled.len() > idx.len() && filled.iter().all(|&i| i >= SUBSETS_MAX || keep & (1 << i) == 0) && play_growth(b, g, was, hand, &filled) >= grown - 1e-12 { filled } else { idx.clone() };
-    Some((idx, spare))
+    let (spare, spare_growth) = if filled.len() > idx.len() && filled.iter().all(|&i| i >= SUBSETS_MAX || keep & (1 << i) == 0) {
+        let fg = play_growth(b, g, was, hand, &filled);
+        if fg >= grown - 1e-12 { (filled, fg) } else { (idx, grown) }
+    } else {
+        (idx, grown)
+    };
+    Some((spare, spare_growth - base))
 }
 
 /// What playing `idx` (cards of `hand`) every hand of `hands` scores: its average now, then the
@@ -4573,7 +4582,7 @@ mod tests {
         let mut g = worths(&mut b, &[([0.0, 0.0, 0.01], -1.0)]);
         let win = finish_play(&b, &g, &hand, need, 3).unwrap();
         assert_eq!(win.len(), 5);
-        let grow = growth_play(&b, &g, &hand, need, &win).expect("a growing play");
+        let grow = growth_play(&b, &g, &hand, need, &win, 0.0).expect("a growing play");
         assert_eq!(grow.len(), 4);
         // no 4-card play leaves the Flush whole: the highest-scoring one, Two Pair
         let cards: Vec<Card> = grow.iter().map(|&i| hand[i]).collect();
@@ -4581,9 +4590,9 @@ mod tests {
         // a spare hand worth as much as the growth: no look-ahead for it
         g.dollar = 0.01;
         g.per_hand = 4.0;
-        assert_eq!(growth_play(&b, &g, &hand, need, &win), None);
+        assert_eq!(growth_play(&b, &g, &hand, need, &win, 0.0), None);
         // nor without growing jokers
-        assert_eq!(growth_play(&b, &RoundGoals::default(), &hand, need, &win), None);
+        assert_eq!(growth_play(&b, &RoundGoals::default(), &hand, need, &win, 0.0), None);
     }
 
     #[test]
@@ -4612,7 +4621,7 @@ mod tests {
         let need = best_play(&b, &hand).unwrap().floor - 1.0;
         let g = worths(&mut b, &[([0.0, 0.0, 0.01], -1.0)]);
         let win = finish_play(&b, &g, &hand, need, 3).unwrap();
-        let grow = growth_play(&b, &g, &hand, need, &win).unwrap();
+        let grow = growth_play(&b, &g, &hand, need, &win, 0.0).unwrap();
         assert_eq!(grow.len(), 4);
         let low: Vec<Card> = grow.iter().map(|&i| hand[i]).collect();
         let ace = Card::parse_list("AS 2H 5D 3C").unwrap();
@@ -4860,14 +4869,14 @@ mod tests {
         let g = worths(&mut b, &[([0.01, 0.0, 0.0], -0.1)]);
         let hand = Card::parse_list("KS KH 9S 9D 2C 3H").unwrap();
         let was = g.jokers_now(&b).unwrap();
-        let (idx, spare) = sparing_play(&b, &g, &was, &hand, &plays_tried(&b, &hand), &[0, 1], 3).unwrap();
+        let (spare, diff) = sparing_play(&b, &g, &was, &hand, &plays_tried(&b, &hand), &[0, 1], 3).unwrap();
         let named = |v: &[usize]| {
             let mut v: Vec<String> = v.iter().map(|&i| hand[i].label()).collect();
             v.sort();
             v
         };
-        assert_eq!(named(&idx), named(&[2, 3]));
-        assert!(spare.len() > idx.len() && spare.iter().all(|&i| i >= 2), "{:?}", named(&spare));
+        assert_eq!(named(&spare), named(&[2, 3, 4, 5]));
+        assert!(diff > 0.0);
         // a play that already grows it has nothing clearly better beside it
         assert!(sparing_play(&b, &g, &was, &hand, &plays_tried(&b, &hand), &[2, 3], 3).is_none());
     }
