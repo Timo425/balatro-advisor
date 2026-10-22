@@ -160,7 +160,7 @@ add to this list's kind; remove from it.
 | Constellation grows from planets in several places | `value.rs` `add_planets`, `spend_once`; `advise.rs` Meteor tag, `grow_constellation` | a planet used as an event in `engine::RunEvent`, applied by `Board::after` (`xmult_from`), counted through `Gain::planets`; `bought_event` then compares what money buys by measured value, not Mult per dollar |
 | A short perishable's price dropped from its value | `advise.rs` (`long_mult = 1 + unlock`) | `LongRun::value` with its price |
 | What a joker adds to a round (hand size, hands, discards) as a table (its `add_to_deck` effects, which the save's `round_resets` holds once it's yours; Burglar's `setting_blind` effect is the engine's, `Board::at_blind_set`, set on each fresh round from the board played, after the boss's own rule: card.lua `calculate_joker`, checked 2026-10-19), and Turtle Bean's shrink by name | `advise.rs` `round_mods`, `value.rs` `long_spec_for` | the center's config in `data/` (`h_size`, `d_size`, `extra`) as game facts; a fading joker's state projected as growth is (`value::Growths`, `grow_antes`) |
-| The rest of a boss's `set_blind` (The Manacle's hand size, the suit and face debuffs: `RoundRules::for_blind`) applied to a fresh round's start by each caller, while its hands and discards come from the board's blind as it's played (`Board::at_blind_set`): so every fresh start's board must carry that round's blind or none, kept by hand (`Ctx::board_for`, and cleared in `typical_n`, `project_as`, `best_order`) | `advise.rs` `blind_from_start`, `Ctx::start_for`, `fresh_round`; `whatif.rs`; `tests/player.rs` | a fresh `RoundStart` names its blind, and one engine step sets it as state_events.lua `new_round` does: `Board::new_round`, all of blind.lua `Blind:set_blind` (hand size, debuffs, The Needle, The Water, a disabled boss giving back what it took), then the jokers' `setting_blind`; callers pass `round_resets` and the plain deck only |
+| A fresh round's blind beside `fresh` (`RoundStart::blind`, `disabled`: ignored on a round in progress, whose board has its blind), named again by `Spec::blind_key`; and `RoundStart::hands_on`, two of the three numbers `Board::at_blind_set` sets, next to the hand size before it's set (`value.rs` `lr.round` once paired them) | `sim.rs` `RoundStart`; `advise.rs` `Spec`, `fresh_round`, `boss_reroll_option` | a start that is either fresh, with its blind, or in progress (an enum), the spec reading the blind from it; callers read what a round is played with off `at_blind_set`'s start |
 
 ## What strong play does
 
@@ -191,7 +191,7 @@ behind it is a blind spot nobody has written down yet.
   pair owned ranks the other first.
 - **Glass and Steel against the last bosses** (their ×Mult doesn't care which hand you can
   make). Needs the bosses ahead in the rounds a deck change is valued on. Blind spot: the
-  projection plays rounds with no boss rule and no target (`value.rs`, `RoundRules::default()`);
+  projection plays rounds with no boss rule and no target (`value.rs`, `long_spec`);
   gaps 12 and 13 cover the target and the horizon, not the bosses. Check: Justice on a card is
   worth more to a deck facing The Eye or The Psychic than to one facing plain rounds.
 
@@ -699,10 +699,10 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    Superposition without its Gold sticker: Death went on a second Steel 4♦ while the owner
    was moving to Straights). Deck shaping's own value is gap 27.
 15. **Bosses whose rule isn't in the simulated round are played as plain blinds.** The
-   simulated round knows the suit and face debuffs, The Manacle, The Needle, The Water, The Hook
-   (2 held cards discarded at random once a hand is played, before it scores: `sim`
-   `boss_takes_held`, `Board::discard_by`) and the scoring bosses (`sim::RoundRules`,
-   `engine/score.rs`); the rest only change their target (said as "not simulated" on the
+   simulated round knows the suit and face debuffs, The Manacle, The Needle, The Water (set as a
+   fresh round's blind is: `Board::at_blind_set`), The Hook (2 held cards discarded at random
+   once a hand is played, before it scores: `sim` `boss_takes_held`, `Board::discard_by`) and
+   the scoring bosses (`engine/score.rs`); the rest only change their target (said as "not simulated" on the
    blind). The Hook is in the engine's `score` (its press-play step, `score::pressed`): once the
    played cards leave the hand it discards 2 held cards through `Board::discard_by`, before the
    hand scores, and which ones is a pick (`Rolls::pick`), asked only when it can change the hand
@@ -834,9 +834,8 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    move). The general
    fix: the rest of the game's press-play step (blind.lua `Blind:press_play`: The Tooth,
    Crimson Heart, The Fish) in the engine's `score` as The Hook is, with The Tooth's money in
-   the round's value; and Chicot's disabled boss set where a round is
-   (`Board::new_round`), with the round rules (`RoundRules`) honouring it (`Board::at_blind_set`,
-   where The Needle and The Water are set, already skips a disabled boss). Raised in
+   the round's value; and Chicot's disabled boss set where a fresh round's blind is
+   (`Board::at_blind_set`, which already skips a disabled boss: `RoundStart::disabled`). Raised in
    play 2026-10-09 (Ante 1, The Hook not simulated). Best play's search against the reference
    on that Hook state (fixture `boss_hook_ante1`): two seeds of three pick within noise of the
    best (0.7%, 1.1% ± 1.3%), the third a Two Pair 5.1% ± 1.5% below it, the best moves all cut
@@ -1423,8 +1422,8 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    arrive), so a step is worth what it adds to where the deck is heading.
 28. **Every blind ahead starts from your board as it is now, not the one the blinds before it
    leave.** The blind odds, the next-ante horizon and the style outlook each simulate their
-   round from the current board (`advise.rs` `board_for`: `Board::new_round` only resets the
-   round), so what a round does to the jokers is undone before the next: within a round the
+   round from the current board (`Board::at_blind_set`, through `Board::new_round`, only resets
+   the round), so what a round does to the jokers is undone before the next: within a round the
    engine steps them (`Board::after_hand`), between rounds nothing does. Jokers that run out
    count in full in every round ahead (Seltzer's hands, Ice Cream's Chips, Popcorn's Mult a
    round, a perishable's rounds), and jokers that grow count at their size now (Green Joker,

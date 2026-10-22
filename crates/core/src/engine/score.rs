@@ -8,6 +8,7 @@ use super::hand::{self, HandInfo, HandType, RuleFlags, card_id, is_face, is_suit
 use super::joker::{Joker, Kind};
 use super::rng::{Pick, Rolls, Unlucky};
 use crate::model::{Card, Edition, Enhancement, Seal, Suit};
+use crate::sim::RoundStart;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Level {
@@ -602,27 +603,55 @@ impl Board {
         }
     }
 
-    /// The hands and discards a round is played with, from those it starts with before the
-    /// blind is set (`round_resets`): state_events.lua `new_round` sets the board's blind first
-    /// (`self.blind`, which must be the round's: `new_round`, or none for a round with no boss
-    /// rule), where blind.lua `Blind:set_blind` takes `round_resets.hands` − 1 hands for The
-    /// Needle (from at least 1: one hand left, two from none) and every discard for The Water;
-    /// then it asks each joker in the `setting_blind` context (card.lua `Card:calculate_joker`),
-    /// where Burglar takes every discard left and adds `extra` hands, and so does each copy of it
-    /// (Blueprint, Brainstorm: `effective_joker`). None of that is in `round_resets`, unlike what
-    /// a joker gives when it's added (`add_to_deck`: Troubadour's hand a round, Merry Andy's and
-    /// Drunkard's discards), which the save's numbers already hold.
-    /// A disabled blind (the save's, after Chicot's `setting_blind` or Luchador's sale) takes
-    /// nothing, as `Blind:disable` gives back what it took: exact for hands; under The Water with
-    /// Burglar the game's discards depend on whether Chicot sits before Burglar (none) or after
-    /// it (all back), and this gives none. Not modelled: Chicot itself (gap 15).
-    pub fn at_blind_set(&self, hands: i64, discards: i64) -> (i64, i64) {
-        let hands = if self.blind.active("bl_needle") { hands.max(1) - (hands - 1) } else { hands };
-        let discards = if self.blind.active("bl_water") { 0 } else { discards };
-        (0..self.jokers.len()).filter_map(|j| effective_joker(self, j)).fold((hands, discards), |(h, d), jk| match jk.key.as_str() {
+    /// The board and start a round is played with: a round in progress its own, set when it
+    /// started; a fresh one's as state_events.lua `new_round` sets them. First the round's reset
+    /// to its blind (`Board::new_round` to `start.blind`), then blind.lua `Blind:set_blind`: The
+    /// Manacle's −1 hand size, the suit and face debuffs (`Blind:debuff_card` on every card,
+    /// which clears any other; every card dealt face up, as a boss turning some down as they're
+    /// drawn isn't simulated), `round_resets.hands` − 1 hands taken for The Needle (from at
+    /// least 1: one hand left, two from none) and every discard for The Water; then each joker
+    /// in the `setting_blind` context (card.lua `Card:calculate_joker`), where Burglar takes
+    /// every discard left and adds `extra` hands, and so does each copy of it (Blueprint,
+    /// Brainstorm: `effective_joker`). `start` holds `round_resets`, where what a joker gives
+    /// when it's added already is (`add_to_deck`: Troubadour's hand a round, Merry Andy's and
+    /// Drunkard's discards), unlike the above.
+    /// A disabled blind (`start.disabled`: the save's, after Chicot's `setting_blind` or
+    /// Luchador's sale) takes nothing, as `Blind:disable` gives back what it took: exact for hands
+    /// and hand size; under The Water with Burglar the game's discards depend on whether Chicot
+    /// sits before Burglar (none) or after it (all back), and this gives none. Not modelled:
+    /// Chicot itself and the other bosses' rules (gap 15).
+    pub fn at_blind_set(&self, start: &RoundStart) -> (Board, RoundStart) {
+        if !start.fresh {
+            return (self.clone(), start.clone());
+        }
+        let mut b = self.clone();
+        b.new_round(&start.blind);
+        b.blind.disabled = start.disabled;
+        let mut s = RoundStart { fresh: false, ..start.clone() };
+        if b.blind.active("bl_manacle") {
+            s.hand_size -= 1;
+        }
+        let suit = match b.blind.key.as_str() {
+            "bl_club" => Some(Suit::Clubs),
+            "bl_goad" => Some(Suit::Spades),
+            "bl_window" => Some(Suit::Diamonds),
+            "bl_head" => Some(Suit::Hearts),
+            _ => None,
+        }
+        .filter(|_| !b.blind.disabled);
+        let faces = b.blind.active("bl_plant");
+        let flags = b.rule_flags();
+        for (i, c) in s.hand.iter_mut().enumerate().chain(s.deck.iter_mut().enumerate()) {
+            c.face_down = false;
+            c.debuff = suit.is_some_and(|suit| hand::is_suit(c, suit, true, false, flags.smeared)) || (faces && hand::is_face(c, i, flags.pareidolia, true));
+        }
+        let hands = if b.blind.active("bl_needle") { s.hands.max(1) - (s.hands - 1) } else { s.hands };
+        let discards = if b.blind.active("bl_water") { 0 } else { s.discards };
+        (s.hands, s.discards) = (0..b.jokers.len()).filter_map(|j| effective_joker(&b, j)).fold((hands, discards), |(h, d), jk| match jk.key.as_str() {
             "j_burglar" => (h + jk.extra.n as i64, 0),
             _ => (h, d),
-        })
+        });
+        (b, s)
     }
 
     /// The round targets the game draws anew at each round's end (state_events.lua `end_round`;

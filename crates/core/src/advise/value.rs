@@ -15,7 +15,7 @@ use crate::data::GameData;
 use crate::engine::{Board, Joker, Kind, RunEvent};
 use crate::model::Card;
 use crate::save::RunState;
-use crate::sim::{JokerGrowth, RoundRules, RoundStart};
+use crate::sim::{JokerGrowth, RoundStart};
 
 /// Deck changes are small, so they get more rounds than the rest (and the same seeds).
 pub(super) const TAROT_ROUNDS: usize = 300;
@@ -428,14 +428,14 @@ impl<'a> LongRun<'a> {
                 scored: 0.0,
                 target: 1e300,
                 fresh: true,
+                ..Default::default()
             },
-            rules: RoundRules::default(),
             horizon: true,
         };
         // Hand size, hands and discards from the jokers on the projected board: the game's
         // numbers already include what the jokers you own now gave when added (`round_mods`),
         // so only the difference counts; Burglar's comes as each blind is set, from the board
-        // played (`RoundStart::hands_on`).
+        // played (`Board::at_blind_set`).
         let mods_now: (i64, i64, i64) = ctx.base.jokers.iter().map(round_mods).fold((0, 0, 0), |a, m| (a.0 + m.0, a.1 + m.1, a.2 + m.2));
         let mut lr = LongRun {
             ctx,
@@ -477,9 +477,8 @@ impl<'a> LongRun<'a> {
             let _ = lr.replaced.set(swap);
         }
         let yours = lr.fill_long(lr.project(&|_| true, run.dollars), None, 0.0);
-        let start = lr.long_spec_for(&yours, (0, 0, 0)).start;
-        let (hands, discards) = start.hands_on(&yours);
-        let _ = lr.round.set((start.hand_size, hands, discards));
+        let (_, s) = yours.at_blind_set(&lr.long_spec_for(&yours, (0, 0, 0)).start);
+        let _ = lr.round.set((s.hand_size, s.hands, s.discards));
         lr.l0 = lr.long_score(&yours);
         let lasting = (0..run.jokers.len()).filter(|&i| lr.lasts(i)).count() as i64;
         lr.full = lasting >= ctx.base.joker_slots;
@@ -568,7 +567,6 @@ impl<'a> LongRun<'a> {
         let flow = self.owned_income(keep) - rent;
         let dollars = dollars + flow;
         let mut b = ctx.base.clone();
-        b.blind = Default::default();
         let top_base = self.top_hand.map(|top| b.levels[top as usize]);
         if let (Some(top), Some(l)) = (self.top_hand, top_base) {
             b.levels[top as usize] = self.top_level(l, dollars, flow, (dollars - self.line).max(0.0));
@@ -817,7 +815,7 @@ impl<'a> LongRun<'a> {
     }
 
     /// Hand size, hands and discards from the jokers on the projected board, `more` (hand
-    /// size, hands, discards: a `Gain`'s) added, before the blind is set (`RoundStart::hands_on`
+    /// size, hands, discards: a `Gain`'s) added, before the blind is set (`Board::at_blind_set`
     /// on `b`). Turtle Bean has shrunk away by then (−1 hand size a round).
     pub fn long_spec_for(&self, b: &Board, more: (i64, i64, i64)) -> Spec {
         let later = b.jokers.iter().map(|j| if j.key == "j_turtle_bean" { (0, 0, 0) } else { round_mods(j) }).fold((0, 0, 0), |a, m| (a.0 + m.0, a.1 + m.1, a.2 + m.2));
@@ -1093,9 +1091,7 @@ impl<'a> LongRun<'a> {
         b.playing_cards = d.len() as i64;
         let mut sp = self.long_spec_for(&b, (0, 0, 0));
         sp.start.deck = d.to_vec();
-        let bb = self.ctx.board_for(&b, &sp);
-        let start = self.ctx.start_for(&sp, &bb);
-        (bb, start)
+        (b, sp.start)
     }
 
     /// What a changed deck makes your run worth by Ante 8, as a ratio of your deck as it is:
@@ -1212,8 +1208,8 @@ impl<'a> LongRun<'a> {
     /// `seal_planets_for` on the round `sp` starts with, played on `b`
     fn seal_planets_in_round(&self, slots: i64, sp: &Spec, b: &Board) -> f64 {
         let Some(&yours) = self.round.get() else { return 0.0 };
-        let (hands, discards) = sp.start.hands_on(b);
-        let round = (sp.start.hand_size, hands, discards);
+        let (_, s) = b.at_blind_set(&sp.start);
+        let round = (s.hand_size, s.hands, s.discards);
         if slots == 0 && round == yours {
             return 0.0;
         }
@@ -1682,7 +1678,7 @@ impl<'a> Ahead<'a> {
 
     /// `runs` with every score in each blind multiplied by its `find`
     fn runs_at(&self, b: &Board, removed: &[&Joker], deck: Option<&[Card]>, find: &[f64]) -> Vec<f64> {
-        let rounds: Vec<(String, RoundStart)> = self.ctx.ahead.iter().zip(find).map(|(spec, &x)| self.round(spec, b, removed, deck, x)).collect();
+        let rounds: Vec<RoundStart> = self.ctx.ahead.iter().zip(find).map(|(spec, &x)| self.round(spec, removed, deck, x)).collect();
         self.chained(b, &rounds)
     }
 
@@ -1691,23 +1687,21 @@ impl<'a> Ahead<'a> {
     fn boss_runs(&self, x: f64) -> Vec<f64> {
         let b = &self.ctx.base;
         let spec = self.ctx.ahead.last().expect("a blind ahead");
-        self.chained(b, &[self.round(spec, b, &[], None, x)])
+        self.chained(b, &[self.round(spec, &[], None, x)])
     }
 
-    /// Blind `spec`'s round for board `b` (as `runs`), every score ×`find`
-    fn round(&self, spec: &Spec, b: &Board, removed: &[&Joker], deck: Option<&[Card]>, find: f64) -> (String, RoundStart) {
-        let ctx = self.ctx;
+    /// Blind `spec`'s round (as `runs`), every score ×`find`
+    fn round(&self, spec: &Spec, removed: &[&Joker], deck: Option<&[Card]>, find: f64) -> RoundStart {
         let mut sp = spec.clone();
         if let Some(d) = deck {
             sp.start.deck = d.to_vec();
         }
-        let bb = ctx.board_for(b, &sp);
-        let mut start = super::apply_mods(&ctx.start_for(&sp, &bb), &[], removed);
+        let mut start = super::apply_mods(&sp.start, &[], removed);
         start.target /= find;
-        (sp.blind_key.clone(), start)
+        start
     }
 
-    fn chained(&self, b: &Board, rounds: &[(String, RoundStart)]) -> Vec<f64> {
+    fn chained(&self, b: &Board, rounds: &[RoundStart]) -> Vec<f64> {
         crate::sim::chained_runs(b, rounds, self.ctx.opts.sims, self.ctx.opts.seed).into_iter().map(|w| if w { 1.0 } else { 0.0 }).collect()
     }
 

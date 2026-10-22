@@ -63,7 +63,7 @@ fn plus_mult_before_x_mult_is_never_worse() {
 #[test]
 fn a_flush_multiplier_beats_a_pair_bonus_on_a_flush_board() {
     // Same rounds, same seeds: Droll + The Tribe (×2 flushes) must out-score Droll + Jolly (+8 on pairs).
-    let start = RoundStart { hand: vec![], deck: standard_deck(), hand_size: 8, hands: 4, discards: 3, scored: 0.0, target: 1e300, fresh: true };
+    let start = RoundStart { hand: vec![], deck: standard_deck(), hand_size: 8, hands: 4, discards: 3, scored: 0.0, target: 1e300, fresh: true, ..Default::default() };
     let tribe = sim::round_odds(&sample_board(&["j_droll", "j_tribe"]), &start, 300, 5).1.mean;
     let jolly = sim::round_odds(&sample_board(&["j_droll", "j_jolly"]), &start, 300, 5).1.mean;
     assert!(tribe > jolly, "Tribe {tribe} vs Jolly {jolly}");
@@ -72,7 +72,7 @@ fn a_flush_multiplier_beats_a_pair_bonus_on_a_flush_board() {
 #[test]
 fn simulations_are_reproducible() {
     let b = sample_board(&["j_droll", "j_lusty_joker", "j_banner"]);
-    let start = RoundStart { hand: vec![], deck: standard_deck(), hand_size: 8, hands: 4, discards: 3, scored: 0.0, target: 3000.0, fresh: true };
+    let start = RoundStart { hand: vec![], deck: standard_deck(), hand_size: 8, hands: 4, discards: 3, scored: 0.0, target: 3000.0, fresh: true, ..Default::default() };
     let a = sim::round_odds(&b, &start, 200, 9);
     let c = sim::round_odds(&b, &start, 200, 9);
     assert_eq!(a.0, c.0);

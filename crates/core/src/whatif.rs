@@ -8,7 +8,7 @@ use crate::data::GameData;
 use crate::engine::{Board, Joker};
 use crate::model::{Card, Edition};
 use crate::save::RunState;
-use crate::sim::{self, RoundRules, RoundStart};
+use crate::sim::{self, RoundStart};
 
 /// A plan, as changes to the current run.
 #[derive(Debug, Clone, Default)]
@@ -194,7 +194,6 @@ pub fn run(run: &RunState, data: &GameData, plan: &Plan, sims: usize, seed: u64)
             // when it started, as advise's round in progress
             let current = bl.state == "Current" && run.blind_in_play().is_some();
             let mut b = board_with(js, full);
-            let rules = RoundRules::for_blind(&bl.key);
             let start = if current {
                 let cb = run.blind_in_play();
                 b.deck_remaining = pile.len() as i64;
@@ -207,24 +206,24 @@ pub fn run(run: &RunState, data: &GameData, plan: &Plan, sims: usize, seed: u64)
                     scored: cb.map_or(0.0, |c| c.scored),
                     target: cb.map_or(bl.target, |c| c.target),
                     fresh: false,
+                    blind: bl.key.clone(),
+                    disabled: cb.is_some_and(|c| c.disabled),
                 }
             } else {
-                b.new_round(&bl.key);
-                let mut deck = full.to_vec();
-                let f = b.rule_flags();
-                rules.apply(&mut deck, f.smeared, f.pareidolia);
                 let start = RoundStart {
                     hand: vec![],
-                    deck,
-                    hand_size: run.hand_size + rules.hand_size_delta,
+                    deck: full.to_vec(),
+                    hand_size: run.hand_size,
                     hands: run.round_hands,
                     discards: run.round_discards,
                     scored: 0.0,
                     target: bl.target,
                     fresh: true,
+                    blind: bl.key.clone(),
+                    disabled: false,
                 };
-                // the plan's jokers; the blind's rules on hands and discards, then the jokers',
-                // come as it's set on the board (`RoundStart::hands_on`)
+                // the plan's jokers; all of blind.lua Blind:set_blind, then the jokers',
+                // come as it's set on the board (sim::round_odds -> Board::at_blind_set)
                 crate::advise::apply_mods(&start, added, removed)
             };
             let (p, st) = sim::round_odds(&b, &start, sims, seed);
@@ -242,10 +241,8 @@ pub fn run(run: &RunState, data: &GameData, plan: &Plan, sims: usize, seed: u64)
         // Next ante: a plain boss, to see how far the board carries
         let ante = run.ante + 1;
         let target = crate::save::blind_amount(ante, run.blind_scaling) * 2.0 * run.ante_scaling;
-        let mut b = board_with(js, full);
-        // a round of its own: not the blind in progress (the board from the save has its rules)
-        b.new_round("");
-        let start = RoundStart { hand: vec![], deck: full.to_vec(), hand_size: run.hand_size, hands: run.round_hands, discards: run.round_discards, scored: 0.0, target, fresh: true };
+        let b = board_with(js, full);
+        let start = RoundStart { hand: vec![], deck: full.to_vec(), hand_size: run.hand_size, hands: run.round_hands, discards: run.round_discards, scored: 0.0, target, fresh: true, ..Default::default() };
         let start = crate::advise::apply_mods(&start, added, removed);
         let (p, st) = sim::round_odds(&b, &start, sims, seed);
         out.push(BlindOdds { label: format!("Ante {ante} plain boss"), target, p_win: p, p_with_bones: None, reach: st.mean / target.max(1.0), round_money: st.money });

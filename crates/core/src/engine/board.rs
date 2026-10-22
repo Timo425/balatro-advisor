@@ -95,11 +95,19 @@ impl RunState {
         self.hand_size + self.round_hand_size_delta
     }
 
+    /// The hand size the round in play started from before its blind was set: `round_hand_size`
+    /// without The Manacle's −1 (`round_hand_size_delta`), which the blind sets again as the
+    /// round is played from its start (`Board::at_blind_set`); a Juggle Tag's +3 stays
+    pub fn round_start_hand_size(&self) -> i64 {
+        self.round_hand_size() + self.current_blind.as_ref().is_some_and(|b| b.key == "bl_manacle" && !b.disabled) as i64
+    }
+
     /// The hands and discards a fresh round is played with: `round_hands` and `round_discards`
     /// as `blind` is set (`BlindRules::default()`: a round with no boss rule) and then the jokers
     /// you own (`Board::at_blind_set`: The Needle's, Burglar's)
     pub fn round_at_blind_set(&self, blind: BlindRules) -> (i64, i64) {
         let jokers = self.jokers.iter().map(|j| Joker { debuff: j.debuff, ..Joker::from_ability(&j.key, &j.ability, 0) }).collect();
-        Board { jokers, blind, ..Board::empty() }.at_blind_set(self.round_hands, self.round_discards)
+        let b = Board { jokers, ..Board::empty() };
+        crate::sim::RoundStart { hands: self.round_hands, discards: self.round_discards, fresh: true, blind: blind.key, disabled: blind.disabled, ..Default::default() }.hands_on(&b)
     }
 }
