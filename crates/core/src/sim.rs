@@ -2822,6 +2822,18 @@ impl RoundGoals {
         self.gain(self.at_now(was), Outcome { grown: self.grown(was, b), ..Default::default() })
     }
 
+    /// What `b` took off the jokers since `was` (a reset, a joker used up), joker by joker, as
+    /// `grown_worth` counts it, with what it added left out (so one joker's growth doesn't hide
+    /// another's loss): none or less
+    pub fn lost_worth(&self, was: &[Option<JokerNow>], b: &Board) -> f64 {
+        let now = self.jokers_now(b).unwrap_or_default();
+        let lost = self.jokers.iter().zip(was).zip(&now).fold(Grown::default(), |s, ((w, before), after)| {
+            let d = w.of(*after) - w.of(*before);
+            s + Grown { long: d.long.min(0.0), ahead: d.ahead.min(0.0) }
+        });
+        self.gain(self.at_now(was), Outcome { grown: lost, ..Default::default() }).min(0.0)
+    }
+
     /// The most a card in `cards` adds (`seen`)
     pub fn seen_gain(&self, cards: &[Card]) -> f64 {
         cards.iter().flat_map(|c| self.seen.iter().filter(move |(_, k, _)| k.same_kind(c)).map(|(_, _, g)| *g)).fold(0.0, f64::max)
@@ -2869,7 +2881,14 @@ fn play_on_instead(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards
     // what this finish keeps of them once the press-play step went (The Hook), on average
     let kept = over_hook_sets(fb, &held, |left| (g.planet_worth(h, g.at(fb)) * seal_planets(fb, left) + dollar * held_dollars(left), 0.0)).0;
     let for_held = most - kept >= LOOKAHEAD_MIN;
-    let for_growth = growth_play(b, g, hand, target - scored, win);
+    // what winning now takes off the jokers (Ride the Bus reset by a scored face card), which
+    // playing on can spare; what it adds is still there to win later
+    let loses = g.jokers_now(fb).map_or(0.0, |was| {
+        let mut after = fb.clone();
+        let _ = after.after_hand(&score::score(fb, &played, &held, &mut Unlucky, false));
+        -g.lost_worth(&was, &after)
+    });
+    let for_growth = growth_play(b, g, hand, target - scored, win, loses);
     if !for_held && for_growth.is_none() {
         return None;
     }
@@ -2975,10 +2994,11 @@ fn paired_pick(vals: &[Vec<f64>]) -> Option<usize> {
 /// The play to grow the jokers a round changes before winning (`play_on_instead`): of the plays
 /// `best_play` tries in `hand` that don't surely win yet (floor below `need`), the one that
 /// grows them most (`RoundGoals::grown`), then one that leaves the winning play `win` in hand,
-/// then the highest floor; only when its growth is worth more than the hand it spends (a spare
-/// hand's money) by `LOOKAHEAD_MIN`, the most playing on could add; topped up with fillers
-/// (`with_fillers`) when they leave its growth as it is. None without such jokers.
-fn growth_play(b: &Board, g: &RoundGoals, hand: &[Card], need: f64, win: &[usize]) -> Option<Vec<usize>> {
+/// then the highest floor; only when its growth and what winning now `loses` the jokers (which
+/// playing on can spare) are worth more than the hand it spends (a spare hand's money) by
+/// `LOOKAHEAD_MIN`, the most playing on could add; topped up with fillers (`with_fillers`) when
+/// they leave its growth as it is. None without such jokers.
+fn growth_play(b: &Board, g: &RoundGoals, hand: &[Card], need: f64, win: &[usize], loses: f64) -> Option<Vec<usize>> {
     let was = g.jokers_now(b)?;
     let mut best: Option<(f64, bool, f64, Vec<usize>)> = None;
     for &(mask, _, _, _, floor, _) in plays_tried(b, hand).iter().filter(|s| s.5 < need) {
@@ -2998,7 +3018,7 @@ fn growth_play(b: &Board, g: &RoundGoals, hand: &[Card], need: f64, win: &[usize
             best = Some((grown, keeps, floor, idx));
         }
     }
-    let (grown, keeps, _, idx) = best.filter(|x| x.0 - g.dollar_worth(g.at_now(&was)) * g.per_hand >= LOOKAHEAD_MIN)?;
+    let (grown, keeps, _, idx) = best.filter(|x| x.0 + loses - g.dollar_worth(g.at_now(&was)) * g.per_hand >= LOOKAHEAD_MIN)?;
     // topped up with the cards a play can spare (`with_fillers`: more drawn next hand) when that
     // grows the jokers as much and leaves the winning play in hand as the play did
     let filled = with_fillers(b, hand, &idx);
@@ -3028,10 +3048,11 @@ const SPARE_ROLLOUTS: usize = 16;
 /// No win on the table: is a play that grows the jokers the round's goals count clearly more
 /// worth more than the policy's `chosen` play (chosen by points: the best play, or a junk hand
 /// that digs)? The play `sparing_play` gives (Ride the Bus spared a scored face card, Obelisk its
-/// reset, Square's 4 cards, Spare Trousers' Two Pair), looked at only when played every hand
-/// left it keeps pace and scores at least what `chosen` would (`line_pace`, both alike: what a
-/// reset or a growth does to this round's later hands is in it; a budget, in the register: a play
-/// that gives up points by the policy's own measure isn't weighed), then weighed against
+/// reset, Square's 4 cards, Spare Trousers' Two Pair), looked at only when the round played on
+/// after it keeps pace and scores at least what it would after `chosen` (`line_pace`, both alike:
+/// each once, then the policy's best play on the board it leaves, so what a reset or a growth
+/// does to this round's later hands is in it; a budget, in the register: a play that gives up
+/// points by the policy's own measure isn't weighed), then weighed against
 /// `chosen` as `play_on_instead` weighs a finish: by `RoundGoals::value` on the same futures
 /// (`SPARE_ROLLOUTS`, `lookahead_values_in`: they play on by the policy without looking ahead, so
 /// a growth a later play would reset is weighed as the policy would reset it), taken only when
@@ -3087,24 +3108,25 @@ fn sparing_play(b: &Board, g: &RoundGoals, was: &[Option<JokerNow>], hand: &[Car
     Some((idx, spare))
 }
 
-/// What playing `idx` (cards of `hand`) every hand of `hands` scores: its average now, then the
-/// same cards again on the board each hand leaves (`Board::after_hand`), each at its average, as
-/// `playing_on` takes the cards held to come back (and, as there, without The Eye's ban)
+/// What playing `idx` (cards of `hand`) now and playing on after it scores over `hands` hands:
+/// its average now, then on the board it leaves (`Board::after_hand`, without The Eye's ban, as
+/// `playing_on` steps it) the best play and playing on from there (`playing_on`, the one pace
+/// every decision uses), so a play that spares a joker's reset, or a junk hand that digs, is
+/// followed by the play the policy would make, not by itself again
 fn line_pace(b: &Board, hand: &[Card], idx: &[usize], hands: i64) -> f64 {
     let played: Vec<Card> = idx.iter().map(|&i| hand[i]).collect();
     let held: Vec<Card> = (0..hand.len()).filter(|i| !idx.contains(i)).map(|i| hand[i]).collect();
     let mut board = b.clone();
     board.hands_left = hands;
-    let mut o = score::score(&board, &played, &held, &mut Unlucky, false);
-    let mut total = mean_score(&board, hand, idx, o.score);
-    for _ in 1..hands {
-        let eye = board.blind.eye_seen;
-        let _ = board.after_hand(&o);
-        board.blind.eye_seen = eye;
-        o = score::score(&board, &played, &held, &mut Unlucky, false);
-        total += mean_score(&board, hand, idx, o.score);
+    let o = score::score(&board, &played, &held, &mut Unlucky, false);
+    let now = mean_score(&board, hand, idx, o.score);
+    if hands <= 1 {
+        return now;
     }
-    total
+    let eye = board.blind.eye_seen;
+    let _ = board.after_hand(&o);
+    board.blind.eye_seen = eye;
+    now + best_play(&board, hand).map_or(0.0, |p| playing_on(&board, hand, &p, hands - 1))
 }
 
 /// What winning now with `win` is worth (`RoundGoals::value`, the measure every move is ranked
@@ -4630,7 +4652,7 @@ mod tests {
         let mut g = worths(&mut b, &[([0.0, 0.0, 0.01], -1.0)]);
         let win = finish_play(&b, &g, &hand, need, 3).unwrap();
         assert_eq!(win.len(), 5);
-        let grow = growth_play(&b, &g, &hand, need, &win).expect("a growing play");
+        let grow = growth_play(&b, &g, &hand, need, &win, 0.0).expect("a growing play");
         assert_eq!(grow.len(), 4);
         // no 4-card play leaves the Flush whole: the highest-scoring one, Two Pair
         let cards: Vec<Card> = grow.iter().map(|&i| hand[i]).collect();
@@ -4638,9 +4660,11 @@ mod tests {
         // a spare hand worth as much as the growth: no look-ahead for it
         g.dollar = 0.01;
         g.per_hand = 4.0;
-        assert_eq!(growth_play(&b, &g, &hand, need, &win), None);
+        assert_eq!(growth_play(&b, &g, &hand, need, &win, 0.0), None);
+        // unless winning now takes something off the jokers (a reset) that playing on spares
+        assert!(growth_play(&b, &g, &hand, need, &win, 0.02).is_some());
         // nor without growing jokers
-        assert_eq!(growth_play(&b, &RoundGoals::default(), &hand, need, &win), None);
+        assert_eq!(growth_play(&b, &RoundGoals::default(), &hand, need, &win, 0.0), None);
     }
 
     #[test]
@@ -4669,7 +4693,7 @@ mod tests {
         let need = best_play(&b, &hand).unwrap().floor - 1.0;
         let g = worths(&mut b, &[([0.0, 0.0, 0.01], -1.0)]);
         let win = finish_play(&b, &g, &hand, need, 3).unwrap();
-        let grow = growth_play(&b, &g, &hand, need, &win).unwrap();
+        let grow = growth_play(&b, &g, &hand, need, &win, 0.0).unwrap();
         assert_eq!(grow.len(), 4);
         let low: Vec<Card> = grow.iter().map(|&i| hand[i]).collect();
         let ace = Card::parse_list("AS 2H 5D 3C").unwrap();
@@ -4905,6 +4929,61 @@ mod tests {
         let mut g = worths(&mut b, &[([0.01, 0.0, 0.0], -0.1)]);
         free(&mut g);
         assert!((play_grown(&g, &mut b, "KS").long - 0.8f64.ln()).abs() < 1e-12);
+    }
+
+    #[test]
+    fn what_a_play_takes_off_the_jokers_is_counted_joker_by_joker() {
+        // Square Joker at 0.01 a Chip and Ride the Bus at +10, 0.001 a Mult: a 4-card play with
+        // a scored King grows Square by 4 Chips and resets Ride the Bus, a net gain that hides
+        // the reset; the loss is the reset alone
+        let mut b = sample_board(&["j_square", "j_ride_the_bus"]);
+        b.jokers[1].mult = 10.0;
+        let g = worths(&mut b, &[([0.0, 0.0, 0.01], -1.0), ([0.001, 0.0, 0.0], -0.1)]);
+        let was = g.jokers_now(&b).unwrap();
+        let mut after = b.clone();
+        let o = score::score(&b, &Card::parse_list("KS KH 9S 9D").unwrap(), &[], &mut Unlucky, false);
+        let _ = after.after_hand(&o);
+        assert!(g.grown_worth(&was, &after) > 0.0);
+        let mut reset = b.clone();
+        reset.jokers[1].mult = 0.0;
+        let lost = g.lost_worth(&was, &after);
+        assert!(lost < 0.0 && (lost - g.grown_worth(&was, &reset)).abs() < 1e-12, "{lost}");
+        // a play that only grows them takes nothing off
+        let mut grown = b.clone();
+        let o = score::score(&b, &Card::parse_list("9S 9D 2C 3H").unwrap(), &[], &mut Unlucky, false);
+        let _ = grown.after_hand(&o);
+        assert_eq!(g.lost_worth(&was, &grown), 0.0);
+    }
+
+    #[test]
+    fn a_line_is_the_play_once_then_the_best_play_on_the_board_it_leaves() {
+        // Ride the Bus at +1: the Pair of 2s spares it, and the hands after it are played as the
+        // policy plays them (the Kings, which still score most), not as the 2s again
+        let mut b = sample_board(&["j_ride_the_bus"]);
+        b.jokers[0].mult = 1.0;
+        let hand = Card::parse_list("KS KH KD 2C 2H 5D").unwrap();
+        let twos = [3, 4];
+        let mut after = b.clone();
+        after.hands_left = 3;
+        let o = score::score(&after, &[hand[3], hand[4]], &[hand[0], hand[1], hand[2], hand[5]], &mut Unlucky, false);
+        let _ = after.after_hand(&o);
+        let best = best_play(&after, &hand).unwrap();
+        assert!(best.cards.contains(&0), "the Kings: {:?}", best.cards);
+        let line = line_pace(&b, &hand, &twos, 3);
+        assert!((line - o.score - playing_on(&after, &hand, &best, 2)).abs() < 1e-6, "{line}");
+        // more than the 2s three times over
+        assert!(line > 3.0 * o.score * 1.5, "{line} against {}", o.score);
+        // a junk hand that moves no joker (a plain Joker) is followed by the best play too
+        let plain = sample_board(&["j_joker"]);
+        let junk = [5];
+        let o = score::score(&plain, &[hand[5]], &[hand[0], hand[1], hand[2], hand[3], hand[4]], &mut Unlucky, false);
+        let best = best_play(&plain, &hand).unwrap();
+        let mut after = plain.clone();
+        after.hands_left = 3;
+        let _ = after.after_hand(&o);
+        let want = o.score + playing_on(&after, &hand, &best_play(&after, &hand).unwrap(), 2);
+        assert!((line_pace(&plain, &hand, &junk, 3) - want).abs() < 1e-6);
+        assert!(line_pace(&plain, &hand, &junk, 3) > o.score + 2.0 * best.floor - 1e-6);
     }
 
     #[test]
