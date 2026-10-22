@@ -363,6 +363,91 @@ fn the_jokers_a_round_changes_for_good_are_the_listed_ones() {
 }
 
 #[test]
+fn every_counter_a_round_moves_is_a_jokers_counter() {
+    // Every joker alone, on the hands and discards of the test above: what a hand or a discard
+    // leaves on the joker for the next round (after the round-end reset, `Board::new_round`),
+    // beyond its three numbers (`Joker::lasting`), is its counter (`Joker::counter`), moved as
+    // `counter_after` says; and a joker whose score reads the hands played in the run (the
+    // board's `hands_played`, which every hand moves) has one. Fails when the engine's steps
+    // move something on a joker that `counter` doesn't name.
+    let data = GameData::bundled();
+    let plays = ["2S 2H 5D 5C", "2S 3H 4D 5C 6S", "KS KH QD", "AS:lucky", "9S:glass 9H:mult 9D:bonus"];
+    let discards = ["KS QS JS 2S 5H", "3D"];
+    let mut with: Vec<String> = vec![];
+    for c in data.centers.iter().filter(|c| c.set == "Joker") {
+        let Some(mut k) = Joker::from_key(&c.key, data) else { continue };
+        k.yorick_discards = 2.0;
+        if k.kind == Kind::Seltzer {
+            k.extra.n = 3.0;
+        }
+        let mut b = Board::empty();
+        b.jokers = vec![k];
+        b.hands_left = 3;
+        b.discards_left = 3;
+        b.hands_played = 7;
+        b.castle_suit = Some(Suit::Spades);
+        b.levels[HandType::HighCard as usize].played = 10;
+        let left = |before: &Board, after: &Board, hands: i64, cards: i64| {
+            let j = &before.jokers[0];
+            let Some(a) = after.jokers.first() else {
+                // used up: no counter left (Seltzer's last hand)
+                assert_eq!(j.counter_after(before.hands_played, hands, cards), None, "{}: used up", c.key);
+                return;
+            };
+            assert_eq!(a.counter(after.hands_played), j.counter_after(before.hands_played, hands, cards), "{}: counter after {hands} hands, {cards} cards", c.key);
+            // both with their numbers and counters alike (a counter set as one at none)
+            let (mut a, mut j) = (a.clone(), j.clone());
+            (a.mult, a.x_mult, a.extra.chips) = (j.mult, j.x_mult, j.extra.chips);
+            a.set_counter(0, 0.0);
+            j.set_counter(0, 0.0);
+            let (mut x, mut y) = (before.clone(), after.clone());
+            (x.jokers, y.jokers) = (vec![j], vec![a]);
+            x.new_round("bl_small");
+            y.new_round("bl_small");
+            assert_eq!(y.jokers[0], x.jokers[0], "{}: a hand or a discard left more than its numbers and counter", c.key);
+        };
+        // hands one after another (past Loyalty Card's whole cycle and Seltzer's last), and
+        // discards, your own and The Hook's
+        for p in plays {
+            let mut a = b.clone();
+            for k in 1..=7 {
+                if a.jokers.is_empty() {
+                    break;
+                }
+                let o = score(&a, &cards(p), &[], &mut Unlucky, false);
+                a.after_hand(&o);
+                left(&b, &a, k, 0);
+            }
+        }
+        for d in discards {
+            for by_hook in [false, true] {
+                let mut a = b.clone();
+                for k in 1..=3 {
+                    a.discard_by(&cards(d), by_hook);
+                    left(&b, &a, 0, k * cards(d).len() as i64);
+                }
+            }
+        }
+        let reads_hands = (0..12).map(|h| sc(&Board { hands_played: h, ..b.clone() }, "KS KH", "")).collect::<Vec<f64>>().windows(2).any(|w| w[0] != w[1]);
+        if b.jokers[0].counter(b.hands_played).is_some() {
+            with.push(c.key.clone());
+        }
+        assert!(!reads_hands || b.jokers[0].counter(0).is_some(), "{} reads the hands played but has no counter", c.key);
+    }
+    with.sort();
+    assert_eq!(with, ["j_loyalty_card", "j_selzer", "j_yorick"]);
+    // Loyalty Card's ×4 on exactly the hands its counter is at the cycle's end (card.lua
+    // `loyalty_remaining == every`), from any hands played and bought at any point
+    let mut b = board(&["j_loyalty_card"]);
+    b.jokers[0].hands_played_at_create = 3.0;
+    for h in 0..15 {
+        b.hands_played = h;
+        let fires = sc(&b, "KS KH", "") == 240.0;
+        assert_eq!(fires, b.jokers[0].counter(h) == Some(b.jokers[0].extra.every), "{h} hands played");
+    }
+}
+
+#[test]
 fn only_the_listed_jokers_answer_the_contexts_few_do() {
     // Unit tests ask every joker in every context (`Pass::asked`) and fail when one answers a
     // context its kind isn't listed for (`Answers`): every joker, alone and copied, on hands

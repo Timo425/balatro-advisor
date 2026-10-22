@@ -636,13 +636,22 @@ impl<'a> LongRun<'a> {
     /// worth only its loss, Seltzer, isn't followed). With `ahead` (Best play's round), each also
     /// counts what its numbers and losing it do in the blinds still ahead in this ante
     /// (`Ahead::joker`, kept apart from its Ante 8 worth: `sim::JokerWorth::of`): one the
-    /// projection drops or replaces by Ante 8 too, as it's on your board for those blinds
+    /// projection drops or replaces by Ante 8 too, as it's on your board for those blinds; and
+    /// each joker's counter a round moves (`Joker::counter`, `Ahead::counter`: Loyalty Card's,
+    /// Yorick's, Seltzer's), which counts there only
     pub fn round_worths(&self, floor: bool, ahead: Option<&Ahead>, board: &Board) -> Vec<crate::sim::JokerWorth> {
         let jokers = &self.ctx.base.jokers;
-        let changed: Vec<usize> = (0..jokers.len()).filter(|&i| !board.jokers.get(i).is_some_and(|j| j.debuff) && crate::engine::CHANGE_IN_ROUND.contains(&jokers[i].key.as_str())).collect();
+        // and those with a counter a round moves (`Joker::counter`), in the blinds ahead only
+        let numbers = |i: usize| crate::engine::CHANGE_IN_ROUND.contains(&jokers[i].key.as_str());
+        let counter = |i: usize| ahead.is_some() && jokers[i].counter(self.ctx.base.hands_played).is_some();
+        let changed: Vec<usize> = (0..jokers.len()).filter(|&i| !board.jokers.get(i).is_some_and(|j| j.debuff) && (numbers(i) || counter(i))).collect();
         let worth = par_map(&changed, |&i| {
-            let (per, gone) = self.joker_worth(i);
-            (per, gone, ahead.map(|a| a.joker(i, self.growths.moved(i).unwrap_or([true; 3]))).unwrap_or_default())
+            let (per, gone) = if numbers(i) { self.joker_worth(i) } else { ([0.0; 3], 0.0) };
+            let ahead = ahead.map(|a| {
+                let w = if numbers(i) { a.joker(i, self.growths.moved(i).unwrap_or([true; 3])) } else { Default::default() };
+                crate::sim::AheadWorth { counter: a.counter(i), ..w }
+            });
+            (per, gone, ahead.unwrap_or_default())
         });
         changed
             .iter()
@@ -1369,6 +1378,11 @@ pub(super) const AHEAD_FLOOR: f64 = 0.1;
 const FIND_STEPS: usize = 6;
 const FIND_MAX: f64 = 1000.0;
 
+/// The most values of a joker's counter measured in the blinds ahead (`Ahead::counter`; the
+/// rest read between them): a budget, in the register. Loyalty Card's cycle (6) and Seltzer's
+/// hands left (at most the round's hands) fit; Yorick's discards (up to 23) are read between.
+pub(super) const COUNTER_POINTS: usize = 8;
+
 /// What the board a round leaves is worth in the blinds still ahead in this ante (`Ctx::ahead`:
 /// the Big Blind's if it's still to come (taken as played, not skipped), then the boss's), for
 /// Best play's round. A choice is worth its chance to get through times the long-run value of
@@ -1735,7 +1749,7 @@ impl<'a> Ahead<'a> {
             }
             b
         };
-        let mut w = crate::sim::AheadWorth { knot: std::array::from_fn(|f| (start[f] - GROWTH_STEPS[f]).max(none[f])), ..Default::default() };
+        let mut w = crate::sim::AheadWorth { knot: std::array::from_fn(|f| (start[f] - GROWTH_STEPS[f]).max(none[f])), lost: true, ..Default::default() };
         for f in (0..3).filter(|&f| fields[f]) {
             w.up[f] = (self.shift(&set(f, start[f] + GROWTH_STEPS[f]), &[]) / GROWTH_STEPS[f]).max(0.0);
             if start[f] <= none[f] {
@@ -1751,6 +1765,49 @@ impl<'a> Ahead<'a> {
         // but a fall is, the fall still counts: `AheadWorth::of` floors at `gone`)
         w.gone = w.loss(self.shift(&super::without(base, i), &[&base.jokers[i]]), &start);
         w
+    }
+
+    /// Your joker `i`'s counter (`Joker::counter`: Loyalty Card's place in its cycle, Yorick's
+    /// discards to its next step, Seltzer's hands left) at each value the round in play can leave
+    /// it at (`Joker::counter_after`, with the hands and discards it has left: at most 5 cards a
+    /// discard, the game's limit, and what the boss's press-play step takes a hand,
+    /// `engine::hook_takes`), as the shift each gives against the counter where it is now
+    /// (`shift`, on the same runs as every change; none where they don't show it): so the hands
+    /// a round takes land Loyalty Card's ×Mult on a hand of the blinds ahead or off them all. At
+    /// most `COUNTER_POINTS` values measured: every so many of them in the order the fewest
+    /// hands and cards reach them, the first and the last included, so the nearest are always
+    /// measured (Yorick's next discard, across its wrap too); the rest read between them by value
+    /// (`sim::CounterWorth::of`). None where it has no counter or the round can't move it.
+    pub fn counter(&self, i: usize) -> Option<crate::sim::CounterWorth> {
+        let base = &self.ctx.base;
+        let j = &base.jokers[i];
+        let start = j.counter(base.hands_played)?;
+        let (hands, discards) = self.ctx.specs.iter().find(|s| s.in_progress())?.start.hands_on(base);
+        let cards = 5 * discards.max(0) + crate::engine::hook_takes(base, usize::MAX) as i64 * hands.max(0);
+        // in the order the fewest moves (hands and cards) reach them, each once
+        let mut reach: Vec<(i64, f64)> = (0..=hands.max(0)).flat_map(|h| (0..=cards).filter_map(move |c| j.counter_after(base.hands_played, h, c).map(|v| (h + c, v)))).filter(|&(_, v)| v != start).collect();
+        reach.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
+        let mut values: Vec<f64> = vec![];
+        for (_, v) in reach {
+            if !values.contains(&v) {
+                values.push(v);
+            }
+        }
+        if values.is_empty() {
+            return None;
+        }
+        if values.len() > COUNTER_POINTS {
+            let n = values.len() - 1;
+            values = (0..COUNTER_POINTS).map(|k| values[k * n / (COUNTER_POINTS - 1)]).collect();
+        }
+        let shifts = par_map(&values, |&v| {
+            let mut b = base.clone();
+            b.jokers[i].set_counter(base.hands_played, v);
+            self.shift(&b, &[])
+        });
+        let mut at: Vec<(f64, f64)> = values.into_iter().zip(shifts).chain([(start, 0.0)]).collect();
+        at.sort_by(|a, b| a.0.total_cmp(&b.0));
+        Some(crate::sim::CounterWorth { start, at })
     }
 
     /// One more level of hand `h` (a Blue Seal's planet, used as the simulated round uses one:

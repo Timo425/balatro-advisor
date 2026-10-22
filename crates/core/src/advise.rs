@@ -2020,7 +2020,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             "Best play counts what the round's hands and discards leave the jokers that grow or fade in a round, by what one more Mult, ×Mult or Chip adds by Ante 8 (measured on a step of +2 Mult, +×0.25 or +10 Chips, taken as linear; a fall never costs more than losing the joker; several jokers' factors multiplied, heuristic) and, in this ante, by what they do to the chance of getting through the blinds still ahead (see the note on those); the simulated player aims for it in how it finishes the round (the winning play worth most, or playing on for growth on a few simulated futures) and, with no win on the table, in a play that grows them more while it keeps pace and scores as much over the hands left as its own pick (weighed on 16 simulated futures), not in its digs or discards, and what they do to your cards (Vampire's enhancements, Glass breaking) isn't counted. The blind odds shown still play your jokers as they are now.",
         ))
         .chain(counts_ahead.then_some(
-            "Best play also counts what the round leaves (the jokers' numbers, Blue Seal planets, money, cards worth drawing) by what it does to the chance of getting through this ante's blinds still ahead (the Big Blind taken as played, then the boss), each from the board the one before leaves: each change but the money's counted only where the paired simulated runs show it, measured on your board carrying what the shops before each blind find, as the shop ranking counts them for the boss (none in the quick pass), put on as a multiplier on every score sized so the boss gets through that often (heuristic), and raised where your board gets through these blinds less than 10% of the time (heuristic); each sized by a search of at most 6 sets of runs, ×1000 at most, ended by two steps that change nothing (a budget), and where that falls short, measured at the chance it reaches, as the change of the odds there, and the changes combined in the odds, so together they stay between none and a sure pass; a joker's numbers stepped up, a step down and down to none (linear in the odds between the steps), apart from its Ante 8 worth (the two multiplied); a card worth drawing once its Ante 8 worth passed; money by how much more often your board gets through with what the shop estimate says $10 more adds before each blind, from where the shops' find put the boss: with the boss alone ahead that much more, with two blinds on the same runs carrying the find raised for it, read off the find's own search (heuristic: linear between the points it tried, past them its slope; where it tried none, a search to within a standard error); counted wherever the estimate shows it, not by the paired runs (none in the quick pass). Not counted: the next ante, the game's round-end steps between the blinds (Popcorn, Turtle Bean, Gros Michel, perishables, the round's money).",
+            "Best play also counts what the round leaves (the jokers' numbers, Blue Seal planets, money, cards worth drawing) by what it does to the chance of getting through this ante's blinds still ahead (the Big Blind taken as played, then the boss), each from the board the one before leaves: each change but the money's counted only where the paired simulated runs show it, measured on your board carrying what the shops before each blind find, as the shop ranking counts them for the boss (none in the quick pass), put on as a multiplier on every score sized so the boss gets through that often (heuristic), and raised where your board gets through these blinds less than 10% of the time (heuristic); each sized by a search of at most 6 sets of runs, ×1000 at most, ended by two steps that change nothing (a budget), and where that falls short, measured at the chance it reaches, as the change of the odds there, and the changes combined in the odds, so together they stay between none and a sure pass; a joker's numbers stepped up, a step down and down to none (linear in the odds between the steps), apart from its Ante 8 worth (the two multiplied); a joker's counter the round moves (Loyalty Card's place in its cycle, Yorick's discards to its next step, Seltzer's hands left) at each value the round can leave it at, so the hands a round takes land Loyalty Card's ×Mult in the blinds ahead or off them (at most 8 values measured, the rest read between them: a budget; counted only there); a card worth drawing once its Ante 8 worth passed; money by how much more often your board gets through with what the shop estimate says $10 more adds before each blind, from where the shops' find put the boss: with the boss alone ahead that much more, with two blinds on the same runs carrying the find raised for it, read off the find's own search (heuristic: linear between the points it tried, past them its slope; where it tried none, a search to within a standard error); counted wherever the estimate shows it, not by the paired runs (none in the quick pass). Not counted: the next ante, the game's round-end steps between the blinds (Popcorn, Turtle Bean, Gros Michel, perishables, the round's money).",
         ))
         .chain((run.hand.len() > sim::ALL_MOVES_MAX).then_some(
             "A big hand: Best play's moves come from the hand's structure (its plays whose cards can all score, the best few of each kind and then by score now; its structure's discards), not every move; the simulated player's best play looks only at its 16 highest cards.",
@@ -4900,6 +4900,62 @@ mod tests {
         ctx.ahead = vec![spec("bl_big", all.p90 * 1.5)];
         let (floor, chain) = value::Ahead::new(&ctx, None).unwrap().find_at();
         assert!(floor[0] > 1.0 && (chain - value::AHEAD_FLOOR).abs() < 0.06, "{floor:?} {chain}");
+    }
+
+    #[test]
+    fn the_hands_a_round_takes_land_loyalty_cards_x_mult_in_the_boss() {
+        // A Big Blind a Pair of Aces wins and no other play does, with Loyalty Card (×4 on every
+        // 6th hand played since it was bought) and Joker, before a boss of 4 hands the board gets
+        // through about half the time with the ×4 on one of them and seldom without it (the
+        // history holds no such board: every saved Loyalty state wins its boss whatever the
+        // ×4's hand). After 12 hands played, winning now leaves the ×4 for the boss's 5th hand
+        // (none); a hand that doesn't win first lands it on its 4th, so Best play plays one first. After 16,
+        // winning now lands it on the boss's 1st and a hand more takes it off: it wins now.
+        // Fails where the blinds ahead start from the hands played as the analysis started,
+        // whatever the round takes (as before Loyalty Card's counter was counted).
+        let data = GameData::bundled();
+        let run = |played: i64, boss: f64| {
+            let mut r = shop_run(&[("j_loyalty_card", None, None), ("j_joker", None, None)], &[]);
+            r.screen = crate::save::Screen::SelectingHand;
+            r.shop = None;
+            r.hand = Card::parse_list("AS AH 2C 3D 5H 7S 9C JD").unwrap();
+            r.draw_pile = crate::bench::standard_deck().into_iter().filter(|c| !r.hand.iter().any(|h| h.rank == c.rank && h.suit == c.suit)).collect();
+            r.hands_played = played;
+            (r.hands_left, r.discards_left) = (4, 0);
+            r.blinds[0].state = "Skipped".into();
+            r.blinds[1].state = "Current".into();
+            r.blinds[2].target = boss;
+            r.current_blind = Some(crate::save::CurrentBlind {
+                key: "bl_big".into(), name: "Big Blind".into(), target: 100.0, scored: 0.0, disabled: false, hands_seen: vec![], only_hand: None,
+            });
+            r
+        };
+        // the boss's target: where the board gets through about 40% of the time with the ×4 on
+        // its 4th hand (14 hands played as it starts), mostly not without (13: the ×4 on a 5th)
+        let r = run(0, 0.0);
+        let mut deck = r.full_deck();
+        deck.sort_by_key(Card::order_key);
+        let boss = |played: i64, target: f64| {
+            let mut b = Board::from_run(&r, data);
+            b.hands_played = played;
+            b.new_round("bl_wall");
+            let (start, _) = blind_from_start("bl_wall", target, &r, &deck);
+            sim::round_odds(&b, &start, 300, 7)
+        };
+        let all = boss(14, 1e15).1;
+        let (mut lo, mut hi) = (all.p10, all.p90 * 2.0);
+        for _ in 0..12 {
+            let t = (lo + hi) / 2.0;
+            if boss(14, t).0 > 0.4 { lo = t } else { hi = t }
+        }
+        let target = (lo + hi) / 2.0;
+        let (hit, miss) = (boss(14, target).0, boss(13, target).0);
+        assert!((0.3..0.5).contains(&hit) && miss < hit / 3.0, "{target}: {hit} {miss}");
+        let opts = Options { quick: true, ..quick() };
+        let bp = analyze(&run(12, target), data, None, &opts).best_play.unwrap();
+        assert!(bp.action == "play" && bp.score < 100.0, "{} {:?} {}", bp.action, bp.cards, bp.score);
+        let bp = analyze(&run(16, target), data, None, &opts).best_play.unwrap();
+        assert!(bp.action == "play" && bp.score >= 100.0, "{} {:?} {}", bp.action, bp.cards, bp.score);
     }
 
     #[test]

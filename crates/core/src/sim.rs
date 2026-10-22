@@ -2618,12 +2618,51 @@ pub struct AheadWorth {
     pub far: [f64; 3],
     pub knot: [f64; 3],
     pub gone: f64,
+    /// Whether its loss was measured (`gone`, 0 where the runs didn't show it): not for a joker
+    /// followed only for its counter, which a round can't use up (Loyalty Card)
+    pub lost: bool,
+    /// Its counter (`Joker::counter`), where it has one the round can move
+    pub counter: Option<CounterWorth>,
+}
+
+/// What a joker's counter (`Joker::counter`: Loyalty Card's place in its cycle, Yorick's
+/// discards to its next step, Seltzer's hands left) left at a round's end does in this ante's
+/// blinds still ahead (`value::Ahead::counter`): the shift of the log-odds at each value the
+/// round can leave it at (`at`, measured, the start's none), against its value as the analysis
+/// started (`start`). Counted only there: the projection to Ante 8 doesn't follow a counter
+/// (Loyalty Card's cycle turns many times by then and Seltzer runs out, `LongRun::lasts`, but
+/// Yorick's count is progress to its next ×Mult step, which its numbers' worth gives whole to
+/// the discard that crosses it: gap 18).
+#[derive(Debug, Clone, Default)]
+pub struct CounterWorth {
+    pub start: f64,
+    /// (value, shift), by value, the start's (none) among them
+    pub at: Vec<(f64, f64)>,
+}
+
+impl CounterWorth {
+    /// The shift at counter `v`: measured there, else linear between the values measured either
+    /// side of it (`value::COUNTER_POINTS`, a budget), else the nearest
+    fn of(&self, v: f64) -> f64 {
+        let i = self.at.partition_point(|p| p.0 < v);
+        match (i.checked_sub(1).map(|k| self.at[k]), self.at.get(i)) {
+            (_, Some(&(x, s))) if x == v => s,
+            (Some((x0, s0)), Some(&(x1, s1))) => s0 + (s1 - s0) * (v - x0) / (x1 - x0),
+            (Some((_, s)), None) | (None, Some(&(_, s))) => s,
+            (None, None) => 0.0,
+        }
+    }
 }
 
 impl AheadWorth {
     /// Whether anything is counted
     pub fn counts(&self) -> bool {
-        self.up.iter().chain(&self.near).chain(&self.far).any(|&x| x > 0.0) || self.gone != 0.0
+        self.up.iter().chain(&self.near).chain(&self.far).any(|&x| x > 0.0) || self.gone != 0.0 || self.counter.as_ref().is_some_and(|c| c.at.iter().any(|p| p.1 != 0.0))
+    }
+
+    /// Its counter at `v` (`CounterWorth::of`): nothing where none is followed
+    fn counter_of(&self, v: f64) -> f64 {
+        self.counter.as_ref().map_or(0.0, |c| c.of(v))
     }
 
     /// Its numbers at none (Mult 0, ×1, Chips 0) against `start`, before the floor at `gone`:
@@ -2662,11 +2701,19 @@ impl AheadWorth {
 const LEAST_FACTOR: f64 = 1e-6;
 
 impl JokerWorth {
-    /// What the joker with these numbers (`None`: used up) is worth against its start, in the
-    /// two parts `Grown` keeps: by Ante 8 the log of 1 + its worth there (so several jokers'
-    /// falls multiply the run's value, each at most to nothing, where added they'd pass it), and
-    /// its shift in the blinds ahead
-    fn of(&self, now: Option<[f64; 3]>) -> Grown {
+    /// The joker as the analysis started (`start`, and its counter where it has one)
+    fn at_start(&self) -> JokerNow {
+        JokerNow { numbers: self.start, counter: self.ahead.counter.as_ref().map(|c| c.start) }
+    }
+
+    /// What the joker as it stands (`None`: used up) is worth against its start, in the two
+    /// parts `Grown` keeps: by Ante 8 the log of 1 + its numbers' worth there (so several jokers'
+    /// falls multiply the run's value, each at most to nothing, where added they'd pass it; its
+    /// counter nothing there, `AheadWorth::counter`), and its shift in the blinds ahead (its
+    /// numbers' and its counter's, added)
+    fn of(&self, now: Option<JokerNow>) -> Grown {
+        let counter = now.and_then(|n| n.counter).map_or(0.0, |v| self.ahead.counter_of(v));
+        let now = now.map(|n| n.numbers);
         let linear = |n: [f64; 3]| (0..3).map(|f| self.per[f] * (n[f] - self.start[f])).sum::<f64>();
         let long = match (now, self.floor) {
             (Some(n), true) => linear(n).max(self.gone),
@@ -2674,13 +2721,23 @@ impl JokerWorth {
             (Some(n), false) => linear(n),
             (None, false) => linear([0.0, 1.0, 0.0]),
         };
-        Grown { long: (1.0 + long).max(LEAST_FACTOR).ln(), ahead: self.ahead.of(&self.start, now) }
+        // numbers and counter together never below losing it, where that loss was measured
+        let ahead = self.ahead.of(&self.start, now) + counter;
+        let ahead = if self.ahead.lost { ahead.max(self.ahead.gone) } else { ahead };
+        Grown { long: (1.0 + long).max(LEAST_FACTOR).ln(), ahead }
     }
 }
 
-/// The counted jokers' numbers before a hand or a discard, by `RoundGoals::jokers` entry
-/// (`None`: used up)
-type JokersNow = Vec<Option<[f64; 3]>>;
+/// A counted joker as the board stands (`RoundGoals::jokers_now`): its numbers
+/// (`Joker::lasting`) and its counter (`Joker::counter`, `None`: it has none)
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct JokerNow {
+    pub numbers: [f64; 3],
+    pub counter: Option<f64>,
+}
+
+/// The counted jokers before a hand or a discard, by `RoundGoals::jokers` entry (`None`: used up)
+type JokersNow = Vec<Option<JokerNow>>;
 
 /// `RoundGoals::jokers_now` on the board's goals
 fn jokers_now(b: &Board) -> Option<JokersNow> {
@@ -2739,29 +2796,29 @@ impl RoundGoals {
         self.jokers_now(b).map_or(Grown::default(), |now| self.at_now(&now))
     }
 
-    fn at_now(&self, now: &[Option<[f64; 3]>]) -> Grown {
+    fn at_now(&self, now: &[Option<JokerNow>]) -> Grown {
         // against each joker at its start, so the analysis start is none in both parts (a joker
         // the projection keeps though weaker than a typical find, an eternal one, has a floor,
         // `gone` by Ante 8, above nothing)
-        self.jokers.iter().zip(now).fold(Grown::default(), |s, (w, n)| s + (w.of(*n) - w.of(Some(w.start))))
+        self.jokers.iter().zip(now).fold(Grown::default(), |s, (w, n)| s + (w.of(*n) - w.of(Some(w.at_start()))))
     }
 
-    /// The counted jokers' numbers now (`None`: used up), by entry, for `grown`; `None` when none
-    /// is counted
+    /// The counted jokers' numbers and counters now (`None`: used up), by entry, for `grown`;
+    /// `None` when none is counted
     pub fn jokers_now(&self, b: &Board) -> Option<JokersNow> {
-        (!self.jokers.is_empty()).then(|| self.jokers.iter().map(|w| b.jokers.iter().find(|j| j.id == w.id).map(Joker::lasting)).collect())
+        (!self.jokers.is_empty()).then(|| self.jokers.iter().map(|w| b.jokers.iter().find(|j| j.id == w.id).map(|j| JokerNow { numbers: j.lasting(), counter: j.counter(b.hands_played) })).collect())
     }
 
     /// What a hand or a discard changed on the counted jokers since `was` (`jokers_now` before
     /// it), by what each is worth before and after it (`JokerWorth::of`), each found by its
     /// place on your board (`Joker::id`, kept through the round's steps)
-    pub fn grown(&self, was: &[Option<[f64; 3]>], b: &Board) -> Grown {
+    pub fn grown(&self, was: &[Option<JokerNow>], b: &Board) -> Grown {
         let now = self.jokers_now(b).unwrap_or_default();
         self.jokers.iter().zip(was).zip(&now).fold(Grown::default(), |s, ((w, before), after)| s + (w.of(*after) - w.of(*before)))
     }
 
     /// `grown` as what it adds to a won round (`gain`), from the jokers at `was`
-    pub fn grown_worth(&self, was: &[Option<[f64; 3]>], b: &Board) -> f64 {
+    pub fn grown_worth(&self, was: &[Option<JokerNow>], b: &Board) -> f64 {
         self.gain(self.at_now(was), Outcome { grown: self.grown(was, b), ..Default::default() })
     }
 
@@ -2952,7 +3009,7 @@ fn growth_play(b: &Board, g: &RoundGoals, hand: &[Card], need: f64, win: &[usize
 /// What playing `idx` (cards of `hand`) changes on the jokers the round's goals count
 /// (`RoundGoals::grown` from `was`, `jokers_now`): the hand scored with every roll failing and
 /// stepped (`Board::after_hand`)
-fn play_growth(b: &Board, g: &RoundGoals, was: &[Option<[f64; 3]>], hand: &[Card], idx: &[usize]) -> f64 {
+fn play_growth(b: &Board, g: &RoundGoals, was: &[Option<JokerNow>], hand: &[Card], idx: &[usize]) -> f64 {
     let played: Vec<Card> = idx.iter().map(|&i| hand[i]).collect();
     let held: Vec<Card> = (0..hand.len()).filter(|i| !idx.contains(i)).map(|i| hand[i]).collect();
     let mut after = b.clone();
@@ -3014,7 +3071,7 @@ fn spare_instead(b: &Board, parts: &HandParts, deck: &[Card], hands: i64, discar
 /// that grow the jokers the goals count (`play_growth`, from `was`) by at least `LOOKAHEAD_MIN`
 /// more than `chosen` does (one tried: a budget). The play, and the play topped up with the
 /// cards it can spare (`with_fillers`) when that grows the jokers as much.
-fn sparing_play(b: &Board, g: &RoundGoals, was: &[Option<[f64; 3]>], hand: &[Card], plays: &[Scored], chosen: &[usize], hands: i64) -> Option<(Vec<usize>, Vec<usize>)> {
+fn sparing_play(b: &Board, g: &RoundGoals, was: &[Option<JokerNow>], hand: &[Card], plays: &[Scored], chosen: &[usize], hands: i64) -> Option<(Vec<usize>, Vec<usize>)> {
     let base = play_growth(b, g, was, hand, chosen);
     // (a play covers the first `SUBSETS_MAX` cards, as `play_of`)
     let keep: u32 = if hands > 1 { pays_at_end(b, hand).iter().filter(|&&i| i < SUBSETS_MAX).fold(0, |m, &i| m | 1 << i) } else { 0 };

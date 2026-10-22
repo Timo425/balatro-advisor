@@ -371,6 +371,53 @@ impl Joker {
     pub fn lasting(&self) -> [f64; 3] {
         [self.mult, if self.resets_at_round_end() { 1.0 } else { self.x_mult }, self.extra.chips]
     }
+
+    /// The counter its ability keeps, apart from its three numbers (`lasting`), that a round's
+    /// hands and discards move and a later round's scoring reads (card.lua `Card:calculate_joker`):
+    /// Loyalty Card's hands since its ×Mult cycle began (`(G.GAME.hands_played −
+    /// hands_played_at_create) % (every + 1)`, `hands_played`: the board's; the game's
+    /// `loyalty_remaining` is `every − 1` less that, its ×Mult on the hand it reaches `every`,
+    /// where this reaches `every` too), Yorick's discards
+    /// left until its next ×Mult step (`yorick_discards`), Seltzer's hands left (`extra`). `None`
+    /// for every other joker, and for one debuffed (Yorick's and Seltzer's don't move then;
+    /// Loyalty Card's does, from the run's hands, but a debuffed joker isn't among the round's
+    /// goals). What `sim::RoundGoals`
+    /// counts in the blinds still ahead (`value::Ahead::counter`); a test plays every joker to
+    /// check it.
+    pub fn counter(&self, hands_played: i64) -> Option<f64> {
+        if self.debuff {
+            return None;
+        }
+        match self.kind {
+            Kind::Loyalty => Some((hands_played as f64 - self.hands_played_at_create).rem_euclid(self.extra.every + 1.0)),
+            Kind::Seltzer => Some(self.extra.n),
+            _ if self.key == "j_yorick" => Some(self.yorick_discards),
+            _ => None,
+        }
+    }
+
+    /// Its counter (`counter`) set to `v`, the rest as it is
+    pub fn set_counter(&mut self, hands_played: i64, v: f64) {
+        match self.kind {
+            Kind::Loyalty => self.hands_played_at_create = hands_played as f64 - v,
+            Kind::Seltzer => self.extra.n = v,
+            _ if self.key == "j_yorick" => self.yorick_discards = v,
+            _ => {}
+        }
+    }
+
+    /// Its counter (`counter`) after `hands` more hands played and `cards` more cards discarded,
+    /// as the engine's steps move it (`Board::after_hand`: Loyalty Card one on, Seltzer one
+    /// down, used up at none; `Board::discard_by`: Yorick one down a card, back to `extra.discards`
+    /// from its last); `None` where it has none or it's used up
+    pub fn counter_after(&self, hands_played: i64, hands: i64, cards: i64) -> Option<f64> {
+        let now = self.counter(hands_played)?;
+        match self.kind {
+            Kind::Loyalty => Some((now + hands as f64).rem_euclid(self.extra.every + 1.0)),
+            Kind::Seltzer => Some(now - hands as f64).filter(|&n| n > 0.0),
+            _ => Some((0..cards).fold(now, |y, _| if y <= 1.0 { self.extra.discards } else { y - 1.0 })),
+        }
+    }
 }
 
 /// The jokers a round changes that grow by taking something from the cards they grow on
