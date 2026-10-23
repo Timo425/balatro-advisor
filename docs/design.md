@@ -113,13 +113,12 @@ so the advisor never saw a pack's cards and every pack was skipped; the jokers w
 the advisor's order; a pick from a pack never sold for a free slot; the game sets `G.GAME.won`
 at the end of the Ante 8 boss round even on a loss (state_events.lua `end_round`); and the bot's
 profile had 35 jokers locked (gap 38). The runs of 2026-10-01 (an early advisor besides) are no
-evidence of over-buying. A fix whose effect shows antes later (spending against saving, what to keep,
-skip-or-play, combos) is judged better by paired play-ons than by whole runs: from the owner's
-saved states where the choice comes up, the old and the new choice each played on for an ante or
-two with the same game seed, so only the choice differs (the card measures its own noise with a
-placebo advisor seed). Whole runs become worth a place in the workflow once the single-decision
-gaps are mostly closed and the bot follows most of the advice (`not_followed` near empty); run
-around the clock, they'd go through the D17 harness, headless, so the owner can play alongside.
+evidence of over-buying. The bot is improved as a player, not used as a judge: nothing judges a
+fix whose effect shows antes later yet. If one is ever needed, paired play-ons would beat whole
+runs (from a saved state where the choice comes up, the old and the new choice each played on
+with the same game seed, so only the choice differs); whole runs only once the single-decision
+gaps are mostly closed and the bot follows most of the advice (`not_followed` near empty), and
+run around the clock through the D17 harness, headless, so the owner can play alongside.
 
 ## Patterns
 
