@@ -415,7 +415,7 @@ sentence was quoted.
 
 Accepted by the owner 2026-10-16; amended with the owner's approval 2026-10-17.
 
-## D17. The game's own code as a test-only parity tier (proposed)
+## D17. The game's own code as a test-only parity tier (accepted)
 
 **What.** A test tier that runs the game's own Lua headless and checks the engine's steps against
 it, lockstep, on states built from the owner's saves. A small LuaJIT program of our own
@@ -482,3 +482,5 @@ in a run kept in memory (each job above loads a save and writes one).
 **Revisit if** keeping the stand-in working takes more than a few lines a game update, the engine's
 differences stay explained for long enough that the tier runs only after game updates, or an
 engine that scores in game order with a usable license (D2) makes the game's own code unneeded.
+
+Approved by the owner 2026-10-23, as proposed.
