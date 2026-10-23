@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::engine::{self, Board, Unlucky};
+use crate::engine::{self, Board, Given, Unlucky};
 use crate::model::Card;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -17,10 +17,18 @@ pub struct Case {
     pub board: Board,
     pub played: Vec<Card>,
     pub held: Vec<Card>,
+    /// The held cards The Hook took (indices into `held`; `handlog` records them)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hooked: Vec<usize>,
     /// What the engine said when the case was captured.
     pub predicted: f64,
     /// What the game showed. `None` until the owner fills it in.
     pub expected: Option<f64>,
+    /// A known engine bug the case shows, not fixed yet (e.g. "queue card 3"): the test skips
+    /// it while it still disagrees, and fails once it agrees, so the fix removes this (as a
+    /// replay fixture's `pending_expect`, D14)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending: Option<String>,
     #[serde(default)]
     pub note: String,
 }
@@ -43,9 +51,22 @@ impl Case {
     }
 
     /// Engine score with every random roll failing (golden hands should avoid luck), with the
-    /// cards in the order they were played and held.
+    /// cards in the order they were played and held, and The Hook's pick as recorded.
     pub fn rescore(&self) -> f64 {
-        engine::score_as_played(&self.board, &self.played, &self.held, &mut Unlucky, false).score
+        self.outcome(false).score
+    }
+
+    pub fn outcome(&self, trace: bool) -> engine::Outcome {
+        if self.hooked.is_empty() {
+            engine::score_as_played(&self.board, &self.played, &self.held, &mut Unlucky, trace)
+        } else {
+            engine::score_as_played(&self.board, &self.played, &self.held, &mut Given(self.hooked.clone()), trace)
+        }
+    }
+
+    /// Whether the engine agrees with the game (`None` while the game's score isn't recorded)
+    pub fn agrees(&self) -> Option<bool> {
+        self.expected.map(|e| (self.rescore() - e).abs() <= e.abs() * 1e-9)
     }
 }
 

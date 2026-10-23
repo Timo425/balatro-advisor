@@ -313,12 +313,40 @@ pub fn load(path: &Path, data: &GameData) -> Result<RunState, Error> {
         return Err(Error::NoRun(path.to_path_buf()));
     }
     let v = crate::jkr::read(path)?;
-    let age = std::fs::metadata(path)
+    from_value(&v, data, path, age_secs(path))
+}
+
+fn age_secs(path: &Path) -> Option<u64> {
+    std::fs::metadata(path)
         .and_then(|m| m.modified())
         .ok()
         .and_then(|t| SystemTime::now().duration_since(t).ok())
-        .map(|d| d.as_secs());
-    from_value(&v, data, path, age)
+        .map(|d| d.as_secs())
+}
+
+/// Each card's id in the hand and in the round's discard pile, in the order of `RunState::hand`
+/// and `RunState::discard_pile`, so a card can be followed from one save to the next:
+/// `params.playing_card`, the number the game gives a playing card when it makes it (card.lua
+/// `Card:init`, from `G.playing_card`), or for a card made without it (`params` empty) its
+/// `sort_id` (saved and restored, `Card:save` / `Card:load`), negated to keep the two apart.
+/// `None` for a card saved with neither.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct CardIds {
+    pub hand: Vec<Option<i64>>,
+    pub discard: Vec<Option<i64>>,
+}
+
+/// `load`, with the cards' ids (`CardIds`) from the same read.
+pub fn load_with_ids(path: &Path, data: &GameData) -> Result<(RunState, CardIds), Error> {
+    if !path.is_file() {
+        return Err(Error::NoRun(path.to_path_buf()));
+    }
+    let v = crate::jkr::read(path)?;
+    let r = from_value(&v, data, path, age_secs(path))?;
+    let ids = |name: &str| area(&v, name).into_iter().filter(|c| playing_card(c).is_some()).map(|c| c.at("params.playing_card").int().or_else(|| c.get("sort_id").int().map(|i| -i))).collect::<Vec<_>>();
+    let mut discard = ids("discard");
+    discard.extend(ids("play"));
+    Ok((r, CardIds { hand: ids("hand"), discard }))
 }
 
 fn num(v: &Value) -> f64 {

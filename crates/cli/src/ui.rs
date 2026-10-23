@@ -30,6 +30,18 @@ pub fn run(save_dir: PathBuf, profile: u8, port: u16, open: bool) -> Result<()> 
     let shared = Arc::new(Mutex::new(Shared { body: r#"{"status":"starting"}"#.into(), ..Default::default() }));
 
     let beat_dir = save_dir.clone();
+    // Hands log: each state kept in the history goes to a thread of its own, which pairs it with
+    // the one before and logs the hand played between them (`handlog`), off the analysis' path
+    let hands = balatro_advisor::calibration::default_dir().map(|dir| {
+        let (tx, rx) = std::sync::mpsc::channel::<PathBuf>();
+        std::thread::spawn(move || {
+            let mut logger = balatro_advisor::handlog::Logger::default();
+            for kept in rx {
+                logger.observe(&kept, &dir, GameData::bundled());
+            }
+        });
+        tx
+    });
     // Watcher: poll the save's mtime; re-analyse after it settles (the game writes several times).
     {
         let shared = shared.clone();
@@ -116,7 +128,10 @@ pub fn run(save_dir: PathBuf, profile: u8, port: u16, open: bool) -> Result<()> 
                             continue;
                         }
                         if last_fp.as_deref() != Some(fp.as_str()) {
-                            keep_history(&save_path, r);
+                            let kept = keep_history(&save_path, r);
+                            if let (Some(kept), Some(tx)) = (kept, &hands) {
+                                let _ = tx.send(kept);
+                            }
                         }
                         last_fp = Some(fp);
                     }
@@ -341,15 +356,16 @@ const HISTORY_DAYS: u64 = 90;
 /// A copy of every state the page analyses (`history/<seed>/`, next to the calibration log,
 /// never in the repo), named by time, ante, round and screen, so a moment can be found again
 /// and replayed as a fixture after the game has moved on. The newest runs (by their newest
-/// state) are kept up to `HISTORY_BYTES` and `HISTORY_DAYS`; older ones are deleted.
-fn keep_history(save: &std::path::Path, r: &save::RunState) {
-    let Some(dir) = balatro_advisor::calibration::default_dir().map(|d| d.join("history")) else { return };
+/// state) are kept up to `HISTORY_BYTES` and `HISTORY_DAYS`; older ones are deleted. Returns the
+/// copy's path.
+fn keep_history(save: &std::path::Path, r: &save::RunState) -> Option<PathBuf> {
+    let dir = balatro_advisor::calibration::default_dir()?.join("history");
     let seed: String = r.seed.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
     let run_dir = dir.join(if seed.is_empty() { "unknown".to_string() } else { seed });
     let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_millis());
-    let name = format!("{now}-a{}-r{}-{:?}.jkr", r.ante, r.round, r.screen);
-    if std::fs::create_dir_all(&run_dir).is_err() || std::fs::copy(save, run_dir.join(name)).is_err() {
-        return;
+    let kept = run_dir.join(format!("{now}-a{}-r{}-{:?}.jkr", r.ante, r.round, r.screen));
+    if std::fs::create_dir_all(&run_dir).is_err() || std::fs::copy(save, &kept).is_err() {
+        return None;
     }
     // the runs, newest first by their latest state (with their size); past the limits, the rest go
     let files = |p: &std::path::Path| std::fs::read_dir(p).ok().into_iter().flatten().filter_map(|e| e.ok()?.metadata().ok()).collect::<Vec<_>>();
@@ -375,6 +391,7 @@ fn keep_history(save: &std::path::Path, r: &save::RunState) {
             let _ = std::fs::remove_dir_all(run);
         }
     }
+    Some(kept)
 }
 
 /// One line per analysis in `timings.jsonl` (next to the calibration log): when, which state

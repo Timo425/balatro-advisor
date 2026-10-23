@@ -67,9 +67,11 @@ balatro-advisor bench              # engine timings
 Card notation: `KS`, `10H`, plus `:modifiers`: `bonus mult wild glass steel stone gold
 lucky`, `foil holo poly`, `red blue goldseal purple`, `debuff`, `+N` (perma chips).
 
-**Golden tests:** before playing a hand, `balatro-advisor score --hand 1,2,5 --golden name`;
-after it scores, `balatro-advisor golden set name <score the game showed>`. `cargo test`
-keeps checking it.
+**Golden tests:** while `ui` runs, every hand you play is scored on the engine and logged
+beside the score the game gave (`hands.jsonl`). `balatro-advisor hands` lists the mismatches
+(`--history` pairs the saved history instead), and `hands --capture N --name NAME` saves one to
+`tests/golden/`, which `cargo test` keeps checking. By hand: `score --hand 1,2,5 --golden name`
+before playing, `golden set name <score the game showed>` after.
 
 `data/game.json` (joker/blind/tag numbers) is generated from a local install:
 `unzip -p .../Balatro.exe game.lua > /tmp/game.lua && cargo run -- extract-data /tmp/game.lua`.

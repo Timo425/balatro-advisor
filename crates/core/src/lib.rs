@@ -9,6 +9,7 @@ pub mod describe;
 pub mod engine;
 pub mod gold;
 pub mod golden;
+pub mod handlog;
 pub mod jkr;
 pub mod lua;
 pub mod model;

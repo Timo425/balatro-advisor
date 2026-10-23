@@ -39,6 +39,20 @@ Raised Fist); `score_as_played` keeps the order given, for the golden checks; Be
 the hand's order when the hand as it sits scores less), `sim` (rounds), `advise` (the four
 stages above, and the output).
 
+The engine is checked against every hand the owner plays (`handlog`): the save before a hand
+and the save after it give the cards played (followed by their ids from the hand to the
+discard pile, in play order; The Hook's reach the pile first), the cards held and the score
+the game gave (the round's chips moved); the engine scores the same cards from the board
+before. The live page logs each hand to `hands.jsonl` from a thread of its own, off the
+analysis' path; `balatro-advisor hands` lists the mismatches (`--history`: the saved history
+paired the same way) and `--capture` saves one to `tests/golden/` (`pending` while it shows a
+known engine bug, D14's pattern). A hand with a roll (Lucky, Misprint, Bloodstone…) only has
+to land between every roll failing and every roll hitting. On 2026-10-23 the history paired
+863 of 1,434 hands: 742 exact, 120 in range, one off by a chip (Ramen's ×Mult drifts in floating
+point, 2 − 0.01 × 18 = 1.8199999999999998, which the save writes as 1.82, so the game's floor
+of 61151.99… isn't seen). Not paired: a hand that won the round (541: the save after it has
+no cards left), a joker added or moved or a consumable used before the hand, a run that ended.
+
 ## Patterns
 
 The engineering practices behind the stages, in plain words:
@@ -340,7 +354,7 @@ the same retriggered ×Mult.
   chance to beat the next boss after the shops before it (a separate forecast line, never part
   of the win chance); rentals held until the danger passes, then sold; interest in the
   long-run money value (dropping under the interest line); Director's Cut's later boss
-  rerolls; golden cases recorded from real hands (`score --golden`).
+  rerolls.
 
 Ranked by how likely each is to cause the next round of patch-on-patch.
 

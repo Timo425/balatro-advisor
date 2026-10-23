@@ -110,6 +110,26 @@ enum Cmd {
     Calibration,
     /// Time the engine on fixed synthetic boards
     Bench,
+    /// Hands you played, the engine's score beside the game's (logged while `ui` runs): what
+    /// didn't match, each numbered for --capture
+    Hands {
+        /// Pair the saved history's states instead of reading the log
+        #[arg(long)]
+        history: bool,
+        /// List every hand, not only the mismatches
+        #[arg(long)]
+        all: bool,
+        /// Save hand number N (as listed) as a golden case in tests/golden/
+        #[arg(long, requires = "name")]
+        capture: Option<usize>,
+        /// The golden case's name
+        #[arg(long)]
+        name: Option<String>,
+        /// Mark the captured case as a known engine bug (e.g. "queue card 3"): cargo test skips it
+        /// while it disagrees
+        #[arg(long)]
+        pending: Option<String>,
+    },
     /// Golden cases: real hands with the in-game score
     Golden {
         #[command(subcommand)]
@@ -242,8 +262,10 @@ fn main() -> Result<()> {
                     board,
                     played,
                     held,
+                    hooked: vec![],
                     predicted: floor.score,
                     expected: None,
+                    pending: None,
                     note: String::new(),
                 };
                 let p = case.save(std::path::Path::new(GOLDEN_DIR)).map_err(anyhow::Error::msg)?;
@@ -351,7 +373,7 @@ fn main() -> Result<()> {
                     c.expected = Some(*score);
                     c.save(dir).map_err(anyhow::Error::msg)?;
                     let got = c.rescore();
-                    if got == *score {
+                    if c.agrees() == Some(true) {
                         println!("✓ {name}: engine and game agree on {score}");
                     } else {
                         println!("✗ {name}: engine {got}, game {score}. `balatro-advisor golden show {name}` for the trace");
@@ -359,7 +381,7 @@ fn main() -> Result<()> {
                 }
                 GoldenCmd::Show { name } => {
                     let c = golden::Case::load(&golden::Case::path(dir, name)).map_err(anyhow::Error::msg)?;
-                    let o = engine::score_as_played(&c.board, &c.played, &c.held, &mut Unlucky, true);
+                    let o = c.outcome(true);
                     print_score(&c.board, &c.played, &c.held, &o, o.score, o.score);
                     println!("Game showed: {}", c.expected.map_or("not recorded".into(), |e| e.to_string()));
                 }
@@ -368,10 +390,11 @@ fn main() -> Result<()> {
                         match c {
                             Ok(c) => {
                                 let got = c.rescore();
-                                let mark = match c.expected {
-                                    None => "…",
-                                    Some(e) if e == got => "✓",
-                                    Some(_) => "✗",
+                                let mark = match (c.agrees(), &c.pending) {
+                                    (None, _) => "…",
+                                    (Some(true), _) => "✓",
+                                    (Some(false), Some(_)) => "◌",
+                                    (Some(false), None) => "✗",
                                 };
                                 println!("{mark} {:<24} engine {got:>12}  game {}", c.name, c.expected.map_or("-".into(), |e| e.to_string()));
                             }
@@ -379,6 +402,73 @@ fn main() -> Result<()> {
                         }
                     }
                 }
+            }
+        }
+        Cmd::Hands { history, all, capture, name, pending } => {
+            use balatro_advisor::handlog::{self, Verdict};
+            let dir = balatro_advisor::calibration::default_dir().context("no data directory")?;
+            let (hands, scan) = if *history {
+                let mut s = handlog::scan(&dir.join("history"), data);
+                (std::mem::take(&mut s.hands), Some(s))
+            } else {
+                (handlog::read_log(&dir), None)
+            };
+            if let Some(n) = capture {
+                let h = hands.get(n.wrapping_sub(1)).with_context(|| format!("no hand {n} (there are {})", hands.len()))?;
+                let mut c = h.golden(name.as_deref().unwrap_or_default()).context("that hand matched, and the log keeps no board for it: capture it from --history")?;
+                c.pending = pending.clone();
+                let p = c.save(std::path::Path::new(GOLDEN_DIR)).map_err(anyhow::Error::msg)?;
+                let state = match c.agrees() {
+                    None => "no exact game score (the hand won the blind): fill it in with `golden set`".to_string(),
+                    Some(true) => "engine and game agree".to_string(),
+                    Some(false) => format!("engine {}, game {}{}", c.rescore(), c.expected.unwrap_or_default(), if c.pending.is_some() { " (pending)" } else { " (cargo test fails until fixed, or mark it --pending)" }),
+                };
+                println!("Saved {}: {state}", p.display());
+                return Ok(());
+            }
+            if cli.json {
+                let rows: Vec<_> = hands.iter().enumerate().map(|(i, h)| serde_json::json!({ "n": i + 1, "verdict": h.verdict(), "cause": h.cause(), "hand": h })).collect();
+                println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "hands": rows, "scan": scan }))?);
+                return Ok(());
+            }
+            let count = |v: Verdict| hands.iter().filter(|h| h.verdict() == v).count();
+            let source = if *history { format!("the history ({})", dir.join("history").display()) } else { handlog::log_path(&dir).display().to_string() };
+            println!("Hands compared: {} from {source}", hands.len());
+            println!(
+                "  match exactly {} · a roll involved, in range {} · won the blind, engine reaches it {} · mismatch {}",
+                count(Verdict::Match),
+                count(Verdict::InRange),
+                count(Verdict::Enough),
+                count(Verdict::Mismatch)
+            );
+            if let Some(s) = &scan {
+                println!("  from {} saved states; the runs played {} hands in all. Not compared:", s.states, s.hands_played);
+                for (k, n) in &s.skipped {
+                    println!("    {n:>5}  {}", k.describe());
+                }
+                let seen = hands.len() + s.skipped.iter().map(|x| x.1).sum::<usize>();
+                println!("    {:>5}  no save of the state before or after it (the run ended on it, or the page missed it)", (s.hands_played as usize).saturating_sub(seen));
+            }
+            let mut causes: Vec<(String, Vec<usize>)> = Vec::new();
+            for (i, h) in hands.iter().enumerate().filter(|(_, h)| *all || h.verdict() == Verdict::Mismatch) {
+                let c = if h.verdict() == Verdict::Mismatch { h.cause() } else { format!("{:?}", h.verdict()).to_lowercase() };
+                match causes.iter_mut().find(|x| x.0 == c) {
+                    Some(x) => x.1.push(i),
+                    None => causes.push((c, vec![i])),
+                }
+            }
+            for (cause, idx) in &causes {
+                println!("\n{cause} ({}):", idx.len());
+                for &i in idx {
+                    let h = &hands[i];
+                    println!("  #{:<4} {}", i + 1, h.summary());
+                    for n in &h.notes {
+                        println!("        {n}");
+                    }
+                }
+            }
+            if !causes.is_empty() {
+                println!("\nbalatro-advisor hands{} --capture N --name NAME saves one as a golden case", if *history { " --history" } else { "" });
             }
         }
         Cmd::ExtractData { game_lua, out, game_version } => {
