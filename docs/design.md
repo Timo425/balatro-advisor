@@ -94,8 +94,8 @@ Hiker, Midas Mask, Bloodstone, Brainstorm, Perkeo…), Violet Vessel, consumable
 selling, skipping.
 
 The bot bench (`tools/botrun.py`, through BalatroBot in the real game on the bot's own profile)
-plays whole runs with the advisor choosing. It isn't a check in the workflow (D18, proposed):
-a run measures the advisor only where the bot follows it, and the bot doesn't follow tarots,
+plays whole runs with the advisor choosing. It isn't a check in the workflow: a run measures
+the advisor only where the bot follows it, and the bot doesn't follow tarots,
 vouchers, Arcana, Spectral and Standard packs, "use X first" or skipping a blind (its docstring
 keeps the list; each run records the advisor's top choices it couldn't take, `not_followed`).
 What was measured on 2026-10-23/24, at 1904f2d (Red Deck, 100 simulations a board): a run on the
@@ -113,7 +113,13 @@ so the advisor never saw a pack's cards and every pack was skipped; the jokers w
 the advisor's order; a pick from a pack never sold for a free slot; the game sets `G.GAME.won`
 at the end of the Ante 8 boss round even on a loss (state_events.lua `end_round`); and the bot's
 profile had 35 jokers locked (gap 38). The runs of 2026-10-01 (an early advisor besides) are no
-evidence of over-buying.
+evidence of over-buying. A fix whose effect shows antes later (spending against saving, what to keep,
+skip-or-play, combos) is judged better by paired play-ons than by whole runs: from the owner's
+saved states where the choice comes up, the old and the new choice each played on for an ante or
+two with the same game seed, so only the choice differs (the card measures its own noise with a
+placebo advisor seed). Whole runs become worth a place in the workflow once the single-decision
+gaps are mostly closed and the bot follows most of the advice (`not_followed` near empty); run
+around the clock, they'd go through the D17 harness, headless, so the owner can play alongside.
 
 ## Patterns
 
