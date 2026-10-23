@@ -53,6 +53,28 @@ point, 2 − 0.01 × 18 = 1.8199999999999998, which the save writes as 1.82, so 
 of 61151.99… isn't seen). Not paired: a hand that won the round (541: the save after it has
 no cards left), a joker added or moved or a consumable used before the hand, a run that ended.
 
+The game's own code, run headless, was measured as a parity check on 2026-10-23 (feasibility
+only, nothing in the repo; D17 proposes it as a test tier). LuaJIT with a stand-in for LÖVE
+loads the game's Lua from the install, loads a saved state, takes one step through the game's
+button functions and writes the game's own save of what it leaves. Against the game's next
+save in the history it matched 2,970 of 2,984 steps: hands 860 of 862, round-winning hands 139
+of 140 (cards inferred), discards 673 of 674, blind setups 571 of 576, cash-outs 134 of 139,
+shop rerolls 150 of 150, pack openings 443 of 443. The other 14 are the owner acting between
+two saves, the save itself (Ramen's rounded float, its timing) and card ids. Against the
+harness, on those steps and on generated ones (the play the engine scores most, a random play
+and a random discard from each saved state in a hand): every one of 5,592 hands scores the
+same or in range (583 with a roll); `after_hand` leaves the same state after 4,244 of 4,310
+hands (the rest rolls in range, a Glass card breaking, which no step does, and Crimson Heart);
+`discard` after all 2,308 discards; `at_blind_set` sets 532 of 576 blinds the same. The 44 are
+Ceremonial Dagger eating its neighbour (14), Riff-raff's jokers (6), Madness (4), The Pillar
+and Verdant Leaf (17, gap 15), Amber Acorn's shuffle (3), Juggle Tags and Crimson Heart (1
+each; two states show two): the jokers'
+`setting_blind` context besides Burglar and tags' `round_start_bonus` aren't modelled. A round
+won changes more that no step does (983 hands): rent and Gold cards' money, Popcorn, Rocket,
+Gros Michel's end, bosses' debuffs lifted, all valued outside the round. What the history
+can't exercise: 39 of the 150 jokers never owned (Glass Joker, DNA, Hiker, Midas Mask,
+Bloodstone, Brainstorm, Perkeo…), Violet Vessel, consumables used, buying, selling, skipping.
+
 ## Patterns
 
 The engineering practices behind the stages, in plain words:

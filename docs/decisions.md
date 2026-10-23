@@ -414,3 +414,71 @@ no one could find why it was chosen, or a fix that broke a rule went ahead becau
 sentence was quoted.
 
 Accepted by the owner 2026-10-16; amended with the owner's approval 2026-10-17.
+
+## D17. The game's own code as a test-only parity tier (proposed)
+
+**What.** A test tier that runs the game's own Lua headless and checks the engine's steps against
+it, lockstep, on states built from the owner's saves. A small LuaJIT program of our own
+(`tools/parity/`: a stand-in for LÖVE, where any call returns a value that does nothing, plus a
+job runner, about 220 lines in all, none of it the game's) loads the game's code at test time from
+the owner's `Balatro.exe` as it is (read from the zip, nothing extracted or written), loads a saved
+state through the game's own `Game:start_run`, takes one step through the game's own button
+functions (`G.FUNCS.play_cards_from_highlighted`, `discard_cards_from_highlighted`,
+`select_blind`, `cash_out`, `reroll_shop`, `use_card` on a booster), runs the game's event queue
+until it rests and writes the game's own save of what the step left (`save_run`). A Rust test
+(`crates/core/tests/parity.rs`, `--ignored`) pairs that save with the state before, as `handlog`
+pairs the history's, and compares the engine's step with it: the score (`score_as_played`), the
+state a hand leaves (`Board::after_hand`), a discard's (`Board::discard`) and a blind's setup
+(`Board::at_blind_set`), every difference listed by cause. The harness rolls the game's own RNG
+from the save, so a roll is the game's: the engine's every-roll-fails and every-roll-hits pair is
+its range, as in the hands log. Two kinds of state: the history's own steps, where the game's next
+save checks the harness, and generated ones from each saved state in a hand (the play the engine
+scores most, a random play, a random discard), which reach plays the owner didn't make. It runs
+where a change touches the engine or the steps the simulated round plays on (`engine/`, the
+`Board` steps), before and after, as D12's slow checks run where they apply: every new difference
+explained or fixed; and after a game update, which it follows by itself since it reads the install.
+
+**Needs installed.** LuaJIT 2.1 (the game ships `lua51.dll`, LuaJIT with Lua 5.1 semantics): the
+system package (`apt install luajit`), run as a process; the feasibility run used the copy in the
+Lutris runtime already on this PC, through a 20-line C host, which isn't a setup to keep. Nothing
+else: the Rust test inflates and deflates the saves (`jkr`). The owner's profile is read in place
+from the save directory (unlocks shape the shop's pools), read only; the tier skips with a message
+where the install, the profile or LuaJIT is missing (a cloud session, CI), as the history checks do.
+Not taken: `mlua` with a vendored LuaJIT as a dev-dependency (in process, faster, but a C build and
+a heavy dependency, CLAUDE.md asks first).
+
+**How it keeps D2.** The game isn't an external engine but the ground truth D2 names, read in place
+from the owner's install at test time as `extract-data` reads it; none of its code is copied,
+extracted or committed (CLAUDE.md: never copy Lua into the repo: the repo's Lua is the stand-in and
+the runner, new code). It is test-only: nothing the advice runs on calls it.
+
+**Why.** The sentences this changes: D12's limits, "Shop choices, value across antes and the
+engine's fidelity to the game still rest on the owner and the calibration log", and CLAUDE.md step
+4's list of the checks a change runs (a new one where it applies). Measured 2026-10-23
+(`docs/design.md`, the golden tests' paragraph): the harness reproduces the game's own next save on
+2,970 of 2,984 of the history's steps (hands, round-winning hands, discards, blind setups,
+cash-outs, shop rerolls, pack openings); of the other 14, 8 are the owner acting between two
+saves, 3 the save itself (a rounded float, its timing) and 3 card ids (copies sharing one, a new
+card's id from a counter the save doesn't keep); against it the engine scores 5,592 hands with no
+mismatch (583 rolls in range), leaves the same state after 4,244 of 4,310 hands (the rest rolls in
+range, a Glass card breaking, Crimson Heart) and all 2,308 discards, and sets 532 of 576 blinds the
+same: the 44 are two engine gaps (the jokers' `setting_blind` context besides Burglar, and Juggle
+Tag's `round_start_bonus`: queued) and bosses gap 15 plays as plain blinds. Each step costs 0.1-0.5
+s with its load and save (0.6 s to start the game once); the 11,000 jobs of the measure took about
+20 minutes on 4 cores at nice 19. The hands log checks only the hands the owner played, and only
+their score; the parity tier checks every step the simulated round plays, on boards the owner
+never played, with the game's own rolls.
+
+**For step 8 (a simulated whole run).** With the owner's profile, the harness reproduces the
+game's shop after a cash-out (134 of 139, the rest the owner acting first; 22 of 117 differed
+without the profile), every reroll (150 of 150), every pack's contents (443 of 443), the next
+blinds and their tags, from the RNG state a save holds. So a simulated whole run's shops, packs and
+bosses can be checked lockstep against the game from any saved state, without the game running or
+the PC idle, or the harness could itself drive whole runs headless for a run bench. Not tried yet:
+buying, selling, using a consumable, skipping a blind (other button functions, to be driven the
+same way); a state the game ends on a UI screen (the win screen) rests there; the time a step takes
+in a run kept in memory (each job above loads a save and writes one).
+
+**Revisit if** keeping the stand-in working takes more than a few lines a game update, the engine's
+differences stay explained for long enough that the tier runs only after game updates, or an
+engine that scores in game order with a usable license (D2) makes the game's own code unneeded.
