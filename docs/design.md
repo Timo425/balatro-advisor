@@ -93,6 +93,28 @@ round. What the history can't exercise: 39 of the 150 jokers never owned (Glass 
 Hiker, Midas Mask, Bloodstone, Brainstorm, Perkeo…), Violet Vessel, consumables used, buying,
 selling, skipping.
 
+The bot bench (`tools/botrun.py`, through BalatroBot in the real game on the bot's own profile)
+plays whole runs with the advisor choosing. It isn't a check in the workflow (D18, proposed):
+a run measures the advisor only where the bot follows it, and the bot doesn't follow tarots,
+vouchers, Arcana, Spectral and Standard packs, "use X first" or skipping a blind (its docstring
+keeps the list; each run records the advisor's top choices it couldn't take, `not_followed`).
+What was measured on 2026-10-23/24, at 1904f2d (Red Deck, 100 simulations a board): a run on the
+same game seed with the same advisor seed is the same run (10 seeds played twice, every pair
+identical), so before and after can be paired seed by seed and re-run when needed rather than
+kept; another advisor seed (a placebo) flips the near-ties and the run goes its own way (seed
+BAVGOLDA: a first discard rated 99.4% against 99.6% left $4 less, no Popcorn, a loss at the
+Ante 1 boss against Ante 3); a Gold Stake run takes 1-21 minutes (most 3-9) and one White Stake
+run to the Ante 8 boss 31, 91-97% of it the advisor's analysis, so a faster game or a simulated
+one saves almost nothing. Measured on a bot that skipped every pack (below), so not a level: the
+same 10 Gold seeds reached Antes 1-5, mean 3.5, no wins. Five faults of the bench, found and
+fixed in that time, voided every run before 2026-10-24 (`void` in `runs.jsonl`): the bot's
+Steamodded doesn't save while a pack is open (its `fixes.toml` guard, lifted in the bot's copy),
+so the advisor never saw a pack's cards and every pack was skipped; the jokers were never put in
+the advisor's order; a pick from a pack never sold for a free slot; the game sets `G.GAME.won`
+at the end of the Ante 8 boss round even on a loss (state_events.lua `end_round`); and the bot's
+profile had 35 jokers locked (gap 38). The runs of 2026-10-01 (an early advisor besides) are no
+evidence of over-buying.
+
 ## Patterns
 
 The engineering practices behind the stages, in plain words:
@@ -1640,3 +1662,24 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    find in its best slot and the money recomputed on the swapped board; the floor scored on the
    board you'd hold (the joker sold gone, its sale counted, against the same baseline as the
    option, `ratio(.., sold)`). Found 2026-10-23 with the Mail-In discards fix.
+37. **The jokers' order is one order for the board, never chosen for the moment it acts in.**
+   `best_order` picks one order over a fixed set of deals, and Best play scores the jokers as
+   they sit. But the game asks the jokers to act at separate moments (`calculate_joker`'s
+   contexts: a blind selected, each hand scored, each discard, the end of the round, leaving the
+   shop), and a player rearranges them for free between any two. A copy joker (Blueprint,
+   Brainstorm) copies whatever is to its right at that moment (card.lua, Blueprint's
+   `calculate_joker` passes the context on), so the best order belongs to the moment: Blueprint
+   beside Burglar when the blind is selected (+3 hands), then beside the joker that scores most
+   for the hand played; beside Trading Card for a discard, Golden Joker or Rocket at the end of
+   the round, Perkeo leaving the shop. Conditional jokers can make the best scoring order differ
+   from hand to hand as well. The general fix: the order chosen per context as part of the move
+   (Best play's plays and discards, the blind's start, the round's end), on an engine that models
+   the copy in each context (the parity tier found `setting_blind` modelled only for Burglar
+   itself, D17). Raised by the owner 2026-10-24, while the bot bench's joker order was fixed.
+38. **The shop pool assumes every joker unlocked.** The game offers a locked joker in no shop or
+   pack (common_events.lua `get_current_pool`: `unlocked ~= false`, legendaries aside), and
+   `shop_pool` doesn't read the profile's unlocks (`meta.jkr`), so on a profile with jokers
+   still locked the shops ahead are valued with jokers they can't show. On the owner's profile
+   every joker is unlocked; on the bot's profile 35 weren't (13 of the 20 rares) until the
+   owner unlocked all on 2026-10-23. The fix: the pool read with the profile's unlocks, as the
+   parity tier already reads the profile for the game's own pools.

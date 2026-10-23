@@ -489,3 +489,42 @@ differences stay explained for long enough that the tier runs only after game up
 engine that scores in game order with a usable license (D2) makes the game's own code unneeded.
 
 Approved by the owner 2026-10-23, as proposed.
+
+---
+
+## D18. No whole-run bench yet; a run-level fix judged by paired play-ons from saved states (proposed)
+
+**What.** Whole bot runs (`tools/botrun.py` in the real game) aren't a check in CLAUDE.md's
+workflow, and no simulated whole run is built. When a fix whose effect only shows antes later
+needs a verdict (spending against saving, gap 17; what to buy, sell or keep; skip-or-play and
+tags; combos, gaps 23/27; the shop choices gap 28 feeds), that card judges it by paired
+play-ons: from the owner's saved states where the choice comes up (the history's shops), the
+old and the new choice each played on for an ante or two by the bot with the same game seed, so
+the shops, packs and draws are the same and only the choice differs. The card measures its own
+noise there (a second advisor seed as a placebo) and says what it couldn't cover. Whole runs
+stay available as a coarse net (a regression of about an ante, or a crash), run by hand.
+
+**Why.** Measured 2026-10-23/24 (docs/design.md, the bot bench's paragraph). (1) The cost is the
+advisor's, not the game's: 91-97% of a run's time is analysis, so a faster game, the D17 harness
+driving runs headless or a whole run simulated in Rust (the game's RNG ported, as balatro-seed
+does, which D2 would have to revisit; besides the RNG, the shops, packs, tags and vouchers
+generated, every consumable's use and the bosses gap 15 doesn't simulate) would save almost nothing a
+verdict; a simulated run whose shops come from the advice's own pool model would also judge
+itself. A Gold Stake run takes about 6 minutes, a White Stake run to the end about 30. (2) The
+bot follows only part of the advice (no tarots, vouchers, Arcana, Spectral or Standard packs,
+skipped blinds, per-moment joker order: gap 37), so a whole run measures the bot's limits as
+much as the advice, and its result moves with every gap closed. (3) Runs are deterministic per
+seed and diverge at the first flipped near-tie (a placebo seed lost or won an Ante 1 boss on a
+$4 difference), so a whole run turns a small change into a different run: a verdict needs many
+seeds for a coarse answer, while a play-on from the state where the choice is made pairs
+everything but the choice. (4) The single-decision gaps show faster and more precisely on
+single states (fixtures, `whatif`, the history check), and most of the run-level questions are
+known gaps still open. Not taken: a real-game bench as a routine check (hours a verdict, the
+owner's PC and game taken over: Profile 3, the bot's mods, no play on the side); the harness
+driving whole runs (its buying, selling, consumables and skips aren't driven yet, D17; worth it
+when runs must go 24/7 so the owner can play alongside); a Rust simulated run.
+
+**Revisit if** the single-decision gaps are mostly closed and what's left is how decisions add
+up over a run; the bot follows most of the advice (`not_followed` near empty); a run-level card
+finds play-ons from saved states too short to show its effect; or benches have to run around the
+clock (then the D17 harness drives them, headless, beside the owner's play).
