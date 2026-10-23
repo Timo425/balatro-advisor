@@ -156,7 +156,7 @@ add to this list's kind; remove from it.
 
 | Rule | Where | General replacement |
 |---|---|---|
-| Suit-joker map, `kickers_matter` list, `income_per_ante` per joker (it reads the run, not the board valued: Mail-In Rebate's discards are the jokers you own's, `RunState::round_at_blind_set`, so a plan that sells or buys Burglar doesn't move them) | `sim.rs` `keep_suit`, `advise.rs` | game facts: move to `data/` or the engine; or work out what to keep by scoring with and without a card |
+| Suit-joker map, `kickers_matter` list, `income_per_ante` per joker (hand-set payouts; Mail-In Rebate's on the discards of a round of the board valued: the projected one, `LongRun::discards_on`; your board now with it for the floor, `LongRun::floor_for`; whatif's plan's. Not measured from the projected rounds until they play to a pace (gaps 8 and 12): played to no target, the simulated player never cashes a money discard there. A copy, Blueprint or Brainstorm, pays nothing, unlike `engine::discard_money`) | `sim.rs` `keep_suit`, `advise.rs` | game facts: move to `data/` or the engine; or work out what to keep by scoring with and without a card |
 | Played cards ordered with Glass and Polychrome last (`sim::arrange`), the order the engine's arrangement starts from and falls back to | `sim.rs` `arrange` | the engine's arrangement from the cards in a fixed order (the fallback then matters only where an effect reads a card's place: gap 19) |
 | Constellation grows from planets in several places | `value.rs` `add_planets`, `spend_once`; `advise.rs` Meteor tag, `grow_constellation` | a planet used as an event in `engine::RunEvent`, applied by `Board::after` (`xmult_from`), counted through `Gain::planets`; `bought_event` then compares what money buys by measured value, not Mult per dollar |
 | Jokers kept out of the sell choices by name while another can go (Mr. Bones, the money jokers `economy_key` lists, Mail-In Rebate; a perished one isn't kept): what they give isn't in a round's score. The long-run sell choice for a shop's joker keeps out only Mr. Bones | `advise.rs` `evaluate_candidate` (`protected`, `sells_bones`), the long-run sell choice (`sellable`) | the joker to replace chosen by the run's value with and without it: Mr. Bones' save in the round's outcome (`Stats::p_saved`), money through `Gain` (`LongRun::value`) |
@@ -647,10 +647,10 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    k / rounds left); nor does keeping Blue Seal cards in hand for them, since projected rounds
    play to an unbounded target, never "on pace", so the simulated player's keep
    (`sim::pays_at_end`, against the board's `planet_slots`) never acts in the projection (deck
-   changes, DNA and Crystal Ball alike). A round's extras reach the round and the Blue Seals,
-   not the rest that reads today's round: joker growth in rounds is measured at this ante's
-   three plain blind sizes with your board as it is (`value::Growths`), Mail-In's income today's discards (`income_per_ante`), DNA's opening hand
-   today's hand size (`round_decks`). Projected rounds are played out with no target, so a hand
+   changes, DNA and Crystal Ball alike). A round's extras reach the round, the Blue Seals and
+   Mail-In's income (`LongRun::discards_on`), not the rest that reads today's round: joker
+   growth in rounds is measured at this ante's three plain blind sizes with your board as it is
+   (`value::Growths`), DNA's opening hand today's hand size (`round_decks`). Projected rounds are played out with no target, so a hand
    more leaves none to pay money at cash-out (`money_per_hand`; said in the note), and a discard
    more is worth what the simulated player makes of it when it's always behind (its dig
    threshold scales with the hands left against the best hand, not with what's needed): about
@@ -1575,3 +1575,14 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    (survive × next-ante survival × long run, money through `Gain`, Mr. Bones' save through
    `Stats::p_saved`), ties reported; the by-name list, `sells_bones` and the second long-run
    pick then retire together. Found reviewing PR #12, 2026-10-23.
+   The By Ante 8 projection's own swap is the same kind (`LongRun::new`, `replaced`): each
+   sellable joker that lasts goes for a ×1.25 typical find in its own slot when the find's
+   simulated score is no lower, the money held fixed, so a money joker usually goes and its
+   income with it, while one bought keeps its income (`long_of`); and as the find takes the
+   joker's place, which one goes depends on the jokers' order (run F26FRJ8U's Ante 3 shop,
+   fixture `shop_mail_in_burglar_for_sale`: Mail-In Rebate kept, Fortune Teller swapped). A
+   sellable option's floor (`floor_for`) scores your board with nothing sold, though the option
+   may sell one. Both take the same fix: the projection's swap judged by the run's value, the
+   find in its best slot and the money recomputed on the swapped board; the floor scored on the
+   board you'd hold (the joker sold gone, its sale counted, against the same baseline as the
+   option, `ratio(.., sold)`). Found 2026-10-23 with the Mail-In discards fix.

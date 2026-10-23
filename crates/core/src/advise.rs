@@ -1769,7 +1769,8 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         let rent_now = run.jokers.iter().filter(|j| j.rental).count() as f64 * 3.0;
         // Only a played round has an end: money jokers pay (a third of an ante's income) and
         // a Blue Seal held then makes a planet (and grows Constellation)
-        let round_income: f64 = run.jokers.iter().filter(|j| !j.debuff).map(|j| income_per_ante(&j.key, &j.ability, run, 1.0) / 3.0).sum();
+        let discards = run.round_at_blind_set(Default::default()).1;
+        let round_income: f64 = run.jokers.iter().filter(|j| !j.debuff).map(|j| income_per_ante(&j.key, &j.ability, run, discards, 1.0) / 3.0).sum();
         let blue = run.full_deck().iter().filter(|c| c.seal == Some(crate::model::Seal::Blue)).count();
         // the money cards counted as used either way (above) don't hold a slot at round end
         let used = run.consumables.iter().filter(|c| tarots.iter().any(|t| t.key == c.key && t.money_gain > 0.0)).count() as i64;
@@ -1935,7 +1936,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         let verdict = if (pv - sv).abs() <= 0.03 * pv.max(sv) { "close" } else if sv > pv { "skip" } else { "play" };
         blind_views[bi].skip = Some(SkipCompare { play_survive, play_next, play_long, skip_survive, skip_next, skip_long, verdict: verdict.into(), tag: what, valued, grows });
     }
-    let flow_now = lr.owned_income(&|_| true) - lr.owned_rent(&|_| true);
+    let flow_now = lr.project(&|_| true, run.dollars).flow;
     let (levels_per_ante, planet_levels) = lr.levels_for(run.dollars + flow_now, flow_now);
     let planet_levels = planet_levels.round() as i64;
     let long_note = format!(
@@ -2781,8 +2782,9 @@ fn glass_presence(antes_left: f64) -> f64 {
 
 /// Money a joker pays per ante (3 rounds), averaged over the antes left, for jokers with
 /// a fixed payout (card.lua `calculate_dollar_bonus` and end-of-round effects). Counted
-/// as money you hold every ante in the By Ante 8 projection.
-pub(crate) fn income_per_ante(key: &str, ability: &serde_json::Value, run: &RunState, antes_left: f64) -> f64 {
+/// as money you hold every ante in the By Ante 8 projection. `discards`: a fresh round's on
+/// the board valued, as its blind is set (`RoundStart::hands_on`: none while a Burglar is on it).
+pub(crate) fn income_per_ante(key: &str, ability: &serde_json::Value, run: &RunState, discards: i64, antes_left: f64) -> f64 {
     let extra = ability.get("extra");
     let num = |v: Option<&serde_json::Value>, d: f64| v.and_then(|x| x.as_f64()).unwrap_or(d);
     let per_round = match key {
@@ -2796,7 +2798,7 @@ pub(crate) fn income_per_ante(key: &str, ability: &serde_json::Value, run: &RunS
         "j_egg" => num(extra, 3.0),
         // $5 per discarded card of a rank that changes every round: ~4 cards a discard, the
         // rank about 1 in 13 of them
-        "j_mail" => num(extra, 5.0) * run.round_at_blind_set(Default::default()).1.max(0) as f64 * 4.0 / 13.0,
+        "j_mail" => num(extra, 5.0) * discards.max(0) as f64 * 4.0 / 13.0,
         _ => 0.0,
     };
     per_round * 3.0
@@ -4571,10 +4573,77 @@ mod tests {
             let sold = Board { jokers: b.jokers.iter().filter(|j| j.key != "j_burglar").cloned().collect(), ..b.clone() };
             assert_eq!(lr.long_spec_for(&sold, (0, 0, 0)).start.hands_on(&sold), (4, 3));
         });
-        // Mail-In Rebate pays by discards: none with Burglar
-        let mail = shop_run(&[("j_burglar", None, None), ("j_mail", None, None)], &[]);
-        assert_eq!(income_per_ante("j_mail", &mail.jokers[1].ability, &mail, 1.0), 0.0);
-        assert!(income_per_ante("j_mail", &mail.jokers[1].ability, &shop_run(&[("j_mail", None, None)], &[]), 1.0) > 0.0);
+    }
+
+    #[test]
+    fn mail_in_rebate_pays_on_the_discards_of_the_board_valued() {
+        // Mail-In Rebate pays $5 a discarded card of its rank (card.lua calculate_joker,
+        // discard) and Burglar takes every discard as each blind is set: its money reads the
+        // round of the board valued, not of the jokers you own. Mail-In is eternal here, as
+        // the projection swaps a sellable one for a typical find by score alone (so are the
+        // jokers beside it, kept on the board projected).
+        let per_ante = 5.0 * 3.0 * 4.0 / 13.0 * 3.0;
+        let mut both = shop_run(&[("j_burglar", None, None), ("j_mail", None, None)], &[]);
+        both.jokers[0].eternal = true;
+        both.jokers[1].eternal = true;
+        with_long_run(&both, |lr| {
+            assert_eq!(lr.project(&|_| true, both.dollars).flow, 0.0);
+            assert_eq!(lr.project(&|k| k != 0, both.dollars).flow, per_ante, "Burglar sold: the reset round's 3 discards");
+        });
+        // a perishable Burglar that runs out before Ante 8 isn't on the board projected
+        let mut perishing = shop_run(&[("j_burglar", None, Some(2)), ("j_mail", None, None)], &[]);
+        perishing.jokers[1].eternal = true;
+        with_long_run(&perishing, |lr| assert_eq!(lr.project(&|_| true, perishing.dollars).flow, per_ante));
+        // a Burglar bought takes them; a joker that adds a discard when it's added (Drunkard,
+        // `round_mods`) and a Gain's discard (Wasteful) add one, a Merry Andy sold takes 3
+        let mut mail = shop_run(&[("j_mail", None, None)], &[]);
+        mail.jokers[0].eternal = true;
+        let data = GameData::bundled();
+        let bought = |key: &str| Joker::from_key(key, data).unwrap();
+        with_long_run(&mail, |lr| {
+            let flow = |added: Option<&Joker>, more| lr.project_as(&|_| true, mail.dollars, 0.0, None, added, more).flow;
+            assert_eq!(flow(None, (0, 0, 0)), per_ante);
+            assert_eq!(flow(Some(&bought("j_burglar")), (0, 0, 0)), 0.0);
+            assert!((flow(Some(&bought("j_drunkard")), (0, 0, 0)) - per_ante * 4.0 / 3.0).abs() < 1e-9);
+            assert!((flow(None, (0, 0, 1)) - per_ante * 4.0 / 3.0).abs() < 1e-9);
+            // a Mail-In bought pays on the board it joins: none beside an owned Burglar
+            assert_eq!(flow(Some(&bought("j_mail")), (0, 0, 0)), 2.0 * per_ante);
+        });
+        with_long_run(&both, |lr| assert_eq!(lr.project_as(&|_| true, both.dollars, 0.0, None, Some(&bought("j_mail")), (0, 0, 0)).flow, 0.0));
+        // through the paths the advice takes: a Burglar bought beside Mail-In is worth what it is
+        // beside a joker that neither scores nor pays (Mr. Bones); a Gain's discard (`board_with`)
+        // buys levels; a Mail-In bought earns nothing in the meantime beside a Burglar (`floor_for`)
+        let beside = |key: &str| {
+            let mut r = shop_run(&[(key, None, None), ("j_joker", None, None)], &[]);
+            r.jokers[0].eternal = true;
+            r.jokers[1].eternal = true;
+            with_long_run(&r, |lr| lr.long_of(&bought("j_burglar"), None, 6, false))
+        };
+        assert_eq!(beside("j_mail"), beside("j_mr_bones"));
+        let mix = [HandShare { hand: "Pair".into(), share: 1.0, played: 1.0, mean: 1.0 }];
+        let pair = |b: &Board| b.levels[crate::engine::HandType::Pair as usize].mult;
+        let (wasteful, plain) = with_long_run_mix(&mail, &mix, |lr| (lr.board_with(&Gain { discards: 1, ..Default::default() }), lr.board_with(&Gain::default())));
+        assert!(pair(&wasteful) > pair(&plain), "{} {}", pair(&wasteful), pair(&plain));
+        let floors = |r: &RunState| with_long_run_mix(r, &mix, |lr| (lr.floor_for(4, false, "j_mail"), lr.floor_for(4, false, "j_mr_bones")));
+        let (mail_floor, bones_floor) = floors(&shop_run(&[("j_burglar", None, None), ("j_joker", None, None)], &[]));
+        assert_eq!(mail_floor, bones_floor);
+        let (mail_floor, bones_floor) = floors(&shop_run(&[("j_joker", None, None)], &[]));
+        assert!(mail_floor > bones_floor, "{mail_floor} {bones_floor}");
+        let mut andy = shop_run(&[("j_merry_andy", None, None), ("j_mail", None, None)], &[]);
+        andy.round_discards = 6;
+        andy.jokers[0].eternal = true;
+        andy.jokers[1].eternal = true;
+        with_long_run(&andy, |lr| {
+            assert_eq!(lr.project(&|_| true, andy.dollars).flow, per_ante * 2.0);
+            assert_eq!(lr.project(&|k| k != 0, andy.dollars).flow, per_ante);
+        });
+        // whatif's money rows: the plan's round, Burglar sold or bought
+        let sell = crate::whatif::Plan { sell: vec!["burglar".into()], ..Default::default() };
+        let o = crate::whatif::run(&both, data, &sell, 20, 3).unwrap();
+        assert_eq!((o.money.per_round, o.money.per_round_after), (0.0, per_ante / 3.0));
+        let buy = crate::whatif::Plan { add: vec!["burglar".into()], ..Default::default() };
+        let o = crate::whatif::run(&mail, data, &buy, 20, 3).unwrap();
+        assert_eq!((o.money.per_round, o.money.per_round_after), (per_ante / 3.0, 0.0));
     }
 
     #[test]

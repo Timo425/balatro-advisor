@@ -345,7 +345,7 @@ pub(super) struct Projected {
     dollars: f64,
     /// Money per ante from money jokers minus rent (in `dollars`), and your main hand's level
     /// before the projection's levels: `fill_long` decides what the spare money buys
-    flow: f64,
+    pub(super) flow: f64,
     top_base: Option<crate::engine::Level>,
 }
 
@@ -526,11 +526,18 @@ impl<'a> LongRun<'a> {
     }
 
     /// Money jokers you keep pay every ante, like rent in reverse; one the projection replaces
-    /// (`replaced`) isn't on the board it pays for.
-    pub fn owned_income(&self, keep: &dyn Fn(usize) -> bool) -> f64 {
+    /// (`replaced`) isn't on the board it pays for. `discards`: a round's on that board
+    /// (`discards_on`).
+    fn owned_income(&self, keep: &dyn Fn(usize) -> bool, discards: i64) -> f64 {
         let run = self.run;
         let replaced = |i: usize| self.replaced.get().is_some_and(|r| r[i]);
-        run.jokers.iter().enumerate().filter(|(i, sj)| keep(*i) && self.lasts(*i) && !sj.debuff && !replaced(*i)).map(|(_, sj)| income_per_ante(&sj.key, &sj.ability, run, self.antes_left)).sum::<f64>()
+        run.jokers.iter().enumerate().filter(|(i, sj)| keep(*i) && self.lasts(*i) && !sj.debuff && !replaced(*i)).map(|(_, sj)| income_per_ante(&sj.key, &sj.ability, run, discards, self.antes_left)).sum::<f64>()
+    }
+
+    /// The discards a fresh round has on projected board `b` with `more` (a `Gain`'s) added:
+    /// its round (`long_spec_for`) as the blind is set on it (`RoundStart::hands_on`)
+    fn discards_on(&self, b: &Board, more: (i64, i64, i64)) -> i64 {
+        self.long_spec_for(b, more).start.hands_on(b).1
     }
 
     /// Stand-ins for the jokers you'd find over the run: empty slots get alternating ×1.5,
@@ -557,20 +564,16 @@ impl<'a> LongRun<'a> {
     /// the money you'd hold buys comes with it (`Projected`). `extra_rent`: more rent per ante
     /// (negative: more income), on top of your jokers'.
     pub fn project_rent(&self, keep: &dyn Fn(usize) -> bool, dollars: f64, extra_rent: f64) -> Projected {
-        self.project_as(keep, dollars, extra_rent, None)
+        self.project_as(keep, dollars, extra_rent, None, None, (0, 0, 0))
     }
 
-    /// `project_rent` with joker `i` as `j` now (`changed`), grown from there
-    fn project_as(&self, keep: &dyn Fn(usize) -> bool, dollars: f64, extra_rent: f64, changed: Option<(usize, &Joker)>) -> Projected {
+    /// `project_rent` with joker `i` as `j` now (`changed`), grown from there. The money jokers
+    /// pay on the round of the board valued (`discards_on`): the one projected, with `added`
+    /// (a joker bought, its income counted too: it goes in its slot in `fill_long`) and `more`
+    /// (a `Gain`'s round) on it.
+    pub(super) fn project_as(&self, keep: &dyn Fn(usize) -> bool, dollars: f64, extra_rent: f64, changed: Option<(usize, &Joker)>, added: Option<&Joker>, more: (i64, i64, i64)) -> Projected {
         let (ctx, run) = (self.ctx, self.run);
-        let rent = self.owned_rent(keep) + extra_rent;
-        let flow = self.owned_income(keep) - rent;
-        let dollars = dollars + flow;
         let mut b = ctx.base.clone();
-        let top_base = self.top_hand.map(|top| b.levels[top as usize]);
-        if let (Some(top), Some(l)) = (self.top_hand, top_base) {
-            b.levels[top as usize] = self.top_level(l, dollars, flow, (dollars - self.line).max(0.0));
-        }
         b.jokers = ctx
             .base
             .jokers
@@ -588,6 +591,20 @@ impl<'a> LongRun<'a> {
                 }
             })
             .collect();
+        b.jokers.extend(added.cloned());
+        let discards = self.discards_on(&b, more);
+        b.jokers.truncate(b.jokers.len() - added.is_some() as usize);
+        let added_income = added.map_or(0.0, |j| {
+            let ability = self.data.center(&j.key).map(|c| crate::engine::joker::ability_from_config(&c.config)).unwrap_or_default();
+            income_per_ante(&j.key, &ability, run, discards, self.antes_left)
+        });
+        let rent = self.owned_rent(keep) + (extra_rent - added_income);
+        let flow = self.owned_income(keep, discards) - rent;
+        let dollars = dollars + flow;
+        let top_base = self.top_hand.map(|top| b.levels[top as usize]);
+        if let (Some(top), Some(l)) = (self.top_hand, top_base) {
+            b.levels[top as usize] = self.top_level(l, dollars, flow, (dollars - self.line).max(0.0));
+        }
         Projected { board: b, dollars, flow, top_base }
     }
 
@@ -871,14 +888,21 @@ impl<'a> LongRun<'a> {
     /// A sellable option you'd later replace is worth at least a typical find, less what it
     /// costs net: its price minus what selling it gives back (Card:set_cost: half the price
     /// paid, at least $1; a rental sells for $1; a free one from a tag still sells for $1).
-    /// A money joker earns while you hold it (about an ante before it's replaced), as a
+    /// A money joker earns while you hold it (about an ante before it's replaced, on the round
+    /// of your board now with it: the board this floor scores keeps every joker you own), as a
     /// rental pays rent.
     pub fn floor_for(&self, cost: i64, rental: bool, key: &str) -> f64 {
         let (run, data) = (self.run, self.data);
         let sell = if rental { 1 } else { (cost / 2).max(1) };
         let rent = if rental { RENT_PER_ANTE } else { 0.0 };
         let ability = data.center(key).map(|c| crate::engine::joker::ability_from_config(&c.config)).unwrap_or_default();
-        let earns = income_per_ante(key, &ability, run, self.antes_left.min(1.0));
+        let discards = Joker::from_key(key, data).map_or(0, |j| {
+            let mut held = self.ctx.base.clone();
+            held.jokers.push(j.clone());
+            let start = RoundStart { hands: run.round_hands, discards: run.round_discards, fresh: true, ..Default::default() };
+            super::apply_mods(&start, &[&j], &[]).hands_on(&held).1
+        });
+        let earns = income_per_ante(key, &ability, run, discards, self.antes_left.min(1.0));
         self.long_score(&self.fill_long(self.project(&|_| true, run.dollars), None, self.once(earns - ((cost - sell) as f64) - rent))) / self.l0
     }
 
@@ -976,15 +1000,13 @@ impl<'a> LongRun<'a> {
     /// A joker's projected score: bought for `cost` (selling `sell`, if any), rent paid if
     /// rental, grown with the money you'd hold.
     pub fn long_of(&self, j: &Joker, sell: Option<usize>, cost: i64, rental: bool) -> f64 {
-        let (run, data) = (self.run, self.data);
+        let run = self.run;
         let back = sell.map_or(0, |i| run.jokers[i].sell_value) as f64;
-        let ability = data.center(&j.key).map(|c| crate::engine::joker::ability_from_config(&c.config)).unwrap_or_default();
         let rent = if rental { RENT_PER_ANTE } else { 0.0 };
-        let income = income_per_ante(&j.key, &ability, run, self.antes_left);
         let horizon = if j.key == "j_madness" { 1.0 } else { self.antes_left };
         // used up by Ante 8 (`Growths`): its slot is filled like any empty one
         let g = self.growths.pool_after(j, self.growths.rounds).unwrap_or_else(|| Some(grow_antes(j, horizon).map_or_else(|| j.clone(), |g| g.0)));
-        let b = self.fill_long(self.project_rent(&|k| Some(k) != sell, run.dollars, rent - income), g, self.once(back - cost as f64));
+        let b = self.fill_long(self.project_as(&|k| Some(k) != sell, run.dollars, rent, None, Some(j), (0, 0, 0)), g, self.once(back - cost as f64));
         self.round_effect_long(b, &j.key)
     }
 
@@ -1003,7 +1025,7 @@ impl<'a> LongRun<'a> {
     /// Your projected board with `g` added (what it adds to a round, `Gain::round`, and its
     /// consumable slots are in the round it's played in: `value`)
     pub fn board_with(&self, g: &Gain) -> Board {
-        let p = self.project_as(&|_| true, self.run.dollars + g.held, 0.0, g.joker.as_ref().map(|(i, j)| (*i, j)));
+        let p = self.project_as(&|_| true, self.run.dollars + g.held, 0.0, g.joker.as_ref().map(|(i, j)| (*i, j)), None, g.round());
         let mut b = self.fill_long(p, None, self.once(g.money));
         if g.all_levels != 0 {
             for l in b.levels.iter_mut() {

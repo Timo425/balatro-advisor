@@ -49,7 +49,8 @@ pub struct Money {
     /// shop's price, else the joker's base price)
     pub dollars_after: f64,
     /// Jokers' fixed payout at the end of a round, less rent ($3 a rental): now and with the
-    /// plan (`advise::income_per_ante`, this round's rate; Rocket's later raises not counted)
+    /// plan (`advise::income_per_ante`, this round's rate; Rocket's later raises not counted),
+    /// on a fresh round with no boss rule: Mail-In Rebate's on its discards, the plan's own
     pub per_round: f64,
     pub per_round_after: f64,
 }
@@ -271,11 +272,19 @@ pub fn run(run: &RunState, data: &GameData, plan: &Plan, sims: usize, seed: u64)
             kept.push((j.key.clone(), ability, false, false));
         }
     }
-    let per_round = |js: &[(String, serde_json::Value, bool, bool)]| -> f64 {
-        js.iter().filter(|j| !j.3).map(|j| crate::advise::income_per_ante(&j.0, &j.1, run, 1.0) / 3.0).sum::<f64>() - js.iter().filter(|j| j.2).count() as f64 * 3.0
+    // on the discards of a fresh round with no boss rule, now and with the plan's jokers
+    let plain = RoundStart { hands: run.round_hands, discards: run.round_discards, fresh: true, ..Default::default() };
+    let per_round = |js: &[(String, serde_json::Value, bool, bool)], discards: i64| -> f64 {
+        js.iter().filter(|j| !j.3).map(|j| crate::advise::income_per_ante(&j.0, &j.1, run, discards, 1.0) / 3.0).sum::<f64>() - js.iter().filter(|j| j.2).count() as f64 * 3.0
     };
     let now_js: Vec<_> = run.jokers.iter().map(|sj| (sj.key.clone(), sj.ability.clone(), sj.rental, sj.debuff)).collect();
-    let money = Money { dollars: run.dollars, dollars_after: run.dollars + (sold - bought) as f64, per_round: per_round(&now_js), per_round_after: per_round(&kept) };
+    let discards_after = crate::advise::apply_mods(&plain, &added, &removed).hands_on(&board_with(&jokers, &full_after)).1;
+    let money = Money {
+        dollars: run.dollars,
+        dollars_after: run.dollars + (sold - bought) as f64,
+        per_round: per_round(&now_js, plain.hands_on(&base).1),
+        per_round_after: per_round(&kept, discards_after),
+    };
     if money.dollars_after < 0.0 {
         notes.push(format!("the plan costs ${:.0} more than the ${:.0} you have", -money.dollars_after, run.dollars));
     }
