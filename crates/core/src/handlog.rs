@@ -52,6 +52,9 @@ pub struct Hand {
     /// What the saves leave unsure (an order guessed, a joker gone after the hand)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
+    /// The played cards' ids (`save::CardIds`), in the order played; not logged
+    #[serde(skip)]
+    pub ids: Vec<i64>,
 }
 
 /// The game's score for the hand.
@@ -79,6 +82,35 @@ pub enum Verdict {
 }
 
 impl Hand {
+    /// A hand played from `before` (its board `board`), scored on the engine: the floor with
+    /// every roll failing, the ceiling with every roll hitting, The Hook's pick as given
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(before: &RunState, board: Board, played: Vec<Card>, held: Vec<Card>, hooked: Vec<usize>, game: Game, notes: Vec<String>, time: u64) -> Hand {
+        let mut h = Hand {
+            time,
+            seed: before.seed.clone(),
+            ante: before.ante,
+            round: before.round,
+            blind: before.current_blind.as_ref().map(|b| b.name.clone()).unwrap_or_default(),
+            hand: String::new(),
+            board: Some(board),
+            played,
+            held,
+            hooked,
+            floor: 0.0,
+            ceiling: 0.0,
+            game,
+            notes,
+            ids: vec![],
+        };
+        let mut rolls = Known { lucky: false, hooked: h.hooked.clone() };
+        let o = engine::score_as_played(h.board.as_ref().expect("just set"), &h.played, &h.held, &mut rolls, false);
+        h.hand = o.hand.name().to_string();
+        h.floor = o.score;
+        h.ceiling = h.rescore(true).unwrap_or(h.floor);
+        h
+    }
+
     /// The engine's score with the rolls all failing (`lucky` false) or all hitting, and The
     /// Hook's pick as it was
     pub fn rescore(&self, lucky: bool) -> Option<f64> {
@@ -264,7 +296,7 @@ pub fn pair(before: &RunState, bids: &CardIds, after: &RunState, aids: &CardIds,
     if after.hand.is_empty() && after.discard_pile.is_empty() {
         return Pairing::Skipped(Skip::CardsGone);
     }
-    let (Some(hand_ids), Some(was_discarded), Some(after_hand), Some(after_disc)) = (all(&bids.hand), all(&bids.discard), all(&aids.hand), all(&aids.discard)) else {
+    let (Some(hand_ids), Some(was_discarded), Some(after_hand), Some(after_disc)) = (bids.hand_ids(), bids.discard_ids(), aids.hand_ids(), aids.discard_ids()) else {
         return Pairing::Skipped(Skip::NoIds);
     };
     if hand_ids.len() != before.hand.len() || after_disc.len() != after.discard_pile.len() {
@@ -319,32 +351,9 @@ pub fn pair(before: &RunState, bids: &CardIds, after: &RunState, aids: &CardIds,
         Some(a) => Game::Scored(a.scored - cb.scored),
         None => Game::AtLeast(cb.target - cb.scored),
     };
-    let mut h = Hand {
-        time,
-        seed: before.seed.clone(),
-        ante: before.ante,
-        round: before.round,
-        blind: cb.name.clone(),
-        hand: String::new(),
-        board: Some(board),
-        played,
-        held,
-        hooked,
-        floor: 0.0,
-        ceiling: 0.0,
-        game,
-        notes,
-    };
-    let mut rolls = Known { lucky: false, hooked: h.hooked.clone() };
-    let o = engine::score_as_played(h.board.as_ref().expect("just set"), &h.played, &h.held, &mut rolls, false);
-    h.hand = o.hand.name().to_string();
-    h.floor = o.score;
-    h.ceiling = h.rescore(true).unwrap_or(h.floor);
+    let mut h = Hand::new(before, board, played, held, hooked, game, notes, time);
+    h.ids = order;
     Pairing::Hand(Box::new(h))
-}
-
-fn all(v: &[Option<i64>]) -> Option<Vec<i64>> {
-    v.iter().copied().collect()
 }
 
 /// The hands the saved history (`history/<seed>/`, oldest first) shows, and why the rest of

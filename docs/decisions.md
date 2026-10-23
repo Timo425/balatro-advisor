@@ -275,7 +275,7 @@ model changes the trade.
 
 Approved by the owner 2026-10-09.
 
-## D12. Proof in two tiers; picks a change moves on the owner's history, judged by the oracle (accepted)
+## D12. Proof in two tiers; picks a change moves on the owner's history, judged by the oracle (accepted, amended 2026-10-23)
 
 **Decision.** Every change to how advice is decided or valued runs a fixed set of checks:
 tests, clippy, the snapshot diff, and the history check (`tests/history_picks.rs`, which
@@ -317,8 +317,11 @@ decisions while no win is on the table. It is not independent of the valuation (
 measured by the code's `RoundGoals`), the engine, or the finish and consumable use (decided as
 the code does when a win is on the table), and the oracle's own look-ahead plays on by the
 policy, so it narrows a policy flaw but needn't remove it. A change to those is half judging
-itself, and its verdicts say so. Shop choices, value across antes and the engine's fidelity to
-the game still rest on the owner and the calibration log. The quick pass takes 1-60 s a state
+itself, and its verdicts say so. Shop choices and value across antes still rest on the owner
+and the calibration log; the engine's fidelity to the game on the steps the simulated round
+plays (a hand's score and the state it leaves, a discard, a blind's setup) is checked by the
+parity tier where a change touches them (amended 2026-10-23, D17: before, it too rested on the
+owner and the hands log). The quick pass takes 1-60 s a state
 by the Ante (median 2.6 s; all 353 in 58 min), hence the sample (about 20 minutes each side;
 the judge about 30 s a moved pick).
 
@@ -327,7 +330,7 @@ disagree with the owner's on cases the owner can explain, the sample misses regr
 owner then finds in the states left out, or a stronger independent judge (a deeper search,
 real outcomes) becomes cheap enough.
 
-Approved by the owner 2026-10-09.
+Approved by the owner 2026-10-09; the limits amended with D17, approved 2026-10-23.
 
 ## D13. The test suite runs in the test profile, with overflow checks (accepted)
 
@@ -415,7 +418,7 @@ sentence was quoted.
 
 Accepted by the owner 2026-10-16; amended with the owner's approval 2026-10-17.
 
-## D17. The game's own code as a test-only parity tier (accepted)
+## D17. The game's own code as a test-only parity tier (accepted, amended 2026-10-23)
 
 **What.** A test tier that runs the game's own Lua headless and checks the engine's steps against
 it, lockstep, on states built from the owner's saves. A small LuaJIT program of our own
@@ -441,7 +444,9 @@ explained or fixed; and after a game update, which it follows by itself since it
 **Needs installed.** LuaJIT 2.1 (the game ships `lua51.dll`, LuaJIT with Lua 5.1 semantics): the
 system package (`apt install luajit`), run as a process; the feasibility run used the copy in the
 Lutris runtime already on this PC, through a 20-line C host, which isn't a setup to keep. Nothing
-else: the Rust test inflates and deflates the saves (`jkr`). The owner's profile is read in place
+else but `unzip`, which the stand-in reads the game's files from the zip with, as CLAUDE.md reads
+them (amended 2026-10-23, as built): the Rust test inflates the saves (`jkr`) and reads the
+harness's as plain text. The owner's profile is read in place
 from the save directory (unlocks shape the shop's pools), read only; the tier skips with a message
 where the install, the profile or LuaJIT is missing (a cloud session, CI), as the history checks do.
 Not taken: `mlua` with a vendored LuaJIT as a dev-dependency (in process, faster, but a C build and

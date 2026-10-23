@@ -336,14 +336,35 @@ pub struct CardIds {
     pub discard: Vec<Option<i64>>,
 }
 
+impl CardIds {
+    /// The hand's ids, if every card has one
+    pub fn hand_ids(&self) -> Option<Vec<i64>> {
+        self.hand.iter().copied().collect()
+    }
+
+    /// The discard pile's ids, if every card has one
+    pub fn discard_ids(&self) -> Option<Vec<i64>> {
+        self.discard.iter().copied().collect()
+    }
+}
+
 /// `load`, with the cards' ids (`CardIds`) from the same read.
 pub fn load_with_ids(path: &Path, data: &GameData) -> Result<(RunState, CardIds), Error> {
     if !path.is_file() {
         return Err(Error::NoRun(path.to_path_buf()));
     }
-    let v = crate::jkr::read(path)?;
-    let r = from_value(&v, data, path, age_secs(path))?;
-    let ids = |name: &str| area(&v, name).into_iter().filter(|c| playing_card(c).is_some()).map(|c| c.at("params.playing_card").int().or_else(|| c.get("sort_id").int().map(|i| -i))).collect::<Vec<_>>();
+    with_ids(&crate::jkr::read(path)?, data, path, age_secs(path))
+}
+
+/// `load_with_ids` from a save's text, not deflated (`return {...}`, as the game's `STR_PACK`
+/// writes it before compressing); `path` names it in errors.
+pub fn from_text_with_ids(src: &str, data: &GameData, path: &Path) -> Result<(RunState, CardIds), Error> {
+    with_ids(&crate::lua::parse(src)?, data, path, None)
+}
+
+fn with_ids(v: &Value, data: &GameData, path: &Path, age: Option<u64>) -> Result<(RunState, CardIds), Error> {
+    let r = from_value(v, data, path, age)?;
+    let ids = |name: &str| area(v, name).into_iter().filter(|c| playing_card(c).is_some()).map(|c| c.at("params.playing_card").int().or_else(|| c.get("sort_id").int().map(|i| -i))).collect::<Vec<_>>();
     let mut discard = ids("discard");
     discard.extend(ids("play"));
     Ok((r, CardIds { hand: ids("hand"), discard }))

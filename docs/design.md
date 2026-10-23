@@ -53,27 +53,45 @@ point, 2 − 0.01 × 18 = 1.8199999999999998, which the save writes as 1.82, so 
 of 61151.99… isn't seen). Not paired: a hand that won the round (541: the save after it has
 no cards left), a joker added or moved or a consumable used before the hand, a run that ended.
 
-The game's own code, run headless, was measured as a parity check on 2026-10-23 (feasibility
-only, nothing in the repo; D17 proposes it as a test tier). LuaJIT with a stand-in for LÖVE
-loads the game's Lua from the install, loads a saved state, takes one step through the game's
-button functions and writes the game's own save of what it leaves. Against the game's next
-save in the history it matched 2,970 of 2,984 steps: hands 860 of 862, round-winning hands 139
-of 140 (cards inferred), discards 673 of 674, blind setups 571 of 576, cash-outs 134 of 139,
-shop rerolls 150 of 150, pack openings 443 of 443. The other 14 are the owner acting between
-two saves, the save itself (Ramen's rounded float, its timing) and card ids. Against the
-harness, on those steps and on generated ones (the play the engine scores most, a random play
-and a random discard from each saved state in a hand): every one of 5,592 hands scores the
-same or in range (583 with a roll); `after_hand` leaves the same state after 4,244 of 4,310
-hands (the rest rolls in range, a Glass card breaking, which no step does, and Crimson Heart);
-`discard` after all 2,308 discards; `at_blind_set` sets 532 of 576 blinds the same. The 44 are
-Ceremonial Dagger eating its neighbour (14), Riff-raff's jokers (6), Madness (4), The Pillar
-and Verdant Leaf (17, gap 15), Amber Acorn's shuffle (3), Juggle Tags and Crimson Heart (1
-each; two states show two): the jokers'
-`setting_blind` context besides Burglar and tags' `round_start_bonus` aren't modelled. A round
-won changes more that no step does (983 hands): rent and Gold cards' money, Popcorn, Rocket,
-Gros Michel's end, bosses' debuffs lifted, all valued outside the round. What the history
-can't exercise: 39 of the 150 jokers never owned (Glass Joker, DNA, Hiker, Midas Mask,
-Bloodstone, Brainstorm, Perkeo…), Violet Vessel, consumables used, buying, selling, skipping.
+The parity tier (D17) checks the engine's steps against the game's own code, run headless.
+`tools/parity/` is our own LuaJIT code, a stand-in for LÖVE and a job runner: the game's Lua is
+read from the install in place (`unzip -p`, nothing extracted), the owner's settings and profile
+as plain-text copies (unlocks shape the shop's pools). Each job loads a saved state through the
+game's `Game:start_run`, takes one step through its button functions, runs its event queue until
+it rests and writes the game's own save of what it leaves; the game rolls its own RNG from the
+save, so a roll is the game's. `tests/parity.rs` (`--ignored`) makes the jobs from a sample of
+the history chosen by name as the history check's is (8,000 states by default): the history's
+own steps (hands, round-winning hands with their cards inferred, discards, blind setups,
+cash-outs run on from the winning hand, shop rerolls, pack openings), checked against the
+game's next save, which checks the harness; and generated ones from each state in a hand (the
+play the engine scores most, a random play, a random discard, seeded by the state's name),
+which reach plays the owner didn't make. Against the harness it checks each hand's score
+(`handlog`'s verdict: a roll lands between every roll failing and every roll hitting) and the
+state `Board::after_hand`, `Board::discard` and `Board::at_blind_set` leave. Every difference
+goes in a known group (a roll in range, gap 15's bosses, a step not modelled yet, the owner
+acting between two saves, a save written early, card ids, Ramen's rounded float) or is listed
+as new, and the test fails on a new one; a summary is written for a before/after `diff`. It
+runs where a change touches the engine or a `Board` step the simulated round plays, and after a
+game update (CLAUDE.md step 4).
+
+First run, 2026-10-23, on the whole history (6,270 states, 9,298 jobs, 11-12 minutes on 6
+runners at nice 19; the feasibility run that led to D17 gave the same, within its own random
+plays): the harness matched the game's next save on 2,971 of the history's 2,984 steps (hands
+861 of 862, round-winning hands 139 of 140, discards 673 of 674, blind setups 571 of 576,
+cash-outs 134 of 139, shop rerolls 150 of 150, pack openings 443 of 443); the other 13 are the
+owner acting between two saves (8), the game's save written early (2), card ids (2) and Ramen's
+rounded float (1). The engine: every one of 5,594 hands scores the same or in range (604 with a
+roll); `after_hand` leaves the same state after 4,235 of 4,298 hands (the rest rolls in range,
+a Glass card breaking, which no step does (18), and Crimson Heart (6)); `discard` after all
+2,305 discards; `at_blind_set` sets 532 of 576 blinds the same. The 44 are the jokers'
+`setting_blind` context besides Burglar (22: Ceremonial Dagger eating its neighbour, Riff-raff's
+jokers, Madness), bosses gap 15 plays as plain blinds (21: The Pillar and Verdant Leaf 17, Amber
+Acorn's shuffle 3, Crimson Heart 1) and a Juggle Tag's `round_start_bonus` (1): not modelled. A
+round won changes more that no step does (983 hands in the feasibility run): rent and Gold cards'
+money, Popcorn, Rocket, Gros Michel's end, bosses' debuffs lifted, all valued outside the
+round. What the history can't exercise: 39 of the 150 jokers never owned (Glass Joker, DNA,
+Hiker, Midas Mask, Bloodstone, Brainstorm, Perkeo…), Violet Vessel, consumables used, buying,
+selling, skipping.
 
 ## Patterns
 

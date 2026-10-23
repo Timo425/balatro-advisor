@@ -77,7 +77,13 @@ change to how the advice decides or values things follows these steps, in order:
    (the engine, what a round simulates), runs `cargo test --release --test player -- --ignored
    --nocapture` before and after: win rates (explain every board that gets worse) and the gap
    to the oracle on the boards the change touches (D9; after a change to the simulated game
-   only the gap judges the player, as win rates move with the game). A change to Best play's search or the noise stage: `cargo test --release --test replay --
+   only the gap judges the player, as win rates move with the game). A change to the engine
+   (`engine/`) or to a `Board` step the simulated round plays on (`after_hand`, `discard`,
+   `at_blind_set`) runs the parity tier (D17: the game's own Lua, headless, against the
+   engine's steps) before and after, `BAV_PARITY_DIR=/tmp/before nice -n 19 cargo test --release
+   --test parity -- --ignored parity --nocapture` (about 15 minutes), then `diff` the two
+   `summary.txt`: every new difference explained or fixed; it also runs after a game update.
+   A change to Best play's search or the noise stage: `cargo test --release --test replay --
    --ignored search_against_reference --nocapture` (every move against a reference; slow,
    split with `BAV_ONLY`/`BAV_SEEDS`)
    before and after, judged by how close each pick is to the best, not by which fixture

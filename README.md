@@ -73,6 +73,12 @@ beside the score the game gave (`hands.jsonl`). `balatro-advisor hands` lists th
 `tests/golden/`, which `cargo test` keeps checking. By hand: `score --hand 1,2,5 --golden name`
 before playing, `golden set name <score the game showed>` after.
 
+**Parity tier:** the engine's steps checked against the game's own Lua, run headless from your
+install with [LuaJIT](https://luajit.org/) (`sudo apt install luajit`) and a stand-in for LÖVE
+(`tools/parity/`), on your saved history: `BAV_PARITY_DIR=/tmp/before nice -n 19 cargo test
+--release --test parity -- --ignored parity --nocapture` (about 15 minutes; the game's code is
+read from `Balatro.exe` in place, never copied).
+
 `data/game.json` (joker/blind/tag numbers) is generated from a local install:
 `unzip -p .../Balatro.exe game.lua > /tmp/game.lua && cargo run -- extract-data /tmp/game.lua`.
 

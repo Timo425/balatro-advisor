@@ -16,10 +16,15 @@ use std::path::{Path, PathBuf};
 use balatro_advisor::{advise, calibration, data::GameData, save};
 
 pub fn states() -> Vec<PathBuf> {
+    sample(std::env::var("BAV_SAMPLE").ok().and_then(|s| s.parse().ok()).unwrap_or(350))
+}
+
+/// `size` of the saved states, chosen by name (0: all, today's too); `BAV_HISTORY`, `BAV_ONLY`
+/// as for `states`
+pub fn sample(size: usize) -> Vec<PathBuf> {
     let dir = std::env::var_os("BAV_HISTORY").map(PathBuf::from).or_else(|| calibration::default_dir().map(|d| d.join("history")));
     let Some(dir) = dir else { return vec![] };
     let only = std::env::var("BAV_ONLY").ok();
-    let size: usize = std::env::var("BAV_SAMPLE").ok().and_then(|s| s.parse().ok()).unwrap_or(350);
     let mut out = vec![];
     for run in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
         for f in std::fs::read_dir(run.path()).into_iter().flatten().flatten() {
