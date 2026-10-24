@@ -11,7 +11,10 @@ seed plays the same run. `--advisor-seed 43` is a placebo: a change that does no
 the picks noise decides, so its paired difference is the noise a real change is judged against.
 
 Strategy "advisor": play the advisor's best play; in the shop take the advisor's top
-option it can act on while it's worth it (ranked above keeping the money), else leave.
+option it can act on while it's worth it (clear of keeping the money by more than the
+ranking's noise: each option's `rank` against the advisor's `shop_tie`), else leave. A joker
+bought into full slots sells the one the advisor's option names by place and key
+(`sell_index`, `sell_key`).
 
 A run measures the advisor only where the bot follows it. Read runs.jsonl's `not_followed`
 (each time the advisor's top choice was one the bot can't take) before reading a run as a
@@ -124,12 +127,16 @@ def index_of_key(gs, area, key):
     return None
 
 
-def sell_named(gs, name):
-    for i, j in enumerate(cards(gs, "jokers")):
-        if j.get("label") == name:
-            rpc("sell", joker=i)
-            return True
-    return False
+def sell_joker(gs, o):
+    """Sells the joker the advisor's option says to sell for it: by its place in your joker row
+    (`sell_index`, the save's order, which is the game's), checked against its key (`sell_key`),
+    so two copies or a label the game words differently can't sell the wrong one."""
+    js = cards(gs, "jokers")
+    i, key = o.get("sell_index"), o.get("sell_key")
+    if i is None or i >= len(js) or js[i].get("key") != key:
+        return False
+    rpc("sell", joker=i)
+    return True
 
 
 def play_hand(sims):
@@ -155,11 +162,21 @@ def play_hand(sims):
         rpc("play", cards=idx)
 
 
-def worth(o, options):
+def worth(o, a):
     """The advisor ranks every option against keeping the money ("next round" / "skip the
-    pack"); anything ranked above that is worth taking."""
+    pack"). Worth taking: ranked above that and clear of it by more than the ranking's noise
+    (each option's `rank`, the ranking's own measure; ties within `tie` of the top's, the
+    advisor's `shop_tie`). When the round is in trouble the ranking goes by the score reached
+    (`trouble`), and ranked above keeping the money is enough."""
+    options, noise = a.get("options", []), a.get("shop_tie")
     keep = next((i for i, x in enumerate(options) if x["kind"] in ("leave", "skip")), len(options))
-    return options.index(o) < keep
+    if options.index(o) >= keep:
+        return False
+    k = options[keep] if keep < len(options) else None
+    if k is None or noise is None or noise.get("trouble") or o.get("rank") is None or k.get("rank") is None:
+        return True
+    top = max(x.get("rank") or 0.0 for x in options)
+    return o["rank"] - k["rank"] > noise["tie"] * top
 
 
 def shop(sims, log):
@@ -175,7 +192,7 @@ def shop(sims, log):
         free = len(cards(gs, "jokers")) < (gs.get("jokers") or {}).get("limit", 5)
         acted, took = False, None
         top = next((o for o in a.get("options", []) if not o.get("unaffordable") and not o["label"].endswith("(you have it)")
-                    and not o["label"].startswith("pick ") and worth(o, a.get("options", []))), None)
+                    and not o["label"].startswith("pick ") and worth(o, a)), None)
         if VERBOSE:
             print(f"  shop ${money} · now {now:.2f} reach {reach:.2f} free slot {free} · " + " | ".join(
                 f"{o['kind']} {o['label']} ${o['cost']} p{o['p_win']:.2f} r{o.get('reach') or 0:.2f} L{o.get('long_mult') or 0:.2f}" for o in a.get("options", [])))
@@ -224,20 +241,18 @@ def arrange_jokers(a, log):
 
 
 def sell_for(o, gs):
-    """Sells the joker the advisor's note names for this option ("sell X for it"), if any."""
-    note = o.get("note") or ""
-    if "sell " not in note or " for it" not in note:
+    """Sells the joker the advisor names for this option (`sell_index` / `sell_key`), if any."""
+    if o.get("sell_key") is None:
         return False
-    name = note.split("sell ", 1)[1].split(" for it", 1)[0]
-    if not sell_named(gs, name):
-        raise RpcError(f"no joker named {name} to sell")
+    if not sell_joker(gs, o):
+        raise RpcError(f"no {o['sell_key']} at place {o.get('sell_index')} to sell")
     return True
 
 
 def take(o, a, gs, money, rerolls, sims, log):
     """Acts on one shop option if the bot can and it's worth it: what it did, or None."""
-    kind, key, options = o["kind"], o.get("key"), a.get("options", [])
-    if not key and kind != "reroll" or not worth(o, options):
+    kind, key = o["kind"], o.get("key")
+    if not key and kind != "reroll" or not worth(o, a):
         return None
     if kind == "joker":
         i = index_of_key(gs, "shop", key)
