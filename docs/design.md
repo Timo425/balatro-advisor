@@ -413,6 +413,12 @@ the same retriggered ×Mult.
   PR #10 (measured, not kept: gap 18). `psychic_kings_zero_score` stays pending: its moves are all within the tie
   margin, and 7 of its 11-12 resets now come where the round is behind pace on the policy's
   play too (the target test, a cost budget).
+- **Done 2026-10-24:** over-buying in the shop measured on the owner's Gold Stake runs that
+  ran low, against leaving by playing on (gap 17, `tests/shop_playon.rs`): not there. Joker
+  buys and Buffoon packs ranked first were right (+0.18 and +0.04 of the bosses' joint chance),
+  the top rerolls a wash that costs $3. Gap 17's fix tried three ways and not kept: the money's
+  finds lean high (the best of every draw, read off the screen's chances), so they come first.
+  The bot buys only what clears keeping the money by the ranking's noise and sells by place.
 - **Next:** the policy's digs and junk hands weighing growth; a free hand banked before the
   hand that wins (gap 34); Ceremonial Dagger's value (gap 8); the blind odds shown and the
   outlook chained as Best play's blinds ahead are (gap 28).
@@ -420,8 +426,8 @@ the same retriggered ×Mult.
   8", with perishables that age only on played rounds, separate from the options ranking); a
   chance to beat the next boss after the shops before it (a separate forecast line, never part
   of the win chance); rentals held until the danger passes, then sold; interest in the
-  long-run money value (dropping under the interest line); Director's Cut's later boss
-  rerolls.
+  long-run money value (dropping under the interest line; measured 2026-10-24, gap 17: not
+  where any over-spending was); Director's Cut's later boss rerolls.
 
 Ranked by how likely each is to cause the next round of patch-on-patch.
 
@@ -985,7 +991,46 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    interest is at least as good (raised in play, 2026-10-05). The same sum on a joker bought
    counts the money's later finds into a slot the joker took. The general fix: the money's
    finds measured from the board the option leaves (its chance as the floor a find must beat,
-   and its slots), for next-ante strength as for survival.
+   and its slots), for next-ante strength as for survival. But first the finds themselves
+   (measured 2026-10-24, below): they lean high, and against finds that high every version of
+   the fix moved picks that played on as right or as a wash.
+   Measured 2026-10-24 on the owner's Gold Stake history (over-buying, raised from the bot's
+   runs, which were void): the 15 runs that ran low on money (a shop under $10 from Ante 3, or
+   in debt), the first shop of each round at Antes 1-5. Of 144 shops the top option spent money
+   in 121 and dropped under an interest step or rerolled in 75 (27 jokers, 26 rerolls, 22
+   packs). Each judged against leaving by playing on (`tests/shop_playon.rs`: the option or
+   not, then the shops to the next ante's boss played by one policy in both branches on the
+   same shop cards, buying the joker that lifts the bosses' chances most and up to 3 rerolls a
+   shop, spending freely or holding the interest cap; boards picked on one set of rounds and
+   scored on another 400; 24 paired shop sequences; it shares the engine, not the valuation).
+   Joker buys were right (26 judged: 15 clearly, none clearly wrong; +0.18 ± 0.01 of the two
+   bosses' joint chance against leaving, $2 less at the next boss), Buffoon packs too (12:
+   +0.04 and +0.07; both on a first judge that scored boards on the rounds it picked them by,
+   which leans toward the branch with more money, here leaving). The top rerolls were a wash
+   that costs money (22 judged: 3 clearly worse, 2 better; −0.002 ± 0.008 spending freely,
+   +0.021 ± 0.008 holding the cap, $3.1 less at the next boss). So no over-buying: the sum
+   above ranks rerolls first where they're worth about leaving. Tried on the same states and
+   not kept: (1) the money's finds as the floor for every option, (2) beside an option with a
+   free slot, the chances of losing multiplied: each moved buys the play-on judged right
+   (Arrowhead +0.71, Mad Joker +0.11 to +0.17, a plain Joker +0.04 to +0.11) to leaving or to
+   Buffoon packs; (3) a reroll as its money's own chain of rerolls with this shop's next one
+   taken first (`money_value_with` from the money before it: the same draws as keeping the
+   money, so never its draw on top), "next round" walking out of the shop (it's valued with this
+   shop's rerolls still open, as every option is), next-ante strength counting the money's
+   finds for every option (keeping your money stays ×1.00 there now) and keeping the money
+   winning a tie across a band's edge (the bands start at the top's value): 19 of 144 top picks
+   moved, 15 of them rerolls, which played on slightly better than leaving (+0.019 ± 0.011 and
+   +0.018 ± 0.011), to packs and planets the play-on can't judge. Why: the money's finds are
+   the best of every draw the money could buy, read off the pool screen's chances (60 rounds,
+   the next ante's boss on 20), which carry a winner's curse (the 12 jokers screening best at
+   the next boss on one state: 0.69 screened, 0.65 simulated again on 600; Seeing Double 0.55 →
+   0.36), so a cheap joker beside them is worth nothing and any reshuffle of what money buys
+   leans on them. Also not modelled: By Ante 8 values money as main-hand levels below the
+   interest line + $30 while survival and next-ante survival value it as jokers found (two
+   models of what money buys, multiplied in the ranking); skip-or-play has no next-ante
+   strength. Money's interest and its curve (one-off money's interest for one ante,
+   `LongRun::once`; `spendable`) moved few of the 75 spending picks: interest for the rest of
+   the run instead moved 8 (4 to keeping the money), money at face value 5 (1).
 18. **Growth is played for at Best play's own move, the simulated player's finish and its plays
    that cost no pace, not in its digs, and a joker the projection replaces counts only in this ante's blinds ahead.** Since 2026-10-14 a round's value
    (`RoundGoals::value`) counts what its hands and discards leave the jokers a round changes,
