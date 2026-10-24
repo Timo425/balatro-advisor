@@ -84,7 +84,8 @@ pub(super) struct LongRun<'a> {
     /// (`long_spec_for`), what your Blue Seal cards are seen in (`seal_planets_in`); set once
     /// your board is known (`new`), before then no board's own round adds planets
     round: OnceLock<(i64, i64, i64)>,
-    /// Your jokers weaker by Ante 8 than a typical find (assumed replaced by then)
+    /// Your jokers worth no more by Ante 8 than a typical find in their place (their place or
+    /// the right end), with their money (income, rent) gone with them (assumed replaced by then)
     replaced: OnceLock<Vec<bool>>,
     /// Your board's projected score: the baseline every value is a ratio of
     pub l0: f64,
@@ -363,18 +364,18 @@ impl std::ops::DerefMut for Projected {
 }
 
 impl<'a> LongRun<'a> {
-    pub fn new(ctx: &'a Ctx<'a>, hand_mix: &'a [HandShare], growths: &'a Growths, pool_entries: &[Candidate], per_rarity: [usize; 4]) -> LongRun<'a> {
-        Self::build(ctx, hand_mix, growths, pool_entries, per_rarity, false)
+    pub fn new(ctx: &'a Ctx<'a>, hand_mix: &'a [HandShare], growths: &'a Growths, pool: &[String], per_rarity: [usize; 4]) -> LongRun<'a> {
+        Self::build(ctx, hand_mix, growths, pool, per_rarity, false)
     }
 
     /// `new` with your jokers whose growth rounds measure (`engine::grows_in_rounds`) kept
     /// however they project, never `replaced`: what they'd be worth if kept and played for, the
     /// round's goals the growth runs are played to again (`advise.rs` `played_for`)
-    pub fn played_for(ctx: &'a Ctx<'a>, hand_mix: &'a [HandShare], growths: &'a Growths, pool_entries: &[Candidate], per_rarity: [usize; 4]) -> LongRun<'a> {
-        Self::build(ctx, hand_mix, growths, pool_entries, per_rarity, true)
+    pub fn played_for(ctx: &'a Ctx<'a>, hand_mix: &'a [HandShare], growths: &'a Growths, pool: &[String], per_rarity: [usize; 4]) -> LongRun<'a> {
+        Self::build(ctx, hand_mix, growths, pool, per_rarity, true)
     }
 
-    fn build(ctx: &'a Ctx<'a>, hand_mix: &'a [HandShare], growths: &'a Growths, pool_entries: &[Candidate], per_rarity: [usize; 4], keep_growers: bool) -> LongRun<'a> {
+    fn build(ctx: &'a Ctx<'a>, hand_mix: &'a [HandShare], growths: &'a Growths, pool: &[String], per_rarity: [usize; 4], keep_growers: bool) -> LongRun<'a> {
         let (run, data) = (ctx.run, ctx.data);
         let antes_left = antes_left(run);
         let top_hand = hand_mix.first().and_then(|h| crate::engine::HandType::from_name(&h.hand));
@@ -384,9 +385,9 @@ impl<'a> LongRun<'a> {
         // make a +15 Mult find the likeliest, so the scarce types are what an option adds.
         let fill_types: Vec<u8> = {
             let mut w = [0.0f64; 3]; // ×Mult, Chips, +Mult
-            for c in pool_entries {
-                let Some(j) = Joker::from_key(&c.key, data) else { continue };
-                let r = c.rarity_n.min(3) as usize;
+            for key in pool {
+                let Some(j) = Joker::from_key(key, data) else { continue };
+                let r = data.center(key).and_then(|c| c.rarity).unwrap_or(0).min(3) as usize;
                 let weight = [0.0, 0.7, 0.25, 0.05][r] / per_rarity[r].max(1) as f64;
                 let t = if j.x_mult > 1.0 || j.extra.xmult > 0.0 {
                     0
@@ -463,16 +464,24 @@ impl<'a> LongRun<'a> {
         {
             let before = lr.long_score(&lr.fill_long(lr.project(&|_| true, run.dollars), None, 0.0));
             let swap: Vec<bool> = par_map(&(0..run.jokers.len()).collect::<Vec<_>>(), |&i| {
-                if run.jokers[i].eternal || !lr.lasts(i) || (keep_growers && crate::engine::grows_in_rounds(&ctx.base.jokers[i].key)) {
+                // (a Negative joker's slot goes with it: no find can take its place)
+                let negative = ctx.base.jokers[i].edition == Some(crate::model::Edition::Negative);
+                if run.jokers[i].eternal || negative || !lr.lasts(i) || (keep_growers && crate::engine::grows_in_rounds(&ctx.base.jokers[i].key)) {
                     return false;
                 }
-                let mut b = lr.project(&|_| true, run.dollars);
-                let pos = (0..i).filter(|&k| lr.lasts(k)).count();
-                if pos >= b.jokers.len() {
-                    return false;
-                }
-                b.jokers[pos] = lr.stand_in(1.25, 0.0, 0.0);
-                lr.long_score(&lr.fill_long(b, None, 0.0)) >= before
+                // judged by the run's value: the money recomputed on the swapped board (the
+                // joker's income and rent go with it, `project`), the find in its best slot
+                // (the joker's place or the right end, as a joker bought is tried)
+                let p = lr.project(&|k| k != i, run.dollars);
+                let end = p.jokers.len();
+                let pos = (0..i).filter(|&k| lr.lasts(k)).count().min(end);
+                let mut slots = vec![pos, end];
+                slots.dedup();
+                slots.into_iter().any(|at| {
+                    let mut q = p.clone();
+                    q.jokers.insert(at, lr.stand_in(1.25, 0.0, 0.0));
+                    lr.long_score(&lr.fill_long(q, None, 0.0)) >= before
+                })
             });
             let _ = lr.replaced.set(swap);
         }
@@ -484,7 +493,7 @@ impl<'a> LongRun<'a> {
         lr.full = lasting >= ctx.base.joker_slots;
         lr.sell_base = if lr.full {
             par_map(&(0..run.jokers.len()).collect::<Vec<_>>(), |&i| {
-                (!run.jokers[i].eternal && lr.lasts(i)).then(|| lr.long_score(&lr.fill_long(lr.project(&|k| k != i, run.dollars), None, 0.0)))
+                (!run.jokers[i].eternal && ctx.base.jokers[i].edition != Some(crate::model::Edition::Negative) && lr.lasts(i)).then(|| lr.long_score(&lr.fill_long(lr.project(&|k| k != i, run.dollars), None, 0.0)))
             })
         } else {
             vec![]
@@ -498,8 +507,11 @@ impl<'a> LongRun<'a> {
         self.run.jokers[i].perishable.is_none_or(|r| r as f64 >= 3.0 * self.antes_left) && !self.growths.used_up(i)
     }
 
+    /// Rent of your rentals that are on the projected board: not one that runs out, nor one the
+    /// projection replaces (`replaced`: its rent goes with it, as its income does)
     pub fn owned_rent(&self, keep: &dyn Fn(usize) -> bool) -> f64 {
-        self.run.jokers.iter().enumerate().filter(|(i, sj)| keep(*i) && self.lasts(*i) && sj.rental).count() as f64 * RENT_PER_ANTE
+        let replaced = |i: usize| self.replaced.get().is_some_and(|r| r[i]);
+        self.run.jokers.iter().enumerate().filter(|(i, sj)| keep(*i) && self.lasts(*i) && sj.rental && !replaced(*i)).count() as f64 * RENT_PER_ANTE
     }
 
     /// Planets on the hand that earns most of your points: half a level per ante as a base,
@@ -889,21 +901,28 @@ impl<'a> LongRun<'a> {
     /// costs net: its price minus what selling it gives back (Card:set_cost: half the price
     /// paid, at least $1; a rental sells for $1; a free one from a tag still sells for $1).
     /// A money joker earns while you hold it (about an ante before it's replaced, on the round
-    /// of your board now with it: the board this floor scores keeps every joker you own), as a
-    /// rental pays rent.
-    pub fn floor_for(&self, cost: i64, rental: bool, key: &str) -> f64 {
+    /// of your board now with it), as a rental pays rent. Scored on the board you'd hold: with
+    /// `sold` (the joker the option replaces) gone and its sale counted, against the same
+    /// baseline as the option (`ratio`).
+    pub fn floor_for(&self, cost: i64, rental: bool, key: &str, sold: Option<usize>) -> f64 {
         let (run, data) = (self.run, self.data);
         let sell = if rental { 1 } else { (cost / 2).max(1) };
         let rent = if rental { RENT_PER_ANTE } else { 0.0 };
+        let back = sold.map_or(0, |i| run.jokers[i].sell_value) as f64;
         let ability = data.center(key).map(|c| crate::engine::joker::ability_from_config(&c.config)).unwrap_or_default();
         let discards = Joker::from_key(key, data).map_or(0, |j| {
             let mut held = self.ctx.base.clone();
+            if let Some(i) = sold {
+                held.jokers.remove(i);
+            }
             held.jokers.push(j.clone());
+            let gone: Vec<&Joker> = sold.map(|i| &self.ctx.base.jokers[i]).into_iter().collect();
             let start = RoundStart { hands: run.round_hands, discards: run.round_discards, fresh: true, ..Default::default() };
-            super::apply_mods(&start, &[&j], &[]).hands_on(&held).1
+            super::apply_mods(&start, &[&j], &gone).hands_on(&held).1
         });
         let earns = income_per_ante(key, &ability, run, discards, self.antes_left.min(1.0));
-        self.long_score(&self.fill_long(self.project(&|_| true, run.dollars), None, self.once(earns - ((cost - sell) as f64) - rent))) / self.l0
+        let held = self.fill_long(self.project(&|k| Some(k) != sold, run.dollars), None, self.once(earns - ((cost - sell) as f64) - rent + back));
+        self.ratio(self.long_score(&held), sold)
     }
 
     /// What a joker that changes a card you pick each round (`consumable::round_card_effect`;
@@ -1285,11 +1304,6 @@ impl<'a> LongRun<'a> {
     /// Your deck as it is, projected the same way: the baseline deck changes are compared to
     pub fn deck_base(&self) -> &crate::sim::Stats {
         self.deck_base.get_or_init(|| self.deck_stats(&self.ctx.fresh_deck, self.run.dollars, 0.0, 0.0))
-    }
-
-    /// The joker a shop action ("replace NAME[, put it rightmost]") sells
-    pub fn sell_index(&self, action: &str) -> Option<usize> {
-        action.strip_prefix("replace ").map(|n| n.trim_end_matches(", put it rightmost")).and_then(|name| self.ctx.base.jokers.iter().position(|x| self.data.name(&x.key) == name))
     }
 
     /// A projected score as a ratio of the baseline (with a typical find in place of `sell`)
