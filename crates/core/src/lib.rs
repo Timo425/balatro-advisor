@@ -4,6 +4,7 @@
 pub mod advise;
 pub mod bench;
 pub mod calibration;
+pub mod choices;
 pub mod data;
 pub mod describe;
 pub mod engine;
@@ -13,6 +14,7 @@ pub mod handlog;
 pub mod jkr;
 pub mod lua;
 pub mod model;
+pub mod overrides;
 pub mod paths;
 pub mod save;
 pub mod sim;

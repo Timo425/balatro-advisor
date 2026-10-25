@@ -130,6 +130,30 @@ enum Cmd {
         #[arg(long)]
         pending: Option<String>,
     },
+    /// Where your choices differed from the advice, in the saved history: plays and discards
+    /// judged against Best play's pick (the advice judging itself, D12), shop, pack and
+    /// skip-or-play choices by agreement only; candidate replay fixtures listed with a capture
+    /// command. Slow: a judged move takes two more analyses, a shop state a full one (about half a minute, the live page's median)
+    Overrides {
+        /// The run (its seed, or part of it); default: the newest run in the history
+        #[arg(long)]
+        run: Option<String>,
+        /// The newest N runs (ignored with --run)
+        #[arg(long, default_value_t = 1)]
+        runs: usize,
+        /// Only "blind" (plays and discards) or "shop" (shop, packs, skip or play)
+        #[arg(long)]
+        only: Option<String>,
+        /// Grade at most this many choices a run (0: all)
+        #[arg(long, default_value_t = 0)]
+        limit: usize,
+        /// The judge's rounds a move (the history check's 400)
+        #[arg(long, default_value_t = 400)]
+        judge_rounds: usize,
+        /// Only read the choices (no analysis): how many there are, and what can't be read
+        #[arg(long)]
+        count: bool,
+    },
     /// Golden cases: real hands with the in-game score
     Golden {
         #[command(subcommand)]
@@ -471,6 +495,7 @@ fn main() -> Result<()> {
                 println!("\nbalatro-advisor hands{} --capture N --name NAME saves one as a golden case", if *history { " --history" } else { "" });
             }
         }
+        Cmd::Overrides { run, runs, only, limit, judge_rounds, count } => overrides(cli.json, run.as_deref(), *runs, only.as_deref(), *limit, *judge_rounds, *count, data)?,
         Cmd::ExtractData { game_lua, out, game_version } => {
             let src = std::fs::read_to_string(game_lua).with_context(|| format!("reading {}", game_lua.display()))?;
             let d = balatro_advisor::data::extract_from_game_lua(&src, game_version).map_err(anyhow::Error::msg)?;
@@ -630,4 +655,147 @@ unsafe fn libc_sigpipe_default() {
     const SIGPIPE: i32 = 13;
     const SIG_DFL: usize = 0;
     unsafe { signal(SIGPIPE, SIG_DFL) };
+}
+
+/// `balatro-advisor overrides`
+#[allow(clippy::too_many_arguments)]
+fn overrides(json: bool, run: Option<&str>, runs: usize, only: Option<&str>, limit: usize, judge_rounds: usize, count: bool, data: &GameData) -> Result<()> {
+    use balatro_advisor::choices::{self, Choice};
+    use balatro_advisor::overrides::{self, Grade, Scope, Verdict};
+    let history = balatro_advisor::calibration::default_dir().context("no data directory")?.join("history");
+    let scope = match only {
+        None => Scope::All,
+        Some("blind") => Scope::Blind,
+        Some("shop") => Scope::Shop,
+        Some(o) => anyhow::bail!("--only takes blind or shop, not {o}"),
+    };
+    // runs, newest first by their last save
+    let mut dirs: Vec<(String, std::path::PathBuf)> = std::fs::read_dir(&history)
+        .with_context(|| format!("reading {}", history.display()))?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.is_dir())
+        .filter_map(|p| Some((choices::run_states(&p).last()?.file_name()?.to_string_lossy().to_string(), p)))
+        .collect();
+    dirs.sort_by(|a, b| b.0.cmp(&a.0));
+    let dirs: Vec<std::path::PathBuf> = match run {
+        Some(r) => dirs.into_iter().map(|d| d.1).filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().contains(r))).collect(),
+        None => dirs.into_iter().take(runs).map(|d| d.1).collect(),
+    };
+    anyhow::ensure!(!dirs.is_empty(), "no run in {} matches", history.display());
+    if count {
+        let mut rows = vec![];
+        for d in &dirs {
+            let (chosen, unclear) = choices::scan_run(d, data);
+            let mut kinds = std::collections::BTreeMap::new();
+            for (_, c) in &chosen {
+                let k = serde_json::to_value(c).ok().and_then(|v| v["kind"].as_str().map(String::from)).unwrap_or_default();
+                *kinds.entry(k).or_insert(0) += 1;
+            }
+            let mut why = std::collections::BTreeMap::new();
+            for (_, u) in &unclear {
+                *why.entry(u.describe()).or_insert(0) += 1;
+            }
+            let seed = d.file_name().unwrap_or_default().to_string_lossy().to_string();
+            if !json {
+                println!("{seed}: {} choices read ({}); {} not readable", chosen.len(), kinds.iter().map(|(k, n)| format!("{k} {n}")).collect::<Vec<_>>().join(", "), unclear.len());
+                for (w, n) in &why {
+                    println!("  {n:>4}  {w}");
+                }
+                // one run named: each choice, from the state it was made from
+                if run.is_some() {
+                    for (f, c) in &chosen {
+                        println!("    {}  {}", f.file_name().unwrap_or_default().to_string_lossy(), c.describe());
+                    }
+                }
+            }
+            rows.push(serde_json::json!({ "seed": seed, "choices": kinds, "unclear": why }));
+        }
+        if json {
+            println!("{}", serde_json::to_string_pretty(&rows)?);
+        }
+        return Ok(());
+    }
+    let mut reports = vec![];
+    for d in &dirs {
+        if !json {
+            eprintln!("{}: grading…", d.display());
+        }
+        let r = overrides::grade_run(d, data, scope, limit, judge_rounds, |g| {
+            if !json {
+                eprintln!("  a{} r{} {}: {} · advice {} · {} ({:.0} s)", g.ante, g.round, g.screen, g.choice.describe(), g.advice, g.grade.describe(), g.secs);
+            }
+        });
+        reports.push(r);
+    }
+    if json {
+        println!("{}", serde_json::to_string_pretty(&reports)?);
+        return Ok(());
+    }
+    let q = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
+    for r in &reports {
+        let in_blind = |g: &&overrides::Graded| matches!(g.choice, Choice::Play { .. } | Choice::Discard { .. });
+        let (blind, shop): (Vec<&overrides::Graded>, Vec<&overrides::Graded>) = r.graded.iter().partition(in_blind);
+        println!("\nRun {} (reached Ante {}{}): {} choices graded in {:.0} min, {} not graded (--only/--limit)", r.seed, r.reached_ante, if r.won { ", won" } else { "" }, r.graded.len(), r.secs / 60.0, r.not_graded);
+        if !blind.is_empty() {
+            let n = |v: Verdict| blind.iter().filter(|g| matches!(g.grade, Grade::Judged { verdict, .. } if verdict == v)).count();
+            let judged: Vec<f64> = blind.iter().filter(|g| matches!(g.grade, Grade::Judged { .. })).map(|g| g.secs).collect();
+            let same = blind.iter().filter(|g| g.grade == Grade::Same).count();
+            println!(
+                "  Plays and discards: {} · Best play's pick {same} · other moves {}: yours ahead {}, tie {}, unclear {}, the pick ahead {}, not judged {}{}",
+                blind.len(),
+                blind.len() - same,
+                n(Verdict::YoursAhead),
+                n(Verdict::Tie),
+                n(Verdict::Unclear),
+                n(Verdict::PickAhead),
+                blind.iter().filter(|g| g.grade == Grade::Unjudged).count(),
+                if judged.is_empty() { String::new() } else { format!(" ({:.0} s a judged move)", judged.iter().sum::<f64>() / judged.len() as f64) }
+            );
+        }
+        if !shop.is_empty() {
+            let c = |f: fn(&Grade) -> bool| shop.iter().filter(|g| f(&g.grade)).count();
+            println!(
+                "  Shop, packs, skip or play, joker order: {} · the advice's {} · shown tied with it {} · ranked below {} · not an option {} · skip or play: close {}, the other way {} · another joker order {} ({:.0} s a state)",
+                shop.len(),
+                c(|g| matches!(g, Grade::Top | Grade::Same)),
+                c(|g| matches!(g, Grade::TiedTop { .. })),
+                c(|g| matches!(g, Grade::Below { .. })),
+                c(|g| matches!(g, Grade::NotAnOption)),
+                c(|g| matches!(g, Grade::Close)),
+                c(|g| matches!(g, Grade::Other)),
+                c(|g| matches!(g, Grade::OrderOther { .. })),
+                shop.iter().map(|g| g.secs).sum::<f64>() / shop.len() as f64
+            );
+        }
+        if !r.unclear.is_empty() {
+            println!("  Not read from the saves:");
+            for (u, n) in &r.unclear {
+                println!("    {n:>4}  {}", u.describe());
+            }
+        }
+        let candidates: Vec<&overrides::Graded> = r.graded.iter().filter(|g| g.grade.candidate()).collect();
+        if candidates.is_empty() {
+            continue;
+        }
+        println!("  Candidate fixtures (overrides the judge can't show were worse; shop ones by agreement only, nothing judges them):");
+        for g in candidates {
+            println!("    a{} r{} {}: you chose {}; the advice preferred {} · {}", g.ante, g.round, g.screen, g.choice.describe(), g.advice, g.grade.describe());
+            let expect = match (&g.choice, &g.option) {
+                (Choice::Play { cards, .. }, _) => serde_json::json!({ "best_action": "play", "best_played": cards }),
+                (Choice::Discard { .. }, _) => serde_json::json!({ "best_action": "discard" }),
+                (_, Some(label)) => serde_json::json!({ "top_option": label }),
+                _ => serde_json::json!({}),
+            };
+            let name = format!("{}-a{}-r{}-{}", r.seed.to_lowercase(), g.ante, g.round, g.screen.to_lowercase());
+            let note = format!("{} Ante {} round {} {}: the owner chose {}, the advice {} ({}). From `balatro-advisor overrides`.", r.seed, g.ante, g.round, g.screen, g.choice.describe(), g.advice, g.grade.describe());
+            println!(
+                "      jq -n --arg note {} --argjson state \"$(balatro-advisor --json state --file {})\" --argjson expect {} '{{note: $note, state: $state, expect: $expect}}' > tests/fixtures/private/{name}.json",
+                q(&note),
+                q(&g.file.display().to_string()),
+                q(&expect.to_string())
+            );
+        }
+    }
+    println!("\nVerdicts are the advice judging itself (D12): its valuation and engine judge both moves, so a verdict against your move is not evidence it was worse. The advice is today's code on each saved state, not what the page showed then.");
+    Ok(())
 }

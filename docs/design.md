@@ -53,6 +53,31 @@ point, 2 − 0.01 × 18 = 1.8199999999999998, which the save writes as 1.82, so 
 of 61151.99… isn't seen). Not paired: a hand that won the round (541: the save after it has
 no cards left), a joker added or moved or a consumable used before the hand, a run that ended.
 
+The owner's overrides are collected the same way (`choices`, `overrides`; `balatro-advisor
+overrides`). The live page shows the advice before the owner acts, so a choice other than the
+advice's is deliberate. `choices::step` reads the choice made between two saves in a row: a hand
+(the hands log's pairing) or a discard (the cards' ids again), by the cards' places in the hand;
+a buy (a joker bought in place of one sold is one choice, the shop ranking's swap), a sale, a
+reroll, leaving the shop; a pick or a skip in a pack; playing or skipping a blind; the jokers'
+order (only a move of the jokers whose order can change a score, `advise::order_free`, read
+beside whatever else was done between the saves). The game
+doesn't save after every click, so two choices between two saves are counted as unreadable,
+never guessed, and so are a card taken from a Tarot, Spectral or Standard pack (what it changed
+isn't followed), a consumable used and the round-winning hand (its cards are gone from the save
+after it). Plays and discards are judged as the history check judges a moved pick: the owner's
+move against Best play's quick pick with the oracle playing on (`Options::judge`, D12), the
+verdict by the search's tie margin (yours ahead, the pick ahead, a tie, unclear). It is the
+advice judging itself, and the output says so. Shop, pack and skip-or-play choices are graded by
+agreement only: the ranking's top option, one shown tied with it, one ranked below or not among
+its options; skip or play against `SkipCompare::verdict`; the jokers' order against the order
+advice (`OrderAdvice`) on those same jokers. Nothing judges a shop choice yet, so no cost is
+given. Overrides the judge can't show were worse are listed as candidate fixtures, each
+with a capture command (CLAUDE.md step 1). The advice is today's code on the saved state, not
+what the page showed then: the page keeps no analyses. It's for finding one questionable call in
+a run (`--run SEED`) and capturing it, one at a time: a whole run's list goes stale as the advice
+changes, so whole-session review, the page logging what it showed, and top players' runs are
+parked (the owner's queue, 2026-10-25).
+
 The parity tier (D17) checks the engine's steps against the game's own code, run headless.
 `tools/parity/` is our own LuaJIT code, a stand-in for LÖVE and a job runner: the game's Lua is
 read from the install in place (`unzip -p`, nothing extracted), the owner's settings and profile

@@ -73,6 +73,13 @@ beside the score the game gave (`hands.jsonl`). `balatro-advisor hands` lists th
 `tests/golden/`, which `cargo test` keeps checking. By hand: `score --hand 1,2,5 --golden name`
 before playing, `golden set name <score the game showed>` after.
 
+**Overrides:** `balatro-advisor overrides` reads the choices you made in a saved run (the
+newest by default; `--run SEED`, `--runs N`), joker order included, and sets each beside the advice on the state you
+made it from. Plays and discards are judged against Best play's pick (by the advice's own
+measure), and shop, pack and skip-or-play choices by agreement only. It lists the overrides
+worth capturing as replay fixtures, each with a ready command. `--count` only reads the choices.
+Slow: `--only blind|shop`, `--limit N`.
+
 **Parity tier:** the engine's steps checked against the game's own Lua, run headless from your
 install with [LuaJIT](https://luajit.org/) (`sudo apt install luajit`) and a stand-in for LÖVE
 (`tools/parity/`), on your saved history: `BAV_PARITY_DIR=/tmp/before nice -n 19 cargo test

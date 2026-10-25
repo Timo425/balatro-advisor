@@ -2422,8 +2422,9 @@ fn sale_unmodelled(ctx: &Ctx, i: usize) -> Vec<String> {
     out
 }
 
-/// Whether moving this joker around can change a score.
-fn order_free(j: &Joker) -> bool {
+/// Whether moving this joker around can change a score (also what `choices` counts as a joker
+/// order the owner chose).
+pub fn order_free(j: &Joker) -> bool {
     use Kind::*;
     let chips_only = matches!(
         j.kind,
