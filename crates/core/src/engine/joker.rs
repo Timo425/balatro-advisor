@@ -473,6 +473,14 @@ impl Joker {
     }
 }
 
+/// The jokers that act when they're sold in the shop (card.lua `Card:calculate_joker`,
+/// `selling_self`: Diet Cola makes a Double Tag, Invisible Joker copies a joker; Luchador's
+/// disables a boss blind in play, so in the shop it does nothing), and those that grow when any
+/// card is sold (`selling_card`, button_callbacks.lua `G.FUNCS.sell_card`: Campfire). A debuffed
+/// one does neither. Not modelled: an option that sells a joker says so where they're involved.
+pub const ACTS_WHEN_SOLD: &[&str] = &["j_diet_cola", "j_invisible"];
+pub const GROWS_FROM_SALES: &[&str] = &["j_campfire"];
+
 /// The jokers whose money the engine pays on any round: while scoring (`score`: Business Card,
 /// Rough Gem, To Do List, Golden Ticket, Reserved Parking), for a discard (`discard_money`: Mail-In
 /// Rebate, Faceless Joker, Trading Card), at a won round's end (`Joker::round_end_dollars`:

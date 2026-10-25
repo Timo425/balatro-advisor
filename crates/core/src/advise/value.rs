@@ -111,6 +111,20 @@ pub(super) struct RoundChange {
     pub hand: f64,
 }
 
+/// What the projection does with one of your jokers by Ante 8 (`LongRun::build`): the choice
+/// that leaves the run most, judged by the run's value
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Fate {
+    Kept,
+    /// A typical find takes its place: its own slot, or the right end (`end`), whichever the
+    /// projection scores higher
+    Replaced { end: bool },
+    /// Sold, no find: its sale counted once, its slot left empty to Ante 8 (the game's limit
+    /// unchanged: a find in it is `Replaced`), a Negative's gone with it (card.lua
+    /// `Card:remove_from_deck`)
+    Sold,
+}
+
 pub(super) struct LongRun<'a> {
     pub ctx: &'a Ctx<'a>,
     pub run: &'a RunState,
@@ -129,9 +143,17 @@ pub(super) struct LongRun<'a> {
     /// (`long_spec_for`), what your Blue Seal cards are seen in (`seal_planets_in`); set once
     /// your board is known (`new`), before then no board's own round adds planets
     round: OnceLock<(i64, i64, i64)>,
-    /// Your jokers worth no more by Ante 8 than a typical find in their place (their place or
-    /// the right end), with their money (income, rent) gone with them (assumed replaced by then)
-    replaced: OnceLock<Vec<bool>>,
+    /// What the projection does with each of your jokers by Ante 8 (`Fate`): kept, or let go
+    /// where that leaves no less, replaced by a typical find in their place (their place or the
+    /// right end) or sold outright, their money (income, rent) gone with them
+    fates: OnceLock<Vec<Fate>>,
+    /// Each of your sellable jokers' better way to let it go (`Fate::Replaced` or `Fate::Sold`,
+    /// whichever leaves more; a Negative's only `Sold`): what selling it now leads to
+    /// (`sold_now`); `None` for one that can't be sold or doesn't last
+    let_go: Vec<Option<Fate>>,
+    /// A typical find's price (`find_price`): what a joker the projection replaces nets is its
+    /// sale less this
+    find_price: f64,
     /// Your board's projected score: the baseline every value is a ratio of
     pub l0: f64,
     /// Every slot taken by jokers that last
@@ -156,6 +178,32 @@ pub(super) struct LongRun<'a> {
     money_rounds: (Board, Vec<RoundStart>),
     /// A board's money round by round on them (`money_board`), by the board
     money: Mutex<std::collections::HashMap<String, std::sync::Arc<Vec<Option<f64>>>>>,
+}
+
+/// A typical find's price: the jokers the shops could offer (`pool`; every joker the game has
+/// when it isn't known), each by its rarity's odds (70/25/5, as the stand-ins' types) over that
+/// rarity's count, at its price (data/game.json `cost`)
+fn find_price(pool: &[String], data: &GameData) -> f64 {
+    let all: Vec<String>;
+    let keys = if pool.is_empty() {
+        all = data.centers.iter().filter(|c| c.set == "Joker" && matches!(c.rarity, Some(1..=3))).map(|c| c.key.clone()).collect();
+        &all
+    } else {
+        pool
+    };
+    let rarity = |k: &str| data.center(k).and_then(|c| c.rarity).unwrap_or(0).min(3) as usize;
+    let mut count = [0usize; 4];
+    for k in keys {
+        count[rarity(k)] += 1;
+    }
+    let (mut sum, mut weight) = (0.0, 0.0);
+    for k in keys {
+        let r = rarity(k);
+        let w = [0.0, 0.7, 0.25, 0.05][r] / count[r].max(1) as f64;
+        sum += w * data.center(k).map_or(0, |c| c.cost) as f64;
+        weight += w;
+    }
+    if weight > 0.0 { sum / weight } else { 0.0 }
 }
 
 /// Antes left to play to the run's end (the one you're in counted half)
@@ -398,6 +446,14 @@ pub(super) struct Projected {
     /// before the projection's levels: `fill_long` decides what the spare money buys
     pub(super) flow: f64,
     top_base: Option<crate::engine::Level>,
+    /// One-off money from the jokers the projection lets go (sold, or replaced by a find: their
+    /// sales less the finds' prices), in dollars (`sales`) and as money to spend (`once`), spent
+    /// with the option's (`fill_long`)
+    once: f64,
+    sales: f64,
+    /// Slots a joker sold outright leaves empty to Ante 8 (`Fate::Sold`, not a Negative: the
+    /// game's limit stays, so Joker Stencil counts them): no stand-in fills them
+    empty: i64,
 }
 
 impl std::ops::Deref for Projected {
@@ -419,7 +475,7 @@ impl<'a> LongRun<'a> {
     }
 
     /// `new` with your jokers whose growth rounds measure (`engine::grows_in_rounds`) kept
-    /// however they project, never `replaced`: what they'd be worth if kept and played for, the
+    /// however they project, never let go (`fates`): what they'd be worth if kept and played for, the
     /// round's goals the growth runs are played to again (`advise.rs` `played_for`)
     pub fn played_for(ctx: &'a Ctx<'a>, hand_mix: &'a [HandShare], growths: &'a Growths, pool: &[String], per_rarity: [usize; 4]) -> LongRun<'a> {
         Self::build(ctx, hand_mix, growths, pool, per_rarity, true)
@@ -500,7 +556,9 @@ impl<'a> LongRun<'a> {
             long_spec,
             mods_now,
             round: OnceLock::new(),
-            replaced: OnceLock::new(),
+            fates: OnceLock::new(),
+            let_go: vec![],
+            find_price: find_price(pool, data),
             l0: 0.0,
             full: false,
             sell_base: vec![],
@@ -515,35 +573,42 @@ impl<'a> LongRun<'a> {
         };
         {
             let before = lr.long_score(&lr.fill_long(lr.project(&|_| true, run.dollars), None, 0.0));
-            let swap: Vec<bool> = par_map(&(0..run.jokers.len()).collect::<Vec<_>>(), |&i| {
-                // (a Negative joker's slot goes with it: no find can take its place)
-                let negative = ctx.base.jokers[i].edition == Some(crate::model::Edition::Negative);
-                if run.jokers[i].eternal || negative || !lr.lasts(i) || (keep_growers && crate::engine::grows_in_rounds(&ctx.base.jokers[i].key)) {
-                    return false;
+            // Each joker you could sell kept, or let go where that leaves no less, by the run's
+            // value: replaced by a typical find (not a Negative: its slot goes with it) or sold
+            // outright, whichever leaves more (`let_go_score`: the money recomputed on the board
+            // without it, its income and rent gone with it)
+            let choice: Vec<(Fate, Option<Fate>)> = par_map(&(0..run.jokers.len()).collect::<Vec<_>>(), |&i| {
+                if run.jokers[i].eternal || !lr.lasts(i) || (keep_growers && crate::engine::grows_in_rounds(&ctx.base.jokers[i].key)) {
+                    return (Fate::Kept, None);
                 }
-                // judged by the run's value: the money recomputed on the swapped board (the
-                // joker's income and rent go with it, the find's comes: `project_as`), the find
-                // in its best slot (the joker's place or the right end, as a joker bought is tried)
-                let find = lr.stand_in(1.25, 0.0, 0.0);
-                let p = lr.project_as(&|k| k != i, run.dollars, 0.0, None, Some(&find), (0, 0, 0));
-                let end = p.jokers.len();
-                let pos = (0..i).filter(|&k| lr.lasts(k)).count().min(end);
-                let mut slots = vec![pos, end];
-                slots.dedup();
-                slots.into_iter().any(|at| {
-                    let mut q = p.clone();
-                    q.jokers.insert(at, lr.stand_in(1.25, 0.0, 0.0));
-                    lr.long_score(&lr.fill_long(q, None, 0.0)) >= before
-                })
+                // (sold either way: its sale counted in both, a find's price on top for a find)
+                let sold = (lr.let_go_score(i, Fate::Sold, lr.let_go_money(i, Fate::Sold)), Fate::Sold);
+                let replaced = (!lr.negative(i)).then(|| {
+                    let money = lr.let_go_money(i, Fate::Replaced { end: false });
+                    let here = (lr.let_go_score(i, Fate::Replaced { end: false }, money), Fate::Replaced { end: false });
+                    if !lr.end_differs(i) {
+                        return here;
+                    }
+                    let last = lr.let_go_score(i, Fate::Replaced { end: true }, money);
+                    if last > here.0 { (last, Fate::Replaced { end: true }) } else { here }
+                });
+                let (score, way) = match replaced {
+                    Some(r) if r.0 >= sold.0 => r,
+                    _ => sold,
+                };
+                (if score >= before { way } else { Fate::Kept }, Some(way))
             });
-            let _ = lr.replaced.set(swap);
+            let _ = lr.fates.set(choice.iter().map(|c| c.0).collect());
+            lr.let_go = choice.into_iter().map(|c| c.1).collect();
         }
         let yours = lr.fill_long(lr.project(&|_| true, run.dollars), None, 0.0);
         let (_, s) = yours.at_blind_set(&lr.long_spec_for(&yours, (0, 0, 0)).start);
         let _ = lr.round.set((s.hand_size, s.hands, s.discards));
         lr.l0 = lr.long_score(&yours);
         let lasting = (0..run.jokers.len()).filter(|&i| lr.lasts(i)).count() as i64;
-        lr.full = lasting >= ctx.base.joker_slots;
+        // (a Negative that doesn't last takes its slot with it: `project_as`)
+        let gone_slots = (0..run.jokers.len()).filter(|&i| !lr.lasts(i) && lr.negative(i)).count() as i64;
+        lr.full = lasting >= ctx.base.joker_slots - gone_slots;
         lr.sell_base = if lr.full {
             par_map(&(0..run.jokers.len()).collect::<Vec<_>>(), |&i| {
                 (!run.jokers[i].eternal && ctx.base.jokers[i].edition != Some(crate::model::Edition::Negative) && lr.lasts(i)).then(|| lr.long_score(&lr.fill_long(lr.project(&|k| k != i, run.dollars), None, 0.0)))
@@ -560,11 +625,100 @@ impl<'a> LongRun<'a> {
         self.run.jokers[i].perishable.is_none_or(|r| r as f64 >= 3.0 * self.antes_left) && !self.growths.used_up(i)
     }
 
+    /// What the projection does with your joker `i` (`fates`; all kept until it's decided)
+    fn fate(&self, i: usize) -> Fate {
+        self.fates.get().map_or(Fate::Kept, |f| f[i])
+    }
+
+    fn negative(&self, i: usize) -> bool {
+        self.ctx.base.jokers[i].edition == Some(crate::model::Edition::Negative)
+    }
+
+    /// What letting your joker `i` go as `way` nets: its sale, less a typical find's price when
+    /// one replaces it (`find_price`)
+    fn let_go_money(&self, i: usize, way: Fate) -> f64 {
+        self.run.jokers[i].sell_value as f64 - if matches!(way, Fate::Replaced { .. }) { self.find_price } else { 0.0 }
+    }
+
+    /// Your joker `i`'s place among the jokers the projection keeps in theirs (`let_go_score`)
+    fn place_of(&self, i: usize) -> usize {
+        (0..i).filter(|&k| self.lasts(k) && matches!(self.fate(k), Fate::Kept | Fate::Replaced { end: false })).count()
+    }
+
+    /// Whether the right end is another place for a find in place of your joker `i` than its own
+    fn end_differs(&self, i: usize) -> bool {
+        let rest = (0..self.run.jokers.len()).filter(|&k| k != i && self.lasts(k) && self.fate(k) != Fate::Sold).count();
+        self.place_of(i) < rest
+    }
+
+    /// The projected score with your joker `i` let go as `way` (`Sold`: no find, its slot left
+    /// empty; `Replaced`: a typical find in its place or at the right end), the other jokers as the
+    /// projection holds them, `money` one-off money with their sales (one `once` on the sum: the
+    /// sale against leaving is told exactly)
+    fn let_go_score(&self, i: usize, way: Fate, money: f64) -> f64 {
+        let run = self.run;
+        let find = self.stand_in(1.25, 0.0, 0.0);
+        let mut p = match way {
+            // the find's money comes (`project_as`)
+            Fate::Replaced { .. } => self.project_as(&|k| k != i, run.dollars, 0.0, None, Some(&find), (0, 0, 0)),
+            _ => self.project_as(&|k| k != i, run.dollars, 0.0, None, None, (0, 0, 0)),
+        };
+        p.once = self.once(p.sales + money);
+        match way {
+            Fate::Replaced { end } => {
+                let at = if end { p.jokers.len() } else { self.place_of(i).min(p.jokers.len()) };
+                p.jokers.insert(at, find);
+            }
+            // (a Negative's slot already gone with it: `project_as`)
+            _ if !self.negative(i) => p.empty += 1,
+            _ => {}
+        }
+        self.long_score(&self.fill_long(p, None, 0.0))
+    }
+
+    /// Your joker `i` sold now, as a ratio of your board's projected score (`l0`): let go its
+    /// better way (`let_go`; one that doesn't last to Ante 8 is gone by then anyway, its slot as
+    /// the projection leaves it), its sale counted once; where the projection lets it go anyway,
+    /// also the round it would be held for until the next shop (`round_flow`). `None`: it can't
+    /// be sold (eternal), or the projection doesn't weigh letting it go (a joker that grows in
+    /// rounds kept as played for: `played_for`).
+    pub fn sold_now(&self, i: usize) -> Option<f64> {
+        if self.run.jokers[i].eternal {
+            return None;
+        }
+        let flow = if self.gone_anyway(i) { self.round_flow(i) } else { 0.0 };
+        let score = match self.let_go.get(i).copied().flatten() {
+            // (the way and slot the projection chose: its value as `l0` holds it)
+            Some(way) => self.let_go_score(i, way, self.let_go_money(i, way) + flow),
+            None if !self.lasts(i) => {
+                let mut p = self.project(&|k| k != i, self.run.dollars);
+                p.once = self.once(p.sales + self.run.jokers[i].sell_value as f64 + flow);
+                self.long_score(&self.fill_long(p, None, 0.0))
+            }
+            None => return None,
+        };
+        Some(score / self.l0)
+    }
+
+    /// Whether the projection has your joker `i` gone by Ante 8 anyway: run out, used up, or let go
+    pub fn gone_anyway(&self, i: usize) -> bool {
+        !self.lasts(i) || self.fate(i) != Fate::Kept
+    }
+
+    /// What holding your joker `i` through the round ahead costs in money: its rent (card.lua
+    /// `Card:calculate_rental`, at the end of each round: $3), less the money it makes in that
+    /// round on your board as it is (`money_board`, `payout_besides` over the round or so it's
+    /// held, as `floor_for`)
+    fn round_flow(&self, i: usize) -> f64 {
+        let all = |_: usize| true;
+        let money = money_difference(&self.money_board(&all, None, (0, 0, 0), true), &self.money_board(&|k| k != i, None, (0, 0, 0), true)) + self.payout_besides(&self.money_rounds.0.jokers[i], self.antes_left.min(1.0));
+        if self.run.jokers[i].rental { RENT_PER_ANTE / 3.0 - money } else { -money }
+    }
+
     /// Rent of your rentals that are on the projected board: not one that runs out, nor one the
-    /// projection replaces (`replaced`: its rent goes with it, as its income does)
+    /// projection lets go (`fates`: its rent goes with it, as its income does)
     pub fn owned_rent(&self, keep: &dyn Fn(usize) -> bool) -> f64 {
-        let replaced = |i: usize| self.replaced.get().is_some_and(|r| r[i]);
-        self.run.jokers.iter().enumerate().filter(|(i, sj)| keep(*i) && self.lasts(*i) && sj.rental && !replaced(*i)).count() as f64 * RENT_PER_ANTE
+        self.run.jokers.iter().enumerate().filter(|(i, sj)| keep(*i) && self.lasts(*i) && sj.rental && self.fate(*i) == Fate::Kept).count() as f64 * RENT_PER_ANTE
     }
 
     /// Planets on the hand that earns most of your points: half a level per ante as a base,
@@ -591,7 +745,8 @@ impl<'a> LongRun<'a> {
     }
 
     /// The money your jokers pay every ante on the board projected with the jokers `keep`s
-    /// (those that last, one the projection replaces by its typical find: `replaced`), `added`
+    /// (those that last, one the projection replaces by its typical find, not one it sells:
+    /// `fates`), `added`
     /// on it and `more` a round (a `Gain`'s), like rent in reverse: your board's money against
     /// it without the jokers the engine pays money for (`engine::PAYS_MONEY`), and that board's
     /// against yours, each on the same rounds (`money_difference`: so a copy of a money joker,
@@ -612,14 +767,14 @@ impl<'a> LongRun<'a> {
     }
 
     /// Whether your joker `i` is on the projected board with the jokers `keep`s as itself: kept,
-    /// lasting and not replaced by a typical find
+    /// lasting and not let go (replaced by a typical find or sold: `fates`)
     fn on_projection(&self, keep: &dyn Fn(usize) -> bool, i: usize) -> bool {
-        keep(i) && self.lasts(i) && !self.replaced.get().is_some_and(|r| r[i])
+        keep(i) && self.lasts(i) && self.fate(i) == Fate::Kept
     }
 
     /// The money each round pays on your board as it is (`now`), or as the projection holds it
-    /// with the jokers `keep`s (one that doesn't last left out, one replaced by its typical find,
-    /// `replaced`), with `added` on it and `more` hand size, hands and discards a round (a
+    /// with the jokers `keep`s (one that doesn't last or that it sells left out, one replaced by
+    /// its typical find: `fates`), with `added` on it and `more` hand size, hands and discards a round (a
     /// `Gain`'s): the round's cash as the game pays it for how it's played
     /// (`sim::RoundResult::cash`: scoring, discards, the round's end, hands and discards left),
     /// `None` for a round lost, on `MONEY_ROUNDS` of each of this ante's three plain blinds, the
@@ -665,10 +820,13 @@ impl<'a> LongRun<'a> {
     }
 
     /// Each of your jokers on the money board (`money_board`): '-' left out (not kept, or, for
-    /// the projection, gone by Ante 8), 'r' replaced by its typical find (`replaced`), 'k' itself
+    /// the projection, gone by Ante 8 or sold), 'r' replaced by its typical find (`fates`), 'k'
+    /// itself
     fn money_mask(&self, keep: &dyn Fn(usize) -> bool, now: bool) -> String {
-        let replaced = |i: usize| !now && self.replaced.get().is_some_and(|r| r[i]);
-        (0..self.money_rounds.0.jokers.len()).map(|i| if !keep(i) || (!now && !self.lasts(i)) { '-' } else if replaced(i) { 'r' } else { 'k' }).collect()
+        let fate = |i: usize| if now { Fate::Kept } else { self.fate(i) };
+        (0..self.money_rounds.0.jokers.len())
+            .map(|i| if !keep(i) || (!now && !self.lasts(i)) || fate(i) == Fate::Sold { '-' } else if fate(i) == Fate::Kept { 'k' } else { 'r' })
+            .collect()
     }
 
     /// What your joker `i` makes a round: the round's money on your board with it against
@@ -737,16 +895,17 @@ impl<'a> LongRun<'a> {
     pub(super) fn project_as(&self, keep: &dyn Fn(usize) -> bool, dollars: f64, extra_rent: f64, changed: Option<(usize, &Joker)>, added: Option<&Joker>, more: (i64, i64, i64)) -> Projected {
         let (ctx, run) = (self.ctx, self.run);
         let mut b = ctx.base.clone();
+        let sold = |i: usize| keep(i) && self.lasts(i) && self.fate(i) == Fate::Sold;
         b.jokers = ctx
             .base
             .jokers
             .iter()
             .zip(&run.jokers)
             .enumerate()
-            .filter(|(i, _)| keep(*i) && self.lasts(*i))
+            .filter(|(i, _)| keep(*i) && self.lasts(*i) && !sold(*i) && self.fate(*i) != Fate::Replaced { end: true })
             .map(|(i, (j, _))| {
                 let j = changed.filter(|c| c.0 == i).map_or(j, |c| c.1);
-                if self.replaced.get().is_some_and(|r| r[i]) {
+                if self.fate(i) == (Fate::Replaced { end: false }) {
                     self.stand_in(1.25, 0.0, 0.0)
                 } else {
                     // (one the runs use up doesn't last: left out above, its slot an empty one)
@@ -754,6 +913,22 @@ impl<'a> LongRun<'a> {
                 }
             })
             .collect();
+        // a find the projection puts at the right end goes there (`Fate::Replaced`: the slot it
+        // was chosen in)
+        let at_end = (0..run.jokers.len()).filter(|&i| keep(i) && self.lasts(i) && self.fate(i) == Fate::Replaced { end: true }).count();
+        b.jokers.extend((0..at_end).map(|_| self.stand_in(1.25, 0.0, 0.0)));
+        // A joker left off the board takes its slot with it when it's Negative (card.lua
+        // `Card:remove_from_deck`: the joker limit −1, sold or destroyed); another the projection
+        // sells leaves its slot empty (`Fate::Sold`: no find)
+        let n = run.jokers.len();
+        let on = |i: usize| keep(i) && self.lasts(i) && !sold(i);
+        b.joker_slots -= (0..n).filter(|&i| !on(i) && self.negative(i)).count() as i64;
+        let empty = (0..n).filter(|&i| sold(i) && !self.negative(i)).count() as i64;
+        // (each joker it lets go is sold, replaced by a find or not: its sale, less the find's
+        // price, once)
+        let let_go = |i: usize| keep(i) && self.lasts(i) && self.fate(i) != Fate::Kept;
+        let sales: f64 = (0..n).filter(|&i| let_go(i)).map(|i| self.let_go_money(i, self.fate(i))).sum();
+        let once = self.once(sales);
         let rent = self.owned_rent(keep) + extra_rent;
         let flow = self.income(keep, added, more) - rent;
         let dollars = dollars + flow;
@@ -761,7 +936,7 @@ impl<'a> LongRun<'a> {
         if let (Some(top), Some(l)) = (self.top_hand, top_base) {
             b.levels[top as usize] = self.top_level(l, dollars, flow, (dollars - self.line).max(0.0));
         }
-        Projected { board: b, dollars, flow, top_base }
+        Projected { board: b, dollars, flow, top_base, once, sales, empty }
     }
 
     /// What one more Mult, ×Mult and Chip on joker `i` (the numbers `Joker::lasting` counts,
@@ -769,11 +944,11 @@ impl<'a> LongRun<'a> {
     /// nothing) is worth by Ante 8 (`value`, less 1), each measured on a
     /// step of its own (`GROWTH_STEPS`) and never below nothing (more never scores less), and
     /// what losing it is worth: its place to a typical find, the benchmark it's kept against
-    /// (`replaced`), so less than nothing for every joker the projection keeps. Nothing for a
-    /// joker the projection drops (a perishable that runs out) or replaces (weaker than a
-    /// typical find, not eternal).
+    /// (`fates`; a Negative's slot goes with it: no find), so less than nothing for every joker
+    /// the projection keeps. Nothing for a joker the projection drops (a perishable that runs
+    /// out) or lets go (replaced or sold, not eternal).
     pub fn joker_worth(&self, i: usize) -> ([f64; 3], f64) {
-        if !self.lasts(i) || self.replaced.get().is_some_and(|r| r[i]) {
+        if !self.lasts(i) || self.fate(i) != Fate::Kept {
             return ([0.0; 3], 0.0);
         }
         let j = &self.ctx.base.jokers[i];
@@ -790,13 +965,26 @@ impl<'a> LongRun<'a> {
             }
             ((self.value(&Gain { joker: Some((i, c)), ..Default::default() }) - 1.0) / GROWTH_STEPS[f]).max(0.0)
         });
-        let gone = self.value(&Gain { joker: Some((i, self.stand_in(1.25, 0.0, 0.0))), ..Default::default() }) - 1.0;
+        // (destroyed: no sale)
+        // (a Negative's slot goes with it; another's takes a find, where the projection would put one)
+        let way = match self.let_go.get(i).copied().flatten() {
+            _ if self.negative(i) => Fate::Sold,
+            Some(r @ Fate::Replaced { .. }) => r,
+            _ => Fate::Replaced { end: false },
+        };
+        let gone = self.let_go_score(i, way, 0.0) / self.l0 - 1.0;
         ([per[0], per[1], per[2]], gone)
     }
 
-    /// Whether your joker `i` is replaced by a typical find by Ante 8 (`replaced`)
-    pub fn is_replaced(&self, i: usize) -> bool {
-        self.replaced.get().is_some_and(|r| r[i])
+    /// Whether the projection lets your joker `i` go by Ante 8: replaced by a typical find or
+    /// sold (`fates`)
+    pub fn is_let_go(&self, i: usize) -> bool {
+        self.fate(i) != Fate::Kept
+    }
+
+    /// Whether the projection sells your joker `i` outright by Ante 8 (`Fate::Sold`)
+    pub fn is_sold(&self, i: usize) -> bool {
+        self.fate(i) == Fate::Sold
     }
 
     /// What the numbers your jokers a round changes (`engine::CHANGE_IN_ROUND`) are left with at a
@@ -906,7 +1094,12 @@ impl<'a> LongRun<'a> {
     /// `fill_long` with the split forced (`Some(true)`: events first) or chosen (`None`)
     fn fill_split(&self, p: Projected, option: Option<Joker>, once: f64, events_first: Option<bool>) -> Board {
         let grower_option = option.as_ref().filter(|j| RunEvent::ALL.iter().any(|&ev| j.mult_from(ev) != 0.0 || j.xmult_from(ev) != 0.0)).cloned();
-        let Projected { board: mut b, dollars, flow, top_base } = p;
+        let Projected { board: mut b, dollars, flow, top_base, once: sold, empty, .. } = p;
+        let once = once + sold;
+        // (a Negative option brings its slot: card.lua `Card:add_to_deck`, the joker limit +1)
+        if option.as_ref().is_some_and(|j| j.edition == Some(crate::model::Edition::Negative)) {
+            b.joker_slots += 1;
+        }
         b.jokers.push(option.unwrap_or_else(|| self.stand_in(1.25, 0.0, 0.0)));
         if event_price(self.run, RunEvent::Reroll).is_some() && b.changes_with(RunEvent::Reroll) {
             b.after(RunEvent::Reroll, self.antes_left);
@@ -936,18 +1129,19 @@ impl<'a> LongRun<'a> {
                 };
                 let first = match events_first {
                     Some(c) => c,
-                    None => self.spare_to_events(&b, grower_option, &mut || (self.fill_slots(levels_first()), self.fill_slots(events_first_board()))),
+                    None => self.spare_to_events(&b, grower_option, &mut || (self.fill_slots(levels_first(), empty), self.fill_slots(events_first_board(), empty))),
                 };
                 b = if first { events_first_board() } else { levels_first() };
             }
         }
-        self.fill_slots(b)
+        self.fill_slots(b, empty)
     }
 
-    /// Empty slots filled with stand-ins (the jokers you'd find over the run)
-    fn fill_slots(&self, mut b: Board) -> Board {
+    /// Empty slots filled with stand-ins (the jokers you'd find over the run), but `empty` of
+    /// them left empty (`Projected::empty`)
+    fn fill_slots(&self, mut b: Board, empty: i64) -> Board {
         let mut k = 0;
-        while (b.jokers.len() as i64) < b.joker_slots {
+        while (b.jokers.len() as i64) < b.joker_slots - empty {
             b.jokers.push(match self.fill_types.get(k).copied().unwrap_or(0) {
                 0 => self.stand_in(1.5, 0.0, 0.0),
                 1 => self.stand_in(1.0, 0.0, 60.0),
@@ -963,10 +1157,10 @@ impl<'a> LongRun<'a> {
     /// levels, as on a board nothing grows on). Decided once for each set of jokers that grow
     /// from events, on one board: your projected board with the option that grows (if it's one)
     /// in the typical find's slot, slots filled; until the projection knows which of your
-    /// jokers it replaces, on `board`'s own two splits (`these`), not kept.
+    /// jokers it lets go, on `board`'s own two splits (`these`), not kept.
     fn spare_to_events(&self, board: &Board, option: Option<Joker>, these: &mut dyn FnMut() -> (Board, Board)) -> bool {
         let pick = |(levels, events): (Board, Board)| self.long_score(&events) > self.long_score(&levels) * (1.0 + super::compare::EQUAL);
-        if self.replaced.get().is_none() {
+        if self.fates.get().is_none() {
             return pick(these());
         }
         let mut growers: Vec<String> = board

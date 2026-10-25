@@ -1690,6 +1690,50 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     if run.screen == crate::save::Screen::Shop && run.open_pack.is_empty() {
         options.push(keep_money("next round", "leave", format!("keep your ${:.0}", run.dollars), 1.0));
     }
+    // Selling one of your jokers outright is an option too (every choice generated): its rounds
+    // simulated without it (the contribution pass, as giving it up for a buy is), its sale's
+    // money now, and the run with it sold (`LongRun::sold_now`: let go its better way, the round
+    // it would be held for counted where the projection lets it go anyway), ranked by the shop
+    // ranking's measure as every option is
+    if run.screen == crate::save::Screen::Shop && run.open_pack.is_empty() {
+        let hz = ctx.specs.iter().position(|x| x.horizon);
+        let longs = par_map(&idx, |&i| lr.sold_now(i));
+        for (&i, long) in idx.iter().zip(longs) {
+            let (Some(long), Some((p, st))) = (long, contrib[i].1.get(key_round)) else { continue };
+            let sj = &run.jokers[i];
+            let money = sj.sell_value as f64;
+            let mut notes = vec![format!("sells for ${}", sj.sell_value)];
+            if sj.rental {
+                notes.push("no more rent ($3 a round)".into());
+            }
+            notes.extend(sale_unmodelled(&ctx, i));
+            if run.stake >= 8 && missing(&ctx.base.jokers[i].key) {
+                notes.push(format!("★ {} has no Gold sticker yet: selling it gives that up this run", data.name(&ctx.base.jokers[i].key)));
+            }
+            // (a copy of another joker you hold named by its place)
+            let name = data.name(&ctx.base.jokers[i].key);
+            let copies = ctx.base.jokers.iter().filter(|j| j.key == ctx.base.jokers[i].key).count();
+            let label = if copies > 1 { format!("sell {name} (place {})", i + 1) } else { format!("sell {name}") };
+            // a joker the projection has gone by Ante 8 anyway: its sale is in both long runs, so
+            // what money past the cap buys (`Spending`) doesn't count it again
+            if lr.gone_anyway(i) {
+                extra_money.insert(label.clone(), -money);
+            }
+            options.push(ShopOption {
+                sell_index: Some(i),
+                sell_key: Some(sj.key.clone()),
+                key: Some(sj.key.clone()),
+                p_win: *p,
+                reach: ctx.specs.get(key_round).map(|sp| st.mean / sp.start.target.max(1.0)),
+                next_p: hz.and_then(|h| contrib[i].1.get(h)).map(|o| o.0),
+                next_strength: hz.and_then(|h| Some(contrib[i].1.get(h)?.1.mean / base_odds.get(h)?.1.mean.max(1e-9))),
+                money_gain: money,
+                money_after: run.dollars + money,
+                interest_after: interest(run.dollars + money, run.interest_amount, run.interest_cap),
+                ..keep_money(&label, "sell", notes.join(" · "), long)
+            });
+        }
+    }
     // Skipping an open pack likewise (and the jokers that grow from it grow)
     if !run.open_pack.is_empty() {
         let note = if skip > 1.0 { lr.event_note(RunEvent::SkipPack) } else { "take nothing".to_string() };
@@ -1936,9 +1980,23 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     let (levels_per_ante, planet_levels) = lr.levels_for(run.dollars + flow_now, flow_now);
     let planet_levels = planet_levels.round() as i64;
     let long_note = format!(
-        "Your board projected {antes_left:.1} antes ahead: growing jokers grown (those that grow from shop events, Red Card and Flash Card, by one pack skip and one reroll an ante, plus 1 per pack's or reroll's price above the interest line, at most 5 an ante, all on the one that grows most per dollar; those a round changes as the simulated player's rounds at this ante's blind sizes leave them), fading ones faded, perishables that run out and jokers those rounds use up dropped, {} +{planet_levels} levels (about {levels_per_ante:.1} per ante with your money), empty slots filled with stand-in jokers (×1.5, +60 Chips or +15 Mult, in proportion to how often your shop pool offers each type). Each option is compared with a typical find (×1.25) in its slot, on whole simulated rounds, with the money it leaves you: its price, what selling a joker gives back or a money card gives (spent once: ~$4 a pack skip or a reroll at its cost when a joker grows from them (Red Card, Flash Card), else ~$12 a level of your main hand, and ~$4 a planet for Constellation; money counts for less the more you have (the next dollar is worth about half at $20); interest lost or gained over the next ante included), and $9 less money held every ante per rental; the jokers add the money a round won pays on the board held against your board, and yours against it without the jokers that pay money, each on the same rounds of this ante's plain blinds won by both (scoring, discards, the round's end, hands left; counted past $0.5 an ante and 2 standard errors), to the money held every ante, with what they pay besides a round's play (Rocket's raises at the bosses ahead, Egg's sell value, To the Moon's interest). Your sellable jokers worth less than a typical find in their place (their money gone with them) are assumed replaced by then, and a sellable option counts at least as a typical find less its price net of what selling it gives back; eternal ones stay, however weak. ×1.00 = as good as a typical find.",
+        "Your board projected {antes_left:.1} antes ahead: growing jokers grown (those that grow from shop events, Red Card and Flash Card, by one pack skip and one reroll an ante, plus 1 per pack's or reroll's price above the interest line, at most 5 an ante, all on the one that grows most per dollar; those a round changes as the simulated player's rounds at this ante's blind sizes leave them), fading ones faded, perishables that run out and jokers those rounds use up dropped, {} +{planet_levels} levels (about {levels_per_ante:.1} per ante with your money), empty slots filled with stand-in jokers (×1.5, +60 Chips or +15 Mult, in proportion to how often your shop pool offers each type). Each option is compared with a typical find (×1.25) in its slot, on whole simulated rounds, with the money it leaves you: its price, what selling a joker gives back or a money card gives (spent once: ~$4 a pack skip or a reroll at its cost when a joker grows from them (Red Card, Flash Card), else ~$12 a level of your main hand, and ~$4 a planet for Constellation; money counts for less the more you have (the next dollar is worth about half at $20); interest lost or gained over the next ante included), and $9 less money held every ante per rental; the jokers add the money a round won pays on the board held against your board, and yours against it without the jokers that pay money, each on the same rounds of this ante's plain blinds won by both (scoring, discards, the round's end, hands left; counted past $0.5 an ante and 2 standard errors), to the money held every ante, with what they pay besides a round's play (Rocket's raises at the bosses ahead, Egg's sell value, To the Moon's interest). Your sellable jokers are let go by then where that leaves no less: replaced by a typical find in their place, or sold outright (no find: the sale counted once, its slot left empty to Ante 8, a Negative's gone with it), whichever leaves more, their money (income, rent) gone with them; selling one now is an option of its own (its rounds without it, its sale, the run with it let go, and the round's rent and money it would be held for when the projection lets it go anyway; its ×1.00 is keeping it), and a sellable option counts at least as a typical find less its price net of what selling it gives back; eternal ones stay, however weak. ×1.00 = as good as a typical find.",
         top_hand.map_or("your main hand", |h| h.name())
     );
+    // which of your jokers it lets go here, and what selling one does that isn't modelled
+    let let_go: Vec<String> = (0..ctx.base.jokers.len())
+        .filter(|&i| lr.is_let_go(i))
+        .map(|i| {
+            let name = data.name(&ctx.base.jokers[i].key);
+            if lr.is_sold(i) {
+                let notes = sale_unmodelled(&ctx, i);
+                if notes.is_empty() { format!("{name} sold") } else { format!("{name} sold ({})", notes.join("; ")) }
+            } else {
+                format!("{name} replaced")
+            }
+        })
+        .collect();
+    let long_note = if let_go.is_empty() { long_note } else { format!("{long_note} Let go by then here: {}.", let_go.join(", ")) };
     let outlook = if quick_blind { None } else { archetype_outlook(&ctx, run, data, &pool_entries, &hand_mix) };
 
     lap("outlook");
@@ -2002,7 +2060,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             "Card order within a play: +Mult cards first, Glass/Polychrome last.",
             "Scaling jokers keep their current value in the blinds ahead. By Ante 8, the ones a round changes grow or fade as the simulated player's rounds at this ante's plain blind sizes leave them (yours by a player that plays to the round's goals, their worths from a projection that keeps them; a shop joker's by a player that plays only to win); the rest by a table.",
             "Blue Seal planets by Ante 8 assume a consumable held at round end in a measured share of rounds (one run).",
-            "With your joker slots full, the joker a shop or pool joker replaces is chosen by the shop ranking's measure: the chance through this ante's hardest round × the next ante's boss × the geometric mean of the long run with that sale (its income and growth by Ante 8) and the strength at the next ante, with Mr. Bones' save counted (the shop ranking itself doesn't count it yet); the swaps and places raced on the same simulated rounds (to the full count), those it can't tell apart reported as ties; when no swap gets through 20% this round, the score reached decides and no ties are shown, as in the shop ranking (heuristic budget: at most 6 swaps after 32 rounds, 4 after 64, 3 after 128; a sale's places that play the first 32 rounds the same count as one). A Negative joker is never the one sold to make room (its slot goes with it). A joker's money is the money a round won pays on the board with it against without it, on the same rounds of this ante's plain blinds (scoring, discards, the round's end, hands left); a joker whose money that doesn't reach (Gift Card, Credit Card, Matador's boss payout) is said \"not modelled\" on an option that sells it. The pool's quick screen tries only the joker whose removal leaves most by the same measure. A perished joker is the one sold.",
+            "With your joker slots full, the joker a shop or pool joker replaces is chosen by the shop ranking's measure: the chance through this ante's hardest round × the next ante's boss × the geometric mean of the long run with that sale (its income and growth by Ante 8) and the strength at the next ante, with Mr. Bones' save counted (the shop ranking itself doesn't count it yet); the swaps and places raced on the same simulated rounds (to the full count), those it can't tell apart reported as ties; when no swap gets through 20% this round, the score reached decides and no ties are shown, as in the shop ranking (heuristic budget: at most 6 swaps after 32 rounds, 4 after 64, 3 after 128; a sale's places that play the first 32 rounds the same count as one). A Negative joker is never the one sold to make room (its slot goes with it). What a sale does that isn't modelled is said on the option (a joker that acts when sold: Diet Cola, Invisible Joker; Campfire's growth from it). A joker's money is the money a round won pays on the board with it against without it, on the same rounds of this ante's plain blinds (scoring, discards, the round's end, hands left); a joker whose money that doesn't reach (Gift Card, Credit Card, Matador's boss payout) is said \"not modelled\" on an option that sells it. The pool's quick screen tries only the joker whose removal leaves most by the same measure. A perished joker is the one sold.",
         ]
         .into_iter()
         .chain(grows.then_some(
@@ -2249,15 +2307,10 @@ fn evaluate_candidate(lr: &value::LongRun, j: Joker, cost: i64, rental: bool, ba
         sell_index,
         sell_tied: vec![],
     };
-    // A joker sold whose game role is money but whose money the engine doesn't pay
-    // (`engine::PAYS_MONEY`: Gift Card's sell values, Credit Card's debt) is given up as if it
-    // earned nothing: said on the option, never silently
-    let unmodelled_money = |i: usize| roles(&base.jokers[i]).contains(&"economy") && !crate::engine::PAYS_MONEY.contains(&base.jokers[i].key.as_str());
     let simulate = |(label, b, removed, t, (slot, _)): &Pick, n: usize| {
         let r: Vec<&Joker> = removed.iter().collect();
         let mut c = candidate(label.clone(), *slot, t, ctx.odds(b, &[&j], &r, n));
-        if let Some(i) = slot.filter(|&i| unmodelled_money(i)) {
-            let note = format!("not modelled: {}'s money effect (counted as nothing it would give up)", data.name(&base.jokers[i].key));
+        for note in slot.map(|i| sale_unmodelled(ctx, i)).unwrap_or_default() {
             c.note = Some(c.note.take().map_or(note.clone(), |n| format!("{n} · {note}")));
         }
         c
@@ -2346,6 +2399,27 @@ fn evaluate_candidate(lr: &value::LongRun, j: Joker, cost: i64, rental: bool, ba
     }
     c.sell_tied = tied;
     c
+}
+
+/// What selling your joker `i` does that isn't modelled, said on every option that sells it,
+/// never silently: a joker whose game role is money but whose money the engine doesn't pay
+/// (`engine::PAYS_MONEY`: Gift Card's sell values, Credit Card's debt; given up as if it earned
+/// nothing), one that acts when it's sold (`engine::ACTS_WHEN_SOLD`), and the jokers left that
+/// grow from a sale (`engine::GROWS_FROM_SALES`); a debuffed one does neither
+fn sale_unmodelled(ctx: &Ctx, i: usize) -> Vec<String> {
+    let (jokers, data) = (&ctx.base.jokers, ctx.data);
+    let name = |k: usize| data.name(&jokers[k].key);
+    let mut out = vec![];
+    if !jokers[i].debuff && roles(&jokers[i]).contains(&"economy") && !crate::engine::PAYS_MONEY.contains(&jokers[i].key.as_str()) {
+        out.push(format!("not modelled: {}'s money effect (counted as nothing it would give up)", name(i)));
+    }
+    if !jokers[i].debuff && crate::engine::ACTS_WHEN_SOLD.contains(&jokers[i].key.as_str()) {
+        out.push(format!("not modelled: what {} does when sold", name(i)));
+    }
+    for k in (0..jokers.len()).filter(|&k| k != i && !jokers[k].debuff && crate::engine::GROWS_FROM_SALES.contains(&jokers[k].key.as_str())) {
+        out.push(format!("not modelled: {}'s growth from the sale", name(k)));
+    }
+    out
 }
 
 /// Whether moving this joker around can change a score.
@@ -3206,7 +3280,7 @@ fn rank_options(out: &mut [ShopOption], base_reach: f64, next_rounds: usize) {
             _ => std::cmp::Ordering::Equal,
         };
         // Keeping your money (next round / skip the pack) wins a tie: spending only beats it
-        // when it's actually better, not within noise
+        // when it's actually better, not within noise (a sale too: leaving keeps the joker, D8)
         let keep = |o: &ShopOption| matches!(o.kind.as_str(), "leave" | "skip");
         let by_keep = keep(b).cmp(&keep(a));
         let first = if trouble { by_reach.then(tier(a).cmp(&tier(b))) } else { tier(a).cmp(&tier(b)).then(by_keep).then(by_flex).then(by_reach) };
@@ -3847,7 +3921,7 @@ fn played_for(ctx: &Ctx, hand_mix: &[HandShare], growths: value::Growths, pool: 
         lr.round_goals(planets, dollar, false, None, &bb)
     };
     let mut played = growths.clone();
-    // a joker still replaced by the projection built on what the runs leave is worth nothing to
+    // a joker still let go by the projection built on what the runs leave is worth nothing to
     // Best play: it's dropped from the goals and the runs played once more without it, so the
     // others aren't measured by a player that gives things up for it (once, not to a fixed point)
     for again in [false, true] {
@@ -3860,11 +3934,11 @@ fn played_for(ctx: &Ctx, hand_mix: &[HandShare], growths: value::Growths, pool: 
             break;
         }
         let lr = value::LongRun::new(ctx, hand_mix, &played, pool, per_rarity);
-        let replaced: Vec<u32> = ctx.base.jokers.iter().enumerate().filter(|(i, _)| lr.is_replaced(*i)).map(|(_, j)| j.id).collect();
-        if !goals.jokers.iter().any(|w| replaced.contains(&w.id)) {
+        let let_go: Vec<u32> = ctx.base.jokers.iter().enumerate().filter(|(i, _)| lr.is_let_go(*i)).map(|(_, j)| j.id).collect();
+        if !goals.jokers.iter().any(|w| let_go.contains(&w.id)) {
             break;
         }
-        std::sync::Arc::make_mut(&mut goals.jokers).retain(|w| !replaced.contains(&w.id));
+        std::sync::Arc::make_mut(&mut goals.jokers).retain(|w| !let_go.contains(&w.id));
     }
     played
 }
@@ -5376,7 +5450,7 @@ mod tests {
         });
         assert!(!lasts);
         assert_eq!(worth, ([0.0; 3], 0.0));
-        // (the plain Joker, weaker than a typical find, is replaced by one: `replaced`)
+        // (the plain Joker, weaker than a typical find, is replaced by one: `Fate::Replaced`)
         assert!(!keys.contains(&"j_selzer".to_string()) && keys[0] == "j_green_joker", "{keys:?}");
         assert_eq!(greens, vec![20.0]);
         // the same jokers kept as on the board without Seltzer (none replaced by mistake)
@@ -5519,10 +5593,136 @@ mod tests {
             let mut r = shop_run(&[("j_golden", None, None), ("j_joker", None, None)], &[]);
             r.dollars = 0.0;
             r.jokers[0].ability["extra"] = dollars.into();
-            with_long_run_mix(&r, &mix, |lr| !lr.is_replaced(0))
+            with_long_run_mix(&r, &mix, |lr| !lr.is_let_go(0))
         };
         assert!(kept(20));
         assert!(!kept(0));
+    }
+
+    #[test]
+    fn the_projection_sells_a_negative_rental_worth_less_than_its_rent() {
+        // A Negative rental can't be replaced by a find (its slot goes with it): kept, it costs
+        // $9 an ante to Ante 8. Judged by the run's value, the projection sells 8 Ball outright
+        // (it scores nothing) and keeps the Joker (+4 Mult is worth its rent there).
+        let mix = [HandShare { hand: "Pair".into(), share: 1.0, played: 1.0, mean: 1.0 }];
+        let let_go = |key: &str| {
+            let mut r = shop_run(&[(key, Some(Edition::Negative), None), ("j_joker", None, None)], &[]);
+            r.dollars = 5.0;
+            r.jokers[0].rental = true;
+            with_long_run_mix(&r, &mix, |lr| lr.is_let_go(0))
+        };
+        assert!(let_go("j_8_ball"));
+        assert!(!let_go("j_joker"));
+    }
+
+    #[test]
+    fn the_find_a_replaced_joker_leaves_goes_where_it_was_chosen() {
+        // Mail-In Rebate paying nothing, leftmost before two +Mult Jokers, is replaced by a
+        // typical find (×1.25) chosen at the right end, after the +Mult: the projected board
+        // holds it there, not in Mail-In's place
+        let mix = [HandShare { hand: "Pair".into(), share: 1.0, played: 1.0, mean: 1.0 }];
+        let mut r = shop_run(&[("j_mail", None, None), ("j_joker", None, None), ("j_joker", None, None)], &[]);
+        r.jokers[0].ability["extra"] = 0.into();
+        let keys = with_long_run_mix(&r, &mix, |lr| {
+            assert!(lr.is_let_go(0));
+            lr.project(&|_| true, r.dollars).jokers.iter().map(|j| j.key.clone()).collect::<Vec<_>>()
+        });
+        assert_eq!(keys, ["j_joker", "j_joker", "stand-in"]);
+    }
+
+    #[test]
+    fn a_negative_joker_gone_by_ante_8_takes_its_slot_with_it() {
+        // A perishable that runs out before Ante 8 leaves the projected board; a Negative one
+        // takes its slot with it (card.lua `Card:remove_from_deck`), so no stand-in fills it
+        let l0 = |edition: Option<Edition>| {
+            let mut r = shop_run(&[("j_joker", edition, Some(3)), ("j_joker", None, None)], &[]);
+            // (a slot free besides the one an option is compared in)
+            r.joker_slots += 1;
+            with_long_run(&r, |lr| lr.l0)
+        };
+        assert!(l0(Some(Edition::Negative)) < l0(None) * 0.99, "{} {}", l0(Some(Edition::Negative)), l0(None));
+    }
+
+    #[test]
+    fn a_rental_that_does_nothing_is_offered_for_sale_and_one_that_helps_is_kept() {
+        // A perished Greedy Joker with the rental sticker scores nothing and still pays $3 at
+        // each round's end (card.lua `Card:calculate_rental`): selling it is an option, its
+        // rounds the same as leaving's, its sale and a round's rent more, which on this weak
+        // board's levels clears the ranking's noise; selling the Joker that scores is below
+        let mut r = shop_run(&[("j_joker", None, None), ("j_greedy_joker", Some(Edition::Negative), Some(0))], &[]);
+        r.jokers[1].rental = true;
+        let a = analyze(&r, GameData::bundled(), None, &quick());
+        let pos = |label: &str| a.options.iter().position(|o| o.label == label).unwrap_or_else(|| panic!("no {label}: {:?}", a.options.iter().map(|o| &o.label).collect::<Vec<_>>()));
+        let (dead, live, leave) = (pos("sell Greedy Joker"), pos("sell Joker"), pos("next round"));
+        assert!((a.options[dead].p_win - a.options[leave].p_win).abs() < 0.02);
+        assert!(dead < leave, "{:?}", a.options.iter().map(|o| (&o.label, o.rank, o.long_mult)).collect::<Vec<_>>());
+        assert!(live > leave);
+        assert_eq!(a.options[dead].sell_key.as_deref(), Some("j_greedy_joker"));
+    }
+
+    #[test]
+    fn selling_a_joker_the_run_lets_go_anyway_saves_the_rounds_rent() {
+        // A perished Greedy Joker is gone from the projection either way: selling it now also
+        // saves the $3 its sticker would cost at the next round's end (not its sale: the
+        // projection sells it by then too)
+        let mix = [HandShare { hand: "Pair".into(), share: 1.0, played: 1.0, mean: 1.0 }];
+        let sold = |rental: bool| {
+            let mut r = shop_run(&[("j_joker", None, None), ("j_greedy_joker", None, Some(0))], &[]);
+            r.jokers[1].rental = rental;
+            with_long_run_mix(&r, &mix, |lr| lr.sold_now(1).unwrap())
+        };
+        let (rental, plain) = (sold(true), sold(false));
+        assert!(rental > plain, "{rental} {plain}");
+    }
+
+    #[test]
+    fn selling_a_joker_the_run_lets_go_anyway_is_worth_only_the_round_it_saves() {
+        // Two Negative 8 Balls score nothing and the projection sells both by Ante 8 (their
+        // sales in its money, one `once` on the sum): selling one now leads to the same run, so
+        // it's worth ×1 exactly, $23 held (an interest step at $25 the two sales cross together)
+        let mix = [HandShare { hand: "Pair".into(), share: 1.0, played: 1.0, mean: 1.0 }];
+        let mut r = shop_run(&[("j_8_ball", Some(Edition::Negative), None), ("j_8_ball", Some(Edition::Negative), None), ("j_joker", None, None)], &[]);
+        r.dollars = 23.0;
+        with_long_run_mix(&r, &mix, |lr| {
+            assert!(lr.is_sold(0) && lr.is_sold(1));
+            assert!((lr.sold_now(0).unwrap() - 1.0).abs() < 1e-9, "{}", lr.sold_now(0).unwrap());
+        });
+        // a rental's adds the rent of the round it would be held for
+        r.jokers[0].rental = true;
+        with_long_run_mix(&r, &mix, |lr| assert!(lr.sold_now(0).unwrap() > 1.0 + 1e-9, "{}", lr.sold_now(0).unwrap()));
+    }
+
+    #[test]
+    fn leaving_the_shop_wins_a_tie_with_a_sale() {
+        // Within the ranking's noise, keeping the joker (leaving) goes first (D8: leaving keeps
+        // the joker to sell at a later shop)
+        let opt = |label: &str, kind: &str, long: f64, reach: Option<f64>| ShopOption {
+            tied: false, rank: None, sell_index: None, sell_key: None, survive: Some(0.9), survive_next: None, next_p: None, next_strength: None, flex: None, reach,
+            label: label.into(), kind: kind.into(), cost: 0, p_win: 0.9, note: String::new(), money_after: 0.0,
+            interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: Some(long), key: None, desc: None,
+        };
+        let mut v = vec![opt("sell Joker", "sell", 1.005, Some(0.6)), opt("next round", "leave", 1.0, Some(0.6))];
+        rank_options(&mut v, 0.6, 300);
+        assert_eq!(v[0].label, "next round");
+        assert!(v[1].tied);
+        // clearly better, it goes first
+        let mut v = vec![opt("sell Joker", "sell", 1.2, Some(0.6)), opt("next round", "leave", 1.0, Some(0.6))];
+        rank_options(&mut v, 0.6, 300);
+        assert_eq!(v[0].label, "sell Joker");
+    }
+
+    #[test]
+    fn a_sale_says_what_it_does_that_isnt_modelled() {
+        // Campfire grows when a card is sold (card.lua `selling_card`), not modelled: said on the
+        // option that sells the Joker next to it, not when Campfire is debuffed
+        let note = |debuff: bool| {
+            let mut r = shop_run(&[("j_joker", None, None), ("j_campfire", None, None)], &[]);
+            r.jokers[1].debuff = debuff;
+            let a = analyze(&r, GameData::bundled(), None, &quick());
+            a.options.iter().find(|o| o.label == "sell Joker").unwrap().note.clone()
+        };
+        assert!(note(false).contains("not modelled: Campfire's growth from the sale"), "{}", note(false));
+        assert!(!note(true).contains("Campfire"));
     }
 
     #[test]
@@ -5554,6 +5754,9 @@ mod tests {
             let mut r = shop_run(&[("j_red_card", None, None), (other, None, None), ("j_joker", None, None)], &[]);
             r.jokers[0].ability["mult"] = 30.into();
             r.jokers[1].eternal = true;
+            // (kept too: a joker let go nets its sale less a find's price, worth more or less at
+            // $37 than at $49; this compares the income alone)
+            r.jokers[2].eternal = true;
             r.dollars = dollars;
             with_long_run_mix(&r, &mix, |lr| lr.board_with(&Gain::default()))
         };
@@ -5573,6 +5776,9 @@ mod tests {
         let board = |dollars: f64| {
             let mut r = shop_run(&[("j_red_card", None, None), ("j_joker", None, None)], &[]);
             r.jokers[0].ability["mult"] = 30.into();
+            // (kept: a joker let go nets its sale less a find's price, which costs more at $25,
+            // an interest step lower, than at $45; this compares the spare money alone)
+            r.jokers[1].eternal = true;
             r.dollars = dollars;
             with_long_run_mix(&r, &mix, |lr| lr.board_with(&Gain::default()))
         };

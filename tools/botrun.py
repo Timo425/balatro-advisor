@@ -25,8 +25,9 @@ verdict on the advice. As of 2026-10-24 the bot:
   names; the jokers' order after each shop (the advisor's `order`, one for the board: no
   order is advised per hand, docs/design.md gap 37).
 - doesn't: tarots and spectrals (bought or in packs), vouchers, Arcana, Spectral and Standard
-  packs, "use X first" in a blind, skipping a blind (always plays it; the advisor isn't asked),
-  selling a joker on its own. Counted in `not_followed`, except skipping a blind.
+  packs, "use X first" in a blind, skipping a blind (always plays it; the advisor isn't asked).
+  Counted in `not_followed`, except skipping a blind. Since 2026-10-25 it also sells a joker on
+  its own when the advisor's "sell X" option clears keeping the money (`worth`).
 - needs: the bot profile (3) with every joker unlocked, as the owner's (the advisor's shop pool
   assumes every joker unlocked, gap 38); Steamodded's guard against saving in an open pack
   lifted in the bot's own copy (BotMods/Steamodded/lovely/fixes.toml), or the advisor never
@@ -200,13 +201,13 @@ def shop(sims, log):
             if o.get("unaffordable") or o["label"].endswith("(you have it)") or o["label"].startswith("pick "):
                 continue
             kind, key = o["kind"], o.get("key")
-            if (kind, key) in failed:
+            if (kind, key, o.get("sell_index")) in failed:
                 continue
             try:
                 acted = take(o, a, gs, money, rerolls, sims, log)
             except RpcError as e:
                 log.append(f"shop {o['label']} failed: {e}")
-                failed.add((kind, key))
+                failed.add((kind, key, o.get("sell_index")))
                 continue
             if acted == "reroll":
                 rerolls += 1
@@ -281,6 +282,11 @@ def take(o, a, gs, money, rerolls, sims, log):
         log.append(f"pack {o['label']}")
         open_pack(sims, log)
         return "pack"
+    if kind == "sell":
+        if not sell_for(o, gs):
+            return None
+        log.append(o["label"])
+        return "sell"
     if kind == "reroll" and rerolls < 2 and money - o["cost"] >= 5:
         rpc("reroll")
         log.append("reroll")
