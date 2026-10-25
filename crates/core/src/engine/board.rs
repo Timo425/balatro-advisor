@@ -27,14 +27,13 @@ impl Board {
             }
         }
         let full = s.full_deck();
-        let tally = |f: &dyn Fn(&Card) -> bool| full.iter().filter(|c| f(c)).count() as i64;
         let blind = s.current_blind.as_ref().map_or_else(BlindRules::default, |b| BlindRules {
             key: b.key.clone(),
             disabled: b.disabled,
             eye_seen: b.hands_seen.iter().filter_map(|h| HandType::from_name(h)).fold(0, |m, h| m | h.bit()),
             mouth_only: b.only_hand.as_deref().and_then(HandType::from_name),
         });
-        Board {
+        let mut b = Board {
             // each told apart from its copies by its place (`Joker::id`)
             jokers: s.jokers.iter().enumerate().map(|(i, j)| Joker { id: i as u32 + 1, ..Joker::from_save(j, data) }).collect(),
             joker_slots: s.joker_slots,
@@ -57,11 +56,13 @@ impl Board {
             hands_played: s.hands_played,
             tarots_used: s.tarots_used,
             starting_deck_size: s.starting_deck_size,
-            playing_cards: full.len() as i64,
+            playing_cards: 0,
             deck_remaining: s.draw_pile.len() as i64,
-            steel_tally: tally(&|c| c.enhancement == Some(Enhancement::Steel)),
-            stone_tally: tally(&|c| c.enhancement == Some(Enhancement::Stone)),
-            driver_tally: tally(&|c| c.enhancement.is_some()),
+            steel_tally: 0,
+            stone_tally: 0,
+            driver_tally: 0,
+            nine_tally: 0,
+            planets_used: s.planets_used,
             probability: s.probability_normal,
             idol: s.round_targets.idol.map(|(r, suit): (Rank, Suit)| (r.0, suit)),
             ancient_suit: s.round_targets.ancient_suit,
@@ -72,7 +73,21 @@ impl Board {
             castle_suit: s.round_targets.castle_suit,
             planet_slots: (s.consumable_slots - s.consumables.len() as i64).max(0),
             goals: None,
-        }
+        };
+        b.count_deck(&full);
+        b
+    }
+
+    /// The counts the jokers that read the full deck see, from deck `d` (`#G.playing_cards`,
+    /// card.lua `Card:update`'s tallies: Steel and Stone cards, enhanced cards, 9s that aren't
+    /// Stone): set again whenever the deck changes
+    pub fn count_deck(&mut self, d: &[Card]) {
+        let tally = |f: &dyn Fn(&Card) -> bool| d.iter().filter(|c| f(c)).count() as i64;
+        self.steel_tally = tally(&|c| c.enhancement == Some(Enhancement::Steel));
+        self.stone_tally = tally(&|c| c.enhancement == Some(Enhancement::Stone));
+        self.driver_tally = tally(&|c| c.enhancement.is_some());
+        self.nine_tally = tally(&|c| c.rank.0 == 9 && c.enhancement != Some(Enhancement::Stone));
+        self.playing_cards = d.len() as i64;
     }
 }
 

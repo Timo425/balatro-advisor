@@ -222,6 +222,9 @@ pub struct Extra {
     /// Faceless Joker: face cards a discard needs to pay
     #[serde(default)]
     pub faces: f64,
+    /// Rocket: what its payout rises by at each boss beaten
+    #[serde(default)]
+    pub increase: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -282,6 +285,7 @@ impl Joker {
                 discard_sub: f(e, "discard_sub"),
                 discards: f(e, "discards"),
                 faces: f(e, "faces"),
+                increase: f(e, "increase"),
             },
             _ => Extra::default(),
         };
@@ -366,6 +370,55 @@ impl Joker {
         !self.debuff && self.key == "j_hit_the_road"
     }
 
+    /// What it pays at the end of a won round (card.lua `Card:calculate_dollar_bonus`, called on
+    /// each joker itself by state_events.lua `G.FUNCS.evaluate_round`, so a copy pays nothing;
+    /// none while debuffed): Golden Joker `extra`, Cloud 9 `extra` per 9 in the deck (the board's
+    /// `nine_tally`), Rocket `extra.dollars`, Satellite `extra` per kind of planet used this run
+    /// (`planets_used`), Delayed Gratification `extra` per discard left when none was used.
+    pub fn round_end_dollars(&self, b: &super::Board) -> f64 {
+        if self.debuff {
+            return 0.0;
+        }
+        match self.key.as_str() {
+            "j_golden" => self.extra.n,
+            "j_cloud_9" => self.extra.n * b.nine_tally as f64,
+            "j_rocket" => self.extra.dollars,
+            "j_satellite" => self.extra.n * b.planets_used as f64,
+            "j_delayed_grat" if b.discards_used == 0 => self.extra.n * b.discards_left.max(0) as f64,
+            _ => 0.0,
+        }
+    }
+
+    /// The joker after `n` more bosses beaten (a fraction is a share of one): what a boss's
+    /// round end raises of its payout (card.lua `Card:calculate_joker`, `end_of_round` with
+    /// `G.GAME.blind.boss`, not a copy): Rocket's `extra.dollars` by `extra.increase`. Nothing
+    /// else a boss's end changes (Campfire's reset).
+    pub fn payout_after_bosses(&mut self, n: f64) {
+        if self.key == "j_rocket" && !self.debuff {
+            self.extra.dollars += self.extra.increase * n;
+        }
+    }
+
+    /// What a round's end adds to its own sell value (card.lua `Card:calculate_joker`,
+    /// `end_of_round`, not a copy, not debuffed): Egg's `extra`. Gift Card's, which raises every
+    /// other card's, isn't this.
+    pub fn sell_value_a_round(&self) -> f64 {
+        if self.debuff || self.key != "j_egg" {
+            return 0.0;
+        }
+        self.extra.n
+    }
+
+    /// What it adds to the interest a round pays per $5 held (card.lua `Card:add_to_deck`:
+    /// To the Moon raises `G.GAME.interest_amount` by `extra`; taken back while debuffed,
+    /// `Card:set_debuff`)
+    pub fn interest_added(&self) -> i64 {
+        if self.debuff || self.key != "j_to_the_moon" {
+            return 0;
+        }
+        self.extra.n as i64
+    }
+
     /// Its Mult, ×Mult and Chips as they'll stand once the round is over (`resets_at_round_end`):
     /// what a round leaves of them (`sim::RoundGoals::jokers`)
     pub fn lasting(&self) -> [f64; 3] {
@@ -419,6 +472,32 @@ impl Joker {
         }
     }
 }
+
+/// The jokers whose money the engine pays on any round: while scoring (`score`: Business Card,
+/// Rough Gem, To Do List, Golden Ticket, Reserved Parking), for a discard (`discard_money`: Mail-In
+/// Rebate, Faceless Joker, Trading Card), at a won round's end (`Joker::round_end_dollars`:
+/// Golden Joker, Cloud 9, Rocket, Satellite, Delayed Gratification) and besides a round's play
+/// (`Joker::sell_value_a_round`: Egg; `Joker::interest_added`: To the Moon). A joker whose game
+/// role is money and isn't here (Gift Card, Credit Card, and Matador: the engine pays it, but only
+/// when a boss's rule triggers, and a joker's money is measured on plain blinds) is "not
+/// modelled" where it's given up; a test checks every money joker is one or the other.
+pub const PAYS_MONEY: &[&str] = &[
+    "j_business",
+    "j_rough_gem",
+    "j_todo_list",
+    "j_ticket",
+    "j_reserved_parking",
+    "j_mail",
+    "j_faceless",
+    "j_trading",
+    "j_golden",
+    "j_cloud_9",
+    "j_rocket",
+    "j_satellite",
+    "j_delayed_grat",
+    "j_egg",
+    "j_to_the_moon",
+];
 
 /// The jokers a round changes that grow by taking something from the cards they grow on
 /// (card.lua `Card:calculate_joker`, `before` context: Vampire strips the enhancement of each

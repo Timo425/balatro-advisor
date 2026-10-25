@@ -39,6 +39,10 @@ pub struct RunState {
     pub interest_cap: i64,
     /// Cash per unused hand at cash-out (`modifiers.money_per_hand`, default 1).
     pub money_per_hand: f64,
+    /// Cash per unused discard at cash-out (`modifiers.money_per_discard`: Green Deck's; none
+    /// otherwise)
+    #[serde(default)]
+    pub money_per_discard: f64,
     /// What a shop's first reroll costs (`GAME.base_reroll_cost`; vouchers lower it).
     pub base_reroll_cost: i64,
     pub skips: i64,
@@ -50,6 +54,9 @@ pub struct RunState {
     pub unused_discards: i64,
     /// Tarots used this run (Fortune Teller).
     pub tarots_used: i64,
+    /// Kinds of planet used this run (the Planet entries of `GAME.consumeable_usage`: Satellite)
+    #[serde(default)]
+    pub planets_used: i64,
     /// What The Fool would copy (`GAME.last_tarot_planet`).
     #[serde(default)]
     pub last_tarot_planet: Option<String>,
@@ -632,11 +639,13 @@ pub fn from_value(g: &Value, data: &GameData, path: &Path, age_secs: Option<u64>
         interest_amount: int(game.get("interest_amount")),
         interest_cap: int(game.get("interest_cap")),
         money_per_hand: game.at("modifiers.money_per_hand").num().unwrap_or(1.0),
+        money_per_discard: game.at("modifiers.money_per_discard").num().unwrap_or(0.0),
         base_reroll_cost: game.get("base_reroll_cost").int().unwrap_or(5),
         skips: int(game.get("skips")),
         hands_played: int(game.get("hands_played")),
         unused_discards: int(game.get("unused_discards")),
         tarots_used: int(game.at("consumeable_usage_total.tarot")),
+        planets_used: game.get("consumeable_usage").table().map_or(0, |t| t.entries.iter().filter(|(_, v)| v.get("set").str() == Some("Planet")).count() as i64),
         last_tarot_planet: game.get("last_tarot_planet").str().filter(|k| *k != "c_fool").map(str::to_string),
         starting_deck_size: game.get("starting_deck_size").int().unwrap_or(52),
         most_played_hand: cr.get("most_played_poker_hand").str().unwrap_or_default().to_string(),

@@ -9,7 +9,7 @@
 
 use std::sync::{Mutex, OnceLock};
 
-use super::{best_of_subsets, glass_presence, grow_antes, income_per_ante, interest, money_value_with, par_map, round_mods, sample_hands, seal_planets_a_round, target_race_priced, UsePrice, TARGET_MAX, Candidate, Ctx, HandShare, Spec, TarotValue};
+use super::{best_of_subsets, glass_presence, grow_antes, interest, money_value_with, par_map, round_mods, sample_hands, seal_planets_a_round, target_race_priced, UsePrice, TARGET_MAX, Candidate, Ctx, HandShare, Spec, TarotValue};
 use crate::engine::HandType;
 use crate::data::GameData;
 use crate::engine::{Board, Joker, Kind, RunEvent};
@@ -44,6 +44,51 @@ pub(super) const HELD_AT_ROUND_END: f64 = 1.0 / 4.0;
 /// Booster packs an ante: 2 in each shop (game.lua: `for i = 1, 2` in the shop's booster
 /// area, not refreshed by a reroll), 3 shops an ante. The most packs that can be skipped.
 pub(super) const PACKS_PER_ANTE: f64 = 6.0;
+/// Rounds a board's money is measured on, on each of this ante's three plain blinds
+/// (`LongRun::money_board`, `advise::plain_rounds_of`): the same rounds for every board, so a joker's
+/// money is the difference on the same deals (a joker that rolls, Lucky cards or Bloodstone, shifts
+/// the round's later rolls: noise `MONEY_NOISE` stands for)
+pub(super) const MONEY_ROUNDS: usize = 32;
+/// Money an ante that a measured difference in money must pass to count (`LongRun::money_difference`): below it,
+/// what moved is taken as the draws', not the joker's (the deck path's threshold too, `value_against`)
+pub(super) const MONEY_NOISE: f64 = 0.5;
+
+/// What a change makes a round, `with` against `without` (`LongRun::money_board`,
+/// `advise::plain_round_cash`: each round's cash, `None` for a loss): the mean of their
+/// difference on the rounds both win (a lost round pays nothing that's spent, and a change in
+/// which rounds are won isn't money), counted when it's clear of the draws: past `MONEY_NOISE` an
+/// ante and `MONEY_CLEAR` standard errors of that mean (on few rounds won the error is large; a
+/// joker that pays without changing the play has none). The one measure of a difference in a
+/// round's money (whatif's too).
+pub(crate) fn money_difference(with: &[Option<f64>], without: &[Option<f64>]) -> f64 {
+    let d: Vec<f64> = with.iter().zip(without).filter_map(|(a, b)| Some((*a)? - (*b)?)).collect();
+    if d.is_empty() {
+        return 0.0;
+    }
+    let n = d.len() as f64;
+    let mean = d.iter().sum::<f64>() / n;
+    let se = if d.len() > 1 { (d.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (n - 1.0) / n).sqrt() } else { f64::INFINITY };
+    if (3.0 * mean).abs() > MONEY_NOISE && mean.abs() > MONEY_CLEAR * se { mean } else { 0.0 }
+}
+
+/// The mean money of the rounds won (`advise::plain_round_cash`; nothing when none is)
+pub(crate) fn won_mean(rounds: &[Option<f64>]) -> f64 {
+    let won: Vec<f64> = rounds.iter().flatten().copied().collect();
+    if won.is_empty() { 0.0 } else { won.iter().sum::<f64>() / won.len() as f64 }
+}
+
+/// What joker `j` pays a round besides how the round is played, over `antes` antes, on board `b`
+/// of `run` (`LongRun::payout_besides`; whatif's at 0 antes: this round's rate)
+pub(crate) fn payout_besides(j: &Joker, b: &Board, run: &RunState, antes: f64) -> f64 {
+    let mut later = j.clone();
+    later.payout_after_bosses(((antes - 1.0) / 2.0 + 1.0 / 3.0).max(0.0));
+    later.round_end_dollars(b) - j.round_end_dollars(b) + j.sell_value_a_round() + interest(run.dollars, j.interest_added(), run.interest_cap) as f64
+}
+
+/// Standard errors a measured difference in a round's money must clear to count
+/// (`LongRun::money_difference`): it's the draws' otherwise
+pub(super) const MONEY_CLEAR: f64 = 2.0;
+
 /// Rerolls money buys: at most this many an ante (on top of the one you'd do anyway)
 const REROLLS_BOUGHT_PER_ANTE_MAX: usize = 5;
 
@@ -106,6 +151,11 @@ pub(super) struct LongRun<'a> {
     deck_money: Mutex<std::collections::HashMap<(usize, usize), f64>>,
     /// A joker's decks round by round, by its key (`round_decks`)
     round_decks: Mutex<std::collections::HashMap<String, std::sync::Arc<RoundChange>>>,
+    /// The rounds money is measured on (`advise::plain_rounds_of`: your board, this ante's plain
+    /// blinds)
+    money_rounds: (Board, Vec<RoundStart>),
+    /// A board's money round by round on them (`money_board`), by the board
+    money: Mutex<std::collections::HashMap<String, std::sync::Arc<Vec<Option<f64>>>>>,
 }
 
 /// Antes left to play to the run's end (the one you're in counted half)
@@ -344,7 +394,7 @@ pub(super) fn add_levels(l: crate::engine::Level, n: f64) -> crate::engine::Leve
 pub(super) struct Projected {
     board: Board,
     dollars: f64,
-    /// Money per ante from money jokers minus rent (in `dollars`), and your main hand's level
+    /// Money per ante from the jokers (`income`) minus rent (in `dollars`), and your main hand's level
     /// before the projection's levels: `fill_long` decides what the spare money buys
     pub(super) flow: f64,
     top_base: Option<crate::engine::Level>,
@@ -460,6 +510,8 @@ impl<'a> LongRun<'a> {
             deck_money: Mutex::new(Default::default()),
             round_decks: Mutex::new(Default::default()),
             spare_choice: Mutex::new(Default::default()),
+            money_rounds: super::plain_rounds_of(ctx),
+            money: Mutex::new(Default::default()),
         };
         {
             let before = lr.long_score(&lr.fill_long(lr.project(&|_| true, run.dollars), None, 0.0));
@@ -470,9 +522,10 @@ impl<'a> LongRun<'a> {
                     return false;
                 }
                 // judged by the run's value: the money recomputed on the swapped board (the
-                // joker's income and rent go with it, `project`), the find in its best slot
-                // (the joker's place or the right end, as a joker bought is tried)
-                let p = lr.project(&|k| k != i, run.dollars);
+                // joker's income and rent go with it, the find's comes: `project_as`), the find
+                // in its best slot (the joker's place or the right end, as a joker bought is tried)
+                let find = lr.stand_in(1.25, 0.0, 0.0);
+                let p = lr.project_as(&|k| k != i, run.dollars, 0.0, None, Some(&find), (0, 0, 0));
                 let end = p.jokers.len();
                 let pos = (0..i).filter(|&k| lr.lasts(k)).count().min(end);
                 let mut slots = vec![pos, end];
@@ -516,7 +569,7 @@ impl<'a> LongRun<'a> {
 
     /// Planets on the hand that earns most of your points: half a level per ante as a base,
     /// plus more when money sits above the interest line (runs vary from 0 to 10+ levels).
-    /// `flow`: money per ante from money jokers minus rent (`dollars` already includes it).
+    /// `flow`: money per ante from the jokers minus rent (`dollars` already includes it).
     /// Above the interest line it's in the spare money; the part below the line counts too,
     /// at about $18 an ante for a planet level, so rent costs and income pays even when poor.
     pub fn levels_for(&self, dollars: f64, flow: f64) -> (f64, f64) {
@@ -537,19 +590,118 @@ impl<'a> LongRun<'a> {
         ((2.0 - self.levels_per_ante(dollars, flow, 0.0)) * 20.0).max(0.0)
     }
 
-    /// Money jokers you keep pay every ante, like rent in reverse; one the projection replaces
-    /// (`replaced`) isn't on the board it pays for. `discards`: a round's on that board
-    /// (`discards_on`).
-    fn owned_income(&self, keep: &dyn Fn(usize) -> bool, discards: i64) -> f64 {
-        let run = self.run;
-        let replaced = |i: usize| self.replaced.get().is_some_and(|r| r[i]);
-        run.jokers.iter().enumerate().filter(|(i, sj)| keep(*i) && self.lasts(*i) && !sj.debuff && !replaced(*i)).map(|(_, sj)| income_per_ante(&sj.key, &sj.ability, run, discards, self.antes_left)).sum::<f64>()
+    /// The money your jokers pay every ante on the board projected with the jokers `keep`s
+    /// (those that last, one the projection replaces by its typical find: `replaced`), `added`
+    /// on it and `more` a round (a `Gain`'s), like rent in reverse: your board's money against
+    /// it without the jokers the engine pays money for (`engine::PAYS_MONEY`), and that board's
+    /// against yours, each on the same rounds (`money_difference`: so a copy of a money joker,
+    /// Blueprint's, is counted once, and goes with the joker it copies), 3 rounds an ante; plus
+    /// what they pay besides a round's play (`payout_besides`).
+    fn income(&self, keep: &dyn Fn(usize) -> bool, added: Option<&Joker>, more: (i64, i64, i64)) -> f64 {
+        let jokers = &self.money_rounds.0.jokers;
+        let all = |_: usize| true;
+        let paid = |i: usize| crate::engine::PAYS_MONEY.contains(&jokers[i].key.as_str());
+        let yours = self.money_board(&all, None, (0, 0, 0), false);
+        // (a money joker replaced by its find keeps the find in both)
+        let unpaid = |i: usize| !(self.on_projection(&all, i) && paid(i));
+        let anchor = if (0..jokers.len()).any(|i| !unpaid(i)) { money_difference(&yours, &self.money_board(&unpaid, None, (0, 0, 0), false)) } else { 0.0 };
+        let same = added.is_none() && more == (0, 0, 0) && self.money_mask(keep, false) == self.money_mask(&all, false);
+        let change = if same { 0.0 } else { money_difference(&self.money_board(keep, added, more, false), &yours) };
+        let besides: f64 = (0..jokers.len()).filter(|&i| self.on_projection(keep, i)).map(|i| self.payout_besides(&jokers[i], self.antes_left)).sum::<f64>() + added.map_or(0.0, |j| self.payout_besides(j, self.antes_left));
+        3.0 * (anchor + change + besides)
     }
 
-    /// The discards a fresh round has on projected board `b` with `more` (a `Gain`'s) added:
-    /// its round (`long_spec_for`) as the blind is set on it (`RoundStart::hands_on`)
-    fn discards_on(&self, b: &Board, more: (i64, i64, i64)) -> i64 {
-        self.long_spec_for(b, more).start.hands_on(b).1
+    /// Whether your joker `i` is on the projected board with the jokers `keep`s as itself: kept,
+    /// lasting and not replaced by a typical find
+    fn on_projection(&self, keep: &dyn Fn(usize) -> bool, i: usize) -> bool {
+        keep(i) && self.lasts(i) && !self.replaced.get().is_some_and(|r| r[i])
+    }
+
+    /// The money each round pays on your board as it is (`now`), or as the projection holds it
+    /// with the jokers `keep`s (one that doesn't last left out, one replaced by its typical find,
+    /// `replaced`), with `added` on it and `more` hand size, hands and discards a round (a
+    /// `Gain`'s): the round's cash as the game pays it for how it's played
+    /// (`sim::RoundResult::cash`: scoring, discards, the round's end, hands and discards left),
+    /// `None` for a round lost, on `MONEY_ROUNDS` of each of this ante's three plain blinds, the
+    /// same rounds for every board (`advise::plain_rounds_of`, `advise::plain_round_cash`).
+    /// Measured once for each board.
+    fn money_board(&self, keep: &dyn Fn(usize) -> bool, added: Option<&Joker>, more: (i64, i64, i64), now: bool) -> std::sync::Arc<Vec<Option<f64>>> {
+        let (bb, starts) = &self.money_rounds;
+        let mask = self.money_mask(keep, now);
+        let place = |i: usize| mask.as_bytes()[i] as char;
+        let key = format!("{mask} {more:?} {}", added.map_or(String::new(), |j| serde_json::to_string(j).unwrap_or_default()));
+        if let Some(m) = self.money.lock().unwrap().get(&key) {
+            return m.clone();
+        }
+        let mut b = bb.clone();
+        let mut gone: Vec<&Joker> = vec![];
+        b.jokers = bb
+            .jokers
+            .iter()
+            .enumerate()
+            .filter_map(|(i, j)| match place(i) {
+                'k' => Some(j.clone()),
+                c => {
+                    gone.push(j);
+                    (c == 'r').then(|| self.stand_in(1.25, 0.0, 0.0))
+                }
+            })
+            .collect();
+        b.jokers.extend(added.cloned());
+        let added: Vec<&Joker> = added.into_iter().collect();
+        let starts: Vec<RoundStart> = starts
+            .iter()
+            .map(|s| {
+                let mut s = super::apply_mods(s, &added, &gone);
+                s.hand_size = (s.hand_size + more.0).max(1);
+                s.hands = (s.hands + more.1).max(1);
+                s.discards = (s.discards + more.2).max(0);
+                s
+            })
+            .collect();
+        let m = std::sync::Arc::new(super::plain_round_cash(&b, &starts, MONEY_ROUNDS, self.ctx.opts.seed, (self.run.money_per_hand, self.run.money_per_discard)));
+        self.money.lock().unwrap().insert(key, m.clone());
+        m
+    }
+
+    /// Each of your jokers on the money board (`money_board`): '-' left out (not kept, or, for
+    /// the projection, gone by Ante 8), 'r' replaced by its typical find (`replaced`), 'k' itself
+    fn money_mask(&self, keep: &dyn Fn(usize) -> bool, now: bool) -> String {
+        let replaced = |i: usize| !now && self.replaced.get().is_some_and(|r| r[i]);
+        (0..self.money_rounds.0.jokers.len()).map(|i| if !keep(i) || (!now && !self.lasts(i)) { '-' } else if replaced(i) { 'r' } else { 'k' }).collect()
+    }
+
+    /// What your joker `i` makes a round: the round's money on your board with it against
+    /// without it (`money_difference`), and what it pays besides (`payout_besides`)
+    #[cfg(test)]
+    pub fn owned_money(&self, i: usize) -> f64 {
+        let all = |_: usize| true;
+        money_difference(&self.money_board(&all, None, (0, 0, 0), false), &self.money_board(&|k| k != i, None, (0, 0, 0), false)) + self.payout_besides(&self.money_rounds.0.jokers[i], self.antes_left)
+    }
+
+    /// What joker `j` bought makes a round over `antes` antes on your board projected with the
+    /// jokers `keep`s: the round's money with it against without it (`money_difference`), and
+    /// what it pays besides (`payout_besides`)
+    pub fn added_money(&self, keep: &dyn Fn(usize) -> bool, j: &Joker, antes: f64) -> f64 {
+        money_difference(&self.money_board(keep, Some(j), (0, 0, 0), false), &self.money_board(keep, None, (0, 0, 0), false)) + self.payout_besides(j, antes)
+    }
+
+    /// What joker `j` pays a round besides how the round is played, over `antes` antes (game
+    /// facts in the engine): its round-end payout's rises at the bosses ahead, the mean over the
+    /// rounds ahead of the raises paid by then (an ante's Small and Big Blind after the bosses
+    /// before it, its boss after its own: (antes − 1)/2 + 1/3; the plain blinds measured have no
+    /// boss) (`Joker::payout_after_bosses`: Rocket), the sell value a round adds to it
+    /// (`Joker::sell_value_a_round`: Egg; counted as money, as it's sold for it) and the interest
+    /// it adds at your money (`Joker::interest_added`: To the Moon)
+    fn payout_besides(&self, j: &Joker, antes: f64) -> f64 {
+        payout_besides(j, &self.ctx.base, self.run, antes)
+    }
+
+    /// What a round you play pays on your board besides its reward and interest: its money on
+    /// the rounds won (`money_board` as it is) and the sell value it adds
+    /// (`Joker::sell_value_a_round`)
+    pub fn round_money_now(&self) -> f64 {
+        won_mean(&self.money_board(&|_| true, None, (0, 0, 0), true)) + self.ctx.base.jokers.iter().map(Joker::sell_value_a_round).sum::<f64>()
     }
 
     /// Stand-ins for the jokers you'd find over the run: empty slots get alternating ×1.5,
@@ -579,10 +731,9 @@ impl<'a> LongRun<'a> {
         self.project_as(keep, dollars, extra_rent, None, None, (0, 0, 0))
     }
 
-    /// `project_rent` with joker `i` as `j` now (`changed`), grown from there. The money jokers
-    /// pay on the round of the board valued (`discards_on`): the one projected, with `added`
-    /// (a joker bought, its income counted too: it goes in its slot in `fill_long`) and `more`
-    /// (a `Gain`'s round) on it.
+    /// `project_rent` with joker `i` as `j` now (`changed`), grown from there. The money the
+    /// jokers pay (`income`) on the board with the jokers kept, `added` (a joker bought: it goes
+    /// in its slot in `fill_long`) and `more` (a `Gain`'s round), measured on this ante's rounds.
     pub(super) fn project_as(&self, keep: &dyn Fn(usize) -> bool, dollars: f64, extra_rent: f64, changed: Option<(usize, &Joker)>, added: Option<&Joker>, more: (i64, i64, i64)) -> Projected {
         let (ctx, run) = (self.ctx, self.run);
         let mut b = ctx.base.clone();
@@ -603,15 +754,8 @@ impl<'a> LongRun<'a> {
                 }
             })
             .collect();
-        b.jokers.extend(added.cloned());
-        let discards = self.discards_on(&b, more);
-        b.jokers.truncate(b.jokers.len() - added.is_some() as usize);
-        let added_income = added.map_or(0.0, |j| {
-            let ability = self.data.center(&j.key).map(|c| crate::engine::joker::ability_from_config(&c.config)).unwrap_or_default();
-            income_per_ante(&j.key, &ability, run, discards, self.antes_left)
-        });
-        let rent = self.owned_rent(keep) + (extra_rent - added_income);
-        let flow = self.owned_income(keep, discards) - rent;
+        let rent = self.owned_rent(keep) + extra_rent;
+        let flow = self.income(keep, added, more) - rent;
         let dollars = dollars + flow;
         let top_base = self.top_hand.map(|top| b.levels[top as usize]);
         if let (Some(top), Some(l)) = (self.top_hand, top_base) {
@@ -900,8 +1044,8 @@ impl<'a> LongRun<'a> {
     /// A sellable option you'd later replace is worth at least a typical find, less what it
     /// costs net: its price minus what selling it gives back (Card:set_cost: half the price
     /// paid, at least $1; a rental sells for $1; a free one from a tag still sells for $1).
-    /// A money joker earns while you hold it (about an ante before it's replaced, on the round
-    /// of your board now with it), as a rental pays rent. Scored on the board you'd hold: with
+    /// A money joker earns while you hold it (about an ante before it's replaced: its money a
+    /// round on your board, `added_money`), as a rental pays rent. Scored on the board you'd hold: with
     /// `sold` (the joker the option replaces) gone and its sale counted, against the same
     /// baseline as the option (`ratio`).
     pub fn floor_for(&self, cost: i64, rental: bool, key: &str, sold: Option<usize>) -> f64 {
@@ -909,18 +1053,8 @@ impl<'a> LongRun<'a> {
         let sell = if rental { 1 } else { (cost / 2).max(1) };
         let rent = if rental { RENT_PER_ANTE } else { 0.0 };
         let back = sold.map_or(0, |i| run.jokers[i].sell_value) as f64;
-        let ability = data.center(key).map(|c| crate::engine::joker::ability_from_config(&c.config)).unwrap_or_default();
-        let discards = Joker::from_key(key, data).map_or(0, |j| {
-            let mut held = self.ctx.base.clone();
-            if let Some(i) = sold {
-                held.jokers.remove(i);
-            }
-            held.jokers.push(j.clone());
-            let gone: Vec<&Joker> = sold.map(|i| &self.ctx.base.jokers[i]).into_iter().collect();
-            let start = RoundStart { hands: run.round_hands, discards: run.round_discards, fresh: true, ..Default::default() };
-            super::apply_mods(&start, &[&j], &gone).hands_on(&held).1
-        });
-        let earns = income_per_ante(key, &ability, run, discards, self.antes_left.min(1.0));
+        // (over the ante or so it's held: its boss's raise a third of the time)
+        let earns = Joker::from_key(key, data).map_or(0.0, |j| 3.0 * self.added_money(&|k| Some(k) != sold, &j, self.antes_left.min(1.0)));
         let held = self.fill_long(self.project(&|k| Some(k) != sold, run.dollars), None, self.once(earns - ((cost - sell) as f64) - rent + back));
         self.ratio(self.long_score(&held), sold)
     }
@@ -1125,11 +1259,7 @@ impl<'a> LongRun<'a> {
                 None => Self::add_planets(&mut b, &[], planets),
             }
         }
-        let tally = |e: crate::model::Enhancement| d.iter().filter(|c| c.enhancement == Some(e)).count() as i64;
-        b.steel_tally = tally(crate::model::Enhancement::Steel);
-        b.stone_tally = tally(crate::model::Enhancement::Stone);
-        b.driver_tally = d.iter().filter(|c| c.enhancement.is_some()).count() as i64;
-        b.playing_cards = d.len() as i64;
+        b.count_deck(d);
         let mut sp = self.long_spec_for(&b, (0, 0, 0));
         sp.start.deck = d.to_vec();
         (b, sp.start)
@@ -1186,7 +1316,7 @@ impl<'a> LongRun<'a> {
             let mut used = income.unwrap_or(0.0);
             if income.is_none() {
                 let extra = (st.money - base.money) * 3.0;
-                if extra.abs() > 0.5 {
+                if extra.abs() > MONEY_NOISE {
                     st = self.deck_stats_s(d, dollars, money_once, extra, rounds, planets, first);
                     used = extra;
                 }
@@ -1295,7 +1425,7 @@ impl<'a> LongRun<'a> {
                     m
                 });
                 let extra = (r.iter().map(|x| x.money).sum::<f64>() / r.len().max(1) as f64 - yours) * 3.0;
-                if extra.abs() > 0.5 { (rounds(extra), extra) } else { (r, 0.0) }
+                if extra.abs() > MONEY_NOISE { (rounds(extra), extra) } else { (r, 0.0) }
             }
         };
         (r.iter().map(|x| x.total.max(1.0) / base.mean.max(1.0)).collect(), used)

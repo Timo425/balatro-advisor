@@ -69,6 +69,12 @@ impl BlindRules {
     pub fn active(&self, key: &str) -> bool {
         !self.disabled && self.key == key
     }
+
+    /// Whether it's a boss blind (game.lua `P_BLINDS`: every blind but the Small and Big ones has
+    /// a `boss` table, `G.GAME.blind.boss`), disabled or not
+    pub fn is_boss(&self) -> bool {
+        !self.key.is_empty() && self.key != "bl_small" && self.key != "bl_big"
+    }
 }
 
 /// Everything besides the cards that scoring depends on.
@@ -99,6 +105,14 @@ pub struct Board {
     pub steel_tally: i64,
     pub stone_tally: i64,
     pub driver_tally: i64,
+    /// 9s in the full deck, Stone cards not (Cloud 9's `nine_tally`: card.lua `Card:update`
+    /// counts `get_id() == 9`, and a Stone card's id is never a rank)
+    #[serde(default)]
+    pub nine_tally: i64,
+    /// Kinds of planet used this run (Satellite: card.lua `calculate_dollar_bonus` counts the
+    /// Planet entries of `G.GAME.consumeable_usage`)
+    #[serde(default)]
+    pub planets_used: i64,
     /// `G.GAME.probabilities.normal`.
     pub probability: f64,
     pub idol: Option<(u8, Suit)>,
@@ -141,6 +155,8 @@ impl Board {
             steel_tally: 0,
             stone_tally: 0,
             driver_tally: 0,
+            nine_tally: 0,
+            planets_used: 0,
             probability: 1.0,
             idol: None,
             ancient_suit: None,
@@ -496,13 +512,25 @@ pub fn discard_money(b: &Board, discarded: &[Card]) -> f64 {
     copies.chain(own).sum()
 }
 
-/// Money a won round pays at its end that depends on how it was played (card.lua
-/// `Card:calculate_dollar_bonus`, not debuffed): Delayed Gratification `extra` for each
-/// discard left when none was used. Fixed payouts (Golden Joker, Rocket…) are valued per
-/// ante instead (`income_per_ante`).
+/// Money a won round pays at its end from the jokers (state_events.lua `G.FUNCS.evaluate_round`:
+/// each joker's own `Card:calculate_dollar_bonus`, `Joker::round_end_dollars`; a copy pays
+/// none), after a boss's `end_of_round` raised what it raises (`end_round` runs before the
+/// cash-out: Rocket pays its raised payout for the boss that raised it,
+/// `Joker::payout_after_bosses`). The blind's reward, the hands left and interest are the
+/// round's, not the jokers'.
 pub fn won_round_money(b: &Board) -> f64 {
-    let unused = if b.discards_used == 0 { b.discards_left.max(0) as f64 } else { 0.0 };
-    b.jokers.iter().filter(|jk| !jk.debuff && jk.key == "j_delayed_grat").map(|jk| jk.extra.n * unused).sum()
+    let boss = b.blind.is_boss();
+    b.jokers
+        .iter()
+        .map(|jk| {
+            if !boss {
+                return jk.round_end_dollars(b);
+            }
+            let mut raised = jk.clone();
+            raised.payout_after_bosses(1.0);
+            raised.round_end_dollars(b)
+        })
+        .sum()
 }
 
 impl Board {

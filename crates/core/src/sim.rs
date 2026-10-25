@@ -887,7 +887,9 @@ pub fn discard_money(b: &Board, hand: &[Card], idx: &[usize]) -> f64 {
 }
 
 /// Money a won round pays at its end for how it was played: Gold cards still in hand
-/// (`held_dollars`) and the engine's `won_round_money` (Delayed Gratification).
+/// (`held_dollars`) and the jokers' (`engine::won_round_money`: Golden Joker, Rocket, Cloud 9,
+/// Satellite, Delayed Gratification). The hands left are counted apart (`RoundResult::cash`,
+/// `RoundGoals::per_hand`).
 fn won_money(b: &Board, held: &[Card]) -> f64 {
     held_dollars(held) + crate::engine::won_round_money(b)
 }
@@ -978,12 +980,25 @@ pub struct RoundResult {
     pub money: f64,
     /// Hands not used when it was won (each pays at cash out).
     pub hands_left: i64,
+    /// Discards not used when it was won (a deck that pays for them, Green Deck, pays at cash out)
+    pub discards_left: i64,
     /// Planets from Blue Seal cards held at the end of a won round.
     pub planets: f64,
     /// The most a card drawn this round adds (`RoundGoals::seen`)
     pub seen: f64,
     /// What its hands and discards changed on the jokers (`RoundGoals::grown`)
     pub grown: Grown,
+}
+
+impl RoundResult {
+    /// What the round pays for how it was played, as the game pays it: its `money` (scoring,
+    /// discards, the round's end: Gold cards held, the jokers' `calculate_dollar_bonus`) and, won,
+    /// `per_hand` for each hand left and `per_discard` for each discard left (state_events.lua
+    /// `G.FUNCS.evaluate_round`, `modifiers.money_per_hand` and `money_per_discard`). The blind's
+    /// reward and interest aren't how it was played.
+    pub fn cash(&self, per_hand: f64, per_discard: f64) -> f64 {
+        self.money + if self.won { self.hands_left as f64 * per_hand + self.discards_left as f64 * per_discard } else { 0.0 }
+    }
 }
 
 fn draw(hand: &mut Vec<Card>, deck: &mut Vec<Card>, size: usize) {
@@ -3371,7 +3386,7 @@ fn play_round(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[Use]) ->
                     money += won_money(&b, &hand);
                     let seen = seen_by.iter().map(|e| e.1).fold(0.0, f64::max);
                     let planets = seal_planets(&b, &hand);
-                    return (RoundResult { total, won: true, saved: false, best_hand, plays, money, hands_left: hands, planets, seen, grown }, b);
+                    return (RoundResult { total, won: true, saved: false, best_hand, plays, money, hands_left: hands, discards_left: discards, planets, seen, grown }, b);
                 }
                 draw(&mut hand, &mut deck, size);
                 note_seen(&b, &hand, &mut seen_by);
@@ -3391,7 +3406,7 @@ fn play_round(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[Use]) ->
     let bones = b.jokers.iter().any(|j| j.key == "j_mr_bones" && !j.debuff);
     let won = total >= start.target;
     let seen = seen_by.iter().map(|e| e.1).fold(0.0, f64::max);
-    (RoundResult { total, won, saved: !won && bones && total >= 0.25 * start.target, best_hand, plays, money, hands_left: 0, planets: 0.0, seen, grown }, b)
+    (RoundResult { total, won, saved: !won && bones && total >= 0.25 * start.target, best_hand, plays, money, hands_left: 0, discards_left: 0, planets: 0.0, seen, grown }, b)
 }
 
 /// What rounds played one after another leave of a joker a round changes (`grown_over`): its
@@ -3523,9 +3538,12 @@ pub struct Stats {
     pub p50: f64,
     pub p90: f64,
     pub n: usize,
-    /// Mean money earned while scoring, per round (round simulations only).
+    /// Mean money earned while playing, per round (`RoundResult::money`; round simulations only).
     #[serde(skip)]
     pub money: f64,
+    /// Mean hands left at the end, per round (0 for a round lost; round simulations only)
+    #[serde(skip)]
+    pub hands_left: f64,
     /// Chance of getting through with Mr. Bones' save counted (round simulations only).
     #[serde(skip)]
     pub p_saved: f64,
@@ -3538,7 +3556,7 @@ impl Stats {
         }
         v.sort_by(f64::total_cmp);
         let q = |p: f64| v[((v.len() - 1) as f64 * p).round() as usize];
-        Stats { mean: v.iter().sum::<f64>() / v.len() as f64, p10: q(0.1), p50: q(0.5), p90: q(0.9), n: v.len(), money: 0.0, p_saved: 0.0 }
+        Stats { mean: v.iter().sum::<f64>() / v.len() as f64, p10: q(0.1), p50: q(0.5), p90: q(0.9), n: v.len(), money: 0.0, hands_left: 0.0, p_saved: 0.0 }
     }
 }
 
@@ -3609,8 +3627,10 @@ pub fn round_odds(b: &Board, start: &RoundStart, sims: usize, seed: u64) -> (f64
     let wins = results.iter().filter(|r| r.won).count();
     let saved = results.iter().filter(|r| r.saved).count();
     let money = results.iter().map(|r| r.money).sum::<f64>() / results.len().max(1) as f64;
+    let hands_left = results.iter().map(|r| if r.won { r.hands_left as f64 } else { 0.0 }).sum::<f64>() / results.len().max(1) as f64;
     let mut st = Stats::of(results.into_iter().map(|r| r.total).collect());
     st.money = money;
+    st.hands_left = hands_left;
     st.p_saved = (wins + saved) as f64 / sims.max(1) as f64;
     (wins as f64 / sims.max(1) as f64, st)
 }

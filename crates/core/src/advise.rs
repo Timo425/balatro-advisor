@@ -21,6 +21,7 @@ mod compare;
 pub use compare::EQUAL as TIE_MARGIN;
 mod play;
 mod value;
+pub(crate) use value::{money_difference, payout_besides, won_mean};
 use value::Gain;
 
 #[derive(Debug, Clone)]
@@ -626,11 +627,12 @@ fn non_scoring_note(key: &str) -> Option<&'static str> {
         "j_juggler" | "j_troubadour" | "j_turtle_bean" | "j_merry_andy" | "j_drunkard" | "j_burglar" => {
             "Changes hand size / hands / discards: simulated"
         }
-        "j_golden" | "j_rocket" | "j_cloud_9" | "j_to_the_moon" | "j_satellite" => {
-            "Economy: money per round, not a score (heuristic)"
+        "j_golden" | "j_rocket" | "j_cloud_9" | "j_satellite" | "j_delayed_grat" => {
+            "Economy: money at the end of a round won, measured on this ante's plain blinds and counted as income (Rocket's raises at the bosses ahead counted; Cloud 9's 9s and Satellite's planets as they are now)"
         }
-        "j_delayed_grat" => "Economy: pays for discards never used, simulated in this round's play; not counted as income in the long run",
-        "j_egg" | "j_gift" => "Economy: grows sell value (heuristic)",
+        "j_to_the_moon" => "Economy: $1 more interest per $5 held, at your money now, counted as income",
+        "j_egg" => "Economy: its sell value grows each round, counted as income",
+        "j_gift" => "Economy: grows every card's sell value (not modelled)",
         "j_credit_card" => "Economy: lets you go to -$20",
         "j_chaos" => "Utility: 1 free reroll per shop",
         "j_ring_master" => "Utility: duplicate jokers can appear",
@@ -842,15 +844,11 @@ impl Ctx<'_> {
     }
 }
 
-/// `b` with its counts of your deck's cards from `d` (Steel and Stone cards, enhanced cards,
-/// cards in all): what jokers that read the deck see once it's changed
+/// `b` with its counts of your deck's cards from `d` (`Board::count_deck`): what jokers that
+/// read the deck see once it's changed
 fn board_with_deck(b: &Board, d: &[Card]) -> Board {
     let mut b = b.clone();
-    let tally = |e: crate::model::Enhancement| d.iter().filter(|c| c.enhancement == Some(e)).count() as i64;
-    b.steel_tally = tally(crate::model::Enhancement::Steel);
-    b.stone_tally = tally(crate::model::Enhancement::Stone);
-    b.driver_tally = d.iter().filter(|c| c.enhancement.is_some()).count() as i64;
-    b.playing_cards = d.len() as i64;
+    b.count_deck(d);
     b
 }
 
@@ -1633,10 +1631,11 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             o.note = format!("{}; room to hold more tarots and planets not modelled", o.note);
         }
         if g.round() != (0, 0, 0) {
-            // projected rounds are played out with no target (`LongRun::long_spec_for`): every
-            // hand is played, so none is left to pay at cash-out, and what a hand or discard more
-            // is worth is what the simulated player makes of it there (known gap 12)
-            o.note = format!("{}; a hand or discard more valued on rounds played out with no target (estimate: what the simulated player makes of it there); money for hands left not modelled", o.note);
+            // projected rounds are played out with no target (`LongRun::long_spec_for`): what a
+            // hand or discard more is worth is what the simulated player makes of it there (known
+            // gap 12); its money (a hand left at cash-out, a discard that pays) is measured on
+            // this ante's plain blinds (`LongRun::money_board`)
+            o.note = format!("{}; a hand or discard more valued on rounds played out with no target (estimate: what the simulated player makes of it there), its money on this ante's plain blinds", o.note);
         }
     }
     // Economy vouchers: money they're worth every ante (an estimate, labelled), plus their price
@@ -1764,16 +1763,16 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         // Rent is charged at the end of a round you play (card.lua calculate_rental): a
         // skipped blind has no round end, so skipping saves it.
         let rent_now = run.jokers.iter().filter(|j| j.rental).count() as f64 * 3.0;
-        // Only a played round has an end: money jokers pay (a third of an ante's income) and
+        // Only a played round has an end: it pays for how it's played (the hands left, the
+        // cards, the money jokers: `LongRun::round_money_now`, on this ante's plain blinds) and
         // a Blue Seal held then makes a planet (and grows Constellation)
-        let discards = run.round_at_blind_set(Default::default()).1;
-        let round_income: f64 = run.jokers.iter().filter(|j| !j.debuff).map(|j| income_per_ante(&j.key, &j.ability, run, discards, 1.0) / 3.0).sum();
+        let round_money = lr.round_money_now();
         let blue = run.full_deck().iter().filter(|c| c.seal == Some(crate::model::Seal::Blue)).count();
         // the money cards counted as used either way (above) don't hold a slot at round end
         let used = run.consumables.iter().filter(|c| tarots.iter().any(|t| t.key == c.key && t.money_gain > 0.0)).count() as i64;
         let free = (run.consumable_slots - run.consumables.len() as i64 + used).max(0) as usize;
         let seal_planets = seal_planets_a_round(round_now(run), blue, run.full_deck().len(), free);
-        let gain = held + bv.reward as f64 + interest(run.dollars + held, run.interest_amount, run.interest_cap) as f64 + run.money_per_hand - rent_now + round_income;
+        let gain = held + bv.reward as f64 + interest(run.dollars + held, run.interest_amount, run.interest_cap) as f64 - rent_now + round_money;
         let play_survive = p_blind * survive_with(run.dollars + gain, k, p_boss);
         let mut play_long = money_long(gain);
         if seal_planets > 0.0 {
@@ -1937,7 +1936,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     let (levels_per_ante, planet_levels) = lr.levels_for(run.dollars + flow_now, flow_now);
     let planet_levels = planet_levels.round() as i64;
     let long_note = format!(
-        "Your board projected {antes_left:.1} antes ahead: growing jokers grown (those that grow from shop events, Red Card and Flash Card, by one pack skip and one reroll an ante, plus 1 per pack's or reroll's price above the interest line, at most 5 an ante, all on the one that grows most per dollar; those a round changes as the simulated player's rounds at this ante's blind sizes leave them), fading ones faded, perishables that run out and jokers those rounds use up dropped, {} +{planet_levels} levels (about {levels_per_ante:.1} per ante with your money), empty slots filled with stand-in jokers (×1.5, +60 Chips or +15 Mult, in proportion to how often your shop pool offers each type). Each option is compared with a typical find (×1.25) in its slot, on whole simulated rounds, with the money it leaves you: its price, what selling a joker gives back or a money card gives (spent once: ~$4 a pack skip or a reroll at its cost when a joker grows from them (Red Card, Flash Card), else ~$12 a level of your main hand, and ~$4 a planet for Constellation; money counts for less the more you have (the next dollar is worth about half at $20); interest lost or gained over the next ante included), and $9 less money held every ante per rental; money jokers (Golden, Rocket, Cloud 9, To the Moon, Egg, Mail-In Rebate) add their payout per ante. Your sellable jokers worth less than a typical find in their place (their money gone with them) are assumed replaced by then, and a sellable option counts at least as a typical find less its price net of what selling it gives back; eternal ones stay, however weak. ×1.00 = as good as a typical find.",
+        "Your board projected {antes_left:.1} antes ahead: growing jokers grown (those that grow from shop events, Red Card and Flash Card, by one pack skip and one reroll an ante, plus 1 per pack's or reroll's price above the interest line, at most 5 an ante, all on the one that grows most per dollar; those a round changes as the simulated player's rounds at this ante's blind sizes leave them), fading ones faded, perishables that run out and jokers those rounds use up dropped, {} +{planet_levels} levels (about {levels_per_ante:.1} per ante with your money), empty slots filled with stand-in jokers (×1.5, +60 Chips or +15 Mult, in proportion to how often your shop pool offers each type). Each option is compared with a typical find (×1.25) in its slot, on whole simulated rounds, with the money it leaves you: its price, what selling a joker gives back or a money card gives (spent once: ~$4 a pack skip or a reroll at its cost when a joker grows from them (Red Card, Flash Card), else ~$12 a level of your main hand, and ~$4 a planet for Constellation; money counts for less the more you have (the next dollar is worth about half at $20); interest lost or gained over the next ante included), and $9 less money held every ante per rental; the jokers add the money a round won pays on the board held against your board, and yours against it without the jokers that pay money, each on the same rounds of this ante's plain blinds won by both (scoring, discards, the round's end, hands left; counted past $0.5 an ante and 2 standard errors), to the money held every ante, with what they pay besides a round's play (Rocket's raises at the bosses ahead, Egg's sell value, To the Moon's interest). Your sellable jokers worth less than a typical find in their place (their money gone with them) are assumed replaced by then, and a sellable option counts at least as a typical find less its price net of what selling it gives back; eternal ones stay, however weak. ×1.00 = as good as a typical find.",
         top_hand.map_or("your main hand", |h| h.name())
     );
     let outlook = if quick_blind { None } else { archetype_outlook(&ctx, run, data, &pool_entries, &hand_mix) };
@@ -2003,7 +2002,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             "Card order within a play: +Mult cards first, Glass/Polychrome last.",
             "Scaling jokers keep their current value in the blinds ahead. By Ante 8, the ones a round changes grow or fade as the simulated player's rounds at this ante's plain blind sizes leave them (yours by a player that plays to the round's goals, their worths from a projection that keeps them; a shop joker's by a player that plays only to win); the rest by a table.",
             "Blue Seal planets by Ante 8 assume a consumable held at round end in a measured share of rounds (one run).",
-            "With your joker slots full, the joker a shop or pool joker replaces is chosen by the shop ranking's measure: the chance through this ante's hardest round × the next ante's boss × the geometric mean of the long run with that sale (its income and growth by Ante 8) and the strength at the next ante, with Mr. Bones' save counted (the shop ranking itself doesn't count it yet); the swaps and places raced on the same simulated rounds (to the full count), those it can't tell apart reported as ties; when no swap gets through 20% this round, the score reached decides and no ties are shown, as in the shop ranking (heuristic budget: at most 6 swaps after 32 rounds, 4 after 64, 3 after 128; a sale's places that play the first 32 rounds the same count as one). A Negative joker is never the one sold to make room (its slot goes with it). Money a joker pays that the income table doesn't (during a round: Business Card, Faceless Joker, To Do List…; Satellite, Gift Card…) isn't counted: an option that sells such a joker says so. The pool's quick screen tries only the joker whose removal leaves most by the same measure. A perished joker is the one sold.",
+            "With your joker slots full, the joker a shop or pool joker replaces is chosen by the shop ranking's measure: the chance through this ante's hardest round × the next ante's boss × the geometric mean of the long run with that sale (its income and growth by Ante 8) and the strength at the next ante, with Mr. Bones' save counted (the shop ranking itself doesn't count it yet); the swaps and places raced on the same simulated rounds (to the full count), those it can't tell apart reported as ties; when no swap gets through 20% this round, the score reached decides and no ties are shown, as in the shop ranking (heuristic budget: at most 6 swaps after 32 rounds, 4 after 64, 3 after 128; a sale's places that play the first 32 rounds the same count as one). A Negative joker is never the one sold to make room (its slot goes with it). A joker's money is the money a round won pays on the board with it against without it, on the same rounds of this ante's plain blinds (scoring, discards, the round's end, hands left); a joker whose money that doesn't reach (Gift Card, Credit Card, Matador's boss payout) is said \"not modelled\" on an option that sells it. The pool's quick screen tries only the joker whose removal leaves most by the same measure. A perished joker is the one sold.",
         ]
         .into_iter()
         .chain(grows.then_some(
@@ -2250,15 +2249,10 @@ fn evaluate_candidate(lr: &value::LongRun, j: Joker, cost: i64, rental: bool, ba
         sell_index,
         sell_tied: vec![],
     };
-    // A joker sold whose money isn't modelled (its game role is money, and the income table
-    // doesn't pay it: round money, Satellite, Gift Card…) is given up as if it earned nothing:
-    // said on the option, never silently
-    let discards_now = ctx.plain_round(base, &[], &[]).1.discards;
-    let unmodelled_money = |i: usize| {
-        let sj = &ctx.run.jokers[i];
-        // (the table read with a discard at least: Mail-In beside a Burglar is modelled, paying none)
-        roles(&base.jokers[i]).contains(&"economy") && income_per_ante(&sj.key, &sj.ability, ctx.run, discards_now.max(1), lr.antes_left) == 0.0
-    };
+    // A joker sold whose game role is money but whose money the engine doesn't pay
+    // (`engine::PAYS_MONEY`: Gift Card's sell values, Credit Card's debt) is given up as if it
+    // earned nothing: said on the option, never silently
+    let unmodelled_money = |i: usize| roles(&base.jokers[i]).contains(&"economy") && !crate::engine::PAYS_MONEY.contains(&base.jokers[i].key.as_str());
     let simulate = |(label, b, removed, t, (slot, _)): &Pick, n: usize| {
         let r: Vec<&Joker> = removed.iter().collect();
         let mut c = candidate(label.clone(), *slot, t, ctx.odds(b, &[&j], &r, n));
@@ -2913,30 +2907,6 @@ fn glass_presence(antes_left: f64) -> f64 {
         return 1.0;
     }
     (1.0 - q.powf(antes_left)) / (antes_left * (1.0 / q).ln())
-}
-
-/// Money a joker pays per ante (3 rounds), averaged over the antes left, for jokers with
-/// a fixed payout (card.lua `calculate_dollar_bonus` and end-of-round effects). Counted
-/// as money you hold every ante in the By Ante 8 projection. `discards`: a fresh round's on
-/// the board valued, as its blind is set (`RoundStart::hands_on`: none while a Burglar is on it).
-pub(crate) fn income_per_ante(key: &str, ability: &serde_json::Value, run: &RunState, discards: i64, antes_left: f64) -> f64 {
-    let extra = ability.get("extra");
-    let num = |v: Option<&serde_json::Value>, d: f64| v.and_then(|x| x.as_f64()).unwrap_or(d);
-    let per_round = match key {
-        "j_golden" => num(extra, 4.0),
-        // $1 a round, +$2 after each boss: the average over the antes left
-        "j_rocket" => num(extra.and_then(|e| e.get("dollars")), 1.0) + num(extra.and_then(|e| e.get("increase")), 2.0) * (antes_left - 1.0).max(0.0) / 2.0,
-        "j_cloud_9" => num(extra, 1.0) * run.full_deck().iter().filter(|c| c.rank.0 == 9 && c.enhancement != Some(crate::model::Enhancement::Stone)).count() as f64,
-        // +$1 interest per $5 (capped like interest): doubles it
-        "j_to_the_moon" => interest(run.dollars, 1, run.interest_cap) as f64,
-        // sell value grows $3 a round
-        "j_egg" => num(extra, 3.0),
-        // $5 per discarded card of a rank that changes every round: ~4 cards a discard, the
-        // rank about 1 in 13 of them
-        "j_mail" => num(extra, 5.0) * discards.max(0) as f64 * 4.0 / 13.0,
-        _ => 0.0,
-    };
-    per_round * 3.0
 }
 
 /// Like `long_draw`, for the share of this round's target reached: the best joker seen,
@@ -3907,15 +3877,52 @@ fn played_for(ctx: &Ctx, hand_mix: &[HandShare], growths: value::Growths, pool: 
 /// round play out all its hands. `None` before a round is known (no rounds simulated).
 fn growth_rounds(ctx: &Ctx) -> Option<(Board, Vec<RoundStart>)> {
     ctx.specs.iter().find(|s| !s.horizon)?;
-    let run = ctx.run;
-    let base = crate::save::blind_amount(run.ante, run.blind_scaling) * run.ante_scaling;
-    let starts = [("bl_small", 1.0), ("bl_big", 1.5), ("bl_big", 2.0)].map(|(key, m)| blind_from_start(key, base * m, run, &ctx.fresh_deck)).to_vec();
+    Some(plain_rounds_of(ctx))
+}
+
+/// Your board without the current blind's debuffs (a perishable's that ran out stay) and this
+/// ante's three plain blinds (`plain_rounds`): what `growth_rounds` plays, and what a board's
+/// money is measured on (`value::LongRun::money_board`)
+fn plain_rounds_of(ctx: &Ctx) -> (Board, Vec<RoundStart>) {
     let mut b = ctx.base.clone();
-    for (j, sj) in b.jokers.iter_mut().zip(&run.jokers) {
+    for (j, sj) in b.jokers.iter_mut().zip(&ctx.run.jokers) {
         j.debuff = sj.perishable == Some(0);
     }
-    Some((b, starts))
+    (b, plain_rounds(ctx.run, &ctx.fresh_deck))
 }
+
+/// This ante's three blinds at their plain sizes, dealt from `deck` (`growth_rounds`)
+pub(crate) fn plain_rounds(run: &RunState, deck: &[Card]) -> Vec<RoundStart> {
+    let base = crate::save::blind_amount(run.ante, run.blind_scaling) * run.ante_scaling;
+    [("bl_small", 1.0), ("bl_big", 1.5), ("bl_big", 2.0)].map(|(key, m)| blind_from_start(key, base * m, run, deck)).to_vec()
+}
+
+/// The money each round pays on `b` as the game pays it for how it's played
+/// (`sim::RoundResult::cash`, `pay`: a hand and a discard left), `n` rounds of each of `starts` in turn;
+/// `None` for a round lost: it ends the run, so it pays nothing that's spent (what a board does
+/// to the chance of winning is counted as that chance, not as money). Each round's targets drawn
+/// anew (`Board::draw_round_targets`: Mail-In Rebate's rank, Castle's suit…), as every round's
+/// are; each start on rounds of its own, the same for every board (two boards' rounds are dealt
+/// the same; a roll one board's joker adds shifts that round's later rolls).
+pub(crate) fn plain_round_cash(b: &Board, starts: &[RoundStart], n: usize, seed: u64, pay: (f64, f64)) -> Vec<Option<f64>> {
+    let jobs: Vec<(usize, &RoundStart)> = starts.iter().enumerate().collect();
+    par_map(&jobs, |&(k, s)| {
+        let salt = (k as u64 + 1).wrapping_mul(0x4d6f_6e65);
+        (0..n)
+            .map(|i| {
+                let mut rng = crate::engine::Rng::new(seed.wrapping_add(i as u64 * 7919) ^ salt);
+                let mut bb = b.clone();
+                bb.draw_round_targets(&s.deck, &mut rng);
+                let r = sim::sim_round(&bb, s, &mut rng);
+                r.won.then(|| r.cash(pay.0, pay.1))
+            })
+            .collect::<Vec<_>>()
+    })
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
 
 /// `spec` played from the start: a round in progress begins again as the blind does
 /// (`blind_from_start`: your whole deck); one not started is only given `deck`
@@ -4732,74 +4739,81 @@ mod tests {
     }
 
     #[test]
+    fn every_money_joker_is_paid_by_the_engine_or_said_not_modelled() {
+        // a joker whose game role is money is either paid by the engine on any round
+        // (`engine::PAYS_MONEY`, measured as a joker's money) or labelled "not modelled" where
+        // it's given up: these, and no other
+        let data = GameData::bundled();
+        let unpaid: Vec<&str> = data.centers.iter().filter(|c| c.set == "Joker" && economy_key(&c.key)).map(|c| c.key.as_str()).filter(|k| !crate::engine::PAYS_MONEY.contains(k)).collect();
+        assert_eq!(unpaid, ["j_credit_card", "j_gift", "j_matador"].iter().copied().filter(|k| unpaid.contains(k)).collect::<Vec<_>>());
+        assert_eq!(unpaid.len(), 3, "{unpaid:?}");
+        assert!(crate::engine::PAYS_MONEY.iter().all(|k| economy_key(k)));
+    }
+
+    #[test]
     fn mail_in_rebate_pays_on_the_discards_of_the_board_valued() {
         // Mail-In Rebate pays $5 a discarded card of its rank (card.lua calculate_joker,
-        // discard) and Burglar takes every discard as each blind is set: its money reads the
-        // round of the board valued, not of the jokers you own. Mail-In is eternal here, as
-        // the projection may swap a sellable one for a typical find (so are the jokers beside
-        // it, kept on the board projected).
-        let per_ante = 5.0 * 3.0 * 4.0 / 13.0 * 3.0;
+        // discard) and Burglar takes every discard as each blind is set: its money is measured
+        // on the rounds of the board valued (`LongRun::money_board`), not read from a table. Mail-In
+        // is eternal here, as the projection may swap a sellable one for a typical find (so are
+        // the jokers beside it, kept on the board projected).
+        let data = GameData::bundled();
+        let bought = |key: &str| Joker::from_key(key, data).unwrap();
         let mut both = shop_run(&[("j_burglar", None, None), ("j_mail", None, None)], &[]);
         both.jokers[0].eternal = true;
         both.jokers[1].eternal = true;
-        with_long_run(&both, |lr| {
-            assert_eq!(lr.project(&|_| true, both.dollars).flow, 0.0);
-            assert_eq!(lr.project(&|k| k != 0, both.dollars).flow, per_ante, "Burglar sold: the reset round's 3 discards");
-        });
-        // a perishable Burglar that runs out before Ante 8 isn't on the board projected
-        let mut perishing = shop_run(&[("j_burglar", None, Some(2)), ("j_mail", None, None)], &[]);
-        perishing.jokers[1].eternal = true;
-        with_long_run(&perishing, |lr| assert_eq!(lr.project(&|_| true, perishing.dollars).flow, per_ante));
-        // a Burglar bought takes them; a joker that adds a discard when it's added (Drunkard,
-        // `round_mods`) and a Gain's discard (Wasteful) add one, a Merry Andy sold takes 3
         let mut mail = shop_run(&[("j_mail", None, None)], &[]);
         mail.jokers[0].eternal = true;
-        let data = GameData::bundled();
-        let bought = |key: &str| Joker::from_key(key, data).unwrap();
-        with_long_run(&mail, |lr| {
+        // beside Burglar it pays nothing: the rounds with and without it are the same rounds
+        with_long_run(&both, |lr| assert_eq!(lr.owned_money(1), 0.0));
+        let alone = with_long_run(&mail, |lr| {
             let flow = |added: Option<&Joker>, more| lr.project_as(&|_| true, mail.dollars, 0.0, None, added, more).flow;
-            assert_eq!(flow(None, (0, 0, 0)), per_ante);
-            assert_eq!(flow(Some(&bought("j_burglar")), (0, 0, 0)), 0.0);
-            assert!((flow(Some(&bought("j_drunkard")), (0, 0, 0)) - per_ante * 4.0 / 3.0).abs() < 1e-9);
-            assert!((flow(None, (0, 0, 1)) - per_ante * 4.0 / 3.0).abs() < 1e-9);
-            // a Mail-In bought pays on the board it joins: none beside an owned Burglar
-            assert_eq!(flow(Some(&bought("j_mail")), (0, 0, 0)), 2.0 * per_ante);
+            let alone = lr.owned_money(0);
+            assert!(alone > 0.0, "{alone}");
+            assert!((flow(None, (0, 0, 0)) - 3.0 * alone).abs() < 1e-9);
+            // a fourth discard (a Gain's, Wasteful) never costs money (Merry Andy's three more,
+            // below, pay more)
+            assert!(flow(None, (0, 0, 1)) >= flow(None, (0, 0, 0)));
+            // a Burglar bought takes them: what it takes and the hands it adds, measured together
+            // on the board it joins, so it earns less beside Mail-In than beside Mr. Bones
+            let burglar = lr.added_money(&|_| true, &bought("j_burglar"), lr.antes_left);
+            let bones_burglar = with_long_run(&shop_run(&[("j_mr_bones", None, None)], &[]), |lb| lb.added_money(&|_| true, &bought("j_burglar"), lb.antes_left));
+            assert!(burglar < bones_burglar, "{burglar} {bones_burglar} {alone}");
+            alone
         });
-        with_long_run(&both, |lr| assert_eq!(lr.project_as(&|_| true, both.dollars, 0.0, None, Some(&bought("j_mail")), (0, 0, 0)).flow, 0.0));
+        // a Mail-In bought pays on the board it joins: none beside an owned Burglar
+        with_long_run(&both, |lr| assert_eq!(lr.added_money(&|_| true, &bought("j_mail"), lr.antes_left), 0.0));
         // through the paths the advice takes: a Burglar bought beside Mail-In is worth what it is
-        // beside a joker that neither scores nor pays (Mr. Bones); a Gain's discard (`board_with`)
-        // buys levels; a Mail-In bought earns nothing in the meantime beside a Burglar (`floor_for`)
+        // beside a joker that neither scores nor pays (Mr. Bones): Mail-In's money there is gone
+        // with the discards; a Mail-In bought earns nothing in the meantime beside a Burglar
+        // (`floor_for`)
         let beside = |key: &str| {
             let mut r = shop_run(&[(key, None, None), ("j_joker", None, None)], &[]);
             r.jokers[0].eternal = true;
             r.jokers[1].eternal = true;
             with_long_run(&r, |lr| lr.long_of(&bought("j_burglar"), None, 6, false))
         };
-        assert_eq!(beside("j_mail"), beside("j_mr_bones"));
+        let (m, b) = (beside("j_mail"), beside("j_mr_bones"));
+        assert!((m / b - 1.0).abs() < 1e-9, "{m} {b}");
         let mix = [HandShare { hand: "Pair".into(), share: 1.0, played: 1.0, mean: 1.0 }];
-        let pair = |b: &Board| b.levels[crate::engine::HandType::Pair as usize].mult;
-        let (wasteful, plain) = with_long_run_mix(&mail, &mix, |lr| (lr.board_with(&Gain { discards: 1, ..Default::default() }), lr.board_with(&Gain::default())));
-        assert!(pair(&wasteful) > pair(&plain), "{} {}", pair(&wasteful), pair(&plain));
         let floors = |r: &RunState| with_long_run_mix(r, &mix, |lr| (lr.floor_for(4, false, "j_mail", None), lr.floor_for(4, false, "j_mr_bones", None)));
         let (mail_floor, bones_floor) = floors(&shop_run(&[("j_burglar", None, None), ("j_joker", None, None)], &[]));
         assert_eq!(mail_floor, bones_floor);
         let (mail_floor, bones_floor) = floors(&shop_run(&[("j_joker", None, None)], &[]));
         assert!(mail_floor > bones_floor, "{mail_floor} {bones_floor}");
+        // Merry Andy's 3 discards more a round: Mail-In pays more beside it
         let mut andy = shop_run(&[("j_merry_andy", None, None), ("j_mail", None, None)], &[]);
         andy.round_discards = 6;
         andy.jokers[0].eternal = true;
         andy.jokers[1].eternal = true;
-        with_long_run(&andy, |lr| {
-            assert_eq!(lr.project(&|_| true, andy.dollars).flow, per_ante * 2.0);
-            assert_eq!(lr.project(&|k| k != 0, andy.dollars).flow, per_ante);
-        });
-        // whatif's money rows: the plan's round, Burglar sold or bought
-        let sell = crate::whatif::Plan { sell: vec!["burglar".into()], ..Default::default() };
-        let o = crate::whatif::run(&both, data, &sell, 20, 3).unwrap();
-        assert_eq!((o.money.per_round, o.money.per_round_after), (0.0, per_ante / 3.0));
-        let buy = crate::whatif::Plan { add: vec!["burglar".into()], ..Default::default() };
-        let o = crate::whatif::run(&mail, data, &buy, 20, 3).unwrap();
-        assert_eq!((o.money.per_round, o.money.per_round_after), (per_ante / 3.0, 0.0));
+        let more = with_long_run(&andy, |lr| lr.owned_money(1));
+        assert!(more > alone, "{more} {alone}");
+        // whatif's money rows: Mail-In sold beside Burglar changes nothing; alone, its money goes
+        let sell = crate::whatif::Plan { sell: vec!["mail".into()], ..Default::default() };
+        let o = crate::whatif::run(&both, data, &sell, 60, 3).unwrap();
+        assert_eq!(o.money.per_round, o.money.per_round_after);
+        let o = crate::whatif::run(&mail, data, &sell, 60, 3).unwrap();
+        assert!(o.money.per_round > o.money.per_round_after, "{:?}", o.money);
     }
 
     #[test]
@@ -4885,16 +4899,19 @@ mod tests {
     #[test]
     fn a_whatif_plan_reports_the_money_its_jokers_make() {
         // Rocket scores nothing, so the odds can't tell it from an empty slot: the money rows
-        // can. Selling it ($2 back) for the shop's Half Joker (its price): $30 → $27, and
-        // Rocket's $1 a round (a fresh one's) gone.
+        // can. Selling it ($2 back) for the shop's Half Joker (its price): $30 → $27; sold alone,
+        // Rocket's $1 a won round (a fresh one's) is gone and nothing else moves (it plays no
+        // card).
         let r = shop_run(&[("j_rocket", None, None), ("j_joker", None, None)], &["j_half"]);
         let plan = crate::whatif::Plan { sell: vec!["rocket".into()], add: vec!["half_joker".into()], ..Default::default() };
         let o = crate::whatif::run(&r, GameData::bundled(), &plan, 50, 3).unwrap();
         let price = r.shop.as_ref().unwrap().jokers[0].cost as f64;
         assert_eq!(o.money.dollars, 30.0);
         assert_eq!(o.money.dollars_after, 30.0 + 2.0 - price);
-        assert_eq!(o.money.per_round, 1.0);
-        assert_eq!(o.money.per_round_after, 0.0);
+        let plan = crate::whatif::Plan { sell: vec!["rocket".into()], ..Default::default() };
+        let o = crate::whatif::run(&r, GameData::bundled(), &plan, 50, 3).unwrap();
+        // (on the rounds won: Rocket wins none more or fewer, so exactly its $1)
+        assert!((o.money.per_round - o.money.per_round_after - 1.0).abs() < 1e-9, "{:?}", o.money);
     }
 
     fn shop_run(owned: &[(&str, Option<Edition>, Option<i64>)], for_sale: &[&str]) -> RunState {
@@ -5526,12 +5543,14 @@ mod tests {
     fn a_kept_money_jokers_income_is_spent_once() {
         // An eternal Golden Joker (kept: $12 an ante) next to Red Card, a High Card main hand
         // (weak levels: the spare money goes to pack skips). $37 held plus Golden's income is
-        // $49, as much spare money as $49 held without it: the same skips, and the same levels
-        // (the income is in the spare money that bought the skips; it doesn't level again).
+        // $49, as much spare money as $49 held with a joker that neither scores nor pays in its
+        // place (Mr. Bones: a joker that scores earns money too, the hands it leaves at the
+        // cash-out): the same skips, and the same levels (the income is in the spare money that
+        // bought the skips; it doesn't level again).
         let high = |b: &Board| b.levels[crate::engine::HandType::HighCard as usize].mult;
         let mix = [HandShare { hand: "High Card".into(), share: 1.0, played: 1.0, mean: 1.0 }];
         let board = |golden: bool, dollars: f64| {
-            let other = if golden { "j_golden" } else { "j_joker" };
+            let other = if golden { "j_golden" } else { "j_mr_bones" };
             let mut r = shop_run(&[("j_red_card", None, None), (other, None, None), ("j_joker", None, None)], &[]);
             r.jokers[0].ability["mult"] = 30.into();
             r.jokers[1].eternal = true;
@@ -6237,8 +6256,9 @@ mod tests {
 
     /// A round voucher (`plan::apply_voucher`: hand size, hands or discards every round) by Ante
     /// 8: `voucher_gain` carries its change as `more` (hand size, hands, discards), the projected
-    /// round is played with it (`value` against the same board scored on a round with `more`
-    /// added by hand), and the shop gives it that value with its price. Returns the value of
+    /// round is played with it and the money it pays comes with it (`value` against the same
+    /// board scored on a round with `more` added by hand), and the shop gives it that value with
+    /// its price. Returns the value of
     /// `more` without a price, and the shop's.
     fn round_voucher_by_ante_8(key: &str, more: (i64, i64, i64)) -> (f64, f64) {
         let r = shop_run(&[("j_joker", None, None), ("j_joker", None, None)], &[]);
@@ -6249,7 +6269,10 @@ mod tests {
         // a main hand, so the price buys something (its levels)
         let mix = [HandShare { hand: "Pair".into(), share: 1.0, played: 1.0, mean: 1.0 }];
         let (v, by_hand, price) = with_long_run_mix(&r, &mix, |lr| {
-            let b = lr.board_with(&Gain::default());
+            // the board with what the round more pays (a hand or discard left at the cash-out,
+            // `LongRun::income`), played on the round with it
+            let g0 = Gain { hand_size: more.0, hands: more.1, discards: more.2, ..Default::default() };
+            let b = lr.board_with(&g0);
             let mut sp = lr.long_spec_for(&b, (0, 0, 0));
             sp.start.hand_size += more.0;
             sp.start.hands += more.1;
@@ -6270,8 +6293,10 @@ mod tests {
         // card.lua apply_to_run: Grabber +1 hand a round. Fails without `Gain::hands` read by
         // the projection or filled by `voucher_gain` (it had only this round's odds).
         let (v, shop) = round_voucher_by_ante_8("v_grabber", (0, 1, 0));
-        // a fifth hand on four: about a quarter more score in a round played out
-        assert!(v > 1.15 && v < 1.3, "×{v}");
+        // a fifth hand on four: about a quarter more score in a round played out, and the $1 it
+        // leaves at a won round's cash-out ($3 an ante: levels of the main hand on this weak
+        // board, about ×1.2 more)
+        assert!(v > 1.35 && v < 1.65, "×{v}");
         assert!(shop > 1.0, "×{shop}");
     }
 

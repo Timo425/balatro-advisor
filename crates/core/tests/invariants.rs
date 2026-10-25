@@ -184,6 +184,35 @@ fn delayed_gratification_pays_for_discards_never_used() {
 }
 
 #[test]
+fn a_won_rounds_end_pays_as_the_game_does() {
+    // card.lua calculate_dollar_bonus, on each joker itself (state_events.lua evaluate_round):
+    // Golden `extra`, Cloud 9 `extra` per 9 in the deck (not Stone: get_id), Rocket
+    // `extra.dollars` (raised by `extra.increase` at a boss's end_of_round, before the cash-out),
+    // Satellite `extra` per kind of planet used; a copy (Blueprint) pays nothing, nor does a
+    // debuffed joker
+    let pay = |keys: &[&str], f: &dyn Fn(&mut engine::Board)| {
+        let mut b = sample_board(keys);
+        f(&mut b);
+        engine::won_round_money(&b)
+    };
+    assert_eq!(pay(&["j_golden"], &|_| {}), 4.0);
+    assert_eq!(pay(&["j_blueprint", "j_golden"], &|_| {}), 4.0);
+    assert_eq!(pay(&["j_golden"], &|b| b.jokers[0].debuff = true), 0.0);
+    let mut deck = standard_deck();
+    deck[0] = Card::parse_list("9S").unwrap()[0];
+    let mut stone = Card::parse_list("9H").unwrap()[0];
+    stone.enhancement = Some(balatro_advisor::model::Enhancement::Stone);
+    deck[1] = stone;
+    let nines = deck.iter().filter(|c| c.rank.0 == 9 && c.enhancement.is_none()).count() as f64;
+    assert_eq!(pay(&["j_cloud_9"], &|b| b.count_deck(&deck)), nines);
+    assert_eq!(pay(&["j_rocket"], &|_| {}), 1.0);
+    assert_eq!(pay(&["j_rocket"], &|b| b.new_round("bl_hook")), 3.0);
+    assert_eq!(pay(&["j_rocket"], &|b| b.new_round("bl_big")), 1.0);
+    assert_eq!(pay(&["j_satellite"], &|b| b.planets_used = 3), 3.0);
+    assert_eq!(pay(&["j_satellite"], &|_| {}), 0.0);
+}
+
+#[test]
 fn discard_money_follows_the_game() {
     // card.lua, discard context: Mail-In pays per card of its rank (get_id: not Stone, not
     // debuffed), Faceless Joker for 3+ faces (is_face: Pareidolia makes any card one); a

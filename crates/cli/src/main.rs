@@ -323,8 +323,8 @@ fn main() -> Result<()> {
                 let m = &o.money;
                 println!("{:<28} {:>10} {:>22} {:>22}", "Money now", "", format!("${:.0}", m.dollars), format!("${:.0}", m.dollars_after));
                 let signed = |x: f64| format!("{}${:.0}", if x < 0.0 { "−" } else { "+" }, x.abs());
-                println!("{:<28} {:>10} {:>22} {:>22}", "Jokers pay a round (− rent)", "", signed(m.per_round), signed(m.per_round_after));
-                println!("(win chance on score, Mr. Bones' save in brackets · average share of the target reached · money the round makes while played: Lucky, Gold cards; {sims} rounds each. Score odds don't see money: compare the money rows for jokers that pay)");
+                println!("{:<28} {:>10} {:>22} {:>22}", "A round won pays (− rent)", "", signed(m.per_round), signed(m.per_round_after));
+                println!("(win chance on score, Mr. Bones' save in brackets · average share of the target reached · money the round pays for how it's played: Lucky, Gold cards, money jokers, hands left; {sims} rounds each. Score odds don't see money: compare the money rows for jokers that pay)");
             }
         }
         Cmd::Ui { port, no_open } => {
