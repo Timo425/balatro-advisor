@@ -640,15 +640,16 @@ fn non_scoring_note(key: &str) -> Option<&'static str> {
         "j_ring_master" => "Utility: duplicate jokers can appear",
         "j_oops" => "Doubles every probability: simulated",
         "j_dna" => "Deck-fixing: each round a copy of the card in your opening hand worth most to your run (the target search; your first hand a single card); copies and their Blue Seal planets projected to Ante 8",
-        "j_marble" | "j_sixth_sense" | "j_certificate" | "j_vampire" | "j_midas_mask" => {
+        "j_marble" => "Deck-fixing: a Stone card into your deck as each blind is set: simulated in the rounds ahead; the deck it builds over the run not projected",
+        "j_sixth_sense" | "j_certificate" | "j_vampire" | "j_midas_mask" => {
             "Deck-fixing: changes your cards over time (only this hand's effect is simulated)"
         }
-        "j_8_ball" | "j_superposition" | "j_seance" | "j_riff_raff" | "j_vagabond" | "j_hallucination"
-        | "j_cartomancer" | "j_astronomer" | "j_perkeo" | "j_invisible" | "j_diet_cola" => {
-            "Utility: makes cards/jokers, value not simulated"
-        }
+        "j_riff_raff" => "Utility: 2 Common jokers as each blind is set while slots are free: simulated in the rounds ahead (drawn from the pool; not in the typical hand); their value over the run not projected",
+        "j_8_ball" | "j_superposition" | "j_seance" | "j_vagabond" | "j_hallucination" | "j_cartomancer" | "j_astronomer" | "j_perkeo"
+        | "j_invisible" | "j_diet_cola" => "Utility: makes cards/jokers, value not simulated",
         "j_burnt" => "Levels the hand of each round's first discard: simulated in this round's play; levels over the run not projected",
-        "j_luchador" | "j_chicot" => "Utility: disables boss effects (not simulated)",
+        "j_chicot" => "Utility: disables each boss as its blind is set: simulated",
+        "j_luchador" => "Utility: disables the boss when sold (not simulated)",
         _ => return None,
     })
 }
@@ -676,29 +677,6 @@ fn joker_note(key: &str) -> Option<String> {
     non_scoring_note(key).map(str::to_string).or_else(|| unprojected_growth(key).map(|g| format!("{g}: not modelled, valued at its size now")))
 }
 
-/// Hand size / hands / discards a joker adds while owned (its `add_to_deck` effects, card.lua
-/// `Card:add_to_deck`: in the save's `round_resets` and hand size once it's yours, so they
-/// count for a joker added or removed; Turtle Bean's at its size now). Burglar's act as each
-/// blind is set instead, from the board played (`Board::at_blind_set`).
-fn round_mods(j: &Joker) -> (i64, i64, i64) {
-    match j.key.as_str() {
-        "j_juggler" => (1, 0, 0),
-        "j_troubadour" => (2, -1, 0),
-        "j_turtle_bean" => (j.extra_h_size() as i64, 0, 0),
-        "j_stuntman" => (-2, 0, 0),
-        "j_merry_andy" => (-1, 0, 3),
-        "j_drunkard" => (0, 0, 1),
-        _ => (0, 0, 0),
-    }
-}
-
-impl Joker {
-    fn extra_h_size(&self) -> f64 {
-        // its current size (5 when bought, −1 each round: card.lua end_of_round)
-        if self.key == "j_turtle_bean" { if self.extra.h_size > 0.0 { self.extra.h_size } else { 5.0 } } else { 0.0 }
-    }
-}
-
 /// A round to simulate, before joker-specific adjustments.
 #[derive(Clone)]
 struct Spec {
@@ -718,7 +696,7 @@ impl Spec {
 }
 
 /// `start` with the hand size, hands and discards that `added` jokers bring and `removed`
-/// ones take away (`round_mods`), for a round not yet started (`RoundStart::fresh`; the round
+/// ones take away (`Joker::round_mods`), for a round not yet started (`RoundStart::fresh`; the round
 /// in progress keeps its own: a gap, see design.md). The blind's and the jokers' rules as it's
 /// set (The Manacle, The Needle, The Water, Burglar) aren't these: the simulation sets them on a
 /// fresh start as it's played (`Board::at_blind_set`).
@@ -728,7 +706,7 @@ pub(crate) fn apply_mods(start: &RoundStart, added: &[&Joker], removed: &[&Joker
         return s;
     }
     for (j, sign) in added.iter().map(|j| (j, 1)).chain(removed.iter().map(|j| (j, -1))) {
-        let (h, hands, d) = round_mods(j);
+        let (h, hands, d) = j.round_mods();
         s.hand_size += sign * h;
         s.hands += sign * hands;
         s.discards += sign * d;
@@ -814,7 +792,7 @@ impl Ctx<'_> {
     /// jokers' hand size, hands and discards, the blind set on it.
     fn plain_round(&self, b: &Board, added: &[&Joker], removed: &[&Joker]) -> (Board, RoundStart) {
         let start = apply_mods(
-            &RoundStart { hand: vec![], deck: vec![], hand_size: self.run.hand_size, hands: self.run.round_hands, discards: self.run.round_discards, scored: 0.0, target: 0.0, fresh: true, ..Default::default() },
+            &RoundStart { hand: vec![], deck: self.fresh_deck.clone(), hand_size: self.run.hand_size, hands: self.run.round_hands, discards: self.run.round_discards, scored: 0.0, target: 0.0, fresh: true, ..Default::default() },
             added,
             removed,
         );
@@ -834,10 +812,11 @@ impl Ctx<'_> {
         let mut none = bb.clone();
         none.discards_left = 0;
         let pair = Card::parse_list("AS AH").unwrap_or_default();
-        let with = Stats::of(sim::typical_hands(&bb, &self.fresh_deck, size, samples, self.opts.seed));
+        // dealt from the deck the blind's setup leaves (Marble Joker's Stone card)
+        let with = Stats::of(sim::typical_hands(&bb, &start.deck, size, samples, self.opts.seed));
         let differs = crate::engine::score(&bb, &pair, &[], &mut crate::engine::Unlucky, false).score != crate::engine::score(&none, &pair, &[], &mut crate::engine::Unlucky, false).score;
         if differs {
-            let without = Stats::of(sim::typical_hands(&none, &self.fresh_deck, size, samples, self.opts.seed));
+            let without = Stats::of(sim::typical_hands(&none, &start.deck, size, samples, self.opts.seed));
             if without.mean > with.mean {
                 return without;
             }
@@ -1003,12 +982,18 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                 fresh: false,
                 blind: cb.key.clone(),
                 disabled: cb.disabled,
+                juggle: 0,
             },
             horizon: false,
         });
     }
+    let next = run.blinds.iter().find(|b| matches!(b.state.as_str(), "Select" | "Upcoming")).map(|b| b.slot.clone());
     let blind_spec = |bl: &crate::save::BlindSlot| -> Spec {
-        let start = blind_from_start(&bl.key, bl.target, run, &fresh_deck);
+        let mut start = blind_from_start(&bl.key, bl.target, run, &fresh_deck);
+        // the next round played draws with the Juggle Tags held (none while one is in play)
+        if next.as_ref() == Some(&bl.slot) {
+            start.juggle = run.round_start_tags();
+        }
         Spec {
             label: if bl.slot == "Boss" { "Boss".into() } else { format!("Next: {}", bl.slot) },
             blind_key: bl.key.clone(),
@@ -1045,6 +1030,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                 fresh: true,
                 blind: String::new(),
                 disabled: false,
+                juggle: 0,
             },
             horizon: true,
         });
@@ -1931,11 +1917,20 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         let skip_grows = ctx.base.changes_with(RunEvent::SkipBlind);
         let mut skip_base = ctx.base.clone();
         skip_base.after(RunEvent::SkipBlind, 1.0);
+        // The boss after a skipped Big Blind is the next round played: the Juggle Tags you hold
+        // act there (`RoundStart::juggle`; played, the Big Blind takes them)
+        let skip_spec = ctx.specs.get(key_round).map(|sp| {
+            let mut sp = sp.clone();
+            if bv.slot == "Big" {
+                sp.start.juggle += run.round_start_tags();
+            }
+            sp
+        });
         // (the skip side's chance at this ante's boss from here on: `p_boss` stays the play
         // side's in `value` and `play_survive`, both above)
-        let p_boss = match ctx.specs.get(key_round) {
+        let p_boss = match &skip_spec {
             // (at least the board as it is, as for every skip-side board below)
-            Some(sp) if skip_grows => ctx.odds_one(&skip_base, sp, spec_rounds(sp, opts.sims)).0.max(p_boss),
+            Some(sp) if skip_grows || sp.start.juggle > 0 => ctx.odds_one(&skip_base, sp, spec_rounds(sp, opts.sims)).0.max(p_boss),
             _ => p_boss,
         };
         let key = bv.skip_tag.as_ref().map_or("", |t| t.key.as_str()).to_string();
@@ -2035,9 +2030,9 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                 format!("a Mega Celestial pack (5 planets, pick 2){}{skip_note}", if cons { "; Constellation +×0.2 from the two planets" } else { "" })
             }
             "tag_juggle" if bv.slot == "Big" => {
-                if let Some(sp) = ctx.specs.get(key_round) {
+                if let Some(sp) = &skip_spec {
                     let mut sp = sp.clone();
-                    sp.start.hand_size += 3;
+                    sp.start.juggle += 1;
                     boss_p = ctx.odds_one(&skip_base, &sp, opts.sims).0.max(p_boss);
                 }
                 "+3 hand size for the boss".to_string()
@@ -2208,11 +2203,12 @@ fn cost(data: &GameData, key: &str) -> i64 {
     data.center(key).map_or(0, |c| c.cost)
 }
 
-/// What a blind row's round doesn't model, for its round: a disabled boss nothing; in play, The
-/// Pillar its replays from the start and Verdant Leaf the sale its odds assume
+/// What a blind row's round doesn't model, for its round: a boss disabled as its blind is set
+/// (the save's, or Chicot's: `Board::at_blind_set`, as the round is simulated) nothing; in play,
+/// The Pillar its replays from the start and Verdant Leaf the sale its odds assume
 /// (`sim::leaf_choice`, named); else the boss's (`unmodelled_boss`)
 fn round_unmodelled(ctx: &Ctx, s: &Spec) -> Option<String> {
-    if s.start.disabled {
+    if s.start.disabled || ctx.base.at_blind_set(&s.start).0.blind.disabled {
         return None;
     }
     match s.blind_key.as_str() {
@@ -2252,19 +2248,12 @@ fn unmodelled_boss(key: &str) -> Option<String> {
 /// on reroll/leave, so only owned jokers stay excluded; Showman lifts even that.
 pub fn shop_pool(run: &RunState, data: &GameData) -> Vec<String> {
     let showman = run.jokers.iter().any(|j| j.key == "j_ring_master");
+    let owned: Vec<&str> = run.jokers.iter().map(|j| j.key.as_str()).collect();
     let deck = run.full_deck();
     data.jokers()
         .filter(|c| matches!(c.rarity, Some(1..=3)))
-        .filter(|c| showman || !run.jokers.iter().any(|j| j.key == c.key))
-        .filter(|c| c.no_pool_flag.as_ref().is_none_or(|f| !run.pool_flags.contains(f)))
-        .filter(|c| c.yes_pool_flag.as_ref().is_none_or(|f| run.pool_flags.contains(f)))
+        .filter(|c| crate::engine::in_joker_pool(c, &owned, showman, &run.pool_flags, &deck))
         .filter(|c| !run.banned_keys.contains(&c.key))
-        .filter(|c| {
-            c.enhancement_gate.as_ref().is_none_or(|g| {
-                let e = crate::model::Enhancement::from_key(g);
-                deck.iter().any(|card| card.enhancement == e)
-            })
-        })
         .map(|c| c.key.clone())
         .collect()
 }
@@ -2586,7 +2575,12 @@ fn best_order(ctx: &Ctx, base_mean: f64) -> Option<OrderAdvice> {
         fresh: true,
         ..Default::default()
     };
-    let (mut b0, start) = ctx.base.at_blind_set(&start);
+    let (_, start) = ctx.base.at_blind_set(&start);
+    // the jokers you own as the round starts (`Board::new_round`: Hit the Road back to ×1), in
+    // the order tried; what the blind's setup destroys or makes isn't theirs to order (an order
+    // for that moment: gap 37)
+    let mut b0 = ctx.base.clone();
+    b0.new_round("");
     let size = (start.hand_size.max(1) as usize).min(deck.len());
     let (hands, discards) = (start.hands, start.discards);
     b0.hands_left = hands.max(1);
@@ -3154,8 +3148,7 @@ fn voucher_gain(before: &RunState, after: &RunState, cost: i64) -> Option<Gain> 
 /// A run's round as it's played now: (hand size, hands, discards), a blind with no boss rule
 /// set on it (`RunState::round_at_blind_set`)
 fn round_now(run: &RunState) -> (i64, i64, i64) {
-    let (hands, discards) = run.round_at_blind_set(Default::default());
-    (run.hand_size, hands, discards)
+    run.round_at_blind_set(Default::default())
 }
 
 /// The chance a Blue Seal card is drawn at some point in a round (then you keep it to the
@@ -3999,6 +3992,7 @@ fn blind_from_start(key: &str, target: f64, run: &RunState, deck: &[Card]) -> Ro
         fresh: true,
         blind: key.to_string(),
         disabled: false,
+        juggle: 0,
     }
 }
 
@@ -4928,6 +4922,7 @@ fn archetype_outlook(
             fresh: true,
             blind: String::new(),
             disabled: false,
+            juggle: 0,
         },
         horizon: true,
     };

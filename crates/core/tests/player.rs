@@ -161,6 +161,7 @@ fn rounds() -> Vec<(String, Board, sim::RoundStart)> {
                 fresh: true,
                 blind: boss.to_string(),
                 disabled: false,
+                juggle: 0,
             }));
         }
     }
@@ -273,7 +274,7 @@ fn player_against_oracle() {
         let run: RunState = serde_json::from_value(v["state"].clone()).unwrap();
         let b = Board::from_run(&run, GameData::bundled());
         if let (true, Some(cb)) = (run.screen.in_blind(), &run.current_blind) {
-            cases.push((format!("{name} live"), b.clone(), sim::RoundStart { hand: run.hand.clone(), deck: run.draw_pile.clone(), hand_size: run.round_hand_size(), hands: run.hands_left, discards: run.discards_left, scored: cb.scored, target: cb.target, fresh: false, blind: cb.key.clone(), disabled: cb.disabled }));
+            cases.push((format!("{name} live"), b.clone(), sim::RoundStart { hand: run.hand.clone(), deck: run.draw_pile.clone(), hand_size: run.round_hand_size(), hands: run.hands_left, discards: run.discards_left, scored: cb.scored, target: cb.target, fresh: false, blind: cb.key.clone(), disabled: cb.disabled, juggle: 0 }));
         }
         let fresh = b.clone();
         let mut deck = run.full_deck();
@@ -282,7 +283,7 @@ fn player_against_oracle() {
             c.debuff = false;
         }
         deck.sort_by_key(|c| c.order_key());
-        let mut start = sim::RoundStart { hand: vec![], deck, hand_size: run.hand_size, hands: run.round_hands, discards: run.round_discards, scored: 0.0, target: 1.0, fresh: true, blind: String::new(), disabled: false };
+        let mut start = sim::RoundStart { hand: vec![], deck, hand_size: run.hand_size, hands: run.round_hands, discards: run.round_discards, scored: 0.0, target: 1.0, fresh: true, blind: String::new(), disabled: false, juggle: 0 };
         start.target = half_point(&fresh, &start, 200, 7);
         cases.push((format!("{name} fresh"), fresh, start));
     }

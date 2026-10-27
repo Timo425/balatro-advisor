@@ -191,7 +191,7 @@ pub fn run(run: &RunState, data: &GameData, plan: &Plan, sims: usize, seed: u64)
     let odds = |js: &[Joker], hand: &[Card], pile: &[Card], full: &[Card], added: &[&Joker], removed: &[&Joker]| -> Vec<BlindOdds> {
         let mut out = Vec::new();
         let upcoming = run.blinds.iter().filter(|bl| matches!(bl.state.as_str(), "Select" | "Upcoming" | "Current"));
-        for bl in upcoming {
+        for (i, bl) in upcoming.enumerate() {
             // the blind in play, its first cards dealt or not (DrawToHand): its blind was set
             // when it started, as advise's round in progress
             let current = bl.state == "Current" && run.blind_in_play().is_some();
@@ -210,6 +210,7 @@ pub fn run(run: &RunState, data: &GameData, plan: &Plan, sims: usize, seed: u64)
                     fresh: false,
                     blind: bl.key.clone(),
                     disabled: cb.is_some_and(|c| c.disabled),
+                    juggle: 0,
                 }
             } else {
                 let start = RoundStart {
@@ -223,9 +224,11 @@ pub fn run(run: &RunState, data: &GameData, plan: &Plan, sims: usize, seed: u64)
                     fresh: true,
                     blind: bl.key.clone(),
                     disabled: false,
+                    // the next round played draws with the Juggle Tags held
+                    juggle: if i == 0 { run.round_start_tags() } else { 0 },
                 };
                 // the plan's jokers; all of blind.lua Blind:set_blind, then the jokers',
-                // come as it's set on the board (sim::round_odds -> Board::at_blind_set)
+                // come as it's set on the board, per round (sim::round_odds -> Board::at_blind_set_drawn)
                 crate::advise::apply_mods(&start, added, removed)
             };
             let (p, st) = sim::round_odds(&b, &start, sims, seed);

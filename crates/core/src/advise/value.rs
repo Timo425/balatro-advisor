@@ -9,7 +9,7 @@
 
 use std::sync::{Mutex, OnceLock};
 
-use super::{best_of_subsets, glass_presence, grow_antes, interest, money_value_with, Kept, Shops, Start, par_map, round_mods, sample_hands, seal_planets_a_round, target_race_priced, UsePrice, TARGET_MAX, Candidate, Ctx, HandShare, Spec, TarotValue};
+use super::{best_of_subsets, glass_presence, grow_antes, interest, money_value_with, Kept, Shops, Start, par_map, sample_hands, seal_planets_a_round, target_race_priced, UsePrice, TARGET_MAX, Candidate, Ctx, HandShare, Spec, TarotValue};
 use crate::engine::HandType;
 use crate::data::GameData;
 use crate::engine::{Board, Joker, Kind, RunEvent};
@@ -343,7 +343,7 @@ impl Gain {
         self
     }
 
-    /// What it adds to a round: (hand size, hands, discards), as `round_mods` counts them
+    /// What it adds to a round: (hand size, hands, discards), as `Joker::round_mods` counts them
     pub fn round(&self) -> (i64, i64, i64) {
         (self.hand_size, self.hands, self.discards)
     }
@@ -540,10 +540,10 @@ impl<'a> LongRun<'a> {
             horizon: true,
         };
         // Hand size, hands and discards from the jokers on the projected board: the game's
-        // numbers already include what the jokers you own now gave when added (`round_mods`),
+        // numbers already include what the jokers you own now gave when added (`Joker::round_mods`),
         // so only the difference counts; Burglar's comes as each blind is set, from the board
         // played (`Board::at_blind_set`).
-        let mods_now: (i64, i64, i64) = ctx.base.jokers.iter().map(round_mods).fold((0, 0, 0), |a, m| (a.0 + m.0, a.1 + m.1, a.2 + m.2));
+        let mods_now: (i64, i64, i64) = ctx.base.jokers.iter().map(Joker::round_mods).fold((0, 0, 0), |a, m| (a.0 + m.0, a.1 + m.1, a.2 + m.2));
         let mut lr = LongRun {
             ctx,
             run,
@@ -1185,7 +1185,7 @@ impl<'a> LongRun<'a> {
     /// size, hands, discards: a `Gain`'s) added, before the blind is set (`Board::at_blind_set`
     /// on `b`). Turtle Bean has shrunk away by then (−1 hand size a round).
     pub fn long_spec_for(&self, b: &Board, more: (i64, i64, i64)) -> Spec {
-        let later = b.jokers.iter().map(|j| if j.key == "j_turtle_bean" { (0, 0, 0) } else { round_mods(j) }).fold((0, 0, 0), |a, m| (a.0 + m.0, a.1 + m.1, a.2 + m.2));
+        let later = b.jokers.iter().map(|j| if j.key == "j_turtle_bean" { (0, 0, 0) } else { j.round_mods() }).fold((0, 0, 0), |a, m| (a.0 + m.0, a.1 + m.1, a.2 + m.2));
         let mut sp = self.long_spec.clone();
         sp.start.hand_size = (sp.start.hand_size + later.0 - self.mods_now.0 + more.0).max(1);
         sp.start.hands = (sp.start.hands + later.1 - self.mods_now.1 + more.1).max(1);

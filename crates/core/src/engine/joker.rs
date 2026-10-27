@@ -341,6 +341,28 @@ impl Joker {
         Some(j)
     }
 
+    /// The hand size, hands and discards it gives while held (its `add_to_deck` effects, card.lua
+    /// `Card:add_to_deck`, taken back by `remove_from_deck`: in the save's `round_resets` and
+    /// hand size once it's yours, so they count for a joker added or removed; Turtle Bean's at
+    /// its size now). Burglar's act as each blind is set instead, from the board played
+    /// (`Board::at_blind_set`). None while debuffed (card.lua `Card:set_debuff` runs
+    /// `remove_from_deck` as it debuffs a joker, a perished one too).
+    pub fn round_mods(&self) -> (i64, i64, i64) {
+        if self.debuff {
+            return (0, 0, 0);
+        }
+        match self.key.as_str() {
+            "j_juggler" => (1, 0, 0),
+            "j_troubadour" => (2, -1, 0),
+            // its current size (5 when bought, −1 each round: card.lua end_of_round)
+            "j_turtle_bean" => (if self.extra.h_size > 0.0 { self.extra.h_size } else { 5.0 } as i64, 0, 0),
+            "j_stuntman" => (-2, 0, 0),
+            "j_merry_andy" => (-1, 0, 3),
+            "j_drunkard" => (0, 0, 1),
+            _ => (0, 0, 0),
+        }
+    }
+
     /// The Mult one `ev` adds to this joker (card.lua `Card:calculate_joker`: Red Card in the
     /// `skipping_booster` context, Flash Card in `reroll_shop`, each by its `ability.extra`;
     /// both `not context.blueprint`, so copies don't grow, and a debuffed joker doesn't run).
@@ -517,6 +539,19 @@ pub const PAYS_MONEY: &[&str] = &[
 /// leave: rounds dealt anew from the same deck would let them grow on the same card every
 /// round (`sim::grown_over` leaves them out).
 pub const GROWS_BY_TAKING_CARDS: &[&str] = &["j_vampire"];
+
+/// Whether joker `c` is in the joker pool (common_events.lua `get_current_pool`, the joker
+/// branch): not one that exists already (`G.GAME.used_jokers`: `owned`, the keys of every copy
+/// on the board) unless Showman's out (`find_joker`: not debuffed), its pool flags
+/// (`yes_pool_flag` set, `no_pool_flag` not: Cavendish once Gros Michel is extinct) against
+/// `flags` (`G.GAME.pool_flags`), and an enhancement gate (`enhancement_gate`) met by a card
+/// among `cards`. Rarity, unlocks and a challenge's bans are the caller's.
+pub fn in_joker_pool(c: &crate::data::Center, owned: &[&str], showman: bool, flags: &[String], cards: &[crate::model::Card]) -> bool {
+    (showman || !owned.contains(&c.key.as_str()))
+        && c.no_pool_flag.as_ref().is_none_or(|f| !flags.contains(f))
+        && c.yes_pool_flag.as_ref().is_none_or(|f| flags.contains(f))
+        && c.enhancement_gate.as_ref().is_none_or(|g| crate::model::Enhancement::from_key(g).is_some_and(|e| cards.iter().any(|card| card.enhancement == Some(e))))
+}
 
 /// Whether rounds played one after another measure how joker `key` grows (`sim::grown_over`): a
 /// joker a round changes (`CHANGE_IN_ROUND`) that doesn't grow by taking from its cards

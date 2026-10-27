@@ -13,11 +13,12 @@
 //! and the engine against the harness: every hand's score (`handlog`'s verdict: rolls as the range
 //! between every roll failing and every roll hitting), the state a hand leaves
 //! (`Board::after_hand`), a discard's (`Board::discard`), a blind's setup (`Board::at_blind_set`).
-//! Every difference is put in a known group (rolls in range, the bosses gap 15 plays as plain
-//! blinds, steps not modelled yet, the owner acting between saves, the saves' timing, card ids)
-//! or listed as NEW; the test fails on a new one, a score mismatch or a job the harness couldn't
-//! run. Run where a change touches `engine/` or a `Board` step the simulated round plays, before
-//! and after (CLAUDE.md step 4), and after a game update:
+//! Every difference is put in a known group (rolls in range, Riff-raff's random jokers at a
+//! blind's setup the engine's seeds didn't draw, the bosses gap 15 plays as plain blinds, steps
+//! not modelled yet, the owner acting between saves, the saves' timing, card ids) or listed as
+//! NEW; the test fails on a new one, a score mismatch or a job the harness couldn't run. Run
+//! where a change touches `engine/` or a `Board` step the simulated round plays, before and
+//! after (CLAUDE.md step 4), and after a game update:
 //! `BAV_PARITY_DIR=/tmp/before nice -n 19 cargo test --release --test parity -- --ignored parity
 //! --nocapture`, then `diff -r` the two `summary.txt`. `BAV_PARITY_SAMPLE` states (default 8000,
 //! about 15 minutes on 6 runners; 0: all, today's too), `BAV_WORKERS` runners (default half the
@@ -410,15 +411,15 @@ struct Diff {
 const ROLL: &str = "a roll, in range (between the engine's every roll failing and every roll hitting)";
 const GLASS: &str = "a Glass card broke: no engine step breaks one (card.lua `Card:shatter`), not modelled yet";
 const GAP15: &str = "a boss gap 15 plays as a plain blind (Amber Acorn, Crimson Heart)";
-const SETTING_BLIND: &str = "the jokers' `setting_blind` context besides Burglar (Ceremonial Dagger, Riff-raff, Madness, Marble Joker, Cartomancer), not modelled yet";
-const JUGGLE: &str = "tags' `round_start_bonus` (Juggle Tag's hand size), not modelled yet";
+const RANDOM_PICK: &str = "Riff-raff's jokers, drawn at random at a blind's setup: none of the engine's 256 seeds drew the game's";
+const SETTING_BLIND: &str = "Ceremonial Dagger's and Madness's `setting_blind` (a joker destroyed, their growth), not modelled yet (gap 8, gap 26)";
 const OWNER: &str = "the owner acted between the two saves (a sale, a consumable used, jokers moved)";
 const TIMING: &str = "the game saved before the step finished (a tag still pending, the shop not stocked yet)";
 const IDS: &str = "card ids (copies sharing one; a new card's id comes from a counter the save doesn't keep)";
 const FLOAT: &str = "one chip off: the game floors a float its save rounds (Ramen's ×Mult)";
 
 const GAP15_BOSSES: [&str; 2] = ["bl_final_acorn", "bl_final_heart"];
-const SETTING_BLIND_JOKERS: [&str; 5] = ["j_ceremonial", "j_riff_raff", "j_madness", "j_marble", "j_cartomancer"];
+const SETTING_BLIND_JOKERS: [&str; 2] = ["j_ceremonial", "j_madness"];
 
 fn close(a: f64, b: f64) -> bool {
     (a - b).abs() <= 1e-6 * a.abs().max(b.abs()).max(1.0)
@@ -761,29 +762,51 @@ fn judge(job: &Job, ran: Ran, data: &GameData) -> Judged {
                 fresh: true,
                 blind: cb.key.clone(),
                 disabled: cb.disabled,
+                juggle: b.0.round_start_tags(),
             };
-            let (mut e, s) = board.at_blind_set(&start);
-            let mut g = Board::from_run(&h.0, data);
-            // the blind's rules and the deck's size aren't this step's (the save's blind is read
-            // as the engine reads it; the cards dealt are the harness's)
-            g.blind = e.blind.clone();
-            e.hands_left = s.hands;
-            e.discards_left = s.discards;
-            e.playing_cards = g.playing_cards;
-            let mut d = board_diff(&e, &g, false);
-            if s.hand_size != h.0.round_hand_size() {
-                d.push(("hand_size".into(), format!("{} / {}", s.hand_size, h.0.round_hand_size())));
+            let g = Board::from_run(&h.0, data);
+            let setup = |seed: u64| {
+                let (mut e, s) = board.at_blind_set_drawn(&start, seed);
+                let mut g = g.clone();
+                // the blind's rules and the deck's size aren't this step's (the save's blind is
+                // read as the engine reads it; the cards dealt are the harness's)
+                g.blind = e.blind.clone();
+                e.hands_left = s.hands;
+                e.discards_left = s.discards;
+                e.playing_cards = g.playing_cards;
+                let mut d = board_diff(&e, &g, false);
+                if s.hand_size != h.0.round_hand_size() {
+                    d.push(("hand_size".into(), format!("{} / {}", s.hand_size, h.0.round_hand_size())));
+                }
+                if let Some((ec, gc)) = s.hand.iter().zip(&h.0.hand).find(|(ec, gc)| ec.debuff != gc.debuff) {
+                    d.push(("card debuff".into(), format!("{} {} / {}", gc.label(), ec.debuff, gc.debuff)));
+                }
+                (d, e.jokers.len())
+            };
+            // Riff-raff's jokers, a random pick: the engine's seeds tried for the game's, the
+            // closest kept; what's left is the pick's where it's the jokers made (their keys,
+            // their numbers, what they give while held) and the jokers count the same
+            let random = board.jokers.iter().any(|j| j.key == "j_riff_raff");
+            let mut best = setup(0);
+            for seed in 1..if random { 256 } else { 1 } {
+                if best.0.is_empty() {
+                    break;
+                }
+                let next = setup(seed);
+                if next.0.len() < best.0.len() {
+                    best = next;
+                }
             }
-            if let Some((ec, gc)) = s.hand.iter().zip(&h.0.hand).find(|(ec, gc)| ec.debuff != gc.debuff) {
-                d.push(("card debuff".into(), format!("{} {} / {}", gc.label(), ec.debuff, gc.debuff)));
-            }
+            let made: Vec<&engine::Joker> = if random && best.1 == g.jokers.len() { g.jokers.iter().skip(board.jokers.len()).collect() } else { vec![] };
+            let held_mods = made.iter().any(|j| j.round_mods() != (0, 0, 0));
+            let of_made = |field: &str| field == "jokers" || made.iter().any(|j| field.starts_with(j.key.as_str())) || (held_mods && matches!(field, "hand_size" | "discards_left"));
             let boss = gap15(&cb.key, cb.disabled);
-            let setting = b.0.jokers.iter().any(|j| SETTING_BLIND_JOKERS.contains(&j.key.as_str()));
-            let juggle = b.0.tags.iter().any(|t| t == "tag_juggle");
-            let d = d
+            let setting = board.jokers.iter().any(|j| SETTING_BLIND_JOKERS.contains(&j.key.as_str()) && !j.debuff);
+            let d = best
+                .0
                 .into_iter()
                 .map(|(field, what)| {
-                    let known = boss.or(setting.then_some(SETTING_BLIND)).or((juggle && field == "hand_size").then_some(JUGGLE));
+                    let known = boss.or(setting.then_some(SETTING_BLIND)).or((!made.is_empty() && of_made(&field)).then_some(RANDOM_PICK));
                     Diff { field, what, known }
                 })
                 .collect();

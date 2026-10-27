@@ -75,6 +75,9 @@ impl Board {
             goals: None,
             played_ante: Vec::new(),
             ante_over: false,
+            round_resets: (0, 0, 0),
+            added_cards: Vec::new(),
+            pool_flags: s.pool_flags.clone(),
         };
         b.count_deck(&full);
         b
@@ -119,12 +122,21 @@ impl RunState {
         self.round_hand_size() + self.current_blind.as_ref().is_some_and(|b| b.key == "bl_manacle" && !b.disabled) as i64
     }
 
-    /// The hands and discards a fresh round is played with: `round_hands` and `round_discards`
-    /// as `blind` is set (`BlindRules::default()`: a round with no boss rule) and then the jokers
-    /// you own (`Board::at_blind_set`: The Needle's, Burglar's)
-    pub fn round_at_blind_set(&self, blind: BlindRules) -> (i64, i64) {
+    /// The Juggle Tags the next round played starts with (tag.lua `round_start_bonus`, used as
+    /// a round's first cards are drawn: none while one is in play)
+    pub fn round_start_tags(&self) -> i64 {
+        if self.blind_in_play().is_some() { 0 } else { self.tags.iter().filter(|t| *t == "tag_juggle").count() as i64 }
+    }
+
+    /// The hand size, hands and discards a fresh round is played with: `hand_size`,
+    /// `round_hands` and `round_discards` as `blind` is set (`BlindRules::default()`: a round
+    /// with no boss rule) and then the jokers you own in your slots (`Board::at_blind_set`: The
+    /// Needle's, Burglar's; a random pick drawn from seed 0)
+    pub fn round_at_blind_set(&self, blind: BlindRules) -> (i64, i64, i64) {
         let jokers = self.jokers.iter().map(|j| Joker { debuff: j.debuff, ..Joker::from_ability(&j.key, &j.ability, 0) }).collect();
-        let b = Board { jokers, ..Board::empty() };
-        crate::sim::RoundStart { hands: self.round_hands, discards: self.round_discards, fresh: true, blind: blind.key, disabled: blind.disabled, ..Default::default() }.hands_on(&b)
+        let b = Board { jokers, joker_slots: self.joker_slots, ..Board::empty() };
+        let start = crate::sim::RoundStart { hand_size: self.hand_size, hands: self.round_hands, discards: self.round_discards, fresh: true, blind: blind.key, disabled: blind.disabled, ..Default::default() };
+        let (_, s) = b.at_blind_set(&start);
+        (s.hand_size, s.hands, s.discards)
     }
 }

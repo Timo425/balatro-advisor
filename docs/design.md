@@ -114,7 +114,11 @@ jokers, Madness), bosses gap 15 plays as plain blinds (21: The Pillar and Verdan
 Acorn's shuffle 3, Crimson Heart 1) and a Juggle Tag's `round_start_bonus` (1): not modelled.
 Since 2026-10-27 (The Pillar and Verdant Leaf simulated, gap 15): `at_blind_set` 548 of 576,
 the 28 left the `setting_blind` jokers (23, one of them a Pillar setup), Amber Acorn (3),
-Crimson Heart (1) and the Juggle Tag (1). A
+Crimson Heart (1) and the Juggle Tag (1). Since 2026-10-27 (the round's start: Chicot,
+Riff-raff, Marble Joker and the Juggle Tags held set as a blind is): 549 of 576, the 27 left
+Ceremonial Dagger and Madness (18, not modelled: gap 8), Riff-raff's random jokers (5: as many
+made as the game's, other keys; none of 256 seeds drew the game's), Amber Acorn (3), Crimson
+Heart (1); nothing new. A
 round won changes more that no step does (983 hands in the feasibility run): rent and Gold cards'
 money, Popcorn, Rocket, Gros Michel's end, bosses' debuffs lifted, all valued outside the
 round. What the history can't exercise: 39 of the 150 jokers never owned (Glass Joker, DNA,
@@ -273,7 +277,7 @@ add to this list's kind; remove from it.
 | Played cards ordered with Glass and Polychrome last (`sim::arrange`), the order the engine's arrangement starts from and falls back to | `sim.rs` `arrange` | the engine's arrangement from the cards in a fixed order (the fallback then matters only where an effect reads a card's place: gap 19) |
 | Constellation grows from planets in several places | `value.rs` `add_planets`, `spend_once`; `advise.rs` Meteor tag, `grow_constellation` | a planet used as an event in `engine::RunEvent`, applied by `Board::after` (`xmult_from`), counted through `Gain::planets`; `bought_event` then compares what money buys by measured value, not Mult per dollar |
 | A short perishable's price dropped from its value | `advise.rs` (`long_mult = 1 + unlock`) | `LongRun::value` with its price |
-| What a joker adds to a round (hand size, hands, discards) as a table (its `add_to_deck` effects, which the save's `round_resets` holds once it's yours; Burglar's `setting_blind` effect is the engine's, `Board::at_blind_set`, set on each fresh round from the board played, after the boss's own rule: card.lua `calculate_joker`, checked 2026-10-19), and Turtle Bean's shrink by name | `advise.rs` `round_mods`, `value.rs` `long_spec_for` | the center's config in `data/` (`h_size`, `d_size`, `extra`) as game facts; a fading joker's state projected as growth is (`value::Growths`, `grow_antes`) |
+| What a joker adds to a round (hand size, hands, discards) as a table (its `add_to_deck` effects, taken back by `remove_from_deck`, which the save's `round_resets` holds once it's yours; the `setting_blind` context is the engine's, `Board::at_blind_set`, set on each fresh round from the board played, after the boss's own rule: card.lua `calculate_joker`, checked 2026-10-19 and 2026-10-27; the jokers that context makes give theirs through this table, none while debuffed), and Turtle Bean's shrink by name | `engine/joker.rs` `Joker::round_mods` (read by `advise.rs` `apply_mods` and `Board::at_blind_set`), `value.rs` `long_spec_for` | the center's config in `data/` (`h_size`, `d_size`, `extra`) as game facts; a fading joker's state projected as growth is (`value::Growths`, `grow_antes`) |
 | A fresh round's blind beside `fresh` (`RoundStart::blind`, `disabled`: ignored on a round in progress, whose board has its blind), named again by `Spec::blind_key`; and `RoundStart::hands_on`, two of the three numbers `Board::at_blind_set` sets, next to the hand size before it's set (`value.rs` `lr.round` once paired them) | `sim.rs` `RoundStart`; `advise.rs` `Spec`, `fresh_round`, `boss_reroll_option` | a start that is either fresh, with its blind, or in progress (an enum), the spec reading the blind from it; callers read what a round is played with off `at_blind_set`'s start |
 | Chaos the Clown's free reroll a shop found by its key (`j_chaos`) | `advise.rs` `money_value_with`, `tests/shop_playon.rs` | a joker game fact for the shop's free rerolls in the engine or `data/` (state_events.lua `new_round`: `free_rerolls` = how many are held) |
 
@@ -513,6 +517,16 @@ the same retriggered ×Mult.
   wasn't there on average. 45 of the 144 Gold Stake shops' top picks moved: 28 judged by playing
   on, +0.11 of the two bosses' joint chance in all (1 clearly better, none clearly worse), 17
   unjudged (tarot packs). Five other versions measured and not kept (gap 17). Left: gap 17.
+- **Done 2026-10-27:** the round's start (`Board::at_blind_set`): the jokers' `setting_blind`
+  context as the game runs it, left to right (Chicot disabling a boss after the rest, Riff-raff's
+  Common jokers drawn per simulated round from the one joker pool, `in_joker_pool`, Marble Joker's
+  Stone card carried to later rounds), the Juggle Tags you hold on the next round played (skip-or-
+  play's Big Blind skip too), what a joker gives while held none while debuffed. Snapshot: only
+  pool candidates now simulated (Riff-raff, Marble) and what reads the pool moved, no top option
+  or Best play pick; 0 of 135 saved picks moved; the player benchmark the same on every board;
+  parity's blind setups 548 → 549 of 576, nothing new. Ceremonial Dagger and Madness were tried
+  and left not modelled: a joker the advice adds goes at the right end (gap 26), where a
+  rightmost Dagger ate every buy, and a joker's loss isn't priced (gap 8); both first.
 - **Next:** the policy's digs and junk hands weighing growth; a free hand banked before the
   hand that wins (gap 34); Ceremonial Dagger's value (gap 8); the blind odds shown and the
   outlook chained as Best play's blinds ahead are (gap 28).
@@ -800,7 +814,12 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    growing joker in one of the three). Ceremonial Dagger's is a choice: what you put to its
    right (raised in play 2026-10-09: a Dagger read as no better than taking nothing, unlabelled),
    so it needs a joker's loss as an event the projection can price (Madness's destroyed
-   jokers aren't counted either), and money for how a round is
+   jokers aren't counted either; neither is played as a blind is set, `Board::at_blind_set`:
+   tried 2026-10-27 and not kept, since a joker the advice adds goes at the right end, gap 26,
+   where a rightmost Dagger ate every buy and the projection's finds (on a fixture with its
+   Dagger moved last every shop option's measure fell ~15×), and the growth measure counted a
+   grower destroyed as used up while a joker that doesn't grow lasted: the loss priced as an
+   event for every joker, and the place a joker is added, come first), and money for how a round is
    played (Delayed Gratification, Trading Card, Faceless Joker) is measured since 2026-10-25
    (a round's money with and without the joker on this ante's plain blinds: `LongRun::income`,
    gap 36). The general fix for the loss: measured from projected rounds (the board at a
@@ -1025,14 +1044,13 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    others about as before. Revisit when the chase predicts its round better (a keep weighed
    against the dig could then be tried again) or the oracle throws cards this keeps.
    The Tooth is in the round's outcome only (its money leaves the board, not the round's
-   value: `Outcome::cash` counts money made), and the blind says so. Chicot
-   isn't simulated: a boss it disables is played as active in a round ahead, The Hook now too
-   (Luchador's sale isn't a move); a round in progress replayed from its start (`fresh_round`)
-   keeps the save's disabled blind since 2026-10-27 (before, it was replayed active). The general
-   fix: the rest of the game's press-play step (blind.lua `Blind:press_play`: The Tooth,
-   Crimson Heart, The Fish) in the engine's `score` as The Hook is, with The Tooth's money in
-   the round's value; and Chicot's disabled boss set where a fresh round's blind is
-   (`Board::at_blind_set`, which already skips a disabled boss: `RoundStart::disabled`). Raised in
+   value: `Outcome::cash` counts money made), and the blind says so. Since 2026-10-27 Chicot
+   disables a boss as its blind is set in every round ahead (`Board::at_blind_set`, its
+   `setting_blind`; the row then names nothing unmodelled), Luchador's sale still isn't a move;
+   a round in progress replayed from its start (`fresh_round`) keeps the save's disabled blind
+   (before 2026-10-27 it was replayed active). The general fix for what's left: the rest of the
+   game's press-play step (blind.lua `Blind:press_play`: The Tooth, Crimson Heart, The Fish) in
+   the engine's `score` as The Hook is, with The Tooth's money in the round's value. Raised in
    play 2026-10-09 (Ante 1, The Hook not simulated). Best play's search against the reference
    on that Hook state (fixture `boss_hook_ante1`): two seeds of three pick within noise of the
    best (0.7%, 1.1% ± 1.3%), the third a Two Pair 5.1% ± 1.5% below it, the best moves all cut
@@ -1610,10 +1628,15 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    5 Juggle Tags, 28 cards in hand): every quick pass of the round was stopped by the next
    save after 27–54 s (`timings.jsonl`: "stopped", 3–9 steps done), so the round was played
    with no Best play at all.
-21. **Tags you hold aren't read, and a tag's effect on a later blind is valued only in one
-   case.** Skip-or-play values a Juggle Tag (+3 hand size, tag.lua `round_start_bonus`: the
-   next round played) only when skipping the Big blind; on a Small blind skip it's "not
-   valued". The tags you already hold (`save` reads them: `RunState::tags`) aren't used: a
+21. **Of the tags you hold only the Juggle Tag is read, and a tag's effect on a later blind is
+   valued only in one case.** Skip-or-play values a Juggle Tag (+3 hand size, tag.lua
+   `round_start_bonus`: the next round played) only when skipping the Big blind; on a Small
+   blind skip it's "not valued". Since 2026-10-27 the Juggle Tags you hold give the next round
+   played their hand size (`RoundStart::juggle`, set in `Board::at_blind_set`): the next blind's
+   row, and the boss on skip-or-play's skip side of a Big Blind (whatever tag the skip takes; a
+   Juggle Tag taken adds its own). Not read: a save in the moment between selecting a blind and
+   its first cards drawn gives them to the blind after it. The other tags you hold (`save` reads them:
+   `RunState::tags`) aren't used: a
    Double Tag copies the next tag taken (tag.lua), so with 7 Double Tags a Juggle Tag skip is
    8 Juggles (+24 hand size for the next round, with Steel cards held a large ×Mult), valued
    as one or none. The general fix: a tag's effect as a `Gain` for the round it acts on
@@ -1669,7 +1692,9 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    card you chose, you saw (raised in play 2026-10-11: Anaglyph Deck run 2BTAA2XK, the 7♥ in
    hand turned Stone during the Ante 4 Spectral Pack, shown as `7♥ [stone]` at Ante 5); one
    Marble Joker adds is a random front over all 52 (card.lua: `pseudorandom_element(G.P_CARDS)`),
-   never shown, and so are Stones from Standard packs; a deck can hold both kinds. The save
+   never shown (the simulated rounds' own, since 2026-10-27 `Board::at_blind_set`, are all A♠: a
+   fixed lean to Spades in whatever counts fronts, until this gap's fix), and so are Stones from
+   Standard packs; a deck can hold both kinds. The save
    doesn't say which, and the advisor reads every front today, so with several Stones it
    "knows" the ones you never saw too. The history can tell them apart: a card keeps its
    `sort_id` through saves (card.lua `Card:save` / `Card:load`; `save.rs` doesn't read it yet),
@@ -1772,7 +1797,9 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    leave.** The blind odds, the next-ante horizon and the style outlook each simulate their
    round from the current board (`Board::at_blind_set`, through `Board::new_round`, only resets
    the round), so what a round does to the jokers is undone before the next: within a round the
-   engine steps them (`Board::after_hand`), between rounds nothing does. Jokers that run out
+   engine steps them (`Board::after_hand`), between rounds nothing does (nor what a blind's
+   setup makes: Riff-raff's jokers and Marble Joker's Stone card, made again in each round
+   ahead). Jokers that run out
    count in full in every round ahead (Seltzer's hands, Ice Cream's Chips, Popcorn's Mult a
    round, a perishable's rounds), and jokers that grow count at their size now (Green Joker,
    Ride the Bus, Runner: an under-count). Raised in play 2026-10-11 (run I6XKKH65, Ante 3 Big

@@ -129,7 +129,7 @@ impl Tracker {
                 let slot = r.blinds.iter().find(|b| b.state == "Current").map(|b| b.slot.clone()).unwrap_or_default();
                 // the hands it was set with: the boss's rule (unless disabled), then the jokers'
                 let set = crate::engine::score::BlindRules { key: cb.key.clone(), disabled: cb.disabled, ..Default::default() };
-                let fresh = cb.scored == 0.0 && r.hands_left == r.round_at_blind_set(set).0;
+                let fresh = cb.scored == 0.0 && r.hands_left == r.round_at_blind_set(set).1;
                 let id = format!("{}-{}-{}", r.seed, r.ante, slot);
                 let known = self.open.iter().any(|o| o.0 == id) || read(&self.dir).iter().any(|e| matches!(e, Entry::Prediction { id: i, .. } if *i == id));
                 if fresh && !slot.is_empty() && !known {

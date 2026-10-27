@@ -142,6 +142,21 @@ pub struct Board {
     /// round's start is read with none played (`at_blind_set`)
     #[serde(default)]
     pub ante_over: bool,
+    /// The hand size, hands and discards the jokers this board's simulated rounds destroyed or
+    /// made took or gave for good (card.lua `Card:remove_from_deck` / `Card:add_to_deck` change
+    /// the hand size and `round_resets`: `Joker::round_mods`), added to each later fresh round's
+    /// start (`at_blind_set`), whose numbers are the save's
+    #[serde(default)]
+    pub round_resets: (i64, i64, i64),
+    /// Cards this board's simulated rounds added to the deck (Marble Joker's Stone cards, as a
+    /// blind is set: `at_blind_set`, which counts them on the board then), dealt in each later
+    /// fresh round too, whose deck is the save's
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub added_cards: Vec<Card>,
+    /// The run's pool flags set (`G.GAME.pool_flags`: Gros Michel extinct), which the joker pool
+    /// reads (Riff-raff's jokers, `at_blind_set`: `in_joker_pool`)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pool_flags: Vec<String>,
 }
 
 impl Board {
@@ -180,6 +195,9 @@ impl Board {
             goals: None,
             played_ante: Vec::new(),
             ante_over: false,
+            round_resets: (0, 0, 0),
+            added_cards: Vec::new(),
+            pool_flags: Vec::new(),
         }
     }
 
@@ -465,6 +483,11 @@ struct Pass<'a, R: Rolls + ?Sized> {
 /// `not context.blueprint` gates: an effect that copies don't trigger must check for that
 /// itself (Mail-In Rebate and Faceless Joker have no such gate).
 pub fn effective_joker(b: &Board, j: usize) -> Option<&Joker> {
+    effective_place(b, j).map(|t| &b.jokers[t])
+}
+
+/// `effective_joker`'s place on the board
+fn effective_place(b: &Board, j: usize) -> Option<usize> {
     let n = b.jokers.len();
     let mut cur = j;
     for _ in 0..=n {
@@ -475,7 +498,7 @@ pub fn effective_joker(b: &Board, j: usize) -> Option<&Joker> {
         let t = match jk.kind {
             Kind::Blueprint => cur + 1,
             Kind::Brainstorm => 0,
-            _ => return Some(jk),
+            _ => return Some(cur),
         };
         if t >= n || t == cur {
             return None;
@@ -646,31 +669,46 @@ impl Board {
 
     /// The board and start a round is played with: a round in progress its own, set when it
     /// started; a fresh one's as state_events.lua `new_round` sets them. First the round's reset
-    /// to its blind (`Board::new_round` to `start.blind`), then blind.lua `Blind:set_blind`: The
-    /// Manacle's −1 hand size, the suit and face debuffs (`Blind:debuff_card` on every card,
-    /// which clears any other: `debuff_cards`, with The Pillar's cards played this ante, those
-    /// the board's rounds played marked first, and Verdant Leaf's every card; every card dealt
-    /// face up, as a boss turning some down as they're drawn isn't simulated),
-    /// `round_resets.hands` − 1 hands taken for The Needle (from at
-    /// least 1: one hand left, two from none) and every discard for The Water; then each joker
-    /// in the `setting_blind` context (card.lua `Card:calculate_joker`), where Burglar takes
-    /// every discard left and adds `extra` hands, and so does each copy of it (Blueprint,
-    /// Brainstorm: `effective_joker`). `start` holds `round_resets`, where what a joker gives
-    /// when it's added already is (`add_to_deck`: Troubadour's hand a round, Merry Andy's and
-    /// Drunkard's discards), unlike the above.
-    /// A disabled blind (`start.disabled`: the save's, after Chicot's `setting_blind` or
-    /// Luchador's sale) takes nothing, as `Blind:disable` gives back what it took: exact for hands
-    /// and hand size; under The Water with Burglar the game's discards depend on whether Chicot
-    /// sits before Burglar (none) or after it (all back), and this gives none. Not modelled:
-    /// Chicot itself and the other bosses' rules (gap 15).
+    /// to its blind (`Board::new_round` to `start.blind`) and what the board's earlier simulated
+    /// rounds changed for good (`round_resets`, the cards they added: `added_cards`), then
+    /// blind.lua `Blind:set_blind`: The Manacle's −1 hand size, `round_resets.hands` − 1 hands
+    /// taken for The Needle (from at least 1: one hand left, two from none) and every discard for
+    /// The Water; then the jokers in the `setting_blind` context (`setting_blind`); then the suit
+    /// and face debuffs (`Blind:debuff_card` on every card, which clears any other:
+    /// `debuff_cards`, with The Pillar's cards played this ante, those the board's rounds played
+    /// marked first, and Verdant Leaf's every card; every card dealt face up, as a boss turning
+    /// some down as they're drawn isn't simulated); then the Juggle Tags held (`start.juggle`:
+    /// tag.lua `round_start_bonus`, each its `h_size` for the round, as the first cards are
+    /// drawn). `start` holds `round_resets`, where what a joker gives when it's added already is
+    /// (`add_to_deck`: Troubadour's hand a round, Merry Andy's and Drunkard's discards), unlike
+    /// the above. A disabled blind (`start.disabled`: the save's, after Chicot's `setting_blind`
+    /// or Luchador's sale) takes nothing, as `Blind:disable` gives back what it took. Not
+    /// modelled: the other bosses' rules (gap 15).
+    /// This is the setup's fixed part, for a caller that reads the round's numbers or sets one
+    /// board for many deals: Riff-raff's jokers, drawn at random, are made only in a simulated
+    /// round, per round (`at_blind_set_drawn`).
     pub fn at_blind_set(&self, start: &RoundStart) -> (Board, RoundStart) {
+        self.set_blind(start, None)
+    }
+
+    /// `at_blind_set` with its random part, drawn from `seed` (the round's own: `sim`
+    /// `play_round`, `outcomes_after`): Riff-raff's jokers made
+    pub fn at_blind_set_drawn(&self, start: &RoundStart, seed: u64) -> (Board, RoundStart) {
+        self.set_blind(start, Some(seed))
+    }
+
+    fn set_blind(&self, start: &RoundStart, draw: Option<u64>) -> (Board, RoundStart) {
         if !start.fresh {
             return (self.clone(), start.clone());
         }
         let mut b = self.clone();
         b.new_round(&start.blind);
         b.blind.disabled = start.disabled;
-        let mut s = RoundStart { fresh: false, ..start.clone() };
+        let mut s = RoundStart { fresh: false, juggle: 0, ..start.clone() };
+        s.hand_size += b.round_resets.0;
+        s.hands += b.round_resets.1;
+        s.discards += b.round_resets.2;
+        s.deck.extend(b.added_cards.iter().copied());
         if b.blind.active("bl_manacle") {
             s.hand_size -= 1;
         }
@@ -685,14 +723,116 @@ impl Board {
                 c.played_this_ante = true;
             }
         }
-        b.debuff_cards(&mut s.hand, &mut s.deck);
         let hands = if b.blind.active("bl_needle") { s.hands.max(1) - (s.hands - 1) } else { s.hands };
         let discards = if b.blind.active("bl_water") { 0 } else { s.discards };
-        (s.hands, s.discards) = (0..b.jokers.len()).filter_map(|j| effective_joker(&b, j)).fold((hands, discards), |(h, d), jk| match jk.key.as_str() {
-            "j_burglar" => (h + jk.extra.n as i64, 0),
-            _ => (h, d),
-        });
+        let took = (s.hands - hands, s.discards - discards);
+        (s.hands, s.discards) = (hands, discards);
+        b.setting_blind(&mut s, took, draw);
+        b.debuff_cards(&mut s.hand, &mut s.deck);
+        if start.juggle > 0 {
+            let h_size = crate::data::GameData::bundled().tags.iter().find(|t| t.key == "tag_juggle").and_then(|t| t.config.get("h_size")?.as_i64()).expect("tag_juggle's h_size in data/game.json");
+            s.hand_size += start.juggle * h_size;
+        }
         (b, s)
+    }
+
+    /// The jokers in the `setting_blind` context as a blind is set (state_events.lua `new_round`
+    /// calls card.lua `Card:calculate_joker` on each, left to right; a debuffed joker does
+    /// nothing). Burglar takes every discard left and adds `extra` hands, and so does each copy
+    /// of it (Blueprint, Brainstorm: `effective_place`). Riff-raff (copies too) makes up to 2
+    /// Common jokers while the slots allow, counting those made (`G.GAME.joker_buffer`), from
+    /// the joker pool (`in_joker_pool`), when `draw` gives the seed to draw them from; each comes
+    /// as the step ends (the game's event) with what it gives while held (`add_to_deck`:
+    /// `Joker::round_mods`, this round's hand size and discards now, its hands from the next
+    /// round, all kept in `round_resets`). Marble Joker (copies too) puts a Stone card into the
+    /// deck (its front never read; `added_cards`, so later rounds deal it) and Hologram grows by
+    /// it (`playing_card_added`). Chicot (not copied) disables a boss: its `Blind:disable` runs
+    /// two events deep, after the other jokers' effects, so it gives back what `took` (The
+    /// Needle's hands, The Water's discards: Burglar's are taken first) and The Manacle's hand
+    /// size, and halves The Wall's target and thirds Violet Vessel's, once for each Chicot (the
+    /// game's disable has no guard). Not modelled: Ceremonial Dagger destroying the joker to its
+    /// right and growing by it, and Madness growing and destroying a random joker on a Small or
+    /// Big Blind (a joker the advice adds goes at the right end, gap 26, and what a loss costs
+    /// over the run isn't priced, gap 8: both first); Cartomancer's Tarot (no consumable is used
+    /// in a simulated round, so neither its slot nor its use); the edition a made joker can roll
+    /// (`poll_edition`), what the profile locks and a challenge bans in the pool or makes
+    /// Eternal; the order the game's queued events give Burglar's discards against a joker made.
+    fn setting_blind(&mut self, s: &mut RoundStart, took: (i64, i64), draw: Option<u64>) {
+        let n = self.jokers.len();
+        let mut rng = draw.map(|seed| super::rng::Rng::new(seed ^ 0x0073_6574_7469_6e67));
+        let mut made: Vec<Joker> = vec![];
+        let mut chicots = 0;
+        for i in 0..n {
+            if self.jokers[i].debuff {
+                continue;
+            }
+            if self.jokers[i].key == "j_chicot" && self.blind.is_boss() && !self.blind.disabled {
+                chicots += 1;
+            }
+            let Some(t) = effective_place(self, i) else { continue };
+            match self.jokers[t].key.as_str() {
+                "j_burglar" => {
+                    s.hands += self.jokers[t].extra.n as i64;
+                    s.discards = 0;
+                }
+                "j_riff_raff" => {
+                    let Some(rng) = rng.as_mut() else { continue };
+                    let k = (self.joker_slots - (n + made.len()) as i64).min(2);
+                    let last = self.jokers.iter().chain(&made).map(|j| j.id).max().unwrap_or(0);
+                    for id in (last + 1..).take(k.max(0) as usize) {
+                        let pool = self.common_pool(s, &made);
+                        let jk = Joker::from_key(pool[rng.below(pool.len())], crate::data::GameData::bundled()).expect("a joker in the pool");
+                        made.push(Joker { id, ..jk });
+                    }
+                }
+                "j_marble" => {
+                    let stone = Card { enhancement: Some(Enhancement::Stone), ..Card::new(crate::model::Rank(14), Suit::Spades) };
+                    s.deck.push(stone);
+                    self.added_cards.push(stone);
+                    self.stone_tally += 1;
+                    self.driver_tally += 1;
+                    self.playing_cards += 1;
+                    for jk in self.jokers.iter_mut().filter(|jk| jk.key == "j_hologram" && !jk.debuff) {
+                        jk.x_mult += jk.extra.n;
+                    }
+                }
+                _ => {}
+            }
+        }
+        for jk in made {
+            let (h, hands, d) = jk.round_mods();
+            s.hand_size += h;
+            s.discards += d;
+            self.round_resets = (self.round_resets.0 + h, self.round_resets.1 + hands, self.round_resets.2 + d);
+            self.jokers.push(jk);
+        }
+        for _ in 0..chicots {
+            if self.blind.key == "bl_manacle" {
+                s.hand_size += 1;
+            }
+            s.hands += took.0;
+            s.discards += took.1;
+            match self.blind.key.as_str() {
+                "bl_wall" => s.target /= 2.0,
+                "bl_final_vessel" => s.target /= 3.0,
+                _ => {}
+            }
+            self.blind.disabled = true;
+        }
+    }
+
+    /// The Common jokers Riff-raff can make (`in_joker_pool`, rarity 1): `made` already count as
+    /// existing; Joker itself when nothing's left (`get_current_pool`'s fallback)
+    fn common_pool(&self, s: &RoundStart, made: &[Joker]) -> Vec<&'static str> {
+        let showman = self.jokers.iter().any(|j| j.key == "j_ring_master" && !j.debuff);
+        let owned: Vec<&str> = self.jokers.iter().chain(made).map(|j| j.key.as_str()).collect();
+        let cards: Vec<Card> = s.hand.iter().chain(&s.deck).copied().collect();
+        let pool: Vec<&'static str> = crate::data::GameData::bundled()
+            .jokers()
+            .filter(|c| c.rarity == Some(1) && super::joker::in_joker_pool(c, &owned, showman, &self.pool_flags, &cards))
+            .map(|c| c.key.as_str())
+            .collect();
+        if pool.is_empty() { vec!["j_joker"] } else { pool }
     }
 
     /// The blind's debuffs set on every playing card (blind.lua `Blind:debuff_card`, as

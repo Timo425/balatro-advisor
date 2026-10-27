@@ -660,12 +660,19 @@ pub fn chance_ratio(base: f64, by: f64, from: f64) -> f64 {
 /// The rounds numbered `range` after `first` (round i always draws the same cards, whatever
 /// the move, so moves compare on the same draws and more rounds can be added later).
 pub fn outcomes_after(b: &Board, start: &RoundStart, first: &Move, range: std::ops::Range<usize>, seed: u64, uses: &[Use]) -> Vec<Outcome> {
-    let (b, start) = b.at_blind_set(start);
-    let size = start.hand_size.max(1) as usize;
-    let (hands, discards) = (start.hands, start.discards);
     range
         .map(|i| {
             let mut rng = Rng::new(seed.wrapping_add(i as u64 * 7919));
+            // a fresh round's blind set per round (its random part drawn from the round's own)
+            let set;
+            let (b, start) = if start.fresh {
+                set = b.at_blind_set_drawn(start, set_seed(&rng));
+                (&set.0, &set.1)
+            } else {
+                (b, start)
+            };
+            let size = start.hand_size.max(1) as usize;
+            let (hands, discards) = (start.hands, start.discards);
             let mut deck = start.deck.clone();
             shuffle(&mut deck, &mut rng);
             let mut hand = start.hand.clone();
@@ -744,6 +751,12 @@ pub fn outcomes_after(b: &Board, start: &RoundStart, first: &Move, range: std::o
 /// n are as likely as the game's two picks, the round's draws are left as a discard leaves them,
 /// and moves compared on the same round that hold the same cards keep or lose them alike, however
 /// the cards sit.
+/// The seed a round's setup draws its random picks from (`Board::at_blind_set_drawn`: Madness's
+/// victim, Riff-raff's jokers): the round's stream, not drawn from, so its deals stay the same
+fn set_seed(rng: &Rng) -> u64 {
+    rng.clone().next_u64() ^ 0x626c_696e_6400
+}
+
 fn boss_takes_held(b: &mut Board, held: &mut Vec<Card>, rng: &Rng) -> f64 {
     if !b.blind.active("bl_hook") {
         return 0.0;
@@ -961,6 +974,10 @@ pub struct RoundStart {
     pub blind: String,
     /// That blind disabled (the save's: Chicot's `setting_blind`, Luchador's sale)
     pub disabled: bool,
+    /// Juggle Tags held as a fresh round starts (tag.lua `Tag:apply_to_run`, `round_start_bonus`:
+    /// each adds its `h_size` for that round and is used up), set by `at_blind_set`: the next
+    /// round played's only (`RunState::round_start_tags`)
+    pub juggle: i64,
 }
 
 impl RoundStart {
@@ -3380,7 +3397,7 @@ pub fn sim_round_uses(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[
 /// blind (Verdant Leaf) the player weighs one before each hand (`leaf_sale`).
 fn play_round(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[Use]) -> (RoundResult, Board) {
     let mut used = vec![false; uses.len()];
-    let (mut b, mut start) = board.at_blind_set(start);
+    let (mut b, mut start) = board.at_blind_set_drawn(start, set_seed(rng));
     // the cards played this ante, set on the board as the round ends: not cloned with every board
     // its choices try
     let mut played_ante = std::mem::take(&mut b.played_ante);
@@ -3612,7 +3629,8 @@ pub fn grown_over(b: &Board, starts: &[RoundStart], checkpoints: &[usize], chain
 /// every round however many rolls an earlier round took. Not modelled between rounds: the
 /// game's other round-end steps (card.lua `end_of_round`: Popcorn, Turtle Bean, Gros Michel, a
 /// perishable's rounds, rent, the round's money) and what a round does to your deck (Vampire's
-/// stripped cards are whole again).
+/// stripped cards are whole again; the Stone cards Marble Joker adds as a blind is set stay:
+/// `Board::added_cards`).
 pub fn chained_runs(b: &Board, rounds: &[RoundStart], sims: usize, seed: u64) -> Vec<bool> {
     let run_one = |i: usize| {
         let mut board = b.clone();
@@ -3706,18 +3724,16 @@ pub fn typical_hands_detail(b: &Board, deck: &[Card], hand_size: usize, samples:
 
 /// Rounds `range` one by one, each drawing the same cards as round i of `round_odds`.
 pub fn round_results(b: &Board, start: &RoundStart, range: std::ops::Range<usize>, seed: u64) -> Vec<RoundResult> {
-    let (b, start) = b.at_blind_set(start);
-    range.map(|i| sim_round(&b, &start, &mut Rng::new(seed.wrapping_add(i as u64 * 7919)))).collect()
+    range.map(|i| sim_round(b, start, &mut Rng::new(seed.wrapping_add(i as u64 * 7919)))).collect()
 }
 
 /// Chance of beating a round, from `sims` simulations (same seed → same deals across boards).
 /// Simulations run in parallel; each has its own seed, so the result doesn't depend on
 /// how they're split across threads.
 pub fn round_odds(b: &Board, start: &RoundStart, sims: usize, seed: u64) -> (f64, Stats) {
-    let (b, start) = b.at_blind_set(start);
     let run_one = |i: usize| {
         let mut rng = Rng::new(seed.wrapping_add(i as u64 * 7919));
-        sim_round(&b, &start, &mut rng)
+        sim_round(b, start, &mut rng)
     };
     let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(sims / 8).max(1);
     let results: Vec<RoundResult> = if threads <= 1 {
@@ -3755,12 +3771,11 @@ pub fn round_odds(b: &Board, start: &RoundStart, sims: usize, seed: u64) -> (f64
 /// Which hands score the points in simulated rounds: (hand, share of points, share of
 /// hands played, mean score). Junk hands played to dig are left out.
 pub fn round_hand_mix(b: &Board, start: &RoundStart, sims: usize, seed: u64) -> Vec<(HandType, f64, f64, f64)> {
-    let (b, start) = b.at_blind_set(start);
     let mut pts = [0.0f64; 12];
     let mut cnt = [0usize; 12];
     for i in 0..sims {
         let mut rng = Rng::new(seed.wrapping_add(i as u64 * 7919));
-        for (h, s, dig) in sim_round(&b, &start, &mut rng).plays {
+        for (h, s, dig) in sim_round(b, start, &mut rng).plays {
             if !dig {
                 pts[h as usize] += s;
                 cnt[h as usize] += 1;
@@ -5291,6 +5306,63 @@ mod tests {
         assert_eq!(debuffed(&end, &RoundStart { blind: "bl_pillar".into(), ..fresh.clone() }).len(), n);
         let (r, after_boss) = play_round(&end, &RoundStart { blind: "bl_pillar".into(), ..fresh.clone() }, &mut Rng::new(5), &[]);
         assert!(r.won && after_boss.played_ante.is_empty() && after_boss.ante_over);
+    }
+
+    #[test]
+    fn a_fresh_round_runs_each_jokers_setting_blind_as_the_game_does() {
+        // card.lua `Card:calculate_joker`, `context.setting_blind`, left to right
+        let fresh = RoundStart { hand: vec![], deck: standard_deck(), hand_size: 8, hands: 4, discards: 3, scored: 0.0, target: 1000.0, fresh: true, blind: "bl_small".into(), ..Default::default() };
+        let keys = |b: &Board| b.jokers.iter().map(|j| j.key.clone()).collect::<Vec<_>>();
+
+        // Riff-raff: up to 2 Common jokers while the slots allow, none you own, each with a place
+        // of its own; a copy makes its own; only where a round is simulated (its random part)
+        let riff = sample_board(&["j_riff_raff"]);
+        let (end, _) = riff.at_blind_set_drawn(&fresh, 1);
+        assert_eq!(end.jokers.len(), 3);
+        assert!(end.jokers[1..].iter().all(|j| j.rarity == 1 && j.key != "j_riff_raff") && end.jokers[1].key != end.jokers[2].key);
+        assert!(end.jokers[1].id > 0 && end.jokers[2].id > end.jokers[1].id);
+        assert_eq!(riff.at_blind_set(&fresh).0.jokers.len(), 1, "the fixed part makes none");
+        let mut full = sample_board(&["j_riff_raff", "j_joker"]);
+        full.joker_slots = 2;
+        assert_eq!(full.at_blind_set_drawn(&fresh, 1).0.jokers.len(), 2);
+        let copied = sample_board(&["j_blueprint", "j_riff_raff"]);
+        assert_eq!(copied.at_blind_set_drawn(&fresh, 1).0.jokers.len(), 5, "3 made, as the 5 slots allow");
+        let juggler = (0..200).map(|seed| riff.at_blind_set_drawn(&fresh, seed)).find(|(b, _)| b.jokers.iter().any(|j| j.key == "j_juggler")).expect("a draw makes Juggler");
+        assert_eq!((juggler.1.hand_size, juggler.0.round_resets.0), (9, 1));
+        assert_eq!(juggler.0.at_blind_set(&fresh).1.hand_size, 9, "the next round keeps its hand size");
+        let draws: std::collections::BTreeSet<Vec<String>> = (0..20).map(|seed| keys(&riff.at_blind_set_drawn(&fresh, seed).0)).collect();
+        assert!(draws.len() > 1, "each round draws anew");
+
+        // Chicot disables a boss after the other jokers act: what it took given back (Burglar's
+        // discards under The Water too, whichever side it sits), The Wall's target halved
+        let chicot = sample_board(&["j_chicot"]);
+        assert_eq!(RoundStart { blind: "bl_needle".into(), ..fresh.clone() }.hands_on(&chicot), (4, 3));
+        let (end, s) = chicot.at_blind_set(&RoundStart { blind: "bl_wall".into(), ..fresh.clone() });
+        assert!(end.blind.disabled && s.target == 500.0);
+        assert_eq!(chicot.at_blind_set(&RoundStart { blind: "bl_manacle".into(), ..fresh.clone() }).1.hand_size, 8);
+        assert!(!chicot.at_blind_set(&fresh).0.blind.disabled);
+        let water = RoundStart { blind: "bl_water".into(), ..fresh.clone() };
+        assert_eq!(water.hands_on(&sample_board(&["j_chicot", "j_burglar"])), (7, 3));
+        assert_eq!(water.hands_on(&sample_board(&["j_burglar", "j_chicot"])), (7, 3));
+
+        // Marble Joker: a Stone card into the deck, dealt in later rounds too (Hologram grows by
+        // it); the Juggle Tags held add their hand size this round only
+        let marble = sample_board(&["j_marble", "j_hologram"]);
+        let (end, s) = marble.at_blind_set(&RoundStart { juggle: 2, ..fresh.clone() });
+        assert_eq!((s.deck.len(), end.stone_tally, end.playing_cards), (53, 1, 53));
+        assert_eq!((end.jokers[1].x_mult, s.hand_size, s.juggle), (1.25, 14, 0));
+        assert_eq!(end.at_blind_set(&fresh).1.deck.len(), 54, "the next round deals the first Stone card too");
+
+        // not modelled: Ceremonial Dagger's and Madness's (gap 8, gap 26), Cartomancer's Tarot
+        let left = sample_board(&["j_ceremonial", "j_madness", "j_joker", "j_cartomancer"]);
+        let (end, _) = left.at_blind_set_drawn(&fresh, 1);
+        assert_eq!((keys(&end), end.jokers[0].mult, end.jokers[1].x_mult, end.planet_slots), (keys(&left), 0.0, 1.0, left.planet_slots));
+
+        // what a joker gives while held: none while debuffed (card.lua `Card:set_debuff`)
+        let mut drunk = sample_board(&["j_drunkard"]);
+        assert_eq!(drunk.jokers[0].round_mods(), (0, 0, 1));
+        drunk.jokers[0].debuff = true;
+        assert_eq!(drunk.jokers[0].round_mods(), (0, 0, 0));
     }
 
     #[test]
