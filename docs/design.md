@@ -493,6 +493,13 @@ the same retriggered ×Mult.
   the replaced jokers' net money in the round goals). Left: ties by paired differences (gap 7),
   only this ante's hardest round read, the keep-or-let-go judged one joker at a time and on an
   exact line.
+- **Done 2026-10-27:** The Pillar and Verdant Leaf in the simulated round (gap 15): one port of
+  `Blind:debuff_card` in the engine, The Pillar's cards played this ante read from the save and
+  carried from round to round, Verdant Leaf's sale made by the simulated player (and before Best
+  play's moves). 38 of 103 saved boss chances before The Pillar moved by more than 0.02; parity's
+  blind setups 532 → 548 of 576; 2 of 135 saved picks moved (1 better, 1 tie). Left: Best play
+  weighing its own cards' cost at The Pillar and racing the sale, the boss row chaining the blinds
+  before it.
 - **Next:** the policy's digs and junk hands weighing growth; a free hand banked before the
   hand that wins (gap 34); Ceremonial Dagger's value (gap 8); the blind odds shown and the
   outlook chained as Best play's blinds ahead are (gap 28).
