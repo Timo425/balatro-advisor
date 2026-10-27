@@ -409,7 +409,7 @@ mod tests {
     }
 
     fn shop(jokers: &[&str]) -> Option<Shop> {
-        Some(Shop { jokers: jokers.iter().map(|k| joker(k)).collect(), other_cards: vec![], boosters: vec![], vouchers: vec![], reroll_cost: 5 })
+        Some(Shop { jokers: jokers.iter().map(|k| joker(k)).collect(), other_cards: vec![], boosters: vec![], vouchers: vec![], reroll_cost: 5, free_rerolls: 0 })
     }
 
     fn no_ids() -> CardIds {

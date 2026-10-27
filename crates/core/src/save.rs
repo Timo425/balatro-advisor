@@ -272,6 +272,10 @@ pub struct Shop {
     pub boosters: Vec<ItemCard>,
     pub vouchers: Vec<ItemCard>,
     pub reroll_cost: i64,
+    /// Free rerolls left in this shop (`current_round.free_rerolls`: one for each Chaos the Clown
+    /// at the round's start, state_events.lua `new_round`)
+    #[serde(default)]
+    pub free_rerolls: i64,
 }
 
 /// Per-round targets that live in `GAME.current_round`, not on the joker.
@@ -612,6 +616,7 @@ pub fn from_value(g: &Value, data: &GameData, path: &Path, age_secs: Option<u64>
             boosters: area(g, "shop_booster").into_iter().map(|c| item_card(c, data)).collect(),
             vouchers: area(g, "shop_vouchers").into_iter().map(|c| item_card(c, data)).collect(),
             reroll_cost: int(cr.get("reroll_cost")),
+            free_rerolls: int(cr.get("free_rerolls")),
         }
     });
 

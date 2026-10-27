@@ -9,7 +9,7 @@
 
 use std::sync::{Mutex, OnceLock};
 
-use super::{best_of_subsets, glass_presence, grow_antes, interest, money_value_with, par_map, round_mods, sample_hands, seal_planets_a_round, target_race_priced, UsePrice, TARGET_MAX, Candidate, Ctx, HandShare, Spec, TarotValue};
+use super::{best_of_subsets, glass_presence, grow_antes, interest, money_value_with, Kept, Shops, Start, par_map, round_mods, sample_hands, seal_planets_a_round, target_race_priced, UsePrice, TARGET_MAX, Candidate, Ctx, HandShare, Spec, TarotValue};
 use crate::engine::HandType;
 use crate::data::GameData;
 use crate::engine::{Board, Joker, Kind, RunEvent};
@@ -1638,7 +1638,8 @@ impl<'a> LongRun<'a> {
 
 /// Money a rich run can't turn into more planet levels (`levels_for` reaches its 2 an ante at
 /// the interest line + $30) goes on rerolls and packs, whichever split is worth more by Ante 8:
-/// rerolls by the best jokers they find (`money_value_with`, by their By Ante 8), packs ($4, 2
+/// rerolls by the jokers they find, bought shop by shop (`money_value_with`, by their By Ante 8:
+/// the best, each later buy ×0.6), packs ($4, 2
 /// a shop) by a typical pack's best pick, each further pack worth ×0.8 of the one before (a
 /// heuristic). The typical pack: Arcana, Celestial, Buffoon, Spectral and Standard by their
 /// shop weights (game.lua P_CENTERS: 4, 4, 1.2, 0.6, 4; Standard counted as nothing).
@@ -1666,7 +1667,7 @@ impl<'a> Spending<'a> {
         if let Some(v) = self.rerolls.lock().unwrap().get(&k) {
             return *v;
         }
-        let v = money_value_with(self.lr.ctx, self.pool, &|c: &Candidate| c.long_mult.unwrap_or(1.0), 1.0, k as f64 * 5.0, false, self.shops, false);
+        let v = money_value_with(self.lr.ctx, self.pool, &Kept::Weighted(&|c: &Candidate| c.long_mult.unwrap_or(1.0)), 1.0, k as f64 * 5.0, Shops::after(self.shops), Start::BOARD);
         self.rerolls.lock().unwrap().insert(k, v);
         v
     }
@@ -1721,7 +1722,7 @@ pub(super) fn without_new_glass(yours: &[Card], d: &[Card]) -> Option<Vec<Card>>
 
 /// The least chance of getting through the blinds ahead the board every change is measured on
 /// (and placed at) is brought to (`Ahead`'s find): the shops'
-/// estimate (`advise.rs` `survival_with`) counts only the best joker money finds, so a board it
+/// estimate (`advise.rs` `survival_with`) counts only the jokers money finds, so a board it
 /// still leaves near none meets the blinds stronger than that (planets, packs, tarots), and
 /// against a chance near none any change would be worth many rounds (with the rule of three's
 /// 3 wins in the runs instead, the same change was worth 9× more on 300 runs than on 60).
@@ -1863,8 +1864,8 @@ impl<'a> Ahead<'a> {
     }
 
     /// The shops' find: what the shops before each blind add to the boss's chance with the money
-    /// you hold (`lifts`, the shop ranking's estimate, as it adds money's survival to an option's
-    /// chance: `advise.rs` `rank_options`), put on the board as a multiplier on every score in
+    /// you hold (`lifts`, the shop ranking's estimate of what money buys: `advise.rs`
+    /// `survival_with`), put on the board as a multiplier on every score in
     /// the blinds after those shops (each blind's target divided by it: every score ×x, which
     /// takes no slot and no joker reads), sized shop by shop where the estimate is measured, on
     /// the boss alone from your board as it is (`boss_runs`): the first shop's on every blind
