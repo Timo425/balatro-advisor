@@ -3530,15 +3530,25 @@ fn play_round(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[Use]) ->
             }
         }
     }
-    // Mr. Bones: a lost round is saved if you reached 25% of the blind (card.lua, game_over)
-    let bones = b.jokers.iter().any(|j| j.key == "j_mr_bones" && !j.debuff);
     let won = total >= start.target;
     let seen = seen_by.iter().map(|e| e.1).fold(0.0, f64::max);
     b.played_ante = played_ante;
-    let saved = !won && bones && total >= 0.25 * start.target;
-    // a round Mr. Bones saves ends as a won one does (state_events.lua `end_round`)
+    // a lost round a joker saves (`Board::saves_lost_round`: Mr. Bones) ends for the board as a
+    // won one does (`won_round`), and the joker that saved it is gone (state_events.lua
+    // `end_round`, card.lua `start_dissolve`; a Blueprint or Brainstorm copying him spends the
+    // same save). Not paid here: what the game's cash-out pays a saved round besides (Gold cards
+    // held, the jokers' round-end money, Blue Seal planets, discards left)
+    let saver = if won { None } else { b.saves_lost_round(total, start.target) };
+    let saved = saver.is_some();
     if won || saved {
         b.won_round();
+    }
+    if let Some(i) = saver {
+        // (a Negative one takes its slot with it: card.lua `Card:remove_from_deck`)
+        if b.jokers[i].edition == Some(crate::model::Edition::Negative) {
+            b.joker_slots -= 1;
+        }
+        b.jokers.remove(i);
     }
     (RoundResult { total, won, saved, best_hand, plays, money, hands_left: 0, discards_left: 0, planets: 0.0, seen, grown }, b)
 }
@@ -3570,7 +3580,9 @@ impl JokerGrowth {
 /// carried from one to the next (the round targets drawn anew from the round's deck,
 /// `Board::draw_round_targets`: Castle's suit; the round's reset as the next one starts,
 /// `Board::at_blind_set`), read after
-/// `checkpoints` rounds (ascending, from 1). The same seed gives the same runs.
+/// `checkpoints` rounds (ascending, from 1). The same seed gives the same runs. A lost round
+/// doesn't end a run here; a save is spent in it as in the game (`play_round`: the Mr. Bones
+/// that saved is gone for the rounds after, which the jokers that read the joker count see).
 pub fn grown_over(b: &Board, starts: &[RoundStart], checkpoints: &[usize], chains: usize, seed: u64) -> Vec<Option<JokerGrowth>> {
     let counted: Vec<bool> = b.jokers.iter().map(|j| crate::engine::grows_in_rounds(&j.key)).collect();
     if !counted.contains(&true) || checkpoints.is_empty() || starts.is_empty() {
@@ -3624,7 +3636,8 @@ pub fn grown_over(b: &Board, starts: &[RoundStart], checkpoints: &[usize], chain
 /// from the board the one before ends with (its jokers' state as its hands and discards left
 /// them; then the round targets drawn anew and the round's reset as it starts, as the game does
 /// and `grown_over` carries it: `Board::at_blind_set`; the first from `b`), a
-/// loss ending the run (Mr. Bones' save not counted, as `round_odds`). Each round of each run is
+/// loss ending the run (a save not counted, as `round_odds`' chance on score: `chained_through`
+/// counts it). Each round of each run is
 /// dealt from its own stream (run, round), so the same run of two boards is dealt the same in
 /// every round however many rolls an earlier round took. Not modelled between rounds: the
 /// game's other round-end steps (card.lua `end_of_round`: Popcorn, Turtle Bean, Gros Michel, a
@@ -3632,18 +3645,37 @@ pub fn grown_over(b: &Board, starts: &[RoundStart], checkpoints: &[usize], chain
 /// stripped cards are whole again; the Stone cards Marble Joker adds as a blind is set stay:
 /// `Board::added_cards`).
 pub fn chained_runs(b: &Board, rounds: &[RoundStart], sims: usize, seed: u64) -> Vec<bool> {
+    chained(b, rounds, sims, seed, false).into_iter().map(|(through, _)| through == rounds.len()).collect()
+}
+
+/// `chained_runs` with saves: for each run, the rounds got through (a lost round a joker saves,
+/// Mr. Bones, played on from the board it leaves, without the joker that saved it:
+/// `play_round`) and which of them were saved (bit `k` for round `k`), on the same draws
+pub fn chained_through(b: &Board, rounds: &[RoundStart], sims: usize, seed: u64) -> Vec<(usize, u64)> {
+    chained(b, rounds, sims, seed, true)
+}
+
+/// The chained runs: a lost round ends a run unless `saves` and a joker saves it. A round in
+/// progress keeps its round targets; a fresh one draws them anew.
+fn chained(b: &Board, rounds: &[RoundStart], sims: usize, seed: u64, saves: bool) -> Vec<(usize, u64)> {
     let run_one = |i: usize| {
         let mut board = b.clone();
+        let mut saved = 0u64;
         for (k, start) in rounds.iter().enumerate() {
             let mut rng = Rng::new(seed.wrapping_add(i as u64 * 7919).wrapping_add(k as u64 * 0x9e37_79b9) ^ 0x6168_6561);
-            board.draw_round_targets(&start.deck, &mut rng);
+            if start.fresh {
+                board.draw_round_targets(&start.deck, &mut rng);
+            }
             let (r, end) = play_round(&board, start, &mut rng, &[]);
+            if !r.won && !(saves && r.saved) {
+                return (k, saved);
+            }
             if !r.won {
-                return false;
+                saved |= 1 << k.min(63);
             }
             board = end;
         }
-        true
+        (rounds.len(), saved)
     };
     let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(sims / 8).max(1);
     if threads <= 1 {
@@ -4030,6 +4062,33 @@ mod tests {
         };
         assert!(matches!(act(&["j_mystic_summit"]), Action::Discard(_)), "Mystic Summit: burn first");
         assert!(matches!(act(&["j_joker"]), Action::Play(..)), "a plain joker: play the Pair");
+    }
+
+    #[test]
+    fn a_save_is_spent_once_for_each_copy() {
+        // Rounds the board loses but reaches a quarter of: the first Mr. Bones saves one and is
+        // gone (state_events.lua `end_round`, card.lua `start_dissolve`), a second copy is left
+        // for the next lost round
+        let start = |target: f64| RoundStart { deck: standard_deck(), hand_size: 8, hands: 4, discards: 3, target, fresh: true, ..Default::default() };
+        let one = sample_board(&["j_mr_bones"]);
+        let two = sample_board(&["j_mr_bones", "j_mr_bones"]);
+        let mean = round_odds(&one, &start(1e12), 200, 3).1.mean;
+        let rounds = vec![start(mean * 2.0); 4];
+        let through = |b: &Board| {
+            let runs = chained_through(b, &rounds, 200, 5);
+            let n = runs.len() as f64;
+            // (rounds got through on score: up to the first saved one)
+            let on_score = |r: &(usize, u64)| if r.1 == 0 { r.0 } else { r.1.trailing_zeros() as usize };
+            (runs.iter().map(|r| on_score(r) as f64).sum::<f64>() / n, runs.iter().map(|r| r.0 as f64).sum::<f64>() / n)
+        };
+        let ((one_score, one_saved), (two_score, two_saved)) = (through(&one), through(&two));
+        assert!(one_saved > one_score + 0.8 && two_saved > one_saved + 0.6, "one copy {one_score} → {one_saved}, two copies {two_score} → {two_saved}");
+        // the round a save ends leaves the board without the copy that saved it
+        let mut rng = Rng::new(9);
+        let (r, end) = play_round(&two, &start(mean * 2.0), &mut rng, &[]);
+        assert!(r.saved, "this round is lost above a quarter of the blind");
+        assert_eq!(end.round_saves(), 1);
+        assert_eq!(two.saves_lost_round(0.2, 1.0), None, "under a quarter of the blind nothing saves");
     }
 
     #[test]

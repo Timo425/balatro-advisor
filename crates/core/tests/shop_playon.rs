@@ -414,6 +414,8 @@ fn money_finds(path: &str, trials: usize, sims: usize) -> String {
     let Some(hz) = a.rounds.iter().position(|r| r.horizon) else { return format!("{path}: no next ante\n") };
     let Some(leave) = a.options.iter().find(|o| o.kind == "leave") else { return format!("{path}: no leaving\n") };
     let (p_now, p_next) = (a.rounds[key].p_win, a.rounds[hz].p_win);
+    // (on a board holding a joker that saves a lost round, `survive` also has the save's lift,
+    // `save_lift`: none of the states measured so far holds one)
     let lift = (leave.survive.unwrap_or(p_now) - p_now, leave.survive_next.unwrap_or(p_next) - p_next);
     let mut out = format!(
         "{path}: ante {} ${} {}/{} jokers · {} {p_now:.3}, next ante {p_next:.3} · advice's lift from the money: this boss {:+.3}, next {:+.3}\n",

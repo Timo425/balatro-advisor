@@ -891,6 +891,28 @@ impl Board {
         }
     }
 
+    /// The joker that saves a round lost with `scored` of `target` (state_events.lua `end_round`:
+    /// each joker in turn is asked with `game_over`; card.lua `calculate_joker`: Mr. Bones saves
+    /// at 25% of the blind or more and dissolves, `start_dissolve`), by its place; `None` when
+    /// none does. The first that saves clears `game_over`, so a second copy isn't spent: it's
+    /// left for a later round. A debuffed joker isn't asked (`calculate_joker` returns at once).
+    pub fn saves_lost_round(&self, scored: f64, target: f64) -> Option<usize> {
+        if scored < 0.25 * target {
+            return None;
+        }
+        self.jokers.iter().position(Self::saves)
+    }
+
+    /// How many lost rounds this board's jokers can save, one after another (each saver is
+    /// spent: `saves_lost_round`)
+    pub fn round_saves(&self) -> usize {
+        self.jokers.iter().filter(|j| Self::saves(j)).count()
+    }
+
+    fn saves(j: &Joker) -> bool {
+        j.key == "j_mr_bones" && !j.debuff
+    }
+
     /// The round targets the game draws anew at each round's end (state_events.lua `end_round`;
     /// common_events.lua `reset_idol_card`, `reset_mail_rank`, `reset_ancient_card`,
     /// `reset_castle_card`): The Idol's card, Mail-In Rebate's rank and Castle's suit from a

@@ -232,7 +232,7 @@ pub fn run(run: &RunState, data: &GameData, plan: &Plan, sims: usize, seed: u64)
                 crate::advise::apply_mods(&start, added, removed)
             };
             let (p, st) = sim::round_odds(&b, &start, sims, seed);
-            let bones = js.iter().any(|j| j.key == "j_mr_bones" && !j.debuff);
+            let bones = b.round_saves() > 0;
             let name = if bl.slot == "Boss" { bl.name.clone() } else { format!("{} Blind", bl.slot) };
             out.push(BlindOdds {
                 label: if current { format!("{name} (in progress)") } else { name },
