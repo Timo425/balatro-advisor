@@ -869,8 +869,8 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    Superposition without its Gold sticker: Death went on a second Steel 4♦ while the owner
    was moving to Straights). Deck shaping's own value is gap 27.
 15. **Bosses whose rule isn't in the simulated round are played as plain blinds.** The
-   simulated round knows the suit and face debuffs, The Manacle, The Needle, The Water (set as a
-   fresh round's blind is: `Board::at_blind_set`), The Hook (2 held cards discarded at random
+   simulated round knows the suit and face debuffs, The Pillar's and Verdant Leaf's (below), The
+   Manacle, The Needle, The Water (set as a fresh round's blind is: `Board::at_blind_set`), The Hook (2 held cards discarded at random
    once a hand is played, before it scores: `sim` `boss_takes_held`, `Board::discard_by`) and
    the scoring bosses (`engine/score.rs`); the rest only change their target (said as "not simulated" on the
    blind). The Hook is in the engine's `score` (its press-play step, `score::pressed`): once the
@@ -999,9 +999,9 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    against the dig could then be tried again) or the oracle throws cards this keeps.
    The Tooth is in the round's outcome only (its money leaves the board, not the round's
    value: `Outcome::cash` counts money made), and the blind says so. Chicot
-   isn't simulated: a boss it disables is played as active, in a round ahead and in a round in
-   progress replayed from its start (`fresh_round`), The Hook now too (Luchador's sale isn't a
-   move). The general
+   isn't simulated: a boss it disables is played as active in a round ahead, The Hook now too
+   (Luchador's sale isn't a move); a round in progress replayed from its start (`fresh_round`)
+   keeps the save's disabled blind since 2026-10-27 (before, it was replayed active). The general
    fix: the rest of the game's press-play step (blind.lua `Blind:press_play`: The Tooth,
    Crimson Heart, The Fish) in the engine's `score` as The Hook is, with The Tooth's money in
    the round's value; and Chicot's disabled boss set where a fresh round's blind is
@@ -1014,36 +1014,94 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    question for the noise stage (`SEARCH_BUDGET`), measured on this fixture; with the budget
    halving many moves (2026-10-11, gap 1) every seed picks within 1% of the best (0.73% ± 1.08%
    on seed 44).
-   The Pillar (blind.lua `Blind:debuff_card`: a card with `ability.played_this_ante` is
-   debuffed) is one of the rest, and costs more than most: the save's `played_this_ante` isn't
-   read (`save.rs`), and the rounds before it aren't chained (gap 28), so its odds count every
-   card at full strength, and nothing in the Small or Big Blind is played to keep cards for it.
-   Raised in play 2026-10-11 (run I6XKKH65, Ante 5 shop): a deck whose chips are its Stones
-   (Hanging Chad, Raised Fist, Mime), where each Stone played before the boss is dead in it;
-   the boss showed 56% and the shop options were ranked on it. The fix is this gap's (the rule
-   in the simulated round, from the save's flag for a round in progress) and gap 28's (the
-   rounds of the ante chained, so what they play is debuffed in the boss). Fixture
-   `ride_the_bus_queens_dig` (Small Blind before the Big Blind and The Pillar) waits on it: since
-   the blinds ahead are measured on a board carrying the shops' find (gap 18, 2026-10-18) its
-   chain is 97% and Ride the Bus's +7 counts nothing there, so Best play plays a Queen now (96.5%
-   this round against 93.5%); the owner's line, the Queens kept out of the Small Blind, is
-   The Pillar's debuff on cards played this ante (`pending_expect`).
-   Verdant Leaf (Ante 8: every card debuffed until a joker is sold) is simulated before it
-   with nothing debuffed and nothing sold, so the boss's chance and the outlook before it
-   measure the whole board, when one joker must go first; in it, the save's debuffs are
-   played (Best play and the boss's chance: 84% on a Flush of 129k debuffed, seen in play
-   2026-10-05) but selling isn't a move, where one sale lifts it (that Flush 484k) (with eternals and a joker kept for
-   a Gold sticker, gap 14, the choice can be down to two). The general fix: the boss's rule in
-   the simulated round (every card debuffed while it's active), and selling a joker as a move
-   the round can make, which lifts it: Best play races which joker to sell (and that it's the
-   first move), and the outlook and the shops before the boss measure the board left after
-   that sale (a cheap joker bought to sell is then worth its keep). Raised in play, 2026-10-05
-   (Ante 8, Verdant Leaf, Arrowhead kept for its Gold sticker). Seen in Best play the same day:
-   on Ante 8's Small blind every move wins, and the Blue Seal planets a line keeps are valued
-   only by their gain in a long run past the run's end ("Ante 10 boss", gap 13) on a final boss
-   at 100%, so lines making 0.64–0.71 planets tie, where after the sale at Verdant Leaf each
-   Flush planet is worth about a tenth more points. Closing it needs both: the long run
-   measured to the final boss (gap 13), with its rule (this gap).
+   The Pillar and Verdant Leaf are in the simulated round (2026-10-27), through one port of
+   blind.lua `Blind:debuff_card` in the engine (`Board::debuff_cards`, which `at_blind_set` and a
+   sale call on every card, as `Blind:set_blind` and `Blind:disable` do): while the blind is
+   active, a card of its suit, a face card (The Plant), a card played this ante (The Pillar) and
+   every card (Verdant Leaf). No other card rule of it is used by a vanilla boss (`debuff.value`
+   and `debuff.nominal` are set by none), so the port is the whole of it for playing cards.
+   The Pillar reads a card's own state, `Card::played_this_ante`: the save's
+   (`ability.played_this_ante`, which state_events.lua `G.FUNCS.play_cards_from_highlighted` sets
+   on each card played and `end_round` clears on every card once a boss is beaten), and the
+   board's simulated rounds': a round adds the cards it played to `Board::played_ante` as it ends
+   (`sim` `play_round`, kept out of the boards its choices try), and a fresh round's start marks
+   each on a card like it not marked yet (`at_blind_set`), so the rounds chained through the
+   blinds ahead (`sim::chained_runs`, `value::Ahead`) meet The Pillar with what the Big Blind
+   played debuffed; a boss beaten ends the ante (`Board::won_round`: the board's cards cleared,
+   and a fresh round's start read with none played, `Board::ante_over`). A round in progress at
+   The Pillar plays the save's debuffs.
+   Verdant Leaf: while a sale would lift the blind (`Board::sale_lifts_blind`), the simulated
+   player weighs one before each hand (`sim` `leaf_sale`), and Best play's first move is played
+   on the board that sale leaves, as the rest of its round is (`outcomes_after`: else a discard
+   got the sale and a play didn't): the joker whose sale leaves the round scoring most by the policy's own pace (`playing_on` over the
+   hands left), from the hand held and from `LEAF_DEALS` (8, a budget) deals of the round's cards
+   (hand and pile, in a fixed order, on a seed of their own), when that beats keeping them all;
+   equal ones by the most money, then by key. Never an eternal joker. `Board::sell_joker` pays
+   its sell value, grows Campfire (`selling_card`, not a debuffed one) and disables the Leaf, and
+   the cards' debuffs are set again. Not modelled: what a joker sold does itself (`selling_self`:
+   Luchador disabling any boss, Diet Cola, Invisible Joker) and what it gave while held
+   (`remove_from_deck`: Juggler's, Troubadour's, Turtle Bean's, Merry Andy's and Stuntman's hand
+   size, Drunkard's and Merry Andy's discards: every sale is weighed at the same hand size, gap
+   22's class); `sell_joker` is where Luchador's sale would go, with the rest of `Blind:disable`
+   (The Needle's hands, The Water's discards, The Manacle's card) applied to the round. The
+   choice is by points: jokers that add none tie and go by money, then key (Mr. Bones' save and a
+   round's end money aren't weighed; the round's value counts a sold joker's loss only for the
+   jokers a round changes, `RoundGoals::jokers`: as a move, a sale would be valued as the
+   projection values one let go, `Fate`). The choice is remembered per board, hand and cards left
+   (`leaf_choice`): every round of a start whose hand is dealt makes the same one, so Best play's
+   moves and a round in progress's runs weigh it once a thread.
+   Why the pace over deals, not the hand's best play: on the saved Verdant Leaf state P6TPNC3T
+   (Swashbuckler, Shoot the Moon, Blueprint, Vampire, Card Sharp, Ante 8) the hand held's best
+   play sold Shoot the Moon (no Queen in hand, five in the pile: 2.3% to win), its best play over
+   deals Card Sharp (whose ×3 needs a hand played again: 0.7%), where selling Swashbuckler wins
+   57%; the pace over deals sells Swashbuckler. And keeping them all can be best: with Duo, Card
+   Sharp, Gros Michel and Ride the Bus the debuffed cards' hands still score (GA74B7U3, Ante 6:
+   83% keeping them all, 31% for the best sale).
+   Measured 2026-10-27 (300 rounds each). The Pillar: on the 103 saved Small and Big Blind
+   states with it ahead (15 runs), the boss alone from your deck as the save leaves it moved by
+   more than 0.02 on 38 (mean −0.049; QBJCMCRM's Big Blind, 5-14 cards played, 0.43-0.50 →
+   0.14-0.21; I6XKKH65's Stone deck, 15-27 played, 0.73-0.79 → 0.45-0.57), and the Small Blind's
+   chain through the Big Blind into it (the Big Blind's cards carried) 0.12-0.28 lower than with
+   The Pillar played as a plain blind wherever it was below 99% (Ante 1: 0.75-0.84 →
+   0.53-0.69). Verdant Leaf: on the two saved states in it the player's sale is the best of
+   every joker's (60.7%, 57.3%); on 40 Ante 6-9 boards from the saves played at Verdant Leaf from
+   a fresh round, 0.012 below the best of every sale and keeping them all on average, 3 more
+   than 0.05 below it (two where keeping them all was best, 0.31 against 0.15 and 0.83 against
+   0.74; one where Card Sharp's sale was, 0.51 against 0.39): the pace's later hands are the
+   cards held again (gap 6), which counts a repeated hand's Card Sharp and a sale's chips past
+   what the round sees. Racing each sale on rounds of its own would close it, at about 6 × 32
+   rounds per decision where the pace takes (1 + 8 deals) × (1 + the jokers sellable) paces.
+   The parity tier (D17, against 2026-10-27's baseline): `Board::at_blind_set` 532 → 548 of 576
+   the same, the known gap 15 group 21 → 4 (Amber Acorn, Crimson Heart; one Pillar setup still
+   differs by a `setting_blind` joker), nothing new; The Pillar and Verdant Leaf left the test's
+   known group (`GAP15_BOSSES`).
+   Left, Best play's side (it needs the valuation, left alone while gap 17 was worked on):
+   Best play's own play in the Small and Big Blind doesn't count what its cards cost at The
+   Pillar (`value::Ahead` measures the blinds ahead from your board as it is, not from the cards
+   a line leaves played), so fixture `ride_the_bus_queens_dig` (Small Blind before the Big Blind
+   and The Pillar; the owner's line keeps the Queens out) still waits in `pending_expect` on this
+   gap; selling isn't a move of Best play's at Verdant Leaf: its moves are played after the
+   simulated player's sale and the blind names it ("not simulated: … assume selling X first"),
+   but Best play neither races the sale nor shows its moves on the board it leaves; a round in
+   progress at The Pillar replayed from its start (`advise.rs` `fresh_round`) counts the cards
+   this round played as played before it (said on the blind). A replay from the start keeps a
+   blind its round disabled (`fresh_round`: Chicot, Luchador's or the Leaf's sale; before, a Leaf
+   already lifted was replayed active and another joker sold). The
+   simulated player plays the Small and Big Blind without keeping cards for The Pillar. The
+   boss's own row ahead (and the shop ranking's, and the shops' find `value::Ahead` sizes on the
+   boss alone) counts only the cards the save shows played, not those the blinds before it will
+   still play (said on the blind: "not simulated"); only `Ahead`'s chain carries the Big Blind's.
+   Also not yet: a card whose enhancement changes (a tarot, Midas Mask, Vampire) loses
+   `played_this_ante` in the game (card.lua `Card:set_ability` rebuilds `ability`), not in the
+   engine; a card a held consumable changed in a simulated round is carried as it was changed;
+   Campfire's reset at a boss's end (gap 8), which a Leaf sale's growth now reaches. Raised in
+   play 2026-10-11 (run I6XKKH65, Ante 5 shop, a Stone deck at 56% for The Pillar) and 2026-10-05
+   (Ante 8, Verdant Leaf, Arrowhead kept for its Gold sticker, gap 14). Seen in Best play
+   2026-10-05: on Ante 8's Small blind every move wins, and the Blue Seal planets a line keeps
+   are valued only by their gain in a long run past the run's end ("Ante 10 boss", gap 13) on a
+   final boss at 100%, so lines making 0.64–0.71 planets tie, where after the sale at Verdant
+   Leaf each Flush planet is worth about a tenth more points: the long run measured to the final
+   boss (gap 13) is what's left there.
 16. **What isn't valued ranks as worth nothing, and an empty slot counts as filled.** Effects
    the valuation doesn't cover (Ectoplasm, room in the consumable slots, some tags and
    vouchers) say "not valued" and add nothing to the ranking: a person reads the label, a

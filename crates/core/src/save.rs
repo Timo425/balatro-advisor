@@ -405,6 +405,7 @@ pub(crate) fn playing_card(c: &Value) -> Option<Card> {
         perma_bonus: num(c.at("ability.perma_bonus")),
         debuff: c.get("debuff").truthy(),
         face_down: c.get("facing").str() == Some("back"),
+        played_this_ante: c.at("ability.played_this_ante").truthy(),
     })
 }
 
@@ -788,7 +789,7 @@ mod tests {
               ["jokers"]={["cards"]={[1]={["save_fields"]={["center"]="j_green_joker",},["ability"]={["name"]="Green Joker",["set"]="Joker",["mult"]=3,["eternal"]=true,},["cost"]=4,["sell_cost"]=2,["edition"]={["type"]="holo",["holo"]=true,},},},["config"]={["card_limit"]=5,},},
               ["hand"]={["cards"]={},["config"]={["card_limit"]=8,},},
               ["consumeables"]={["cards"]={},["config"]={["card_limit"]=2,},},
-              ["deck"]={["cards"]={[1]={["save_fields"]={["center"]="m_glass",["card"]="H_K",},["base"]={["value"]="King",["suit"]="Hearts",},["ability"]={["perma_bonus"]=5,["set"]="Enhanced",},["seal"]="Red",},},},
+              ["deck"]={["cards"]={[1]={["save_fields"]={["center"]="m_glass",["card"]="H_K",},["base"]={["value"]="King",["suit"]="Hearts",},["ability"]={["perma_bonus"]=5,["set"]="Enhanced",["played_this_ante"]=true,},["seal"]="Red",},},},
               ["shop_jokers"]={["cards"]={[1]={["save_fields"]={["center"]="j_jolly",},["ability"]={["name"]="Jolly Joker",["set"]="Joker",},["cost"]=3,},},},
             },}"#;
 
@@ -804,6 +805,7 @@ mod tests {
         let k = &s.draw_pile[0];
         assert_eq!((k.rank, k.suit, k.enhancement, k.seal), (Rank::KING, Suit::Hearts, Some(Enhancement::Glass), Some(Seal::Red)));
         assert_eq!(k.perma_bonus, 5.0);
+        assert!(k.played_this_ante);
         // Big blind on ante 2, purple+ scaling: 1000 * 1.5
         assert_eq!(s.blinds[1].target, 1500.0);
         assert_eq!(s.blinds[2].name, "The Club");

@@ -253,6 +253,9 @@ pub struct Joker {
     /// copies when one is used up (`sim::RoundGoals::grown`)
     #[serde(skip)]
     pub id: u32,
+    /// Eternal (`ability.eternal`): it can't be sold (`Board::sell_joker`'s callers leave it)
+    #[serde(default)]
+    pub eternal: bool,
 }
 
 fn f(v: &serde_json::Value, k: &str) -> f64 {
@@ -310,6 +313,7 @@ impl Joker {
             to_do_hand: ability.get("to_do_poker_hand").and_then(|t| t.as_str()).and_then(HandType::from_name),
             yorick_discards,
             id: 0,
+            eternal: ability.get("eternal").and_then(serde_json::Value::as_bool).unwrap_or(false),
         }
     }
 

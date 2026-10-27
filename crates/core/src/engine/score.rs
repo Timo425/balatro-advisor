@@ -131,6 +131,17 @@ pub struct Board {
     #[serde(default)]
     pub castle_suit: Option<Suit>,
     pub plasma: bool,
+    /// Cards played this ante that a round's start doesn't show as played (`Card::played_this_ante`):
+    /// those the board's simulated rounds played (`sim` `play_round` adds them as its round ends),
+    /// each marked on a card like it as a fresh round starts (`at_blind_set`); none once a boss is
+    /// beaten (`won_round`)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub played_ante: Vec<Card>,
+    /// A boss was beaten on this board: the ante whose cards a round's start shows as played is
+    /// over (state_events.lua `end_round` clears `played_this_ante` on every card), so a fresh
+    /// round's start is read with none played (`at_blind_set`)
+    #[serde(default)]
+    pub ante_over: bool,
 }
 
 impl Board {
@@ -167,6 +178,8 @@ impl Board {
             castle_suit: None,
             planet_slots: 2,
             goals: None,
+            played_ante: Vec::new(),
+            ante_over: false,
         }
     }
 
@@ -635,8 +648,10 @@ impl Board {
     /// started; a fresh one's as state_events.lua `new_round` sets them. First the round's reset
     /// to its blind (`Board::new_round` to `start.blind`), then blind.lua `Blind:set_blind`: The
     /// Manacle's −1 hand size, the suit and face debuffs (`Blind:debuff_card` on every card,
-    /// which clears any other; every card dealt face up, as a boss turning some down as they're
-    /// drawn isn't simulated), `round_resets.hands` − 1 hands taken for The Needle (from at
+    /// which clears any other: `debuff_cards`, with The Pillar's cards played this ante, those
+    /// the board's rounds played marked first, and Verdant Leaf's every card; every card dealt
+    /// face up, as a boss turning some down as they're drawn isn't simulated),
+    /// `round_resets.hands` − 1 hands taken for The Needle (from at
     /// least 1: one hand left, two from none) and every discard for The Water; then each joker
     /// in the `setting_blind` context (card.lua `Card:calculate_joker`), where Burglar takes
     /// every discard left and adds `extra` hands, and so does each copy of it (Blueprint,
@@ -659,20 +674,18 @@ impl Board {
         if b.blind.active("bl_manacle") {
             s.hand_size -= 1;
         }
-        let suit = match b.blind.key.as_str() {
-            "bl_club" => Some(Suit::Clubs),
-            "bl_goad" => Some(Suit::Spades),
-            "bl_window" => Some(Suit::Diamonds),
-            "bl_head" => Some(Suit::Hearts),
-            _ => None,
-        }
-        .filter(|_| !b.blind.disabled);
-        let faces = b.blind.active("bl_plant");
-        let flags = b.rule_flags();
-        for (i, c) in s.hand.iter_mut().enumerate().chain(s.deck.iter_mut().enumerate()) {
+        // the cards played this ante: none in a new ante, then each the board's rounds played on
+        // a card like it not marked yet
+        for c in s.hand.iter_mut().chain(s.deck.iter_mut()) {
             c.face_down = false;
-            c.debuff = suit.is_some_and(|suit| hand::is_suit(c, suit, true, false, flags.smeared)) || (faces && hand::is_face(c, i, flags.pareidolia, true));
+            c.played_this_ante &= !b.ante_over;
         }
+        for p in &b.played_ante {
+            if let Some(c) = s.hand.iter_mut().chain(s.deck.iter_mut()).find(|c| !c.played_this_ante && c.same_kind(p) && c.perma_bonus == p.perma_bonus) {
+                c.played_this_ante = true;
+            }
+        }
+        b.debuff_cards(&mut s.hand, &mut s.deck);
         let hands = if b.blind.active("bl_needle") { s.hands.max(1) - (s.hands - 1) } else { s.hands };
         let discards = if b.blind.active("bl_water") { 0 } else { s.discards };
         (s.hands, s.discards) = (0..b.jokers.len()).filter_map(|j| effective_joker(&b, j)).fold((hands, discards), |(h, d), jk| match jk.key.as_str() {
@@ -680,6 +693,62 @@ impl Board {
             _ => (h, d),
         });
         (b, s)
+    }
+
+    /// The blind's debuffs set on every playing card (blind.lua `Blind:debuff_card`, as
+    /// `Blind:set_blind` and `Blind:disable` call it on each; it clears any other): while the
+    /// blind is active, a card of its suit (The Club, The Goad, The Window, The Head), a face card
+    /// (The Plant), a card played this ante (The Pillar) and every card (Verdant Leaf)
+    pub fn debuff_cards(&self, hand: &mut [Card], deck: &mut [Card]) {
+        let key = if self.blind.disabled { "" } else { self.blind.key.as_str() };
+        let suit = match key {
+            "bl_club" => Some(Suit::Clubs),
+            "bl_goad" => Some(Suit::Spades),
+            "bl_window" => Some(Suit::Diamonds),
+            "bl_head" => Some(Suit::Hearts),
+            _ => None,
+        };
+        let flags = self.rule_flags();
+        for (i, c) in hand.iter_mut().enumerate().chain(deck.iter_mut().enumerate()) {
+            c.debuff = suit.is_some_and(|suit| hand::is_suit(c, suit, true, false, flags.smeared))
+                || (key == "bl_plant" && hand::is_face(c, i, flags.pareidolia, true))
+                || (key == "bl_pillar" && c.played_this_ante)
+                || key == "bl_final_leaf";
+        }
+    }
+
+    /// Joker `j` sold (card.lua `Card:sell_card`): its sell value to your money, the jokers left
+    /// in the `selling_card` context (Campfire's ×Mult grows by its `extra`, unless debuffed; not
+    /// copied) and a Verdant Leaf in play disabled, after which the blind's debuffs are set again
+    /// on the cards (`debuff_cards`, by the caller, which holds them). Not modelled: what the joker
+    /// sold does itself (`selling_self`: Luchador disabling any boss, Diet Cola's tag, Invisible
+    /// Joker's copy). Returns the money.
+    pub fn sell_joker(&mut self, j: usize) -> f64 {
+        let sold = self.jokers.remove(j);
+        for jk in self.jokers.iter_mut().filter(|jk| !jk.debuff && jk.key == "j_campfire") {
+            jk.x_mult += jk.extra.n;
+        }
+        if self.sale_lifts_blind() {
+            self.blind.disabled = true;
+        }
+        self.dollars += sold.sell_value;
+        sold.sell_value
+    }
+
+    /// Whether selling a joker now lifts the blind (card.lua `Card:sell_card`: Verdant Leaf is
+    /// disabled by any joker sold while it's active)
+    pub fn sale_lifts_blind(&self) -> bool {
+        self.blind.active("bl_final_leaf")
+    }
+
+    /// A round won on this board, or saved by Mr. Bones (state_events.lua `end_round`): a boss
+    /// beaten ends the ante, and with it every card's `played_this_ante` (`played_ante`,
+    /// `ante_over`). Not here yet: what else a boss's end does to the jokers (Campfire's reset)
+    pub fn won_round(&mut self) {
+        if self.blind.is_boss() {
+            self.played_ante.clear();
+            self.ante_over = true;
+        }
     }
 
     /// The round targets the game draws anew at each round's end (state_events.lua `end_round`;

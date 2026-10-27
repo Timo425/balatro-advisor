@@ -73,6 +73,8 @@ impl Board {
             castle_suit: s.round_targets.castle_suit,
             planet_slots: (s.consumable_slots - s.consumables.len() as i64).max(0),
             goals: None,
+            played_ante: Vec::new(),
+            ante_over: false,
         };
         b.count_deck(&full);
         b

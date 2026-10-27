@@ -409,7 +409,7 @@ struct Diff {
 
 const ROLL: &str = "a roll, in range (between the engine's every roll failing and every roll hitting)";
 const GLASS: &str = "a Glass card broke: no engine step breaks one (card.lua `Card:shatter`), not modelled yet";
-const GAP15: &str = "a boss gap 15 plays as a plain blind (The Pillar, Verdant Leaf, Amber Acorn, Crimson Heart)";
+const GAP15: &str = "a boss gap 15 plays as a plain blind (Amber Acorn, Crimson Heart)";
 const SETTING_BLIND: &str = "the jokers' `setting_blind` context besides Burglar (Ceremonial Dagger, Riff-raff, Madness, Marble Joker, Cartomancer), not modelled yet";
 const JUGGLE: &str = "tags' `round_start_bonus` (Juggle Tag's hand size), not modelled yet";
 const OWNER: &str = "the owner acted between the two saves (a sale, a consumable used, jokers moved)";
@@ -417,7 +417,7 @@ const TIMING: &str = "the game saved before the step finished (a tag still pendi
 const IDS: &str = "card ids (copies sharing one; a new card's id comes from a counter the save doesn't keep)";
 const FLOAT: &str = "one chip off: the game floors a float its save rounds (Ramen's ×Mult)";
 
-const GAP15_BOSSES: [&str; 4] = ["bl_pillar", "bl_final_leaf", "bl_final_acorn", "bl_final_heart"];
+const GAP15_BOSSES: [&str; 2] = ["bl_final_acorn", "bl_final_heart"];
 const SETTING_BLIND_JOKERS: [&str; 5] = ["j_ceremonial", "j_riff_raff", "j_madness", "j_marble", "j_cartomancer"];
 
 fn close(a: f64, b: f64) -> bool {

@@ -165,6 +165,11 @@ pub struct Card {
     pub debuff: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub face_down: bool,
+    /// Played this ante (`ability.played_this_ante`: state_events.lua
+    /// `G.FUNCS.play_cards_from_highlighted` sets it on each card played, `end_round` clears it on
+    /// every card once a boss is beaten); The Pillar debuffs it (`Board::at_blind_set`)
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub played_this_ante: bool,
 }
 
 fn is_zero(x: &f64) -> bool {
@@ -173,7 +178,7 @@ fn is_zero(x: &f64) -> bool {
 
 impl Card {
     pub fn new(rank: Rank, suit: Suit) -> Card {
-        Card { rank, suit, enhancement: None, edition: None, seal: None, perma_bonus: 0.0, debuff: false, face_down: false }
+        Card { rank, suit, enhancement: None, edition: None, seal: None, perma_bonus: 0.0, debuff: false, face_down: false, played_this_ante: false }
     }
 
     /// The same card as far as play goes (rank, suit, enhancement, seal, edition), whatever its
@@ -189,7 +194,9 @@ impl Card {
         (
             std::cmp::Reverse(self.rank.0),
             self.suit as u8,
-            format!("{:?}|{:?}|{:?}|{}|{}|{}", self.enhancement, self.seal, self.edition, self.perma_bonus, self.debuff, self.face_down),
+            // a card played this ante marked only on it: every other card's key as it was (The Hook's
+            // pick hashes it, `sim` `boss_takes_held`)
+            format!("{:?}|{:?}|{:?}|{}|{}|{}{}", self.enhancement, self.seal, self.edition, self.perma_bonus, self.debuff, self.face_down, if self.played_this_ante { "|played" } else { "" }),
         )
     }
 
@@ -203,7 +210,7 @@ impl Card {
     /// `perma_bonus` as it prints: by its bits, every NaN alike).
     pub fn order_eq(&self, other: &Card) -> bool {
         let bonus = self.perma_bonus.to_bits() == other.perma_bonus.to_bits() || (self.perma_bonus.is_nan() && other.perma_bonus.is_nan());
-        self.same_kind(other) && bonus && self.debuff == other.debuff && self.face_down == other.face_down
+        self.same_kind(other) && bonus && self.debuff == other.debuff && self.face_down == other.face_down && self.played_this_ante == other.played_this_ante
     }
 
     /// `K♠ [glass] (foil) <Red>`

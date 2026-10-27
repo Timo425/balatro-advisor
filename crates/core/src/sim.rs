@@ -676,6 +676,13 @@ pub fn outcomes_after(b: &Board, start: &RoundStart, first: &Move, range: std::o
             bb.deck_remaining = deck.len() as i64;
             // valued against the analysis start: the jokers' numbers as the round so far left them
             let mut o = Outcome { grown: bb.goals.as_ref().map_or(Grown::default(), |g| g.at(&bb)), ..Default::default() };
+            // the sale the player would make first (Verdant Leaf), so every first move is played
+            // on the board the rest of its round is (selling isn't a move of its own yet, gap 15)
+            if bb.sale_lifts_blind() {
+                let was = jokers_now(&bb);
+                o.cash += leaf_sale(&mut bb, &mut hand, &mut deck, size, hands);
+                o.grown += grown_since(&bb, &was);
+            }
             let next = match first {
                 Move::Play(idx) => {
                     let played: Vec<Card> = idx.iter().filter_map(|&k| hand.get(k).copied()).collect();
@@ -2307,7 +2314,8 @@ fn aim_completions_held(b: &Board, aim: &Aim, hand: &[Card]) -> Vec<(Vec<Card>, 
     let distinct = |fits: &[Card]| -> Vec<(Card, f64)> {
         let mut v: Vec<(Card, f64)> = vec![];
         for c in fits {
-            match v.iter_mut().find(|x| x.0.same_kind(c)) {
+            // a debuffed copy (The Pillar's) apart from a live one
+            match v.iter_mut().find(|x| x.0.same_kind(c) && x.0.debuff == c.debuff) {
                 Some(x) => x.1 += 1.0,
                 None => v.push((*c, 1.0)),
             }
@@ -3271,16 +3279,111 @@ fn use_if_better(b: &mut Board, hand: &mut Vec<Card>, uses: &[Use], used: &mut [
     }
 }
 
+/// Deals of the round's cards a Verdant Leaf sale is weighed on besides the hand held
+/// (`leaf_sale`): a budget
+const LEAF_DEALS: usize = 8;
+
+/// Verdant Leaf (blind.lua `Blind:debuff_card`: every card debuffed until a joker is sold, card.lua
+/// `Card:sell_card`): the joker the player sells (`leaf_choice`), sold, and the blind's debuffs set
+/// again on every card (`Board::debuff_cards`). Returns the money.
+fn leaf_sale(b: &mut Board, hand: &mut [Card], deck: &mut [Card], size: usize, hands: i64) -> f64 {
+    match leaf_choice(b, hand, deck, size, hands) {
+        Some(j) => {
+            let money = b.sell_joker(j);
+            b.debuff_cards(hand, deck);
+            money
+        }
+        None => 0.0,
+    }
+}
+
+/// The joker the player sells to lift Verdant Leaf (by its place on `b`), or none: the one whose
+/// sale leaves the round scoring most, when that beats keeping them all; equal ones by the most
+/// money, then by key, then by place. What the round scores: the policy's own pace (`playing_on`
+/// over the `hands` left: the jokers a round's later hands grow or pay, Card Sharp's repeated hand)
+/// from the hand held and from `LEAF_DEALS` deals of `size` from every card the round still has
+/// (hand and pile, in a fixed order, on a seed of their own): the hand held alone missed the joker
+/// the round needs (Shoot the Moon with the Queens in the pile, Card Sharp). An eternal joker
+/// can't be sold. Remembered per board, hand and cards left (the same in every round of a
+/// start whose hand is dealt: Best play's moves, a round in progress's runs).
+pub fn leaf_choice(b: &Board, hand: &[Card], deck: &[Card], size: usize, hands: i64) -> Option<usize> {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::hash::{Hash, Hasher};
+    thread_local! {
+        static CACHE: RefCell<HashMap<u64, Option<usize>>> = RefCell::new(HashMap::new());
+    }
+    if b.jokers.iter().all(|j| j.eternal) {
+        return None;
+    }
+    let mut all: Vec<Card> = hand.iter().chain(deck.iter()).copied().collect();
+    all.sort_by(Card::order_cmp);
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    serde_json::to_string(b).unwrap_or_default().hash(&mut h);
+    for c in hand {
+        c.order_key().hash(&mut h);
+    }
+    (hand.len(), size, hands).hash(&mut h);
+    for c in &all {
+        c.order_key().hash(&mut h);
+    }
+    let key = h.finish();
+    if let Some(c) = CACHE.with(|c| c.borrow().get(&key).copied()) {
+        return c;
+    }
+    let mut rng = Rng::new(0x1eaf);
+    let mut deals = vec![hand.to_vec()];
+    for _ in 0..LEAF_DEALS {
+        shuffle(&mut all, &mut rng);
+        deals.push(all[..size.min(all.len())].to_vec());
+    }
+    let worth = |b: &Board| {
+        deals
+            .iter()
+            .map(|d| {
+                let mut d = d.clone();
+                b.debuff_cards(&mut d, &mut []);
+                best_play(b, &d).map_or(0.0, |p| playing_on(b, &d, &p, hands))
+            })
+            .sum::<f64>()
+    };
+    let now = worth(b);
+    let mut best: Option<(f64, f64, usize)> = None;
+    for j in (0..b.jokers.len()).filter(|&j| !b.jokers[j].eternal) {
+        let mut b2 = b.clone();
+        let money = b2.sell_joker(j);
+        let w = worth(&b2);
+        let better = best.is_none_or(|(m, d, k)| w > m + 1e-9 || ((w - m).abs() <= 1e-9 && (money > d || (money == d && b.jokers[j].key < b.jokers[k].key))));
+        if better {
+            best = Some((w, money, j));
+        }
+    }
+    let choice = best.filter(|&(w, _, _)| w > now + 1e-9).map(|(_, _, j)| j);
+    CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.len() > 4096 {
+            c.clear();
+        }
+        c.insert(key, choice);
+    });
+    choice
+}
+
 /// `sim_round` with consumables held (see `Use`).
 pub fn sim_round_uses(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[Use]) -> RoundResult {
     play_round(board, start, rng, uses).0
 }
 
 /// `sim_round_uses`, with the board the round ends on (its jokers as its hands and discards
-/// left them: `grown_over`)
+/// left them: `grown_over`; the cards played this ante, `Board::played_ante`, with the ones its
+/// hands played, none after a boss beaten: `Board::won_round`). While a sale would lift the
+/// blind (Verdant Leaf) the player weighs one before each hand (`leaf_sale`).
 fn play_round(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[Use]) -> (RoundResult, Board) {
     let mut used = vec![false; uses.len()];
     let (mut b, mut start) = board.at_blind_set(start);
+    // the cards played this ante, set on the board as the round ends: not cloned with every board
+    // its choices try
+    let mut played_ante = std::mem::take(&mut b.played_ante);
     let mut deck = std::mem::take(&mut start.deck);
     shuffle(&mut deck, rng);
     let size = start.hand_size.max(1) as usize;
@@ -3300,6 +3403,11 @@ fn play_round(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[Use]) ->
         b.hands_left = hands;
         b.discards_left = discards;
         b.deck_remaining = deck.len() as i64;
+        if b.sale_lifts_blind() {
+            let was = jokers_now(&b);
+            money += leaf_sale(&mut b, &mut hand, &mut deck, size, hands);
+            grown += grown_since(&b, &was);
+        }
         use_if_better(&mut b, &mut hand, uses, &mut used, start.target - total, hands);
         drop_used_seen(&b, &mut seen_by);
         // a win on the table: the finish (`finish_play` by the round's goals; without them, while
@@ -3371,6 +3479,7 @@ fn play_round(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[Use]) ->
                 idx.truncate(5);
                 let played: Vec<Card> = idx.iter().map(|&i| hand[i]).collect();
                 let mut held: Vec<Card> = (0..hand.len()).filter(|i| !idx.contains(i)).map(|i| hand[i]).collect();
+                played_ante.extend(played.iter().filter(|c| !c.played_this_ante).map(|c| Card { played_this_ante: true, debuff: false, ..*c }));
                 let was = jokers_now(&b);
                 money += boss_takes_held(&mut b, &mut held, rng);
                 let o = score::score_pressed(&b, &played, &held, rng, false);
@@ -3386,6 +3495,8 @@ fn play_round(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[Use]) ->
                     money += won_money(&b, &hand);
                     let seen = seen_by.iter().map(|e| e.1).fold(0.0, f64::max);
                     let planets = seal_planets(&b, &hand);
+                    b.played_ante = played_ante;
+                    b.won_round();
                     return (RoundResult { total, won: true, saved: false, best_hand, plays, money, hands_left: hands, discards_left: discards, planets, seen, grown }, b);
                 }
                 draw(&mut hand, &mut deck, size);
@@ -3406,7 +3517,13 @@ fn play_round(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[Use]) ->
     let bones = b.jokers.iter().any(|j| j.key == "j_mr_bones" && !j.debuff);
     let won = total >= start.target;
     let seen = seen_by.iter().map(|e| e.1).fold(0.0, f64::max);
-    (RoundResult { total, won, saved: !won && bones && total >= 0.25 * start.target, best_hand, plays, money, hands_left: 0, discards_left: 0, planets: 0.0, seen, grown }, b)
+    b.played_ante = played_ante;
+    let saved = !won && bones && total >= 0.25 * start.target;
+    // a round Mr. Bones saves ends as a won one does (state_events.lua `end_round`)
+    if won || saved {
+        b.won_round();
+    }
+    (RoundResult { total, won, saved, best_hand, plays, money, hands_left: 0, discards_left: 0, planets: 0.0, seen, grown }, b)
 }
 
 /// What rounds played one after another leave of a joker a round changes (`grown_over`): its
@@ -5131,6 +5248,96 @@ mod tests {
         // less −1: two
         let (b, needle_zero) = for_blind(&[], "bl_needle");
         assert_eq!(RoundStart { hands: 0, ..needle_zero }.hands_on(&b), (2, 3));
+    }
+
+    #[test]
+    fn the_pillar_debuffs_the_cards_played_this_ante_and_rounds_carry_them() {
+        // blind.lua `Blind:debuff_card`: The Pillar debuffs a card with `played_this_ante`, which
+        // state_events.lua sets on each card played and clears on every card once a boss is beaten
+        let fresh = RoundStart { hand: vec![], deck: standard_deck(), hand_size: 8, hands: 4, discards: 3, scored: 0.0, target: 1.0, fresh: true, ..Default::default() };
+        let mut save = fresh.clone();
+        for c in save.deck.iter_mut().filter(|c| c.rank.0 >= 13) {
+            c.played_this_ante = true;
+        }
+        let pillar = RoundStart { blind: "bl_pillar".into(), ..save.clone() };
+        let b = sample_board(&[]);
+        let debuffed = |b: &Board, s: &RoundStart| b.at_blind_set(s).1.deck.iter().filter(|c| c.debuff).map(|c| c.label()).collect::<Vec<_>>();
+        assert_eq!(debuffed(&b, &pillar).len(), 8);
+        assert!(debuffed(&b, &RoundStart { disabled: true, ..pillar.clone() }).is_empty());
+        assert!(debuffed(&b, &RoundStart { blind: "bl_big".into(), ..save.clone() }).is_empty());
+
+        // a card the board's rounds played is marked on one card like it, unless that one is
+        // marked already; after a boss beaten the start's marks are an ante gone
+        let mut played = sample_board(&[]);
+        played.played_ante = Card::parse_list("AS KS QH").unwrap();
+        let two_queens = RoundStart { deck: [save.deck.clone(), Card::parse_list("QH").unwrap()].concat(), ..pillar.clone() };
+        let d = debuffed(&played, &two_queens);
+        assert_eq!((d.len(), d.iter().filter(|l| l.starts_with("Q♥")).count()), (9, 1));
+        // each played card marks its own copy, and only a copy with the same bonus chips
+        let mut twice = sample_board(&[]);
+        twice.played_ante = Card::parse_list("QH QH 2C").unwrap();
+        twice.played_ante[2].perma_bonus = 4.0;
+        let d = debuffed(&twice, &RoundStart { deck: [fresh.deck.clone(), Card::parse_list("QH").unwrap()].concat(), ..pillar.clone() });
+        assert_eq!((d.len(), d.iter().filter(|l| l.starts_with("Q♥")).count()), (2, 2));
+        // a new ante (a boss beaten, then this ante's rounds played on)
+        played.ante_over = true;
+        assert_eq!(debuffed(&played, &pillar).len(), 3);
+
+        // a round carries the cards it played to the next one, and a boss beaten ends the ante
+        let big = RoundStart { blind: "bl_big".into(), ..fresh.clone() };
+        let (r, end) = play_round(&b, &big, &mut Rng::new(5), &[]);
+        assert!(r.won && !end.played_ante.is_empty() && end.played_ante.iter().all(|c| c.played_this_ante) && !end.ante_over);
+        let n = end.played_ante.len();
+        assert_eq!(debuffed(&end, &RoundStart { blind: "bl_pillar".into(), ..fresh.clone() }).len(), n);
+        let (r, after_boss) = play_round(&end, &RoundStart { blind: "bl_pillar".into(), ..fresh.clone() }, &mut Rng::new(5), &[]);
+        assert!(r.won && after_boss.played_ante.is_empty() && after_boss.ante_over);
+    }
+
+    #[test]
+    fn verdant_leaf_debuffs_every_card_until_the_player_sells_a_joker() {
+        // blind.lua `Blind:debuff_card`: every card under Verdant Leaf; card.lua `Card:sell_card`
+        // disables it (`Blind:disable` sets every card's debuff again), Campfire grows by the sale
+        let fresh = RoundStart { hand: vec![], deck: standard_deck(), hand_size: 8, hands: 1, discards: 0, scored: 0.0, target: 1.0, fresh: true, blind: "bl_final_leaf".into(), ..Default::default() };
+        let b = sample_board(&["j_joker", "j_jolly"]);
+        let (_, s) = b.at_blind_set(&fresh);
+        assert!(s.deck.iter().all(|c| c.debuff));
+        assert!(!b.at_blind_set(&RoundStart { disabled: true, ..fresh.clone() }).1.deck.iter().any(|c| c.debuff));
+
+        let mut fire = sample_board(&["j_joker", "j_campfire"]);
+        fire.blind.key = "bl_final_leaf".into();
+        fire.jokers[0].sell_value = 2.0;
+        let x = fire.jokers[1].x_mult;
+        assert_eq!(fire.sell_joker(0), 2.0);
+        assert!(fire.blind.disabled && fire.jokers.len() == 1 && fire.jokers[0].x_mult == x + fire.jokers[0].extra.n && fire.dollars == 2.0);
+        // a debuffed Campfire doesn't grow (card.lua: a debuffed joker answers no context)
+        let mut out = sample_board(&["j_joker", "j_campfire"]);
+        out.jokers[1].debuff = true;
+        out.sell_joker(0);
+        assert_eq!(out.jokers[0].x_mult, x);
+        let mut cards = Card::parse_list("AS AH").unwrap();
+        b.at_blind_set(&fresh).0.debuff_cards(&mut cards, &mut []);
+        assert!(cards.iter().all(|c| c.debuff));
+        fire.debuff_cards(&mut cards, &mut []);
+        assert!(!cards.iter().any(|c| c.debuff));
+
+        // the player sells the joker whose sale leaves the best play scoring most (Joker, keeping
+        // Jolly Joker's +8 for the Pair), never an eternal one, and is paid for it
+        let pair = RoundStart { hand: Card::parse_list("AS AH 2C 5D 7H 9S JC 4D").unwrap(), deck: vec![], hands: 1, ..fresh.clone() };
+        let mut sell = sample_board(&["j_joker", "j_jolly"]);
+        sell.jokers.iter_mut().for_each(|j| j.sell_value = 3.0);
+        let (r, end) = play_round(&sell, &pair, &mut Rng::new(1), &[]);
+        assert!(r.won && r.money == 3.0 && end.jokers.len() == 1 && end.jokers[0].key == "j_jolly" && end.blind.disabled);
+        assert_eq!(r.plays[0].1, (10.0 + 11.0 + 11.0) * (2.0 + 8.0));
+        sell.jokers[0].eternal = true;
+        let (_, end) = play_round(&sell, &pair, &mut Rng::new(1), &[]);
+        assert_eq!(end.jokers.iter().map(|j| j.key.as_str()).collect::<Vec<_>>(), ["j_joker"]);
+        // Best play's first move is played on the board the sale leaves, as the rest of its round
+        // (Joker eternal: Jolly Joker sold, Joker's +4 kept)
+        let o = &outcomes_after(&sell, &RoundStart { target: 1e9, ..pair.clone() }, &Move::Play(vec![0, 1]), 0..1, 3, &[])[0];
+        assert_eq!((o.total, o.cash), ((10.0 + 11.0 + 11.0) * (2.0 + 4.0), 3.0));
+        // nothing to sell: the round is played with every card debuffed
+        let (r, end) = play_round(&sample_board(&[]), &pair, &mut Rng::new(1), &[]);
+        assert!(!end.blind.disabled && r.plays[0].1 == 10.0 * 2.0);
     }
 
     #[test]

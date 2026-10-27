@@ -1066,7 +1066,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             in_progress: s.in_progress(),
             horizon: s.horizon,
             reach: st.mean / s.start.target.max(1.0),
-            unmodelled: unmodelled_boss(&s.blind_key),
+            unmodelled: round_unmodelled(&ctx, s),
         })
         .collect();
 
@@ -2106,14 +2106,35 @@ fn cost(data: &GameData, key: &str) -> i64 {
     data.center(key).map_or(0, |c| c.cost)
 }
 
+/// What a blind row's round doesn't model, for its round: a disabled boss nothing; in play, The
+/// Pillar its replays from the start and Verdant Leaf the sale its odds assume
+/// (`sim::leaf_choice`, named); else the boss's (`unmodelled_boss`)
+fn round_unmodelled(ctx: &Ctx, s: &Spec) -> Option<String> {
+    if s.start.disabled {
+        return None;
+    }
+    match s.blind_key.as_str() {
+        "bl_pillar" if s.in_progress() => Some("not simulated: where this round is played again from its start (hand mix, packs, tarots), the cards it played count as played before it".into()),
+        "bl_final_leaf" if s.in_progress() => {
+            let (b, st) = ctx.base.at_blind_set(&s.start);
+            let sold = sim::leaf_choice(&b, &st.hand, &st.deck, st.hand_size.max(1) as usize, st.hands).map(|j| ctx.data.name(&b.jokers[j].key).to_string());
+            let first = sold.map_or("keeping every joker".into(), |n| format!("selling {n} first"));
+            Some(format!("not simulated: selling a joker as a move of Best play's; its odds and this blind's assume {first} (the simulated player's pick, heuristic: its pace over 8 deals)"))
+        }
+        _ => unmodelled_boss(&s.blind_key),
+    }
+}
+
 fn unmodelled_boss(key: &str) -> Option<String> {
     let s = match key {
         // in the round's outcome, not in the simulated player's choices: gap 15
         "bl_tooth" => "The Tooth in the simulated player's choices (its money is in the outcome)",
         "bl_serpent" => "The Serpent's 3-card draws",
-        "bl_pillar" => "The Pillar's debuffs",
+        // the save's cards played this ante are debuffed; the blinds before it aren't played first
+        "bl_pillar" => "The Pillar's debuffs on the cards this ante's blinds before it will still play",
         "bl_house" | "bl_wheel" | "bl_fish" | "bl_mark" => "face-down cards",
-        "bl_final_leaf" => "Verdant Leaf (all cards debuffed until a joker is sold)",
+        // the simulated rounds sell a joker first (`sim` `leaf_sale`); Best play's moves don't
+        "bl_final_leaf" => "selling a joker to lift Verdant Leaf, as a move of Best play's (the simulated rounds sell one first)",
         "bl_final_heart" => "Crimson Heart's disabled joker",
         "bl_final_bell" => "Cerulean Bell's forced card",
         "bl_final_acorn" => "Amber Acorn's joker shuffle",
@@ -4004,7 +4025,8 @@ pub(crate) fn plain_round_cash(b: &Board, starts: &[RoundStart], n: usize, seed:
 fn fresh_round(spec: &Spec, run: &RunState, deck: &[Card]) -> Spec {
     let mut fresh = spec.clone();
     if fresh.in_progress() {
-        fresh.start = RoundStart { hand_size: run.round_start_hand_size(), ..blind_from_start(&spec.blind_key, spec.start.target, run, deck) };
+        // a blind disabled in its round stays so (Chicot, Luchador's or Verdant Leaf's sale)
+        fresh.start = RoundStart { hand_size: run.round_start_hand_size(), disabled: spec.start.disabled, ..blind_from_start(&spec.blind_key, spec.start.target, run, deck) };
     }
     fresh.start.deck = deck.to_vec();
     fresh
@@ -4946,13 +4968,13 @@ mod tests {
         let spec = Spec { label: "This blind".into(), blind_key: "bl_manacle".into(), blind_name: "The Manacle".into(), start: playing, horizon: false };
         let again = fresh_round(&spec, &m, &fresh_deck).start;
         assert_eq!(ctx.base.at_blind_set(&again).1.hand_size, m.hand_size + 3 - 1);
-        // disabled in the save (its −1 given back), it's replayed active as a boss ahead is
-        // (Chicot isn't simulated: gap 15), from the same hand size
+        // disabled in the save (its −1 given back), it's replayed disabled, as its round was
+        // (Chicot would disable it again; a sale that disabled it is on the board already)
         m.round_hand_size_delta = 3;
         m.current_blind.as_mut().unwrap().disabled = true;
         let spec = Spec { start: RoundStart { hand_size: m.round_hand_size(), disabled: true, ..spec.start.clone() }, ..spec };
         let again = fresh_round(&spec, &m, &fresh_deck).start;
-        assert_eq!(ctx.base.at_blind_set(&again).1.hand_size, m.hand_size + 3 - 1);
+        assert_eq!(ctx.base.at_blind_set(&again).1.hand_size, m.hand_size + 3);
     }
 
     #[test]
