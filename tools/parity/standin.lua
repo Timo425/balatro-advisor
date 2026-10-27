@@ -8,12 +8,19 @@
 local EXE = assert(os.getenv('PARITY_EXE'), 'set PARITY_EXE')
 local PROFILE = os.getenv('PARITY_PROFILE')
 
-local function quote(s) return "'" .. s:gsub("'", "'\\''") .. "'" end
+-- Windows runs io.popen through cmd.exe: double quotes (paths can't contain them), NUL, and
+-- binary mode so the game's files come through byte for byte
+local WINDOWS = package.config:sub(1, 1) == '\\'
+local function quote(s)
+  if WINDOWS then return '"' .. s .. '"' end
+  return "'" .. s:gsub("'", "'\\''") .. "'"
+end
 
 local zip_cache = {}
 local function zip_read(path)
   if zip_cache[path] == nil then
-    local p = io.popen('unzip -p ' .. quote(EXE) .. ' ' .. quote(path) .. ' 2>/dev/null')
+    local null = WINDOWS and 'NUL' or '/dev/null'
+    local p = io.popen('unzip -p ' .. quote(EXE) .. ' ' .. quote(path) .. ' 2>' .. null, WINDOWS and 'rb' or 'r')
     local s = p:read('*a'); p:close()
     zip_cache[path] = (s ~= '' and s) or false
   end

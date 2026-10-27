@@ -33,7 +33,8 @@ pub fn config_path() -> Option<PathBuf> {
     Some(base.join("balatro-advisor/config.toml"))
 }
 
-fn home() -> Option<PathBuf> {
+/// `HOME`, else `USERPROFILE` (Windows sets only the latter).
+pub fn home() -> Option<PathBuf> {
     std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from)
 }
 

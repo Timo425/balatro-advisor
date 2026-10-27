@@ -448,7 +448,17 @@ fn lower_priority() {
     }
 }
 
+/// A chromeless app window (Edge `--app`: it comes with Windows). `start` finds Edge through
+/// App Paths, which a plain spawn doesn't search.
+#[cfg(windows)]
+fn open_window(url: &str) {
+    let _ = std::process::Command::new("cmd")
+        .args(["/C", "start", "", "msedge", &format!("--app={url}"), "--window-size=1150,1000"])
+        .spawn();
+}
+
 /// A chromeless app window (Chrome/Chromium `--app`), else the default browser.
+#[cfg(not(windows))]
 fn open_window(url: &str) {
     for browser in ["google-chrome", "chromium", "chromium-browser", "brave-browser"] {
         let ok = std::process::Command::new(browser)

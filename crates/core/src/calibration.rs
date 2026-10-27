@@ -42,7 +42,7 @@ pub enum Entry {
 pub fn default_dir() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))?;
+        .or_else(|| crate::paths::home().map(|h| h.join(".local/share")))?;
     Some(base.join("balatro-advisor"))
 }
 

@@ -31,12 +31,17 @@ Needs Rust ([rustup](https://rustup.rs)).
 ```bash
 git clone https://github.com/Timo425/balatro-advisor && cd balatro-advisor
 cargo install --path crates/cli
-balatro-advisor ui          # opens the advisor window (Chrome/Chromium app window, else your browser)
+balatro-advisor ui          # opens the advisor window (Chrome/Chromium app window, else your browser; Edge on Windows)
 ```
+
+On Windows, Rust needs the MSVC C++ build tools (`winget install Microsoft.VisualStudio.2022.BuildTools`
+with the "Desktop development with C++" workload).
 
 The save folder is found automatically on Linux (Steam + Proton) and Windows
 (`%APPDATA%\Balatro`). Override with `--save-dir`, the `BALATRO_DIR` env var, or
-`save_dir` in `~/.config/balatro-advisor/config.toml`.
+`save_dir` in `~/.config/balatro-advisor/config.toml`. The advisor's own data (history,
+calibration) lives in `~/.local/share/balatro-advisor/` (`$XDG_DATA_HOME`; on Windows under
+`%USERPROFILE%`).
 
 ### Optional: live updates (Lovely mod)
 
@@ -81,7 +86,8 @@ worth capturing as replay fixtures, each with a ready command. `--count` only re
 Slow: `--only blind|shop`, `--limit N`.
 
 **Parity tier:** the engine's steps checked against the game's own Lua, run headless from your
-install with [LuaJIT](https://luajit.org/) (`sudo apt install luajit`) and a stand-in for LÖVE
+install with [LuaJIT](https://luajit.org/) (`sudo apt install luajit`; on Windows `winget install
+DEVCOM.LuaJIT` and an `unzip.exe` on PATH, e.g. Git for Windows' `usr\bin`) and a stand-in for LÖVE
 (`tools/parity/`), on your saved history: `BAV_PARITY_DIR=/tmp/before nice -n 19 cargo test
 --release --test parity -- --ignored parity --nocapture` (about 15 minutes; the game's code is
 read from `Balatro.exe` in place, never copied).
