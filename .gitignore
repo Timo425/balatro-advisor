@@ -22,3 +22,6 @@ config.local.toml
 .vscode/
 *.swp
 .DS_Store
+
+# Machine-local Claude Code settings (e.g. the laptops' fixture-pull hook)
+.claude/settings.local.json
