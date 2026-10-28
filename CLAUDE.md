@@ -20,10 +20,12 @@
 - Code, comments and docs in English (D4 in `docs/decisions.md`).
 - **One task, one independent chat.** A follow-up is offered as a task card (`start_session`,
   "own_initiative", context "fresh", in the main checkout) and starts only on the owner's click:
-  never "user_asked" unless the owner said to start it, never a fork or a hand-off. The started
-  chat is detached at once (`detach_session`: it then never reports back or wakes the chat that
-  offered it): its brief's first step is to detach itself ("self"), and the offering chat detaches
-  it when it can; if the app refuses, the owner uses "Detach to top level". Chats that started
+  never "user_asked" unless the owner said to start it, never a fork or a hand-off. A chat started
+  with `start_session` is detached at once (`detach_session`: it then never reports back or wakes
+  the chat that offered it): its brief's first step is to detach itself ("self"), and the offering
+  chat detaches it when it can; if the app refuses, the owner uses "Detach to top level". A brief
+  pasted into a new chat or written to the queue has no detach step: that chat is already
+  independent. Chats that started
   each other and woke each other on every turn burned a third of a 5-hour limit on 2026-10-16.
 
 ## Answering "what if I…" questions
