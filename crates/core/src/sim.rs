@@ -398,6 +398,9 @@ struct HandParts<'a> {
     /// the whole hand's plays as its search scored them (`best_play_among`): their front
     /// (`front_of`) is where `playing_on`'s later hands start
     scored: std::cell::RefCell<Option<Vec<Scored>>>,
+    /// the board each card's discard alone leaves, by card, when they're not all alike
+    /// (`card_discards`)
+    discards: std::cell::OnceCell<Option<Vec<Board>>>,
 }
 
 /// The largest hand `HandParts` shares detections for (2^n of them)
@@ -406,7 +409,31 @@ const PARTS_MAX: usize = 12;
 impl<'a> HandParts<'a> {
     fn new(b: &'a Board, hand: &'a [Card]) -> Self {
         let size = if hand.len() <= PARTS_MAX { 1 << hand.len() } else { 0 };
-        HandParts { b, hand, detected: std::cell::RefCell::new(vec![None; size]), done: std::cell::RefCell::new(vec![]), scored: std::cell::RefCell::new(None) }
+        HandParts { b, hand, detected: std::cell::RefCell::new(vec![None; size]), done: std::cell::RefCell::new(vec![]), scored: std::cell::RefCell::new(None), discards: std::cell::OnceCell::new() }
+    }
+
+    /// The board each card's discard alone leaves (the engine's step, `Board::discard`), by
+    /// card; `None` when every card's leaves the same jokers, levels, deck size and money (no
+    /// joker reads which card was thrown: Green Joker, Ramen, Yorick count any card alike)
+    fn card_discards(&self) -> Option<&Vec<Board>> {
+        self.discards
+            .get_or_init(|| {
+                let boards: Vec<Board> = self
+                    .hand
+                    .iter()
+                    .map(|c| {
+                        // the count of discards put back, as `dig_board` does
+                        let mut a = self.b.clone();
+                        let _ = a.discard(&[*c]);
+                        a.discards_left = self.b.discards_left;
+                        a.discards_used = self.b.discards_used;
+                        a
+                    })
+                    .collect();
+                let alike = |x: &Board, y: &Board| x.jokers == y.jokers && x.levels == y.levels && x.playing_cards == y.playing_cards && x.dollars == y.dollars;
+                boards.iter().any(|x| !alike(x, &boards[0])).then_some(boards)
+            })
+            .as_ref()
     }
 
     /// The whole hand's unbeaten plays (`front_of`), once its best play was worked out: the
@@ -1285,7 +1312,7 @@ fn decide_cards_with(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discar
         vec![]
     };
     let ends = (!pile_sorted.is_empty()).then_some(Ends { pile: &pile_sorted, size });
-    let round = ChaseRound { pile: deck.len(), size, hands, discards, need, best: best.mean, later, on_pace, takes: score::hook_takes(b, size), stays: 0 };
+    let round = ChaseRound { pile: deck.len(), size, hands, discards, need, best: best.mean, later, on_pace, takes: score::hook_takes(b, size), stays: 0, lift: 1.0 };
     // the first dig for each plan (`dig_for`), and the hand it leaves (its best play: what a
     // failed chase is left with)
     type Dig = Option<(Vec<usize>, bool)>;
@@ -1305,35 +1332,54 @@ fn decide_cards_with(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discar
             (None, _) => held_keep().clone(),
         }
     };
+    // the board a plan's first dig leaves when it discards (`dig_board`): every hand of its
+    // chase after that dig is scored there; `b` where the discard changes nothing a score reads
+    let boards: Vec<std::cell::OnceCell<Option<Board>>> = all.iter().map(|_| std::cell::OnceCell::new()).collect();
+    let board_of = |k: usize| -> &Board {
+        boards[k]
+            .get_or_init(|| match dig_of(k) {
+                Some((v, false)) => dig_board(b, hand, v, &best.cards),
+                _ => None,
+            })
+            .as_ref()
+            .unwrap_or(b)
+    };
+    let moved = |k: usize| !std::ptr::eq(board_of(k), b);
     // a plan's score, on its middle completion (the screen) or all of them (`aim_score`),
     // worked out once each
     let quick: Vec<std::cell::OnceCell<f64>> = all.iter().map(|_| std::cell::OnceCell::new()).collect();
-    let quick_of = |k: usize| *quick[k].get_or_init(|| aim_quick(b, &all[k], hand, &kept_of(k), ends));
+    let quick_of = |k: usize| *quick[k].get_or_init(|| aim_quick(board_of(k), &all[k], hand, &kept_of(k), ends));
     let full: Vec<std::cell::OnceCell<f64>> = all.iter().map(|_| std::cell::OnceCell::new()).collect();
-    let full_of = |k: usize| *full[k].get_or_init(|| aim_score(b, &all[k], hand, &kept_of(k), ends));
+    let full_of = |k: usize| *full[k].get_or_init(|| aim_score(board_of(k), &all[k], hand, &kept_of(k), ends));
     let left: Vec<std::cell::OnceCell<f64>> = all.iter().map(|_| std::cell::OnceCell::new()).collect();
     let left_of = |k: usize| {
         *left[k].get_or_init(|| {
             let thrown = dig_of(k).as_ref().map_or(&[][..], |d| &d.0[..]);
             let rest: Vec<usize> = (0..hand.len()).filter(|i| !thrown.contains(i)).collect();
-            parts.best(&rest).map_or(0.0, |p| match ends {
-                // the cards drawn after the dig held beside its play, on `HELD_DRAWS` draws
-                Some(e) if !thrown.is_empty() => {
-                    let played: Vec<Card> = p.cards.iter().map(|&i| hand[i]).collect();
-                    let held: Vec<Card> = rest.iter().filter(|i| !p.cards.contains(i)).map(|&i| hand[i]).collect();
-                    let count = e.size.saturating_sub(rest.len());
-                    let own = score::score(b, &played, &held, &mut Unlucky, false).score;
-                    let drawn = (0..HELD_DRAWS)
-                        .map(|s| {
-                            let mut h = held.clone();
-                            h.extend(held_draws(e.pile, &[], count, s));
-                            score::score(b, &played, &h, &mut Unlucky, false).score
-                        })
-                        .sum::<f64>()
-                        / HELD_DRAWS as f64;
-                    p.mean + drawn - own
+            let on = board_of(k);
+            parts.best(&rest).map_or(0.0, |p| {
+                let played: Vec<Card> = p.cards.iter().map(|&i| hand[i]).collect();
+                let held: Vec<Card> = rest.iter().filter(|i| !p.cards.contains(i)).map(|&i| hand[i]).collect();
+                // its average on the board the dig leaves: the search's, by what that board's
+                // score of it is to this one's
+                let mean = if moved(k) { p.mean * ratio(b, on, &played, &held) } else { p.mean };
+                match ends {
+                    // the cards drawn after the dig held beside its play, on `HELD_DRAWS` draws
+                    Some(e) if !thrown.is_empty() => {
+                        let count = e.size.saturating_sub(rest.len());
+                        let own = score::score(on, &played, &held, &mut Unlucky, false).score;
+                        let drawn = (0..HELD_DRAWS)
+                            .map(|s| {
+                                let mut h = held.clone();
+                                h.extend(held_draws(e.pile, &[], count, s));
+                                score::score(on, &played, &h, &mut Unlucky, false).score
+                            })
+                            .sum::<f64>()
+                            / HELD_DRAWS as f64;
+                        mean + drawn - own
+                    }
+                    _ => mean,
                 }
-                _ => p.mean,
             })
         })
     };
@@ -1344,25 +1390,35 @@ fn decide_cards_with(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discar
     // completion beside `k`'s other kept cards and what `k`'s dig leaves
     let in_chase: std::cell::RefCell<Vec<((usize, usize), f64)>> = Default::default();
     let lesser_of = |k: usize, j: usize| -> f64 {
-        if ends.is_none() {
+        // its own estimate where its board is `k`'s (the boards are each plan's dig's)
+        if ends.is_none() && std::ptr::eq(board_of(k), board_of(j)) {
             return full_of(j);
         }
         if let Some(e) = in_chase.borrow().iter().find(|e| e.0 == (k, j)) {
             return e.1;
         }
-        // `k`'s own cards first, then what its dig leaves (`held_beside` keeps them in that order)
-        let kept: Vec<usize> = all[k].keep.iter().copied().filter(|i| !all[j].keep.contains(i)).chain(kept_of(k)).collect();
-        let v = aim_score(b, &all[j], hand, &kept, ends);
+        // `k`'s own cards first, then what its dig leaves (`held_beside` keeps them in that order);
+        // on the board `k`'s dig leaves
+        let kept: Vec<usize> = match ends {
+            Some(_) => all[k].keep.iter().copied().filter(|i| !all[j].keep.contains(i)).chain(kept_of(k)).collect(),
+            None => kept_of(j),
+        };
+        let v = aim_score(board_of(k), &all[j], hand, &kept, ends);
         in_chase.borrow_mut().push(((k, j), v));
         v
     };
+    // a later hand played on after the dig: playing on's, by what the board the dig leaves
+    // makes of the best play now against this board (`ratio`)
+    let best_played: Vec<Card> = best.cards.iter().map(|&i| hand[i]).collect();
+    let best_held: Vec<Card> = (0..hand.len()).filter(|i| !best.cards.contains(i)).map(|i| hand[i]).collect();
+    let lift_of = |k: usize| if moved(k) { ratio(b, board_of(k), &best_played, &best_held) } else { 1.0 };
     let run = |k: usize, score: &dyn Fn(usize) -> f64| {
         let lesser: Vec<(&Aim, f64)> = (0..all.len())
             .filter(|&j| (all[j].hand as usize) > (all[k].hand as usize) && all[j].keep.iter().all(|i| all[k].keep.contains(i)))
             .map(|j| (&all[j], lesser_of(k, j)))
             .collect();
         let stays = held_keep().iter().filter(|i| !all[k].keep.contains(i)).count();
-        chase(&all[k], score(k), left_of(k), &lesser, &ChaseRound { stays, ..round })
+        chase(&all[k], score(k), left_of(k), &lesser, &ChaseRound { stays, lift: lift_of(k), ..round })
     };
     // screened on one completion each; the best few get the full estimate
     // (a plan with nothing to throw can't be chased)
@@ -1393,8 +1449,8 @@ fn decide_cards_with(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discar
         return play_best;
     }
     if discards > 0 {
-        let mut toss: Vec<usize> = (0..hand.len()).filter(|i| !best.cards.contains(i) && !held_keep().contains(i)).collect();
-        toss.sort_by(|&a, &c| hand[a].rank.chips().total_cmp(&hand[c].rank.chips()));
+        let free: Vec<usize> = (0..hand.len()).filter(|i| !best.cards.contains(i) && !held_keep().contains(i)).collect();
+        let mut toss = throw_order(parts, &free);
         toss.truncate(5);
         if !toss.is_empty() {
             return Action::Discard(toss);
@@ -1540,23 +1596,26 @@ fn later_best(b: &Board, hand: &[Card], short: &mut Option<Shortlist>) -> Option
     })
 }
 
-/// The first dig for a plan keeping `keep`: up to 5 of the lowest cards outside it, never
-/// those worth holding (`held`), thrown with a discard; once discards are gone, played as a
-/// junk hand: the best hand the cards it may throw make (so it still scores), topped up with
-/// the lowest of them to 5. The cards it removes from the hand, and whether it's a junk hand;
-/// none when there's nothing to throw.
+/// The first dig for a plan keeping `keep`: up to 5 of the cards outside it, never those worth
+/// holding (`held`), thrown with a discard (in `throw_order`: what their discard leaves the
+/// round's later hands first, then the lowest); once discards are gone, played as a junk hand:
+/// the best hand the cards it may throw make (so it still scores), topped up with the lowest of
+/// them to 5. The cards it removes from the hand, and whether it's a junk hand; none when
+/// there's nothing to throw.
 fn dig_for(parts: &HandParts, keep: &[usize], held: &[usize], discards: i64) -> Option<(Vec<usize>, bool)> {
     let hand = parts.hand;
     let free: Vec<usize> = (0..hand.len()).filter(|i| !keep.contains(i) && !held.contains(i)).collect();
-    let mut toss = free.clone();
-    toss.sort_by(|&a, &c| hand[a].rank.chips().total_cmp(&hand[c].rank.chips()));
-    toss.truncate(5);
-    if toss.is_empty() {
+    if free.is_empty() {
         return None;
     }
     if discards > 0 {
+        let mut toss = throw_order(parts, &free);
+        toss.truncate(5);
         return Some((toss, false));
     }
+    let mut toss = free.clone();
+    toss.sort_by(|&a, &c| hand[a].rank.chips().total_cmp(&hand[c].rank.chips()));
+    toss.truncate(5);
     let mut dig: Vec<usize> = parts.best(&free).map(|p| p.cards).unwrap_or_default();
     for i in toss {
         if dig.len() >= 5 {
@@ -1567,6 +1626,72 @@ fn dig_for(parts: &HandParts, keep: &[usize], held: &[usize], discards: i64) -> 
         }
     }
     Some((dig, true))
+}
+
+/// The cards `free` (of `parts.hand`) in the order a discard throws them: the lowest first,
+/// except where which card is thrown changes what a score reads (`HandParts::card_discards`:
+/// the jokers' `discard` context, card.lua `Card:calculate_joker`, e.g. Hit the Road's ×Mult
+/// for a Jack, Castle's Chips for its suit); there first the cards whose discard alone leaves
+/// the best play of the cards that stay (those outside `free`, with the rest of them held)
+/// scoring most, so an effect every card has alike (Green Joker's) changes nothing; then the
+/// lowest.
+fn throw_order(parts: &HandParts, free: &[usize]) -> Vec<usize> {
+    let hand = parts.hand;
+    let mut out = free.to_vec();
+    out.sort_by(|a, c| hand[*a].rank.chips().total_cmp(&hand[*c].rank.chips()));
+    let Some(after) = parts.card_discards() else { return out };
+    let stay: Vec<usize> = (0..hand.len()).filter(|i| !free.contains(i)).collect();
+    let Some(r) = (!stay.is_empty()).then(|| parts.best(&stay)).flatten() else { return out };
+    let played: Vec<Card> = r.cards.iter().map(|&i| hand[i]).collect();
+    let held: Vec<Card> = stay.iter().filter(|i| !r.cards.contains(i)).map(|&i| hand[i]).collect();
+    // each board scored once (Hit the Road: a Jack's and the rest's)
+    let mut seen: Vec<(usize, f64)> = vec![];
+    let mut value = |i: usize| match seen.iter().find(|(j, _)| after[*j].jokers == after[i].jokers && after[*j].levels == after[i].levels && after[*j].dollars == after[i].dollars) {
+        Some(&(_, v)) => v,
+        None => {
+            let v = score::score(&after[i], &played, &held, &mut Unlucky, false).score;
+            seen.push((i, v));
+            v
+        }
+    };
+    let values: Vec<(usize, f64)> = out.iter().map(|&i| (i, value(i))).collect();
+    let at = |i: &usize| values.iter().find(|v| v.0 == *i).map_or(0.0, |v| v.1);
+    out.sort_by(|a, c| at(c).total_cmp(&at(a)));
+    out
+}
+
+/// The board discarding `thrown` (of `hand`) leaves, for the hands after it: what the engine's
+/// step (`Board::discard`) does to the board's state (the jokers' `discard` context, card.lua
+/// `Card:calculate_joker`: Hit the Road, Castle, Green Joker's Mult; Burnt Joker's level; the
+/// money it pays), with the count of discards left and used put back: what the jokers that read
+/// the count (Banner's Chips, Mystic Summit's Mult) lose to a dig isn't weighed (counting it
+/// here, on the dig's side only, cost Banner's board 2.5 to 16 points: playing on spends
+/// discards later too; design.md gap 8). `None` where the cards change nothing a score reads (the jokers, levels and deck size the
+/// same, and `probe`, a play of `hand`, scoring the same on it).
+fn dig_board(b: &Board, hand: &[Card], thrown: &[usize], probe: &[usize]) -> Option<Board> {
+    let mut after = b.clone();
+    let _ = after.discard(&picked(hand, thrown));
+    after.discards_left = b.discards_left;
+    after.discards_used = b.discards_used;
+    if after.jokers != b.jokers || after.levels != b.levels || after.playing_cards != b.playing_cards {
+        return Some(after);
+    }
+    if after.dollars == b.dollars {
+        return None;
+    }
+    let played: Vec<Card> = probe.iter().map(|&i| hand[i]).collect();
+    let held: Vec<Card> = (0..hand.len()).filter(|i| !probe.contains(i)).map(|i| hand[i]).collect();
+    (ratio(b, &after, &played, &held) != 1.0).then_some(after)
+}
+
+/// What board `on` makes of a play (`played`, with `held`) against board `b`, as a factor (1
+/// where `b` scores it nothing)
+fn ratio(b: &Board, on: &Board, played: &[Card], held: &[Card]) -> f64 {
+    let now = score::score(b, played, held, &mut Unlucky, false).score;
+    if now <= 0.0 {
+        return 1.0;
+    }
+    score::score(on, played, held, &mut Unlucky, false).score / now
 }
 
 thread_local! {
@@ -2069,6 +2194,9 @@ struct ChaseRound {
     /// the cards held beside the plan's that a dig never throws (`held_value`, `dig_for`): they
     /// take slots a dig would refill
     stays: usize,
+    /// what the first dig's discard does to a later hand played on (`dig_board`): the best play
+    /// now on the board it leaves against this board's (`ratio`); 1 when it leaves the scores
+    lift: f64,
 }
 
 /// What chasing a plan is worth, as the policy plays it out.
@@ -2097,7 +2225,10 @@ const ON_PACE_MARGIN: f64 = 0.5;
 /// isn't worked out); else the chase goes
 /// on, or stops with the hand it leaves (`left`: the best play of the hand the first dig leaves). A
 /// hand made is played once, the hands after it at a later hand's (`later`), and a junk hand
-/// scores nothing; playing on now is the best play now, then `later` each hand after. A lesser plan's chance per
+/// scores nothing; playing on now is the best play now, then `later` each hand after. After a
+/// first dig that discards, every hand is on the board its discard leaves (`dig_board`): `score`,
+/// `left` and the lesser plans come scored there, and a later hand played on is `later` times
+/// `ChaseRound::lift`; the digs after the first count no lift of their own. A lesser plan's chance per
 /// dig: its cards among the dig's new ones (other than the plan's own fits; cards drawn
 /// toward it in earlier digs aren't counted, the chase throws them away), the best of them
 /// when several turn up. On pace, the chase must beat playing on by `ON_PACE_MARGIN` of the
@@ -2116,12 +2247,15 @@ fn chase(aim: &Aim, score: f64, left: f64, lesser: &[(&Aim, f64)], r: &ChaseRoun
         .map(|(l, sc)| (l.groups.iter().map(|g| (g.0.iter().filter(|c| !fits.contains(c)).count(), g.1)).collect(), *sc))
         .collect();
     lesser.sort_by(|a, c| c.1.total_cmp(&a.1));
+    // a later hand played on after the first dig, on the board its discard leaves (`lift`;
+    // `score`, `left` and the lesser plans come scored there); playing on now without it
+    let later = r.later * r.lift;
     // the hands left at dig s (a junk hand once the discards are gone)
     let hands_at = |s: usize| if s as i64 >= r.discards { r.hands - (s as i64 - r.discards) } else { r.hands };
     // playing on at dig s instead of digging
     let stay = |s: usize| {
         let h = hands_at(s) as f64;
-        if s == 0 { r.best + (h - 1.0) * r.later } else { left + (h - 1.0) * r.later }
+        if s == 0 { r.best + (h - 1.0) * r.later } else { left + (h - 1.0) * later }
     };
     let mut out = Chase { value: stay(0), go: false };
     // the chase from the next dig on, when the policy goes on with it
@@ -2131,7 +2265,7 @@ fn chase(aim: &Aim, score: f64, left: f64, lesser: &[(&Aim, f64)], r: &ChaseRoun
         let hit = if f0 < 1.0 { ((f1 - f0) / (1.0 - f0)).clamp(0.0, 1.0) } else { 1.0 };
         let hands = hands_at(s);
         let after = if s as i64 >= r.discards { hands - 1 } else { hands };
-        let ends = |x: f64| x + (after - 1).max(0) as f64 * r.later;
+        let ends = |x: f64| x + (after - 1).max(0) as f64 * later;
         let pile = r.pile.saturating_sub(t * s).saturating_sub(fits.len());
         let (mut miss, mut stop) = (1.0, 0.0);
         for (groups, sc) in &lesser {
@@ -4515,7 +4649,7 @@ mod tests {
             keep: vec![0, 1, 2, 3],
             groups: groups.iter().map(|&n| (standard_deck()[..n].to_vec(), 1)).collect(),
         };
-        let round = |best: f64, need: f64, discards: i64| ChaseRound { pile: 44, size: 8, hands: 4, discards, need, best, later: best, on_pace: best * 4.0 >= need, takes: 0, stays: 0 };
+        let round = |best: f64, need: f64, discards: i64| ChaseRound { pile: 44, size: 8, hands: 4, discards, need, best, later: best, on_pace: best * 4.0 >= need, takes: 0, stays: 0, lift: 1.0 };
         // one card away, 5 fits: one dig makes it 39% of the time, too little on its own to
         // beat playing on, but the policy digs again after a miss, so six digs make it nearly
         // always: worth chasing (a chase decided on one dig's odds would never start)
@@ -4560,6 +4694,69 @@ mod tests {
         let flush = Aim { family: None, hand: HandType::Flush, keep: vec![0, 1, 2, 3], groups: vec![(standard_deck()[10..19].to_vec(), 1)] };
         let with = chase(&two, 1000.0, 20.0, &[(&flush, 300.0)], &round(180.0, 876.0, 1));
         assert!(with.value > c.value, "{} {}", with.value, c.value);
+        // a later hand played on after the first dig, on the board its discard leaves (`lift`):
+        // one that lowers it (Green Joker's Mult) makes the one-away chase worth less, one that
+        // raises it (Hit the Road's Jack) the two-away one worth more; playing on now stays
+        let lifted = |a: &Aim, lift: f64, sc: f64, left: f64, r: ChaseRound| chase(a, sc, left, &[], &ChaseRound { lift, ..r }).value;
+        let base = round(3312.0, 21360.0, 3);
+        assert!(lifted(&one, 0.5, 8652.0, 74.0, base) < lifted(&one, 1.0, 8652.0, 74.0, round(3312.0, 21360.0, 3)));
+        assert!(lifted(&two, 2.0, 1000.0, 20.0, round(180.0, 876.0, 1)) > c.value);
+    }
+
+    #[test]
+    fn a_dig_throws_first_the_cards_whose_discard_lifts_the_hands_after_it() {
+        // an effect every card has alike (Green Joker's Mult) leaves the lowest first: a pair of
+        // 3s among the six thrown from is thrown as on a plain board
+        let pairs = Card::parse_list("KH KS 3C 3D 4S 6C 7D 9S").unwrap();
+        let mut green = sample_board(&["j_green_joker"]);
+        green.jokers[0].mult = 5.0;
+        let toss = |b: &Board| dig_for(&HandParts::new(b, &pairs), &[0, 1], &[], 1).unwrap().0;
+        assert_eq!(toss(&green), toss(&sample_board(&["j_joker"])));
+        // beside a joker whose effect depends on the card (Hit the Road), Green Joker's still
+        // cancels: the same cards as with Hit the Road alone
+        let mut both = sample_board(&["j_green_joker", "j_hit_the_road"]);
+        both.jokers[0].mult = 5.0;
+        let jacks = Card::parse_list("KH KS JC 3D 4S 6C 7D 9S").unwrap();
+        let toss = |b: &Board| dig_for(&HandParts::new(b, &jacks), &[0, 1], &[], 1).unwrap().0;
+        assert_eq!(toss(&both)[0], 2);
+        assert_eq!(toss(&both), toss(&sample_board(&["j_hit_the_road"])));
+        // Hit the Road: ×0.5 Mult for each Jack discarded, for the rest of the round (card.lua
+        // `Card:calculate_joker`, the `discard` context). Six cards outside the Hearts kept, five
+        // thrown: the Jack before the lower cards with it; without it, the lowest five
+        let hand = Card::parse_list("2H 5H 9H JS 3C 4D 6S 7C").unwrap();
+        let dig = |b: &Board| dig_for(&HandParts::new(b, &hand), &[0, 1], &[], 1).unwrap().0;
+        assert_eq!(dig(&sample_board(&["j_hit_the_road"]))[0], 3);
+        assert!(!dig(&sample_board(&["j_joker"])).contains(&3));
+        // as a junk hand (no discard left) nothing is discarded: the same cards as without it
+        let junk = |b: &Board| dig_for(&HandParts::new(b, &hand), &[0, 1], &[], 0).unwrap().0;
+        assert_eq!(junk(&sample_board(&["j_hit_the_road"])), junk(&sample_board(&["j_joker"])));
+    }
+
+    #[test]
+    fn a_dig_is_scored_on_the_board_its_cards_leave() {
+        let hand = Card::parse_list("KH KS JS 3C 4D").unwrap();
+        let kings = [0, 1];
+        let lift = |b: &Board, thrown: &[usize]| dig_board(b, &hand, thrown, &kings).map_or(1.0, |a| ratio(b, &a, &picked(&hand, &kings), &picked(&hand, &[2, 3, 4])));
+        // Hit the Road: a Jack thrown, the Pair of Kings after it at ×1.5; no Jack, no board
+        let road = sample_board(&["j_hit_the_road"]);
+        assert!((lift(&road, &[2]) - 1.5).abs() < 0.01, "{}", lift(&road, &[2]));
+        assert!(dig_board(&road, &hand, &[3, 4], &kings).is_none());
+        // Green Joker loses a Mult for each discard, whatever is thrown
+        let mut green = sample_board(&["j_green_joker"]);
+        green.jokers[0].mult = 5.0;
+        assert!(lift(&green, &[3]) < 1.0, "{}", lift(&green, &[3]));
+        // the count of discards left is the round's resource, not the cards' doing: with Banner
+        // (Chips for each discard left) beside Hit the Road, a dig without a Jack leaves no
+        // board, and one with a Jack keeps the discards left, so its lift is the Jack's alone
+        let mut banner = sample_board(&["j_banner", "j_hit_the_road"]);
+        banner.discards_left = 3;
+        assert!(dig_board(&banner, &hand, &[3, 4], &kings).is_none());
+        let after = dig_board(&banner, &hand, &[2], &kings).unwrap();
+        assert_eq!((after.discards_left, after.discards_used), (banner.discards_left, banner.discards_used));
+        // Burnt Joker levels the first discard's hand: a board of its own
+        assert!(dig_board(&sample_board(&["j_burnt"]), &hand, &[3], &kings).is_some());
+        // a joker no discard changes
+        assert!(dig_board(&sample_board(&["j_joker"]), &hand, &[2], &kings).is_none());
     }
 
     #[test]

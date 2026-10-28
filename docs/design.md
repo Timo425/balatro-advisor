@@ -19,7 +19,7 @@ failed: fix that stage for every case, not the case.
 | Stage | Question | Where |
 |---|---|---|
 | **Moves tried** | Which choices are compared? All of them while the search can take them, narrowed down by simulation; beyond that, the moves the hand's structure gives, over every card (D10): no cut by the cards' order, the budgets named in the register. | Best play (`advise/play.rs`): `sim::all_plays` (every 1–5 card play) and `sim::all_discards` (every discard) of a hand of up to 12 cards (`sim::ALL_MOVES_MAX`); a bigger hand's `sim::big_hand_moves` (the plays whose cards can all score, `scoring_plays`, each also topped up with the least-worth cards outside it, the best few of each kind then by score now, 256 in all, a budget; the discards of the hand's structure, `structure_discards`), for your hand as it is and after each held consumable, all in one `compare::race`. Shop: `advise.rs` `shop_options` (every shop item, pack pick and "leave"; in the shop, selling each sellable joker outright too: its rounds without it from the contribution pass, its sale, the run with it let go, `LongRun::sold_now`, ranked like every option); a joker with no slot free, in place of each joker whose sale makes room (not eternal, not Negative: its slot goes with it) and, in the full pass, in each place it can go (the freed slot and the right end; a sale's places that play the race's first batch the same are one) (`evaluate_candidate`; only a perished one, if any), all in one `compare::race` on the shop ranking's measure (`shop_measure`, one function for both: through this ante's hardest round × the next ante's boss × the geometric mean of the long run with that sale, `LongRun::long_of`, and the strength at the next ante; in the race per round, `SwapRound::value`, with Mr. Bones' save counted), those it can't tell apart from the pick reported as ties (`Candidate::sell_tied`; none in trouble, as the shop ranking): what a joker does outside a hand (Burglar's hands, Drunkard's discard, Mr. Bones' save, Card Sharp's later hands) shows in the rounds, what it leaves the run (its income, its growth) in the long run; with a free slot, the two places of a joker on offer raced the same way; the pool's screen tries only the joker whose removal leaves most by the same measure in expectation (`Ctx::removal_rank`, `swap_measure`, from the contribution pass; the outlook gives up the same). Skip-or-play: the blind you're choosing, or in the shop (no pack open) the next blind still to come, with the money you have now. A consumable's targets: every set of cards its game data allows (`engine::consumable`; a random effect on them, Aura's edition, as its outcomes with their chances, a set worth its outcomes' values on each round), in the hand it's used from, in one `compare::race` on the deck projection (`target_race`). A joker that changes a card each round (DNA: `consumable::round_card_effect`) goes through the same search, round by round (`LongRun::round_decks`). |
-| **Simulated player** | How is the rest of the round played out? Toward the same measure the advice uses. | `sim::decide` (play/discard policy, a labelled heuristic: dig plans, `sim::aims` (a flush, a straight, a straight flush, one more of a rank, a Full House from Two Pair, Two Pair from a Pair, a Full House from Three of a Kind), each chased dig by dig as the policy would, when the round's expected points with it beat playing on (`sim::chase`); pace by playing on (`playing_on`: the best play's average now, then the best play of the same cards each hand after on the board the hand before leaves (among the plays a full search left unbeaten in chips and Mult, `later_best`: the decision's own search of the hand, searched again when a hand's step moves plays of one hand apart; every play when The Hook's pick matters, `front_holds`), the engine's own step, `Board::after_hand`, but not The Eye's ban on the hands played since: the cards held stand in for the ones drawn); cards that score while held kept, `held_value`; the round plays on the board each play and discard leaves: the engine's steps, `Board::after_hand` (jokers' state, the hand's level, money, Ice Cream and Seltzer after the hand) and `Board::discard` (card.lua's discard contexts; The Hook's through `discard_by`), and a won round's money for how it was played: Gold cards held and every joker's `calculate_dollar_bonus`, `engine::won_round_money`; the hands left counted apart at `money_per_hand`), measured by `tests/player.rs` (win rates on one board per play style at fixed targets, plus boards with jokers that grow in the round, a deck with a few strong cards and debuffing bosses; and against `sim::set_oracle`, a slow player that tries alternatives on simulated futures; `player_values`: the round's value on boards with fixed goals), `sim::RoundGoals` + `finish_play` (the winning play worth most) + `play_on_instead` (weighs "win now" against playing on, with a few simulated futures, paired: `paired_pick`; playing on includes the play that grows the jokers most, `growth_play`) + `spare_instead` (with no win on the table, the policy's play gives way to the highest-floor play that grows the jokers clearly more, `sparing_play`, when the round played on after it keeps pace and scores as much as after the policy's play and 16 paired futures show it worth more by `RoundGoals::value`), `sim::pays_at_end` (cards that pay at round end stay in hand while on pace), held consumables: used for score as soon as they lift the best play, the biggest lift first (`sim::use_if_better`), except one that would put a card that pays at round end in hand, which is held while on pace; right before the winning hand, each that makes the win worth more by `RoundGoals::value` is used (`sim::finish_with_uses`: a Blue Seal or Gold card more in hand at the end, a slot freed for a planet). The "play on" futures play to the same goals, the finish included, without looking ahead again, and by the policy alone when the oracle is on (`sim::policy_outcomes`, as the oracle's own futures) |
+| **Simulated player** | How is the rest of the round played out? Toward the same measure the advice uses. | `sim::decide` (play/discard policy, a labelled heuristic: dig plans, `sim::aims` (a flush, a straight, a straight flush, one more of a rank, a Full House from Two Pair, Two Pair from a Pair, a Full House from Three of a Kind), each chased dig by dig as the policy would, when the round's expected points with it beat playing on (`sim::chase`; after a first dig that discards, the plan's completion, the lesser plans and the hand a failed chase is left with scored on the board its cards leave, and a later hand played on by what that board makes of the best play now: `dig_board`, what the engine's step, `Board::discard`, does to the board's state, the count of discards left put back); where which card is thrown changes what a score reads, a discard throws first the cards whose discard alone leaves the best play of the cards that stay scoring most, then the lowest (`throw_order`: Hit the Road's Jacks, Castle's suit; an effect every card has alike, Green Joker's, changes nothing); pace by playing on (`playing_on`: the best play's average now, then the best play of the same cards each hand after on the board the hand before leaves (among the plays a full search left unbeaten in chips and Mult, `later_best`: the decision's own search of the hand, searched again when a hand's step moves plays of one hand apart; every play when The Hook's pick matters, `front_holds`), the engine's own step, `Board::after_hand`, but not The Eye's ban on the hands played since: the cards held stand in for the ones drawn); cards that score while held kept, `held_value`; the round plays on the board each play and discard leaves: the engine's steps, `Board::after_hand` (jokers' state, the hand's level, money, Ice Cream and Seltzer after the hand) and `Board::discard` (card.lua's discard contexts; The Hook's through `discard_by`), and a won round's money for how it was played: Gold cards held and every joker's `calculate_dollar_bonus`, `engine::won_round_money`; the hands left counted apart at `money_per_hand`), measured by `tests/player.rs` (win rates on one board per play style at fixed targets, plus boards with jokers that grow in the round, a deck with a few strong cards and debuffing bosses; and against `sim::set_oracle`, a slow player that tries alternatives on simulated futures; `player_values`: the round's value on boards with fixed goals), `sim::RoundGoals` + `finish_play` (the winning play worth most) + `play_on_instead` (weighs "win now" against playing on, with a few simulated futures, paired: `paired_pick`; playing on includes the play that grows the jokers most, `growth_play`) + `spare_instead` (with no win on the table, the policy's play gives way to the highest-floor play that grows the jokers clearly more, `sparing_play`, when the round played on after it keeps pace and scores as much as after the policy's play and 16 paired futures show it worth more by `RoundGoals::value`), `sim::pays_at_end` (cards that pay at round end stay in hand while on pace), held consumables: used for score as soon as they lift the best play, the biggest lift first (`sim::use_if_better`), except one that would put a card that pays at round end in hand, which is held while on pace; right before the winning hand, each that makes the win worth more by `RoundGoals::value` is used (`sim::finish_with_uses`: a Blue Seal or Gold card more in hand at the end, a slot freed for a planet). The "play on" futures play to the same goals, the finish included, without looking ahead again, and by the policy alone when the oracle is on (`sim::policy_outcomes`, as the oracle's own futures) |
 | **Valuation** | What is an outcome worth? One measure, measured by simulating your board. | `advise/value.rs`: `LongRun` (your board projected to Ante 8, each joker you could sell kept or let go, whichever leaves the run more by its value: replaced by a typical find in its best slot, or sold outright, no find, its slot left empty to Ante 8, `Fate`, its sale counted once either way, a find's price on top for a find; a Negative only sold, and its slot goes with it whenever it leaves the board, card.lua `Card:remove_from_deck`, as one bought brings its own; `value(&Gain)` for anything a run gains: one-off money, money held, planets with Constellation, levels, consumable slots (the planets your Blue Seal cards make with them: `seal_planets_for`; your slots by Ante 8 are a projected quantity, `consumable_slots`, as hands and hand size are), hand size, hands and discards a round (`Gain::hand_size` / `hands` / `discards`: added to the projected round, `long_spec_for`, so it's played with them, and to the round your Blue Seal cards are seen in: every projected board is scored on its own round, its jokers' and a `Gain`'s, with the planets your Blue Seals make more or fewer in it than in yours, `long_score`, `seal_planets_for`), the events between rounds the board grows from (pack skips, rerolls, blind skips: `engine` `Board::after`, the game's amounts via `Joker::mult_from` / `xmult_from` and its counters; money, once or held, buys them through one chooser, `bought_event`, at `event_price`); `planet(hand)`; `long_of` for jokers; `joker_worth`, what one more Mult, ×Mult or Chip on a joker is worth and losing it, through `Gain::joker`), `Spending` (money held past the planet-level cap, worth the rerolls and packs it buys). `RoundGoals` for the simulated player is built from these (a Blue Seal's planet by hand, a dollar, cards worth drawing, and what the jokers a round changes are left with: `RoundGoals::jokers`, counted at each hand and discard as `Outcome::grown`; in Best play's round each also by what it does in this ante's blinds still ahead, `Ahead`, and there also the counter a joker's ability keeps that a round moves, `Joker::counter`). Shop ranking: `rank_options` (survive × next-ante survival × long-run); a joker that saves a lost round (Mr. Bones, `Board::saves_lost_round`, spent once for each copy) counted in both survivals through the rounds ahead, on the board each option leaves (`save_lift`). |
 | **Noise** | Which differences are real? | `advise/compare.rs` `race`: the same draws for every option, in batches on fresh rounds until the best is clear; options clearly worse drop (where a round can be lost outright, a steady small deficit isn't clearly worse until a rare round in its favour could have shown: the rule of three), options shown within 1% of the leader's value are ties, reported as ties (showing it takes enough shared rounds for a rare round where they part ways to have turned up: 3 × the largest round value / n ≤ 1% of the leader's value, and a round worth something: on rounds all worth nothing, a round you rarely win, nothing is shown equal, since 2026-10-11; a tie stands only through ties to the final leader; tied moves are ordered by their paired difference to the leader); a race with a status quo (a target search's "no target") never cuts it by the budget, only by a finding, and keeps it when it ends as good as the leader and not acting keeps something (D8: a held consumable isn't spent on a change that can't be told from none; DNA's round, gone if unused, takes the leader); options still in at the round cap are "undecided" and every caller reports them as ties too (as good as far as those rounds can tell; at a low cap, such as the target search's 128 rounds, that's all a tie can be, since showing one needs about 300); past that, an explicit budget limits how many stay in (with many options at least half of them for each doubling of the rounds, `compare::halving`: successive halving, so a field of hundreds isn't cut to a few dozen on its first batch), keeping those least shown worse than the leader (`compare::better_by`, the bound "clearly worse" uses: a move a rare round could still separate isn't cut for a steady edge on few rounds; an option whose rounds differ more from the leader's stays before a steady one as far behind, so in a graded race (the target search) what is still in at the cap leans to the noisier sets; since 2026-10-05, before by value), on exact ties by value, then a secondary value such as how close lost rounds came to the target, and is named as a budget, not a finding. The search is measured against a reference (every move on `compare::MAX` rounds of its own: `search_against_reference` in tests/replay.rs); a pick a change moves on the owner's saved states is judged against the one before with the rest of the round played by the oracle (`Options::judge`, tests/history_picks.rs and `history_judge` in tests/history.rs, D12). Same seeds (common random numbers) everywhere; cards are put in one fixed order (`Card::order_key`) before anything random touches them, so card order never changes the advice (tested). |
 
@@ -536,8 +536,13 @@ the same retriggered ×Mult.
   0.298 → 0.446, just below leaving's 0.461: this ante 0.60 → 0.84 against leaving's 0.76, the
   next ante 0.57 against 0.61 without Gros Michel); the 135 saved Best play picks and parity
   unchanged; the player bench not run (no bench board holds a saver). Money past the cap
-  (gap 36 (a)) tried and parked: it waits on the simulated player weighing paying discards.
-- **Next:** the policy's digs and junk hands weighing growth; a free hand banked before the
+  (gap 36 (a)) tried and parked: the bias it exposed (×0.78 a buy) was read as the policy's
+  digs, but the whatif row behind it was a rental's rent (2026-10-28): its cause is open.
+- **Done 2026-10-28:** the policy's digs count what their discard does to the round's later
+  hands (`dig_board`, `throw_order`, gap 8): win rates up on the Hit the Road and Castle
+  boards (most by 5-8 points), the oracle's gap there narrowed; weighing digs by the round's goals measured
+  as not paying (the oracle's gap beyond winning ≤ 0.005 of a round).
+- **Next:** a free hand banked before the
   hand that wins (gap 34); Ceremonial Dagger's value (gap 8); the blind odds shown and the
   outlook chained as Best play's blinds ahead are (gap 28).
 - **Not built yet** (ideas, not gaps): a rush check ("skip every small and big blind to Ante
@@ -801,16 +806,63 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    finds (gap 17), so what moves that ratio moves such near-ties too: a dead suit joker's sale
    scores 3% under your board at the next ante, as the simulated player's suit map
    (`sim::keep_suit`, retire list) still chases its suit while it's debuffed.
-8. **The policy doesn't weigh what a discard does to the jokers.** The simulated round plays on
-   the board each discard leaves (`Board::discard`), so Best play's moves are valued with it,
-   but the policy's own choices aren't: burning discards (`burn_pays`) looks only at jokers
-   that score by discards left, and cashing paying discards is a threshold. Weighing the burn
-   on the engine's discard step (each discard like the first) was measured (2026-10-05, 6000
-   rounds at fixed targets): Hit the Road +1.3 / +0.5 points (3 / 1 discards), Castle −5.4 /
-   −1.7 (its +3 Chips a card set off burns that threw away digs). The general fix: weigh a
-   burn by what the round is worth (`RoundGoals`), not by the play's score alone; the same
-   holds for Delayed Gratification's money, which spending a discard (paying or digging) gives
-   up and the policy doesn't weigh. What a discard or a hand does to the jokers over the run is
+8. **The policy weighs what a discard does to the jokers only in this round's points, and only in
+   its digs.** The simulated round plays on the board each discard leaves (`Board::discard`), so
+   Best play's moves are valued with it. Since 2026-10-28 the policy's digs are too: after a
+   first dig that discards, a plan's chase scores its completion, the lesser plans it keeps
+   alive and the hand a failed chase is left with on the board the dig's cards leave, and a
+   later hand played on by what that board makes of the best play now (`dig_board`: what the
+   engine's step does to the board's state, the jokers' `discard` context and Burnt Joker's
+   level; the count of discards left is put back; `ChaseRound::lift`); playing on now is left as it is. Where which card is thrown changes
+   what a score reads (`HandParts::card_discards`), a discard throws first the cards whose
+   discard alone leaves the best play of the cards that stay scoring most, then the lowest
+   (`throw_order`; an effect every card has alike, Green Joker's, changes nothing). One measure,
+   the engine's step, for every joker in card.lua's `discard` context (Hit the Road's Jacks,
+   Castle's suit, Green Joker's and Ramen's losses, Burnt Joker's level), with no list of
+   jokers. So what a dig costs the jokers that read the count of discards left (Banner's Chips,
+   Mystic Summit's Mult) isn't weighed, while Green Joker's Mult, which the `discard` context
+   lowers, is: counting the count too (the whole step) was measured and not kept, the
+   `discards` board (Banner, Mystic Summit) −10.4 / −2.5 / −15.9 points, since only the dig's
+   side was charged and playing on spends its discards later too; the fix charges both sides
+   what each spends. Raised by the oracle: on a board with Greedy
+   Joker, Hit the Road and Joker the oracle won 19 points more, throwing 1.32 Jacks a round
+   against the policy's 0.89 with as many discards (it picked the digs that throw Jacks).
+   Measured (2026-10-28, `player_win_rates`, 2,000 rounds a board, the boards `hit_road` and
+   `castle` added at the half points of the player before): Hit the Road +7.8 / +5.9 / +2.0
+   points (4 hands and 3 / 1 discards, 1 hand and 3), Castle +7.3 / +0.2 / +8.6, Green Joker's
+   boards +0.6 / −0.2 and with The Hook +1.0 / +0.7, every other board the same round for
+   round; the oracle's gap (200 rounds) on Hit the Road 18.5 → 11.0, 8.0 → 5.0 and 4.0 → 2.5
+   points, on Castle 7.0 → −0.5 and 11.5 → 3.5. A first version took the ratio the discard
+   gives the hand the dig leaves as a factor on every hand of the chase: right for a ×Mult
+   (Hit the Road), too much for added Chips (Castle's three Chips a card read off a High Card as ×1.56 where
+   the flush the chase completes gains about ×1.12) and for Green Joker's Mult; it won Castle's one-hand board +12.3 but lost
+   Castle and Green Joker boards 0.6-0.7 points (the reviewer's finding). The owner's saved
+   states: 5 of 135 picks moved, 2 ties and 3 unclear (+0.29% ± 0.87%, +0.37% ± 0.86%, +0.46% ±
+   0.48%), none shown worse; the judge plays its futures by this policy, so it partly judges
+   itself. No fixture's Best play moved; two shop rankings reorder below their top three, the
+   jokers' measures played by this player (selling Hit the Road beside Banner falls 0.954 →
+   0.827, the player now feeds it Jacks, and Banner's sale rises past Cloud 9's; on
+   `shop_keep_unfaded_ramen` every option ~8% lower, Green Joker and Ramen measured anew). A
+   full analysis of a saved state with Hit the Road and Mail-In 4-28% more CPU (more digs, and
+   the chase's terms scored again on the dig's board), one without such a joker 3-7% (each
+   card's discard tried once a hand, `card_discards`; the same machine busy, two runs each). What's left: burning
+   discards while on pace (`burn_pays`) still looks only at jokers that score by discards left;
+   burning on the discard's lift was measured the same day and not kept (Castle −10.8 points,
+   Hit the Road −1.0: burns throw away digs, as in 2026-10-05's measurement, Hit the Road +1.3
+   / +0.5, Castle −5.4 / −1.7); a chase counts its first dig's board, not its later digs';
+   the plays scored there are those `b` picks (with Burnt Joker the dig's level can make
+   another hand the best: understated); the cards are ordered by each one's discard alone, so
+   what a set does together (Burnt Joker's level for the hand the set makes, Faceless's three
+   faces) doesn't choose them; a
+   junk hand's cards are the lowest whatever their play does to the jokers; cashing paying
+   discards is a threshold, and Delayed Gratification's money, which spending a discard gives
+   up, isn't
+   weighed. What a discard leaves beyond the round's points (`RoundGoals`: the jokers past the
+   round, its money) was measured against the oracle by the round's value, on boards with
+   goals for Green Joker, Castle, Ramen, Yorick, Delayed Gratification, Mail-In Rebate,
+   Faceless and Trading Card (1,000 rounds each, 2026-10-28): the oracle's gap beyond winning
+   was 0.0000 to 0.0049 of a round (its win gap 0.8 to 21 points), so weighing digs by the
+   round's goals wasn't built: the gap is in the points. What a discard or a hand does to the jokers over the run is
    measured since 2026-10-17 from the simulated player's rounds (`value::Growths`, gap 18:
    Green Joker, Castle, Ramen, Ice Cream, Seltzer and every joker a round changes), not from
    the run's own play: before, a table faded Ramen −×0.3 an ante whatever was played, and a
@@ -1281,7 +1333,7 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    against leaving, Buffoon packs +0.04, the top rerolls a wash costing $3), and three fixes of
    the old sum not kept against finds that leaned high.
 18. **Growth is played for at Best play's own move, the simulated player's finish and its plays
-   that cost no pace, not in its digs, and a joker the projection replaces counts only in this ante's blinds ahead.** Since 2026-10-14 a round's value
+   that cost no pace, in its digs only as this round's points (gap 8), and a joker the projection replaces counts only in this ante's blinds ahead.** Since 2026-10-14 a round's value
    (`RoundGoals::value`) counts what its hands and discards leave the jokers a round changes,
    each by what one more Mult, ×Mult or Chip adds by Ante 8 (`LongRun::joker_worth`, in the
    register), so Best play weighs a hand's growth against its points: with Square Joker (+4
@@ -1334,7 +1386,9 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
      kept: the pace test alone, without futures (the Square board lost 7.6 points of win rate),
      and the futures without the "as much as the policy's play" test (with 8, Square −0.003 of a
      round on noise; with 16, a quick pass on a Square board 6 → 20 s). Still not done: the digs are chosen by points (a
-     chase doesn't weigh growth, nor a discard's, gap 8; a junk hand's cards are the lowest,
+     chase doesn't weigh growth past the round, nor a discard's: since 2026-10-28 a dig counts
+     what its discard does to this round's later hands, gap 8, where the oracle's gap by the
+     round's value was measured to lie; a junk hand's cards are the lowest,
      whatever they reset; nor the cards that pay at round end, which stay out only while the
      rest keeps pace); a play that gives up pace for growth isn't weighed (with the test at 80%
      of the policy's pace growers gained +0.002 more, and a Square board's quick pass went 6 →
@@ -2002,13 +2056,13 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    each shop of the money's walk, `Shops::income`), in the keep-or-let-go, the race, sales and
    buys. It works as built (F67C37FV's Ante 3 shop at $60: the projection keeps Mail-In, $9.57
    an ante past the cap ×1.29; a first pass costs about 8 s, 19 → 27 s) but exposed a bias it
-   then multiplies: the money measured on a board with a joker that changes how the simulated
-   player digs falls (there Greedy Joker cuts Mail-In's money a round won +$4 → +$2 in whatif,
-   a plain Joker +$4 → +$5: the player spends the discards on Greedy's suit instead of cashing
-   Mail-In's rank; the paying-discard threshold, gap 8), so every buy there lost ×0.78 of its
-   long run and the race kept selling Mail-In. It waits on the simulated player weighing paying
-   discards against digs (gap 8; measuring with the round's goals wouldn't help: the goals
-   player cashes by the same threshold). Fixture `shop_mail_in_sold_rich` (selling Mail-In for
+   then multiplies: every buy there lost ×0.78 of its long run and the race kept selling
+   Mail-In. It was read as the money measured on a board with a joker that changes how the
+   simulated player digs falling (whatif: Greedy Joker cuts a round won +$4 → +$2, a plain
+   Joker +$4 → +$5); on 2026-10-28 that row was the shop's Greedy Joker's rental ($3 rent,
+   whatif's "− rent"): without it +$5, as the Joker, and its rounds pay as much (the Big Blind's
+   money $4.7 against the Joker's $4.5), so the ×0.78 needs another cause; the simulated
+   player's digs count their discards since (gap 8). Fixture `shop_mail_in_sold_rich` (selling Mail-In for
    $2 ranked above leaving) is pending on it, and on the money's walk counting the income of the
    board each option leaves (gap 17: its survival counts the sale's $2, not Mail-In's money
    before the boss). (b) The money is this

@@ -12,7 +12,8 @@ use serde_json::Value;
 /// strong cards among plain ones, a boss that debuffs cards, jokers that read the round's memory
 /// of the hands played (Card Sharp, Acrobat, Obelisk; The Eye), jokers that fade, and The Hook
 /// (held cards discarded before each hand scores) on boards that read held cards, hold seals
-/// and Steel, or grow by discards.
+/// and Steel, or grow by discards; and jokers that grow in the round by the cards discarded
+/// (Hit the Road's Jacks, Castle's suit).
 const BOARDS: &[(&str, &[&str], bool, &str)] = &[
     ("plain", &[], false, ""),
     ("pairs", &["j_jolly", "j_duo", "j_sly"], false, ""),
@@ -37,6 +38,8 @@ const BOARDS: &[(&str, &[&str], bool, &str)] = &[
     ("held_hook", &["j_baron", "j_shoot_the_moon", "j_raised_fist"], false, "bl_hook"),
     ("enhanced_hook", &["j_jolly", "j_duo", "j_joker"], true, "bl_hook"),
     ("growers_hook", &["j_green_joker", "j_ride_the_bus", "j_runner"], false, "bl_hook"),
+    ("hit_road", &["j_hit_the_road", "j_greedy_joker", "j_joker"], false, ""),
+    ("castle", &["j_castle", "j_droll", "j_joker"], false, ""),
 ];
 
 /// A deck as a run has it by Ante 3 or 4: the standard 52 with these cards changed (Bonus 3s,
@@ -137,13 +140,25 @@ const TARGETS: &[(&str, f64)] = &[
     ("growers_hook_4h3d", 1508.0),
     ("growers_hook_4h1d", 1099.0),
     ("growers_hook_1h3d", 470.0),
+    // the boards added 2026-10-28 (jokers that grow by the cards discarded): the half points of
+    // the player at 9e86250 (before a dig plan was valued on the board its discard leaves), on
+    // these rounds (the round's targets drawn as `rounds` draws them)
+    ("hit_road_4h3d", 3960.0),
+    ("hit_road_4h1d", 2660.0),
+    ("hit_road_1h3d", 1896.0),
+    ("castle_4h3d", 3696.0),
+    ("castle_4h1d", 2564.0),
+    ("castle_1h3d", 1530.0),
 ];
 
-/// Each board's rounds; a board without a target yet gets 0 (`player_targets` finds it).
+/// Each board's rounds; a board without a target yet gets 0 (`player_targets` finds it). The
+/// round's targets (Castle's suit, Mail-In Rebate's rank…) drawn once for each board, from a
+/// fixed seed: only a joker that reads one sees it.
 fn rounds() -> Vec<(String, Board, sim::RoundStart)> {
     let mut out = vec![];
     for (name, keys, enhanced, boss) in BOARDS {
-        let b = bench::sample_board(keys);
+        let mut b = bench::sample_board(keys);
+        b.draw_round_targets(&bench::standard_deck(), &mut balatro_advisor::engine::Rng::new(5));
         assert_eq!(b.jokers.len(), keys.len(), "{name}: unknown joker key");
         let deck = if *enhanced { enhanced_deck() } else { bench::standard_deck() };
         // a round of 4 hands with 3 or 1 discards, and The Needle's one hand with 3
