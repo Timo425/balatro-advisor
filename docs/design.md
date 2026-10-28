@@ -1389,7 +1389,16 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
      chase doesn't weigh growth past the round, nor a discard's: since 2026-10-28 a dig counts
      what its discard does to this round's later hands, gap 8, where the oracle's gap by the
      round's value was measured to lie; a junk hand's cards are the lowest,
-     whatever they reset; nor the cards that pay at round end, which stay out only while the
+     whatever they reset (tried 2026-10-28 and not kept: once the plan is picked, the throw of as
+     many of the cards it may throw whose step the goals value most, jokers and money, by
+     `LOOKAHEAD_MIN`, never scoring less or leaving less that pays at round end: on top of
+     `throw_order` no `player_values` board moved, the castle board included; before it castle
+     +0.0026 ± 0.0013 of a round with 3 discards, all from throwing the suit, which `throw_order`
+     now does by points; and a junk hand giving way to its largest part that grows the jokers
+     more, Ride the Bus spared a lone King, on 16 futures and screened against the dig's own
+     line: growers +0.0006 ± 0.0004 and +0.0010 ± 0.0005, Square and seals_growers +0.0004 at
+     most, for simulated rounds 30-80% slower where junk hands dig, as nearly every one passes
+     the screen; a cheaper test of which parts are worth the futures comes first); nor the cards that pay at round end, which stay out only while the
      rest keeps pace); a play that gives up pace for growth isn't weighed (with the test at 80%
      of the policy's pace growers gained +0.002 more, and a Square board's quick pass went 6 →
      16 s; raised in play 2026-10-17, fixture `psychic_kings_zero_score`, pending: Ride the Bus

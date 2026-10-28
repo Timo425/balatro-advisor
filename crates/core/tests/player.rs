@@ -334,6 +334,7 @@ const GOAL_BOARDS: &[GoalBoard] = &[
     ("trousers", &[("j_trousers", [0.0048, 0.0, 0.0]), ("j_trousers", [0.0048, 0.0, 0.0]), ("j_joker", [0.0; 3])], &[]),
     ("seals", &[("j_joker", [0.0; 3]), ("j_droll", [0.0; 3])], &["3S:blue", "7H:blue", "KD:blue", "2C:blue", "5D:gold", "9C:gold", "QS:gold"]),
     ("seals_growers", &[("j_green_joker", [0.019, 0.0, 0.0]), ("j_square", [0.0, 0.0, 0.0037])], &["3S:blue", "7H:blue", "KD:blue", "5D:gold", "9C:gold"]),
+    ("castle", &[("j_castle", [0.0, 0.0, 0.0037]), ("j_joker", [0.0; 3])], &[]),
 ];
 
 /// The simulated player's rounds valued as Best play values them (`RoundGoals::value`: 0 lost,
@@ -359,6 +360,8 @@ fn player_values() {
         let keys: Vec<&str> = jokers.iter().map(|j| j.0).collect();
         let mut b = bench::sample_board(&keys);
         assert_eq!(b.jokers.len(), keys.len(), "{name}: unknown joker key");
+        // the round's targets as the game draws them (Castle's suit)
+        b.draw_round_targets(&bench::standard_deck(), &mut balatro_advisor::engine::Rng::new(1));
         b.planet_slots = 2;
         for (i, j) in b.jokers.iter_mut().enumerate() {
             j.id = i as u32 + 1;
