@@ -151,6 +151,11 @@ runs (from a saved state where the choice comes up, the old and the new choice e
 with the same game seed, so only the choice differs); whole runs only once the single-decision
 gaps are mostly closed and the bot follows most of the advice (`not_followed` near empty), and
 run around the clock through the D17 harness, headless, so the owner can play alongside.
+The bench's restart rule (`--restart-below` on `ante2_reach`, the horizon row at the Ante 2 blind
+select) has the heuristic threshold 0.30, judged 2026-10-28 at 1786431 against the owner's 51 saved
+runs (Anaglyph Deck, Gold Stake; 44 reached that screen, 7 below the line, none of them won or got
+past Ante 5; a win from 0.36 rules out a higher line). The default stays off, so a run is a
+baseline; runs played out are filtered by the logged `ante2_reach` afterwards.
 
 ## Patterns
 

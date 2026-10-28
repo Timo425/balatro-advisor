@@ -35,6 +35,14 @@ verdict on the advice. As of 2026-10-24 the bot:
 Every run before 2026-10-24 (none has a `commit`) is marked `void` in runs.jsonl: every pack
 skipped, the jokers never arranged, "won" read from a flag the game also sets on a loss, and
 before 2026-10-23 35 jokers locked and an early advisor. Don't read them as evidence.
+
+Restarting (`--restart-below`, off by default: the bot plays every run out, a baseline; every run
+logs `ante2_reach` either way). The threshold 0.30, a heuristic, was judged 2026-10-28 at 1786431
+on the owner's 51 saved runs (Anaglyph Deck, Gold Stake, played with older advisors): of the 44
+that reached the Ante 2 blind select, the 7 below 0.30 (6 played out) won none and none got past
+Ante 5; the 37 at or above got to Ante 5.4 on average with 6 wins, and one won from 0.36, so a
+higher line restarts winners. A small sample. Above it reach barely orders how far a run gets.
+At Ante 1 the reach can't tell starts apart (no scoring joker yet), so the rule waits for Ante 2.
 """
 import argparse
 import json
