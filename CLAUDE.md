@@ -18,6 +18,11 @@
 - **No coupling** to `balatro-agent` or other local repos. Copy and adapt with
   an attribution comment if needed, and never import by path.
 - Code, comments and docs in English (D4 in `docs/decisions.md`).
+- **Know where things stand before judging them.** A chat that brainstorms, judges a gap (its
+  effort against its benefit) or picks work first runs `tools/status.py` and reads
+  `docs/owner-view.md`, says what's unknown or stale, and asks the owner before concluding. It
+  never cites a measurement without its commit and age. `docs/owner-view.md` holds only the
+  owner's words.
 - **One task, one independent chat.** A follow-up is offered as a task card (`start_session`,
   "own_initiative", context "fresh", in the main checkout) and starts only on the owner's click:
   never "user_asked" unless the owner said to start it, never a fork or a hand-off. A chat started
