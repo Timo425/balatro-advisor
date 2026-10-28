@@ -23,6 +23,12 @@
   `docs/owner-view.md`, says what's unknown or stale, and asks the owner before concluding. It
   never cites a measurement without its commit and age. `docs/owner-view.md` holds only the
   owner's words.
+- **Shelve on a missing prerequisite.** When a task turns out halfway to need something not
+  there yet (a judge that can't play where the change moves picks, an engine step not modelled),
+  don't iterate on a proof that can't see it: tell the owner in one line, queue the prerequisite
+  ahead of the rest of the task, commit only what is already proven (the unproven part named in
+  its gap) and move on. The work queue's header (`Arvutimängud/Balatro/advisor-queue.md` in the
+  owner's Obsidian vault) has the steps and the `After:` lines that order cards.
 - **One task, one independent chat.** A follow-up is offered as a task card (`start_session`,
   "own_initiative", context "fresh", in the main checkout) and starts only on the owner's click:
   never "user_asked" unless the owner said to start it, never a fork or a hand-off. A chat started
