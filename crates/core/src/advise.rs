@@ -5980,7 +5980,9 @@ mod tests {
             let a = value::Ahead::new(ctx, Some((0.0, &with as &dyn Fn(f64, usize) -> f64))).unwrap();
             (a.dollar(), a.find_at(), a.find_10_at())
         };
-        let (d, (at, _), (at10, _)) = ten(&ctx, [0.2, 0.5], [0.5, 0.52]);
+        // the second shop's lift wide enough for `Ahead`'s 300 simulations to see it (+0.02 read
+        // as $0 once the simulated player's last hand moved the board's odds, 2026-10-29)
+        let (d, (at, _), (at10, _)) = ten(&ctx, [0.2, 0.5], [0.5, 0.55]);
         assert!(d > 0.0 && at10[0] > at[0] && at10[1] >= at10[0], "{d} {at:?} {at10:?}");
         // a boss the board already gets through about half the time, which the shops' sliver
         // doesn't move (no search, no points to read): $10 more found by a search of its own

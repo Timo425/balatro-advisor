@@ -1154,7 +1154,7 @@ fn decide_with(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i6
             };
         }
     }
-    decide_cards_with(b, hand, deck, hands, discards, need, size, true, parts)
+    decide_cards_with(b, hand, deck, hands, discards, need, size, true, parts, true)
 }
 
 /// Whether the best play in `hand` scores more with no discards left than with the board's
@@ -1167,8 +1167,20 @@ pub fn scores_more_without_discards(b: &Board, hand: &[Card]) -> bool {
 /// Whether `play` (cards of `hand`) scores more with no discards left than with the board's:
 /// two scoring passes, cheap enough for every decision.
 fn burn_pays(b: &Board, hand: &[Card], play: &[usize]) -> bool {
+    burn_scores(b, hand, play).is_some_and(|(now, none)| none > now * 1.001)
+}
+
+/// Whether `play` (cards of `hand`) scores differently with no discards left than with the
+/// board's (a joker reads the count: Banner, Mystic Summit)
+fn burn_reads(b: &Board, hand: &[Card], play: &[usize]) -> bool {
+    burn_scores(b, hand, play).is_some_and(|(now, none)| none != now)
+}
+
+/// `play` (cards of `hand`) scored with the board's discards left and with none (every roll
+/// failing); None with no discards left or nothing played
+fn burn_scores(b: &Board, hand: &[Card], play: &[usize]) -> Option<(f64, f64)> {
     if b.discards_left <= 0 || play.is_empty() {
-        return false;
+        return None;
     }
     let mut none = b.clone();
     none.discards_left = 0;
@@ -1176,7 +1188,34 @@ fn burn_pays(b: &Board, hand: &[Card], play: &[usize]) -> bool {
     let held: Vec<Card> = (0..hand.len()).filter(|i| !play.contains(i)).map(|i| hand[i]).collect();
     let info = hand::detect(&played, b.rule_flags());
     let now = score::score_detected(b, &played, &held, info.clone(), &mut Unlucky, false).score;
-    score::score_detected(&none, &played, &held, info, &mut Unlucky, false).score > now * 1.001
+    Some((now, score::score_detected(&none, &played, &held, info, &mut Unlucky, false).score))
+}
+
+/// On the round's last hand, playing `play` (cards of `hand`) now as the chase counts a hand
+/// (`reached`): `need` times its share of `Play::mean`'s rolls that reach it, each at the better
+/// of the discards left and none where `burns` (as a plan's completions, `aim_score`)
+fn play_reach(b: &Board, hand: &[Card], play: &[usize], need: f64, burns: bool) -> f64 {
+    let played: Vec<Card> = play.iter().map(|&i| hand[i]).collect();
+    let held: Vec<Card> = (0..hand.len()).filter(|i| !play.contains(i)).map(|i| hand[i]).collect();
+    let info = hand::detect(&played, b.rule_flags());
+    let none = (burns && b.discards_left > 0).then(|| {
+        let mut z = b.clone();
+        z.discards_left = 0;
+        z
+    });
+    let mut rolls = Rng::new(0x6d65616e);
+    let mut w = Watched { rolls: Unlucky, asked: false };
+    let floor = score::score_detected(b, &played, &held, info.clone(), &mut w, false).score;
+    let n = if w.asked { MEAN_ROLLS } else { 1 };
+    let hits = (0..n)
+        .filter(|_| {
+            let same = rolls.clone();
+            let x = if w.asked { score::score_detected(b, &played, &held, info.clone(), &mut rolls, false).score } else { floor };
+            let y = none.as_ref().map_or(x, |z| x.max(score::score_detected(z, &played, &held, info.clone(), &mut same.clone(), false).score));
+            y >= need
+        })
+        .count();
+    need * hits as f64 / n as f64
 }
 
 /// The heuristic play/discard policy (labelled as a heuristic everywhere it shows):
@@ -1188,20 +1227,24 @@ fn burn_pays(b: &Board, hand: &[Card], play: &[usize]) -> bool {
 ///   cards each hand after, on the board the hand before leaves);
 /// - otherwise, if digging for a hand (`aims`: a flush, a straight, a straight flush, one
 ///   more of a rank, a Full House) is worth more than playing on (`chase`: the round's
-///   expected points, dig by dig as this policy plays it), throw away the cards outside it:
+///   expected points, dig by dig as this policy plays it; on the round's last hand its chance
+///   to reach the score still needed), throw away the cards outside it:
 ///   with a discard, or by playing them as a junk hand once discards are gone;
 /// - otherwise discard the cards outside the best play and hope to improve it.
 ///
 /// Cards that add to the best play while held (`held_value`) are never thrown away.
-/// `burn`: whether to check if burning discards pays (off inside that check itself).
+/// `burn`: whether to check if burning discards pays (off inside that check itself, which digs
+/// whatever the pace and cashes no paying discard).
 #[allow(clippy::too_many_arguments)]
 fn decide_cards(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i64, need: f64, size: usize, burn: bool) -> Action {
-    decide_cards_with(b, hand, deck, hands, discards, need, size, burn, None)
+    decide_cards_with(b, hand, deck, hands, discards, need, size, burn, None, true)
 }
 
-/// `decide_cards`, with the best plays of `hand` and its parts already worked out (`given`)
+/// `decide_cards`, with the best plays of `hand` and its parts already worked out (`given`);
+/// `reach`: on the round's last hand, whether plans are weighed by reaching the score needed
+/// (`chase`), else in points
 #[allow(clippy::too_many_arguments)]
-fn decide_cards_with(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i64, need: f64, size: usize, burn: bool, given: Option<&HandParts>) -> Action {
+fn decide_cards_with(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i64, need: f64, size: usize, burn: bool, given: Option<&HandParts>, reach: bool) -> Action {
     // the best plays of this hand and of its parts (`HandParts`)
     let own;
     let parts = match given {
@@ -1226,7 +1269,7 @@ fn decide_cards_with(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discar
     let on = || *on_cell.get_or_init(|| playing_on_with(b, hand, &best, hands, true, true, parts.shortlist()));
     let all: Vec<usize> = (0..hand.len()).collect();
     let now = discards > 1 || best.surest >= need || hands <= 1;
-    if now && discards > 0 && discard_money(b, hand, &all) > 0.0 && on() >= need {
+    if burn && now && discards > 0 && discard_money(b, hand, &all) > 0.0 && on() >= need {
         let n = hand.len().min(12);
         let key = |v: &[usize]| {
             let mut k: Vec<_> = v.iter().map(|&i| hand[i].order_key()).collect();
@@ -1277,9 +1320,10 @@ fn decide_cards_with(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discar
     // pay that way), discard before playing. Which cards: what the policy digs with when it's
     // behind (a flush chase when the odds are there, else what's outside the best play). The
     // discards are spent anyway, so keeping a draw costs nothing; being on pace only decides
-    // whether to spend a discard, which the burn already has. Nothing to throw: play.
+    // whether to spend a discard, which the burn already has (inside it the policy digs whatever
+    // the pace, toward the score still needed). Nothing to throw: play.
     if burn && discards > 0 && burn_pays(b, hand, &best.cards) {
-        if let Action::Discard(v) = decide_cards(b, hand, deck, hands, discards, f64::INFINITY, size, false) {
+        if let Action::Discard(v) = decide_cards(b, hand, deck, hands, discards, need, size, false) {
             return Action::Discard(v);
         }
         return play_best;
@@ -1287,7 +1331,8 @@ fn decide_cards_with(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discar
     // Dig plans (`aims`): every hand you could dig for, each chased dig by dig as this policy
     // would (`chase`): the one whose chase is worth most, when that beats playing on (a later
     // hand played on is worth its average, `later`).
-    let on_pace = on() >= need;
+    // inside the burn's dig (`burn` off) the discards are spent anyway: never on pace
+    let on_pace = burn && on() >= need;
     let later = if hands > 1 { (on() - best.mean) / (hands - 1) as f64 } else { best.mean };
     // the cards worth holding (`held_value`), worked out only when needed
     let held_cell = std::cell::OnceCell::new();
@@ -1300,7 +1345,15 @@ fn decide_cards_with(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discar
         let one_away = a.groups.iter().map(|g| g.1).sum::<usize>() == 1;
         !on_pace || (breaks_draw && one_away)
     };
-    let all = aims(b, hand, deck);
+    // on the round's last hand only reaching the score needed counts (`chase`, `reached`); a
+    // decision asked as if behind by any amount (an unbounded `need`: playing on's alternative)
+    // has no score to reach and weighs points
+    let last = (reach && hands <= 1 && need.is_finite()).then_some(need);
+    // on the last hand a made hand is played after the discards left are burned when that scores
+    // more (the burn above), as no later hand needs them: where a joker reads the count
+    // (`burn_reads`), a plan's completions are scored so
+    let burns = last.is_some() && burn_reads(b, hand, &best.cards);
+    let all = aims(b, hand, deck, last.is_some());
     // When the score reads held cards (a card's own held effect, a joker on held cards,
     // Blackboard; the pile's cards too, as they may be drawn), what a plan's completion and the
     // hand its dig leaves hold beside them counts: the cards the dig leaves and those drawn into
@@ -1323,7 +1376,7 @@ fn decide_cards_with(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discar
     // for its discard (`dig_board`), as a dig's is charged to the chase
     let spent_cell = std::cell::OnceCell::new();
     let spent = || *spent_cell.get_or_init(|| spent_by(b, hand, toss(), &best.cards));
-    let round = ChaseRound { pile: deck.len(), size, hands, discards, need, best: best.mean, later, on_pace, takes: score::hook_takes(b, size), stays: 0, lift: 1.0, spent: 1.0 };
+    let round = ChaseRound { pile: deck.len(), size, hands, discards, need, best: best.mean, later, on_pace, takes: score::hook_takes(b, size), stays: 0, lift: 1.0, spent: 1.0, last, now: last.map_or(0.0, |n| play_reach(b, hand, &best.cards, n, burns)) };
     // the first dig for each plan (`dig_for`), and the hand it leaves (its best play: what a
     // failed chase is left with)
     type Dig = Option<(Vec<usize>, bool)>;
@@ -1359,9 +1412,10 @@ fn decide_cards_with(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discar
     // a plan's score, on its middle completion (the screen) or all of them (`aim_score`),
     // worked out once each
     let quick: Vec<std::cell::OnceCell<f64>> = all.iter().map(|_| std::cell::OnceCell::new()).collect();
-    let quick_of = |k: usize| *quick[k].get_or_init(|| aim_quick(board_of(k), &all[k], hand, &kept_of(k), ends));
     let full: Vec<std::cell::OnceCell<f64>> = all.iter().map(|_| std::cell::OnceCell::new()).collect();
-    let full_of = |k: usize| *full[k].get_or_init(|| aim_score(board_of(k), &all[k], hand, &kept_of(k), ends));
+    let full_of = |k: usize| *full[k].get_or_init(|| aim_score(board_of(k), &all[k], hand, &kept_of(k), ends, last, burns));
+    // the screen: there every plan gets the full estimate, as one completion can't tell its share
+    let quick_of = |k: usize| if last.is_some() { full_of(k) } else { *quick[k].get_or_init(|| aim_quick(board_of(k), &all[k], hand, &kept_of(k), ends)) };
     let left: Vec<std::cell::OnceCell<f64>> = all.iter().map(|_| std::cell::OnceCell::new()).collect();
     let left_of = |k: usize| {
         *left[k].get_or_init(|| {
@@ -1414,7 +1468,7 @@ fn decide_cards_with(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discar
             Some(_) => all[k].keep.iter().copied().filter(|i| !all[j].keep.contains(i)).chain(kept_of(k)).collect(),
             None => kept_of(j),
         };
-        let v = aim_score(board_of(k), &all[j], hand, &kept, ends);
+        let v = aim_score(board_of(k), &all[j], hand, &kept, ends, last, burns);
         in_chase.borrow_mut().push(((k, j), v));
         v
     };
@@ -1444,9 +1498,17 @@ fn decide_cards_with(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discar
         None => true,
     });
     plan.truncate(AIM_FINALISTS);
+    let plan: Vec<(usize, Chase)> = plan.into_iter().map(|(k, _)| (k, run(k, &full_of))).collect();
+    // on the last hand, where neither playing now nor any plan reaches the score needed on its
+    // estimate, the estimates can't tell the plans apart, though the round still can be won (a
+    // completion counts only its plan's own hand, not a pair among the cards drawn or the cards
+    // held a later dig gathers, and the policy's fallback discard isn't valued, gap 6): they are
+    // weighed in points, which say which comes nearest
+    if last.is_some() && round.now <= 0.0 && !plan.is_empty() && plan.iter().all(|(_, c)| c.value <= 0.0) {
+        return decide_cards_with(b, hand, deck, hands, discards, need, size, burn, Some(parts), false);
+    }
     let plan = plan
         .into_iter()
-        .map(|(k, _)| (k, run(k, &full_of)))
         .filter(|(_, c)| c.go)
         .max_by(|a, c| a.1.value.total_cmp(&c.1.value));
     if let Some((k, _)) = plan
@@ -1894,8 +1956,9 @@ struct Aim {
 /// misc_functions.lua `evaluate_poker_hand`); one more of a rank you hold 2+ of (Three, Four,
 /// Five of a Kind); a Full House from Two Pair; one more of a single card's rank beside a Pair
 /// (Two Pair) or Three of a Kind (a Full House). Hands already made aren't aims (the best play
-/// has them).
-fn aims(b: &Board, hand: &[Card], deck: &[Card]) -> Vec<Aim> {
+/// has them), but on the round's last hand (`last`) a flush made is: one more of its suit, as the
+/// sets and straights already have a plan up from a made one (a bigger set, another run).
+fn aims(b: &Board, hand: &[Card], deck: &[Card], last: bool) -> Vec<Aim> {
     use HandType::*;
     let f = b.rule_flags();
     let need = if f.four_fingers { 4 } else { 5 };
@@ -1907,6 +1970,10 @@ fn aims(b: &Board, hand: &[Card], deck: &[Card]) -> Vec<Aim> {
         if keep.len() >= 2 && keep.len() < need && fits.len() + keep.len() >= need {
             let n = need - keep.len();
             out.push(Aim { family: None, hand: Flush, keep, groups: vec![(fits, n)] });
+        } else if last && keep.len() >= need && keep.len() < hand.len() && !fits.is_empty() {
+            // on the round's last hand, a flush made: one more of its suit, the best five of them
+            // played (a flush short of the score needed has no other way up)
+            out.push(Aim { family: None, hand: Flush, keep, groups: vec![(fits, 1)] });
         }
     }
     // a card's rank as straights see it (Stone cards have none); an Ace is also 1
@@ -2230,6 +2297,12 @@ struct ChaseRound {
     /// on pace or with nothing to throw (it plays on and keeps its discards), with none left, or
     /// where the discard changes nothing a score reads
     spent: f64,
+    /// on the round's last hand, the score still needed when only reaching it counts (`reached`);
+    /// None where points count
+    last: Option<f64>,
+    /// on the round's last hand, playing the best play now as a plan's completion is counted
+    /// (`play_reach`: per roll, after the burn), in place of its average
+    now: f64,
 }
 
 /// What chasing a plan is worth, as the policy plays it out.
@@ -2268,7 +2341,13 @@ const ON_PACE_MARGIN: f64 = 0.5;
 /// dig: its cards among the dig's new ones (other than the plan's own fits; cards drawn
 /// toward it in earlier digs aren't counted, the chase throws them away), the best of them
 /// when several turn up. On pace, the chase must beat playing on by `ON_PACE_MARGIN` of the
-/// best play.
+/// best play, but on the round's last hand. On the round's last hand (one hand left, a discard to dig with) the round is that
+/// hand alone, so only reaching the score still needed counts: every hand it can end with is
+/// worth that score when it reaches it and nothing when it doesn't (`reached`; the caller's
+/// `score` and `lesser` come measured so, their share of completions that reach it), playing
+/// now by its share of rolls that reach it (`ChaseRound::now`, `play_reach`: no `spent` is
+/// charged there) and the hand a failed chase leaves by its average; a lesser plan ends the
+/// chase when its completion reaches it.
 fn chase(aim: &Aim, score: f64, left: f64, lesser: &[(&Aim, f64)], r: &ChaseRound) -> Chase {
     // the hand's slots a dig refills: all but the cards it holds back (`stays`)
     let room = r.size.saturating_sub(r.stays);
@@ -2286,12 +2365,15 @@ fn chase(aim: &Aim, score: f64, left: f64, lesser: &[(&Aim, f64)], r: &ChaseRoun
     // a later hand played on after the first dig, on the board its discard leaves (`lift`;
     // `score`, `left` and the lesser plans come scored there); playing on now without it
     let later = r.later * r.lift;
+    // the round's last hand: a hand counts the score needed when it reaches it, else nothing
+    let last = r.last;
+    let left = reached(left, last);
     // the hands left at dig s (a junk hand once the discards are gone)
     let hands_at = |s: usize| if s as i64 >= r.discards { r.hands - (s as i64 - r.discards) } else { r.hands };
     // playing on at dig s instead of digging (at the first, charged the policy's own discard)
     let stay = |s: usize| {
         let h = hands_at(s) as f64;
-        if s == 0 { (r.best + (h - 1.0) * r.later) * r.spent } else { left + (h - 1.0) * later }
+        if s == 0 && last.is_some() { r.now } else if s == 0 { (r.best + (h - 1.0) * r.later) * r.spent } else { left + (h - 1.0) * later }
     };
     let mut out = Chase { value: stay(0), go: false };
     // the chase from the next dig on, when the policy goes on with it
@@ -2305,13 +2387,21 @@ fn chase(aim: &Aim, score: f64, left: f64, lesser: &[(&Aim, f64)], r: &ChaseRoun
         let pile = r.pile.saturating_sub(t * s).saturating_sub(fits.len());
         let (mut miss, mut stop) = (1.0, 0.0);
         for (groups, sc) in &lesser {
+            let q = draw_odds(groups, pile, t.min(pile));
+            // on the last hand: made, it stops the chase when its completion reaches the score
+            // needed (`sc`, measured so, is that score times its share that does)
+            if let Some(need) = last {
+                let q = q * (sc / need).min(1.0);
+                stop += miss * q * need;
+                miss *= 1.0 - q;
+                continue;
+            }
             // whether the policy stops there: the made hand's score every hand left, the flat pace
             // (the made hand's own growth isn't worked out; the current hand's `later` would credit
             // it with growth it may not give, a Flush with the Two Pair's on Spare Trousers)
             if sc * (after as f64) < r.need {
                 continue;
             }
-            let q = draw_odds(groups, pile, t.min(pile));
             stop += miss * q * ends(*sc);
             miss *= 1.0 - q;
         }
@@ -2327,7 +2417,9 @@ fn chase(aim: &Aim, score: f64, left: f64, lesser: &[(&Aim, f64)], r: &ChaseRoun
             let spared = comb(held.saturating_sub(aim.keep.len()), k) / comb(held, k).max(1.0);
             value = spared * value + (1.0 - spared) * stay(s + 1);
         }
-        let margin = if s == 0 && r.on_pace { ON_PACE_MARGIN * r.best } else { 0.0 };
+        // the margin is in points: on the last hand the values are the score needed times a
+        // chance, so none there
+        let margin = if s == 0 && r.on_pace && last.is_none() { ON_PACE_MARGIN * r.best } else { 0.0 };
         out = Chase { value, go: value > stay(s) + margin };
         next = out.go.then_some(value);
     }
@@ -2560,8 +2652,12 @@ fn aim_completions_held(b: &Board, aim: &Aim, hand: &[Card]) -> Vec<(Vec<Card>, 
 /// (`aim_completions`), random effects at their average (`MEAN_ROLLS` rolls in all) when the
 /// middle completion or any Lucky card in it is random. Held beside it: `held`, and when the
 /// score reads held cards (`ends`), the hand as it is then (`held_beside`: what the dig leaves
-/// and the draws into the rest, `HELD_DRAWS` of them over the completions).
-fn aim_score(b: &Board, aim: &Aim, hand: &[Card], held: &[usize], ends: Option<Ends>) -> f64 {
+/// and the draws into the rest, `HELD_DRAWS` of them over the completions). `last`: the score
+/// still needed when the hand is the round's last, where only reaching it counts (`chase`): each
+/// completion is then worth that score if it reaches it, else nothing. `burns`: each completion
+/// scored at the better of the board's discards left and none, as the policy burns them before
+/// playing it when that scores more (`burn_pays`).
+fn aim_score(b: &Board, aim: &Aim, hand: &[Card], held: &[usize], ends: Option<Ends>, last: Option<f64>, burns: bool) -> f64 {
     let kept: Vec<Card> = held.iter().filter(|i| !aim.keep.contains(i)).map(|&i| hand[i]).collect();
     let all = aim_completions_held(b, aim, hand);
     // each completion's hand detected once
@@ -2579,6 +2675,19 @@ fn aim_score(b: &Board, aim: &Aim, hand: &[Card], held: &[usize], ends: Option<E
         mid_floor = Some(floor);
         w.asked && score::score_detected(b, mid, &mid_held, mid_info.clone(), &mut crate::engine::Lucky, false).score > floor
     };
+    let none = (burns && b.discards_left > 0).then(|| {
+        let mut z = b.clone();
+        z.discards_left = 0;
+        z
+    });
+    // the better of the two boards, on the same roll (`same`: the rolls before this score)
+    let burned = |x: f64, cards: &[Card], held: &[Card], info: &hand::HandInfo, same: Option<Rng>| match &none {
+        Some(z) => x.max(match same {
+            Some(mut r) => score::score_detected(z, cards, held, info.clone(), &mut r, false).score,
+            None => score::score_detected(z, cards, held, info.clone(), &mut Unlucky, false).score,
+        }),
+        None => x,
+    };
     let mut rolls = Rng::new(0x1d1e);
     let per = if random { MEAN_ROLLS.div_ceil(all.len()) } else { 1 };
     // with drawn cards held, every completion one draw at least, and every one of the
@@ -2591,15 +2700,27 @@ fn aim_score(b: &Board, aim: &Aim, hand: &[Card], held: &[usize], ends: Option<E
             // every plan, and the hand a dig leaves, on the same `HELD_DRAWS` draws
             let held = held_beside(aim, hand, cards, rest, &kept, ends, s % HELD_DRAWS);
             s += 1;
-            total += w * match (random, mid_floor) {
+            let same = random.then(|| rolls.clone());
+            let x = match (random, mid_floor) {
                 (true, _) => score::score_detected(b, cards, &held, info.clone(), &mut rolls, false).score,
                 (false, Some(f)) if ends.is_none() && k == all.len() / 2 && r == 0 => f,
                 (false, _) => score::score_detected(b, cards, &held, info.clone(), &mut Unlucky, false).score,
             };
+            total += w * reached(burned(x, cards, &held, info, same), last);
             weight += w;
         }
     }
     total / weight
+}
+
+/// A score as the round counts it (`chase`): as it is, or on the round's last hand (`last`: the
+/// score still needed) the score needed when it reaches it, else nothing
+fn reached(x: f64, last: Option<f64>) -> f64 {
+    match last {
+        Some(need) if x >= need => need,
+        Some(_) => 0.0,
+        None => x,
+    }
 }
 
 /// The cards of `hand` outside `play` that add to its score while held (Baron's Kings, Steel
@@ -4235,6 +4356,71 @@ mod tests {
     }
 
     #[test]
+    fn the_last_hand_digs_for_what_reaches_the_score_needed() {
+        // One hand left with 3 discards, 316 needed, no jokers (the bench's plain_1h3d). Four
+        // clubs make a flush that scores 288-320 by the club drawn (a 9 or higher reaches it, 3
+        // of the 9 clubs left), so most complete short;
+        // A K Q J make a straight of 324 with any 10. In points the flush's plan scores more, but
+        // only the straight surely reaches: the last hand weighs reaching it.
+        let hand = Card::parse_list("KC JS 2H AC 8H KS QC 4C").unwrap();
+        let deck: Vec<Card> = standard_deck().into_iter().filter(|c| !hand.contains(c)).collect();
+        let b = sample_board(&[]);
+        let thrown = |reach: bool| match decide_cards_with(&b, &hand, &deck, 1, 3, 316.0, 8, true, None, reach) {
+            Action::Discard(v) => v,
+            a => panic!("{a:?}"),
+        };
+        let keeps_straight = |v: &[usize]| [1, 3, 6].iter().all(|i| !v.contains(i)) && !(v.contains(&0) && v.contains(&5));
+        assert!(keeps_straight(&thrown(true)), "{:?}", thrown(true));
+        assert!(!keeps_straight(&thrown(false)), "in points it digs for the flush: {:?}", thrown(false));
+    }
+
+    #[test]
+    fn playing_now_on_the_last_hand_counts_its_rolls_that_reach() {
+        // Misprint's Mult is rolled: a Pair of Aces reaches a score between its floor and its
+        // top on some rolls only, so playing it now is worth that share of the score needed;
+        // with no roll asked, all or nothing
+        let hand = Card::parse_list("AS AH KD 9C 7S 5H 3D 2C").unwrap();
+        let b = sample_board(&["j_misprint"]);
+        let play = [0, 1];
+        let played: Vec<Card> = play.iter().map(|&i| hand[i]).collect();
+        let held: Vec<Card> = hand[2..].to_vec();
+        let floor = score::score(&b, &played, &held, &mut Unlucky, false).score;
+        let top = score::score(&b, &played, &held, &mut crate::engine::Lucky, false).score;
+        let need = (floor + top) / 2.0;
+        let v = play_reach(&b, &hand, &play, need, false);
+        assert!(v > 0.0 && v < need, "{floor} {top} {v}");
+        let plain = sample_board(&["j_joker"]);
+        let x = score::score(&plain, &played, &held, &mut Unlucky, false).score;
+        assert_eq!(play_reach(&plain, &hand, &play, x, false), x);
+        assert_eq!(play_reach(&plain, &hand, &play, x + 1.0, false), 0.0);
+    }
+
+    #[test]
+    fn a_made_flush_is_a_plan_on_the_last_hand_only() {
+        // Q 10 8 6 3 of diamonds: a flush made, short of what's needed only on the last hand
+        let hand = Card::parse_list("QD TD 8D 6D 3D 4S TH 2C").unwrap();
+        let deck: Vec<Card> = standard_deck().into_iter().filter(|c| !hand.contains(c)).collect();
+        let b = sample_board(&[]);
+        let made = |last: bool| aims(&b, &hand, &deck, last).into_iter().any(|a| a.hand == HandType::Flush && a.keep == [0, 1, 2, 3, 4] && a.groups[0].1 == 1);
+        assert!(made(true));
+        assert!(!made(false));
+    }
+
+    #[test]
+    fn on_the_last_hand_a_completion_is_scored_after_the_burn() {
+        // Mystic Summit's Mult with no discards left: the policy burns them before playing the
+        // made hand when that scores more, so the plan's completions are scored so
+        let hand = Card::parse_list("AH KH 9H 5H 2C 3S 7D 8C").unwrap();
+        let deck: Vec<Card> = standard_deck().into_iter().filter(|c| !hand.contains(c)).collect();
+        let mut b = sample_board(&["j_mystic_summit"]);
+        b.discards_left = 2;
+        let a = aims(&b, &hand, &deck, true).into_iter().find(|a| a.hand == HandType::Flush).unwrap();
+        assert!(aim_score(&b, &a, &hand, &[], None, None, true) > aim_score(&b, &a, &hand, &[], None, None, false));
+        // and only reaching counts there: a score needed above every completion is worth nothing
+        assert_eq!(aim_score(&b, &a, &hand, &[], None, Some(1e9), true), 0.0);
+    }
+
+    #[test]
     fn a_save_is_spent_once_for_each_copy() {
         // Rounds the board loses but reaches a quarter of: the first Mr. Bones saves one and is
         // gone (state_events.lua `end_round`, card.lua `start_dissolve`), a second copy is left
@@ -4347,7 +4533,7 @@ mod tests {
             let hand = Card::parse_list(cards).unwrap();
             let mut deck: Vec<Card> = standard_deck().into_iter().filter(|c| !hand.iter().any(|h| h.same_kind(c))).collect();
             deck.retain(|c| !extra.iter().any(|e| Card::parse(e).unwrap().same_kind(c)));
-            aims(&sample_board(&[]), &hand, &deck).into_iter().filter(|a| a.hand == want).map(|a| (a.keep, a.groups[0].0.len())).collect()
+            aims(&sample_board(&[]), &hand, &deck, false).into_iter().filter(|a| a.hand == want).map(|a| (a.keep, a.groups[0].0.len())).collect()
         };
         // a Pair of 9s, singles K Q 7 4 3 2: all have 3 left, so the higher first; the plans keep
         // the Pair and one or two singles (`AIM_SINGLES`), 3 more cards of each
@@ -4373,7 +4559,7 @@ mod tests {
         for cards in ["9S 9H KD QC 7S 4H 2D 3C", "9S 9H 9D QC 7S 4H 2D 3C", "5H 6H 7H 8H KS QC 3D 2C", "AS AH KS KH 9C 9D 2S 3S", "2H 5H 9H JH KD QC 7S 3C"] {
             let hand = Card::parse_list(cards).unwrap();
             let deck: Vec<Card> = standard_deck().into_iter().filter(|c| !hand.iter().any(|h| h.same_kind(c))).collect();
-            for a in aims(&b, &hand, &deck) {
+            for a in aims(&b, &hand, &deck, false) {
                 for (c, _) in aim_completions(&b, &a, &hand) {
                     assert!(c.len() <= 5 && hand::detect(&c, b.rule_flags()).contains(a.hand), "{cards}: {:?} keep {:?}: {:?}", a.hand, a.keep, c.iter().map(|x| x.label()).collect::<Vec<_>>());
                 }
@@ -4558,7 +4744,7 @@ mod tests {
         for (cards, keys) in [("5H 6H 7H 8H 9H KH 2H 3C", &[][..]), ("5H 6D 7H 8D 9H KH 2D 3C", &["j_smeared"][..]), ("AH 2H 3H 4H 5H KH QH 3C", &[][..])] {
             let hand = Card::parse_list(cards).unwrap();
             let deck: Vec<Card> = standard_deck().into_iter().filter(|c| !hand.iter().any(|h| h.same_kind(c))).collect();
-            let all = aims(&sample_board(keys), &hand, &deck);
+            let all = aims(&sample_board(keys), &hand, &deck, false);
             assert!(all.iter().all(|a| a.keep.len() <= 5), "{cards}: {:?}", all.iter().map(|a| (a.hand, a.keep.clone())).collect::<Vec<_>>());
             // the run held (cards 0-4) is no plan; the run one rank up from its top four is
             let sf: Vec<&Vec<usize>> = all.iter().filter(|a| a.hand == HandType::StraightFlush).map(|a| &a.keep).collect();
@@ -4574,7 +4760,7 @@ mod tests {
         let plans = |cards: &str, keys: &[&str]| -> Vec<(Vec<usize>, Vec<String>)> {
             let hand = Card::parse_list(cards).unwrap();
             let deck: Vec<Card> = standard_deck().into_iter().filter(|c| !hand.iter().any(|h| h.same_kind(c))).collect();
-            aims(&sample_board(keys), &hand, &deck)
+            aims(&sample_board(keys), &hand, &deck, false)
                 .into_iter()
                 .filter(|a| a.hand == HandType::StraightFlush && a.groups.len() == 1)
                 .map(|a| {
@@ -4620,13 +4806,13 @@ mod tests {
         let mut pile = deck.clone();
         pile.sort_by(|p, q| p.order_cmp(q));
         let ends = Some(Ends { pile: &pile, size: 8 });
-        let flush = |b: &Board| aims(b, &hand, &deck).into_iter().find(|a| a.hand == HandType::Flush && a.keep == [0, 1, 2, 3]).unwrap();
+        let flush = |b: &Board| aims(b, &hand, &deck, false).into_iter().find(|a| a.hand == HandType::Flush && a.keep == [0, 1, 2, 3]).unwrap();
         let fist = sample_board(&["j_raised_fist"]);
         let a = flush(&fist);
-        assert!(aim_score(&fist, &a, &hand, &[], ends) > aim_score(&fist, &a, &hand, &[], None));
+        assert!(aim_score(&fist, &a, &hand, &[], ends, None, false) > aim_score(&fist, &a, &hand, &[], None, None, false));
         let black = sample_board(&["j_blackboard"]);
         let a = flush(&black);
-        assert!(aim_score(&black, &a, &hand, &[], ends) < aim_score(&black, &a, &hand, &[], None));
+        assert!(aim_score(&black, &a, &hand, &[], ends, None, false) < aim_score(&black, &a, &hand, &[], None, None, false));
         // a completion that can't be made beside the cards held back (2 Hearts kept, 4 Steel
         // cards worth holding, 2 slots a dig refills, 3 Hearts missing) has no odds, and what it
         // holds beside it never takes the hand past its size, the first cards held back first
@@ -4636,7 +4822,7 @@ mod tests {
         pile.sort_by(|p, q| p.order_cmp(q));
         let ends = Some(Ends { pile: &pile, size: 8 });
         let b = sample_board(&[]);
-        let a = aims(&b, &hand, &deck).into_iter().find(|a| a.hand == HandType::Flush && a.keep == [0, 1]).unwrap();
+        let a = aims(&b, &hand, &deck, false).into_iter().find(|a| a.hand == HandType::Flush && a.keep == [0, 1]).unwrap();
         let kept: Vec<Card> = hand[2..].to_vec();
         for (cards, _, rest) in aim_completions_held(&b, &a, &hand) {
             let held = held_beside(&a, &hand, &cards, &rest, &kept, ends, 0);
@@ -4667,7 +4853,7 @@ mod tests {
         let hand = Card::parse_list("KS KH KD 5C 9D 2H 3S 4C").unwrap();
         let deck: Vec<Card> = standard_deck().into_iter().filter(|c| !hand.iter().any(|h| h.same_kind(c))).collect();
         let b = sample_board(&[]);
-        let a = aims(&b, &hand, &deck).into_iter().find(|a| a.hand == HandType::FullHouse && a.keep.len() == 5).unwrap();
+        let a = aims(&b, &hand, &deck, false).into_iter().find(|a| a.hand == HandType::FullHouse && a.keep.len() == 5).unwrap();
         let kept: Vec<Card> = a.keep.iter().map(|&i| hand[i]).collect();
         for (cards, _, rest) in aim_completions_held(&b, &a, &hand) {
             assert_eq!((cards.len(), rest.len()), (5, 1), "{cards:?} {rest:?}");
@@ -4685,7 +4871,7 @@ mod tests {
             keep: vec![0, 1, 2, 3],
             groups: groups.iter().map(|&n| (standard_deck()[..n].to_vec(), 1)).collect(),
         };
-        let round = |best: f64, need: f64, discards: i64| ChaseRound { pile: 44, size: 8, hands: 4, discards, need, best, later: best, on_pace: best * 4.0 >= need, takes: 0, stays: 0, lift: 1.0, spent: 1.0 };
+        let round = |best: f64, need: f64, discards: i64| ChaseRound { pile: 44, size: 8, hands: 4, discards, need, best, later: best, on_pace: best * 4.0 >= need, takes: 0, stays: 0, lift: 1.0, spent: 1.0, last: None, now: 0.0 };
         // one card away, 5 fits: one dig makes it 39% of the time, too little on its own to
         // beat playing on, but the policy digs again after a miss, so six digs make it nearly
         // always: worth chasing (a chase decided on one dig's odds would never start)
@@ -4698,6 +4884,12 @@ mod tests {
         // played on worth 2.5 times this one)
         let junk = |later: f64| chase(&one, 20000.0, 74.0, &[], &ChaseRound { later, ..round(3312.0, 21360.0, 0) }).go;
         assert!(junk(3312.0) && !junk(2.5 * 3312.0));
+        // on the round's last hand, on pace (its best play reaches the score needed on half its
+        // rolls): three digs make it about 78% of the time, which beats playing now's 50%; the
+        // on-pace margin, half a best play in points, isn't asked there
+        let last = ChaseRound { hands: 1, on_pace: true, last: Some(1000.0), now: 500.0, ..round(1200.0, 1000.0, 3) };
+        let c = chase(&one, 1000.0, 0.0, &[], &last);
+        assert!(c.go && c.value > 700.0 && c.value < 500.0 + ON_PACE_MARGIN * 1200.0, "{}", c.value);
         // a junk hand is a played hand: The Hook then discards 2 of the 4 cards held, the plan's
         // own, so with no discard it isn't chased; with discards, the digs after them count less
         let hook = |discards: i64| chase(&one, 20000.0, 74.0, &[], &ChaseRound { takes: 2, ..round(3312.0, 21360.0, discards) });
