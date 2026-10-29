@@ -156,6 +156,11 @@ select) has the heuristic threshold 0.30, judged 2026-10-28 at 1786431 against t
 runs (Anaglyph Deck, Gold Stake; 44 reached that screen, 7 below the line, none of them won or got
 past Ante 5; a win from 0.36 rules out a higher line). The default stays off, so a run is a
 baseline; runs played out are filtered by the logged `ante2_reach` afterwards.
+Measured 2026-10-29 at 6dd28fa, 25 runs (Anaglyph Deck, Gold Stake, seeds BAVANG01-25, 100
+simulations, restart off): Antes 2-5, mean 3.5, no wins, none past Ante 5; 23 at or above 0.30
+(the owner's 37: 6 wins, 14 past Ante 5); the 12 runs with `not_followed` empty died at Antes 2-4
+like the rest. One run ended on an advisor panic (`advise/play.rs`, no move for a hand), three had
+a pack pick fail for a sale in an open pack, and 12 went below $0 in a shop (causes queued).
 
 ## Patterns
 
