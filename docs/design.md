@@ -467,6 +467,9 @@ the same retriggered ×Mult.
   finds lean high (the best of every draw, read off the screen's chances), so they come first.
   The bot buys only what clears keeping the money by the ranking's noise and sells by place.
   (Superseded 2026-10-26: the finds' lean wasn't the screen's but how the money was spent, gap 17.)
+  (Reopened 2026-10-29: the play-on judged to the next ante's boss only, which can't see interest
+  paid over Antes 4-8, and from the owner's money; 25 bot runs at 6dd28fa spent to a median
+  $3.5-5 at Antes 2-4, half their shops under $5, so "not there" isn't shown. Queued.)
 - **Done 2026-10-24:** the joker a buy replaces chosen by the shop ranking's measure (gap 36):
   every sale and place raced on the same rounds (`shop_measure`, one function for the shop and
   the race; Mr. Bones' save counted in the race), ties reported, the by-name sell rules and the
