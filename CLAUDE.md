@@ -23,6 +23,13 @@
   `docs/owner-view.md`, says what's unknown or stale, and asks the owner before concluding. It
   never cites a measurement without its commit and age. `docs/owner-view.md` holds only the
   owner's words.
+- **Review the crucial steps, not only code.** Once a task, before its final report, the queue
+  cards written from it and any verdict it commits to docs, run `/fan-out-review` on all three
+  together (at least the Opus lead; step 5's skip for docs doesn't apply). Give it the raw results
+  and, as paths it reads itself: the queue card, `docs/owner-view.md`, the whole `docs/design.md`
+  (it finds the earlier conclusions on the same topic, not the chat), and the owner's history
+  (`~/.local/share/balatro-advisor/history/`) when the result is about play. Act on what holds
+  up before reporting.
 - **Shelve on a missing prerequisite.** When a task turns out halfway to need something not
   there yet (a judge that can't play where the change moves picks, an engine step not modelled),
   don't iterate on a proof that can't see it: tell the owner in one line, queue the prerequisite
