@@ -422,7 +422,8 @@ impl<'a> HandParts<'a> {
                     .hand
                     .iter()
                     .map(|c| {
-                        // the count of discards put back, as `dig_board` does
+                        // the count of discards put back: the same for every card, it orders
+                        // none of them
                         let mut a = self.b.clone();
                         let _ = a.discard(&[*c]);
                         a.discards_left = self.b.discards_left;
@@ -1312,7 +1313,17 @@ fn decide_cards_with(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discar
         vec![]
     };
     let ends = (!pile_sorted.is_empty()).then_some(Ends { pile: &pile_sorted, size });
-    let round = ChaseRound { pile: deck.len(), size, hands, discards, need, best: best.mean, later, on_pace, takes: score::hook_takes(b, size), stays: 0, lift: 1.0 };
+    let best_played: Vec<Card> = best.cards.iter().map(|&i| hand[i]).collect();
+    let best_held: Vec<Card> = (0..hand.len()).filter(|i| !best.cards.contains(i)).map(|i| hand[i]).collect();
+    // the policy's own discard when no chase goes, off pace with a discard left (`fallback_toss`;
+    // none on pace or with none left), worked out once, when needed
+    let toss_cell = std::cell::OnceCell::new();
+    let toss = || toss_cell.get_or_init(|| if on_pace || discards <= 0 { vec![] } else { fallback_toss(parts, &best.cards, held_keep()) });
+    // what that move spends, charged to playing on (`ChaseRound::spent`): the engine's whole step
+    // for its discard (`dig_board`), as a dig's is charged to the chase
+    let spent_cell = std::cell::OnceCell::new();
+    let spent = || *spent_cell.get_or_init(|| spent_by(b, hand, toss(), &best.cards));
+    let round = ChaseRound { pile: deck.len(), size, hands, discards, need, best: best.mean, later, on_pace, takes: score::hook_takes(b, size), stays: 0, lift: 1.0, spent: 1.0 };
     // the first dig for each plan (`dig_for`), and the hand it leaves (its best play: what a
     // failed chase is left with)
     type Dig = Option<(Vec<usize>, bool)>;
@@ -1409,8 +1420,6 @@ fn decide_cards_with(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discar
     };
     // a later hand played on after the dig: playing on's, by what the board the dig leaves
     // makes of the best play now against this board (`ratio`)
-    let best_played: Vec<Card> = best.cards.iter().map(|&i| hand[i]).collect();
-    let best_held: Vec<Card> = (0..hand.len()).filter(|i| !best.cards.contains(i)).map(|i| hand[i]).collect();
     let lift_of = |k: usize| if moved(k) { ratio(b, board_of(k), &best_played, &best_held) } else { 1.0 };
     let run = |k: usize, score: &dyn Fn(usize) -> f64| {
         let lesser: Vec<(&Aim, f64)> = (0..all.len())
@@ -1418,7 +1427,7 @@ fn decide_cards_with(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discar
             .map(|j| (&all[j], lesser_of(k, j)))
             .collect();
         let stays = held_keep().iter().filter(|i| !all[k].keep.contains(i)).count();
-        chase(&all[k], score(k), left_of(k), &lesser, &ChaseRound { stays, lift: lift_of(k), ..round })
+        chase(&all[k], score(k), left_of(k), &lesser, &ChaseRound { stays, lift: lift_of(k), spent: spent(), ..round })
     };
     // screened on one completion each; the best few get the full estimate
     // (a plan with nothing to throw can't be chased)
@@ -1448,13 +1457,8 @@ fn decide_cards_with(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discar
     if on_pace {
         return play_best;
     }
-    if discards > 0 {
-        let free: Vec<usize> = (0..hand.len()).filter(|i| !best.cards.contains(i) && !held_keep().contains(i)).collect();
-        let mut toss = throw_order(parts, &free);
-        toss.truncate(5);
-        if !toss.is_empty() {
-            return Action::Discard(toss);
-        }
+    if !toss().is_empty() {
+        return Action::Discard(toss().clone());
     }
     play_best
 }
@@ -1663,25 +1667,47 @@ fn throw_order(parts: &HandParts, free: &[usize]) -> Vec<usize> {
 /// The board discarding `thrown` (of `hand`) leaves, for the hands after it: what the engine's
 /// step (`Board::discard`) does to the board's state (the jokers' `discard` context, card.lua
 /// `Card:calculate_joker`: Hit the Road, Castle, Green Joker's Mult; Burnt Joker's level; the
-/// money it pays), with the count of discards left and used put back: what the jokers that read
-/// the count (Banner's Chips, Mystic Summit's Mult) lose to a dig isn't weighed (counting it
-/// here, on the dig's side only, cost Banner's board 2.5 to 16 points: playing on spends
-/// discards later too; design.md gap 8). `None` where the cards change nothing a score reads (the jokers, levels and deck size the
-/// same, and `probe`, a play of `hand`, scoring the same on it).
+/// money it pays; the count of discards left, which Banner's Chips and Mystic Summit's Mult
+/// read). Off pace with a discard left, the policy's alternative to a dig is a discard too when
+/// it has something to throw, charged the same way (`spent_by`, `ChaseRound::spent`): charging
+/// the dig's side alone cost the `discards` board (Banner, Mystic Summit) 2.5 to 16 points
+/// (design.md gap 8). `None` where the cards change nothing a score reads (the jokers, levels and deck size the same, and
+/// `probe`, a play of `hand`, scoring the same on it).
 fn dig_board(b: &Board, hand: &[Card], thrown: &[usize], probe: &[usize]) -> Option<Board> {
     let mut after = b.clone();
     let _ = after.discard(&picked(hand, thrown));
-    after.discards_left = b.discards_left;
-    after.discards_used = b.discards_used;
     if after.jokers != b.jokers || after.levels != b.levels || after.playing_cards != b.playing_cards {
         return Some(after);
     }
-    if after.dollars == b.dollars {
+    if after.dollars == b.dollars && after.discards_left == b.discards_left {
         return None;
     }
     let played: Vec<Card> = probe.iter().map(|&i| hand[i]).collect();
     let held: Vec<Card> = (0..hand.len()).filter(|i| !probe.contains(i)).map(|i| hand[i]).collect();
     (ratio(b, &after, &played, &held) != 1.0).then_some(after)
+}
+
+/// The policy's discard when no chase goes (its caller checks it's off pace with a discard
+/// left): the cards outside `best` (the best play) and `keep` (those worth holding), in the order
+/// a discard throws them (`throw_order`), up to 5. Empty: it plays the best play and keeps its
+/// discards.
+fn fallback_toss(parts: &HandParts, best: &[usize], keep: &[usize]) -> Vec<usize> {
+    let free: Vec<usize> = (0..parts.hand.len()).filter(|i| !best.contains(i) && !keep.contains(i)).collect();
+    let mut v = throw_order(parts, &free);
+    v.truncate(5);
+    v
+}
+
+/// What discarding `toss` (of `hand`; none: no discard) does to `best`, a play of `hand`: the
+/// board it leaves (`dig_board`, the engine's whole step) against `b`, as a factor (`ratio`); 1
+/// where it changes nothing a score reads. The policy's fallback discard, charged to playing on
+/// as a dig's discard is charged to its chase (`ChaseRound::spent`).
+fn spent_by(b: &Board, hand: &[Card], toss: &[usize], best: &[usize]) -> f64 {
+    if toss.is_empty() {
+        return 1.0;
+    }
+    let held: Vec<usize> = (0..hand.len()).filter(|i| !best.contains(i)).collect();
+    dig_board(b, hand, toss, best).map_or(1.0, |after| ratio(b, &after, &picked(hand, best), &picked(hand, &held)))
 }
 
 /// What board `on` makes of a play (`played`, with `held`) against board `b`, as a factor (1
@@ -2197,6 +2223,13 @@ struct ChaseRound {
     /// what the first dig's discard does to a later hand played on (`dig_board`): the best play
     /// now on the board it leaves against this board's (`ratio`); 1 when it leaves the scores
     lift: f64,
+    /// what the policy's alternative to a chase does: off pace with a discard left, it discards
+    /// now (the cards outside the best play and those worth holding, `decide_cards_with`'s last
+    /// step), so playing on is on the board that discard leaves (`spent_by`: the engine's whole
+    /// step, as `lift` is the dig's), the best play now there against this board's (`ratio`); 1
+    /// on pace or with nothing to throw (it plays on and keeps its discards), with none left, or
+    /// where the discard changes nothing a score reads
+    spent: f64,
 }
 
 /// What chasing a plan is worth, as the policy plays it out.
@@ -2228,7 +2261,10 @@ const ON_PACE_MARGIN: f64 = 0.5;
 /// scores nothing; playing on now is the best play now, then `later` each hand after. After a
 /// first dig that discards, every hand is on the board its discard leaves (`dig_board`): `score`,
 /// `left` and the lesser plans come scored there, and a later hand played on is `later` times
-/// `ChaseRound::lift`; the digs after the first count no lift of their own. A lesser plan's chance per
+/// `ChaseRound::lift`; the digs after the first count no lift of their own. At the first dig,
+/// off pace, playing on is charged the discard the policy makes instead of the chase
+/// (`ChaseRound::spent`), so a discard's step is weighed on both sides; playing on after a later
+/// dig isn't, as that dig counts none. A lesser plan's chance per
 /// dig: its cards among the dig's new ones (other than the plan's own fits; cards drawn
 /// toward it in earlier digs aren't counted, the chase throws them away), the best of them
 /// when several turn up. On pace, the chase must beat playing on by `ON_PACE_MARGIN` of the
@@ -2252,10 +2288,10 @@ fn chase(aim: &Aim, score: f64, left: f64, lesser: &[(&Aim, f64)], r: &ChaseRoun
     let later = r.later * r.lift;
     // the hands left at dig s (a junk hand once the discards are gone)
     let hands_at = |s: usize| if s as i64 >= r.discards { r.hands - (s as i64 - r.discards) } else { r.hands };
-    // playing on at dig s instead of digging
+    // playing on at dig s instead of digging (at the first, charged the policy's own discard)
     let stay = |s: usize| {
         let h = hands_at(s) as f64;
-        if s == 0 { r.best + (h - 1.0) * r.later } else { left + (h - 1.0) * later }
+        if s == 0 { (r.best + (h - 1.0) * r.later) * r.spent } else { left + (h - 1.0) * later }
     };
     let mut out = Chase { value: stay(0), go: false };
     // the chase from the next dig on, when the policy goes on with it
@@ -4649,7 +4685,7 @@ mod tests {
             keep: vec![0, 1, 2, 3],
             groups: groups.iter().map(|&n| (standard_deck()[..n].to_vec(), 1)).collect(),
         };
-        let round = |best: f64, need: f64, discards: i64| ChaseRound { pile: 44, size: 8, hands: 4, discards, need, best, later: best, on_pace: best * 4.0 >= need, takes: 0, stays: 0, lift: 1.0 };
+        let round = |best: f64, need: f64, discards: i64| ChaseRound { pile: 44, size: 8, hands: 4, discards, need, best, later: best, on_pace: best * 4.0 >= need, takes: 0, stays: 0, lift: 1.0, spent: 1.0 };
         // one card away, 5 fits: one dig makes it 39% of the time, too little on its own to
         // beat playing on, but the policy digs again after a miss, so six digs make it nearly
         // always: worth chasing (a chase decided on one dig's odds would never start)
@@ -4701,6 +4737,10 @@ mod tests {
         let base = round(3312.0, 21360.0, 3);
         assert!(lifted(&one, 0.5, 8652.0, 74.0, base) < lifted(&one, 1.0, 8652.0, 74.0, round(3312.0, 21360.0, 3)));
         assert!(lifted(&two, 2.0, 1000.0, 20.0, round(180.0, 876.0, 1)) > c.value);
+        // a discard's count (Banner's Chips) on both sides: a chase a dig's ×0.8 stops goes
+        // when playing on is charged the same discard (`spent`)
+        let counted = |spent: f64| chase(&one, 0.8 * 5200.0, 74.0, &[], &ChaseRound { lift: 0.8, spent, ..round(3312.0, 21360.0, 3) }).go;
+        assert!(!counted(1.0) && counted(0.8));
     }
 
     #[test]
@@ -4745,18 +4785,45 @@ mod tests {
         let mut green = sample_board(&["j_green_joker"]);
         green.jokers[0].mult = 5.0;
         assert!(lift(&green, &[3]) < 1.0, "{}", lift(&green, &[3]));
-        // the count of discards left is the round's resource, not the cards' doing: with Banner
-        // (Chips for each discard left) beside Hit the Road, a dig without a Jack leaves no
-        // board, and one with a Jack keeps the discards left, so its lift is the Jack's alone
+        // the count of discards left is the engine's step too: with Banner (Chips for each
+        // discard left) beside Hit the Road, a dig without a Jack leaves a board one discard
+        // lower, and one with a Jack the Jack's lift and the count's
         let mut banner = sample_board(&["j_banner", "j_hit_the_road"]);
         banner.discards_left = 3;
-        assert!(dig_board(&banner, &hand, &[3, 4], &kings).is_none());
-        let after = dig_board(&banner, &hand, &[2], &kings).unwrap();
-        assert_eq!((after.discards_left, after.discards_used), (banner.discards_left, banner.discards_used));
+        let after = dig_board(&banner, &hand, &[3, 4], &kings).unwrap();
+        assert_eq!((after.discards_left, after.discards_used), (2, banner.discards_used + 1));
+        let count = lift(&banner, &[3, 4]);
+        assert!(count < 1.0, "{count}");
+        assert!((lift(&banner, &[2]) - 1.5 * count).abs() < 0.01, "{}", lift(&banner, &[2]));
         // Burnt Joker levels the first discard's hand: a board of its own
         assert!(dig_board(&sample_board(&["j_burnt"]), &hand, &[3], &kings).is_some());
         // a joker no discard changes
         assert!(dig_board(&sample_board(&["j_joker"]), &hand, &[2], &kings).is_none());
+    }
+
+    #[test]
+    fn playing_on_is_charged_the_discard_the_policy_makes_instead() {
+        // `spent_by`: the policy's fallback discard on the engine's whole step, as a dig's is
+        // charged to its chase. Nothing to throw: it plays and keeps its discards
+        let hand = Card::parse_list("KH KS JS 3C 4D").unwrap();
+        let kings = [0, 1];
+        let mut banner = sample_board(&["j_banner"]);
+        banner.discards_left = 3;
+        assert_eq!(spent_by(&banner, &hand, &[], &kings), 1.0);
+        // Banner's Chips for the discard it spends; Green Joker's Mult; Hit the Road's Jack
+        // thrown lifts the hands after it; a joker no discard changes, nothing
+        assert!(spent_by(&banner, &hand, &[3, 4], &kings) < 1.0);
+        let mut green = sample_board(&["j_green_joker"]);
+        green.jokers[0].mult = 5.0;
+        assert!(spent_by(&green, &hand, &[3, 4], &kings) < 1.0);
+        assert!((spent_by(&sample_board(&["j_hit_the_road"]), &hand, &[2, 3], &kings) - 1.5).abs() < 0.01);
+        assert_eq!(spent_by(&sample_board(&["j_joker"]), &hand, &[2, 3, 4], &kings), 1.0);
+        // the discard charged is the policy's own fallback: the cards outside the best play and
+        // those worth holding, lowest first; with every other card worth holding, none
+        let parts = HandParts::new(&banner, &hand);
+        assert_eq!(fallback_toss(&parts, &kings, &[]), vec![3, 4, 2]);
+        assert_eq!(fallback_toss(&parts, &kings, &[4]), vec![3, 2]);
+        assert!(fallback_toss(&parts, &kings, &[2, 3, 4]).is_empty());
     }
 
     #[test]
