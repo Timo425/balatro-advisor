@@ -32,6 +32,9 @@ verdict on the advice. As of 2026-10-24 the bot:
   assumes every joker unlocked, gap 38); Steamodded's guard against saving in an open pack
   lifted in the bot's own copy (BotMods/Steamodded/lovely/fixes.toml), or the advisor never
   sees a pack's cards.
+Since 2026-10-29 every state the advisor analysed in a shop or an open pack is kept
+(`bot/shops/<seed>/a<ante>-r<round>-<n>-<screen>.jkr`; `analyze --file` replays it) and the run's
+log is whole: each shop analysis logs the money, the jokers' stickers and every option ranked.
 Every run before 2026-10-24 (none has a `commit`) is marked `void` in runs.jsonl: every pack
 skipped, the jokers never arranged, "won" read from a flag the game also sets on a loss, and
 before 2026-10-23 35 jokers locked and an early advisor. Don't read them as evidence.
@@ -61,6 +64,7 @@ NOT_FOLLOWED = []  # the advisor's top choices the bot couldn't take, this run
 HOME = pathlib.Path.home()
 OUT = HOME / ".local/share/balatro-advisor/bot"
 STATE = OUT / "state.jkr"
+KEEP_DIR = None  # this run's kept states (bot/shops/<seed>/): every shop and pack the advisor analysed
 WIN_STATE = "Z:" + str(STATE)  # the game runs under Proton: Z: is the Linux root
 
 
@@ -108,10 +112,22 @@ def vanilla_state(path):
     return state
 
 
-def analyze(sims, quick=False):
+def keep_state(screen):
+    """Copies the state about to be analysed to this run's folder (`a<ante>-r<round>-<n>-<screen>.jkr`),
+    so a run's shops can be replayed with `analyze --file` afterwards: state.jkr is overwritten."""
+    if KEEP_DIR is None:
+        return
+    gs = rpc("gamestate")
+    n = sum(1 for _ in KEEP_DIR.iterdir())
+    (KEEP_DIR / f"a{gs.get('ante_num')}-r{gs.get('round_num')}-{n:03d}-{screen}.jkr").write_bytes(STATE.read_bytes())
+
+
+def analyze(sims, quick=False, keep=None):
     global ANALYSIS_S
     rpc("save", path=WIN_STATE)
     v = vanilla_state(STATE)
+    if keep:
+        keep_state(keep)
     if VERBOSE and v:
         print(f"  (pack state {v})")
     t = time.monotonic()
@@ -193,9 +209,10 @@ def shop(sims, log):
     failed = set()  # options the game refused this shop: not tried again
     shop_start = len(NOT_FOLLOWED)
     for _ in range(8):
-        a = analyze(sims)
+        a = analyze(sims, keep="shop")
         gs = rpc("gamestate")
         money = gs["money"]
+        log_shop(a, gs, log)
         rnd = a["rounds"][a["options_round"]] if a.get("rounds") else {}
         now, reach = rnd.get("p_win", 0), rnd.get("reach", 0)
         free = len(cards(gs, "jokers")) < (gs.get("jokers") or {}).get("limit", 5)
@@ -229,6 +246,17 @@ def shop(sims, log):
             break
     arrange_jokers(a, log)
     rpc("next_round")
+
+
+def log_shop(a, gs, log):
+    """One line per shop analysis: the money, the jokers and their stickers, and every option
+    as ranked (its `rank`, `*` where `worth` takes it), so where the money went can be read back."""
+    noise = a.get("shop_tie") or {}
+    js = ", ".join(j["name"] + "".join(f" ({s})" for s in ("rental", "eternal", "debuff") if j.get(s)) for j in a.get("jokers", []))
+    opts = " | ".join(f"{'*' if worth(o, a) else ''}{o['kind']} {o['label']} ${o['cost']} r{o.get('rank') or 0:.3f}"
+                      f"{' (unaffordable)' if o.get('unaffordable') else ''}" for o in a.get("options", []))
+    log.append(f"shop a{gs.get('ante_num')} r{gs.get('round_num')} ${gs['money']} tie {noise.get('tie')} "
+               f"trouble {noise.get('trouble')} · jokers {js or '-'} · {opts}")
 
 
 def arrange_jokers(a, log):
@@ -307,7 +335,8 @@ def open_pack(sims, log):
         gs = rpc("gamestate")
         if gs["state"] != "SMODS_BOOSTER_OPENED":
             return
-        a = analyze(sims)
+        a = analyze(sims, keep="pack")
+        log.append(f"pack screen ${gs['money']} · " + " | ".join(f"{o['kind']} {o['label']} r{o.get('rank') or 0:.3f}" for o in a.get("options", [])))
         if VERBOSE:
             print(f"  pack screen {a.get('screen')} · " + " | ".join(f"{o['kind']} {o['label']} {o.get('key')}" for o in a.get("options", [])))
         took = False
@@ -353,11 +382,18 @@ def commit():
 
 
 def one_run(args, n, seed=None):
-    global ANALYSIS_S
+    global ANALYSIS_S, KEEP_DIR
     ANALYSIS_S = 0.0
     NOT_FOLLOWED.clear()
     rpc("menu")
     seed = seed or f"BOT{int(time.time()) % 100000:05d}{n}"
+    # a seed played again (paired runs, --repeat) keeps its states in a folder of its own
+    KEEP_DIR = OUT / "shops" / seed
+    k = 1
+    while KEEP_DIR.exists():
+        k += 1
+        KEEP_DIR = OUT / "shops" / f"{seed}-{k}"
+    KEEP_DIR.mkdir(parents=True)
     rpc("start", deck=args.deck, stake=args.stake, seed=seed)
     for _ in range(60):  # the last run's game-over screen can outlast the start
         if rpc("gamestate")["state"] == "BLIND_SELECT":
@@ -412,7 +448,7 @@ def one_run(args, n, seed=None):
         "errors": sum(1 for l in log if l.startswith("error")), "shop_money": shop_money, "ante2_reach": ante2_reach, "label": args.label, "advisor_seed": ADVISOR_SEED, "commit": commit(),
         "not_followed": NOT_FOLLOWED[:],
         "jokers": [j.get("label") for j in cards(gs, "jokers")],
-        "minutes": round((time.monotonic() - t0) / 60, 1), "analysis_minutes": round(ANALYSIS_S / 60, 1), "log": log[-60:], "time": int(time.time()),
+        "minutes": round((time.monotonic() - t0) / 60, 1), "analysis_minutes": round(ANALYSIS_S / 60, 1), "log": log, "states": str(KEEP_DIR), "time": int(time.time()),
     }
     with open(OUT / "runs.jsonl", "a") as f:
         f.write(json.dumps(result) + "\n")
