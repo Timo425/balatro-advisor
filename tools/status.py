@@ -166,11 +166,14 @@ def bot(args):
     if not valid:
         print("no valid bot runs: nothing measured about the advisor here")
         return
+    # (a series is the runs of one commit and label: a paired before and after can share a commit;
+    # a commit marked "+" ran on a checkout with changes, not the commit itself)
     groups = collections.defaultdict(list)
     for r in valid:
-        groups[r.get("commit") or "?"].append(r)
-    for c, rs in sorted(groups.items(), key=lambda kv: max(r["time"] for r in kv[1])):
-        behind = git("rev-list", "--count", f"{c}..HEAD") if c != "?" else ""
+        groups[(r.get("commit") or "?", r.get("label") or "")].append(r)
+    for (c, label), rs in sorted(groups.items(), key=lambda kv: max(r["time"] for r in kv[1])):
+        base = c.rstrip("+")
+        behind = git("rev-list", "--count", f"{base}..HEAD") if base != "?" else ""
         behind = int(behind) if behind else None
         last = max(r["time"] for r in rs)
         decks = collections.Counter(f"{r['deck']}/{r['stake']}" for r in rs)
@@ -178,7 +181,7 @@ def bot(args):
         reach = sorted(r["ante2_reach"] for r in rs if r.get("ante2_reach") is not None)
         missed = collections.Counter(m.split(":", 1)[0] + ":" + " ".join(m.split(":", 1)[1].split()[:2]) if ":" in m else m
                                      for r in rs for m in r.get("not_followed") or [])
-        print(f"{c} ({behind if behind is not None else '?'} commits behind HEAD, last run {day(last)}){stale(days=age_days(last), commits=behind, args=args)}: "
+        print(f"{base}{' (modified checkout)' if c.endswith('+') else ''}{f' [{label}]' if label else ''} ({behind if behind is not None else '?'} commits behind HEAD, last run {day(last)}){stale(days=age_days(last), commits=behind, args=args)}: "
               f"{len(rs)} runs ({', '.join(f'{k} x{n}' for k, n in decks.items())}), antes {antes}, "
               f"wins {sum(1 for r in rs if r.get('won'))}, restarts {sum(1 for r in rs if r.get('restarted'))}"
               + (f", ante2_reach median {reach[len(reach) // 2]:.2f}" if reach else ""))

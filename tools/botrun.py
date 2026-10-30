@@ -32,12 +32,17 @@ verdict on the advice. As of 2026-10-24 the bot:
   assumes every joker unlocked, gap 38); Steamodded's guard against saving in an open pack
   lifted in the bot's own copy (BotMods/Steamodded/lovely/fixes.toml), or the advisor never
   sees a pack's cards.
-Since 2026-10-29 every state the advisor analysed in a shop or an open pack is kept
-(`bot/shops/<seed>/a<ante>-r<round>-<n>-<screen>.jkr`; `analyze --file` replays it) and the run's
-log is whole: each shop analysis logs the money, the jokers' stickers and every option ranked.
+Since 2026-10-29 every state the advisor analysed in a shop or an open pack, and every state an
+analysis failed on (`error`), is kept (`bot/shops/<seed>/a<ante>-r<round>-<n>-<screen>.jkr`;
+`analyze --file` replays it) and the run's log is whole: each shop analysis logs the money, the jokers' stickers and every option ranked.
 Every run before 2026-10-24 (none has a `commit`) is marked `void` in runs.jsonl: every pack
 skipped, the jokers never arranged, "won" read from a flag the game also sets on a loss, and
 before 2026-10-23 35 jokers locked and an early advisor. Don't read them as evidence.
+
+The game is restarted before a run once it holds more than a fresh one (`--restart-game`, Linux
+with Steam: it keeps 0.3-0.9 GB a run, measured 2026-10-29); elsewhere a series stops between runs
+past `--max-game-mb` and prints the seeds to resume with. The runs are seeded, so a restart
+between them changes nothing.
 
 Restarting (`--restart-below`, off by default: the bot plays every run out, a baseline; every run
 logs `ante2_reach` either way). The threshold 0.30, a heuristic, was judged 2026-10-28 at 1786431
@@ -51,6 +56,7 @@ import argparse
 import json
 import pathlib
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -137,6 +143,8 @@ def analyze(sims, quick=False, keep=None):
     )
     ANALYSIS_S += time.monotonic() - t
     if out.returncode != 0:
+        # (the state it failed on, for a fixture: kept whatever the screen)
+        keep_state("error")
         raise RuntimeError(out.stderr.strip()[-300:])
     return json.loads(out.stdout)
 
@@ -373,12 +381,79 @@ def won(gs):
     return bool(gs.get("won")) and gs["state"] != "GAME_OVER"
 
 
+def game_pids():
+    """The game's own process (Linux /proc: its executable, not the Steam and Proton wrappers
+    that wait for it, nor a shell whose command line names it)"""
+    pids = []
+    for d in pathlib.Path("/proc").iterdir():
+        try:
+            if d.name.isdigit() and (d / "cmdline").read_bytes().split(b"\0")[0].endswith(b"Balatro.exe"):
+                pids.append(int(d.name))
+        except OSError:
+            pass
+    return pids
+
+
+def game_rss_mb():
+    """The game's resident memory (Linux; None elsewhere). The bot's modded game grows by about
+    0.3-0.9 GB a run (11.9 GB after 19 runs, 2026-10-29)."""
+    try:
+        for pid in game_pids():
+            kb = next(l for l in pathlib.Path(f"/proc/{pid}/status").read_text().splitlines() if l.startswith("VmRSS"))
+            return int(kb.split()[1]) // 1024
+    except (OSError, StopIteration, ValueError):
+        pass
+    return None
+
+
+# The game launched with the bot's mods, as balatro-agent's tools/bot.sh `start` does (adapted
+# from it: the launch only; bot.sh sets Profile 3 and backs up the owner's settings, which a
+# restart in the bot's session leaves as they are)
+BOT_MODS = r"C:\users\steamuser\AppData\Roaming\Balatro\BotMods"
+FRESH_MB = 1000  # a game just started holds ~0.6 GB
+
+
+def restart_game():
+    """Closes the bot's game and starts it again (Linux, Steam), so a run starts from a fresh game:
+    the modded game keeps 0.3-0.9 GB a run. False where it can't (no Steam, not Linux)."""
+    if not sys.platform.startswith("linux") or not shutil.which("steam"):
+        return False
+    import os
+    import signal
+    for pid in game_pids():
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+    t = time.monotonic()
+    while game_pids() and time.monotonic() - t < 20:
+        time.sleep(0.5)
+    for pid in game_pids():
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+    time.sleep(3)
+    subprocess.Popen(["steam", "-applaunch", "2379780", "--mod-dir", BOT_MODS], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    t = time.monotonic()
+    while time.monotonic() - t < 180:
+        try:
+            rpc("health")
+            print(f"  (game restarted in {time.monotonic() - t:.0f} s)")
+            return True
+        except Exception:
+            time.sleep(2)
+    sys.exit("the game didn't come back within 3 minutes after a restart")
+
+
 def commit():
     """The checkout's commit, to tie a run to the code (the installed advisor is whatever
     `cargo install` last built: keep them the same)."""
-    out = subprocess.run(["git", "-C", str(pathlib.Path(__file__).resolve().parent), "rev-parse", "--short", "HEAD"],
-                         capture_output=True, text=True)
-    return out.stdout.strip() or None
+    here = str(pathlib.Path(__file__).resolve().parent)
+    out = subprocess.run(["git", "-C", here, "rev-parse", "--short", "HEAD"], capture_output=True, text=True)
+    # (a checkout with changes to tracked files is marked: its runs aren't the commit's)
+    dirty = subprocess.run(["git", "-C", here, "status", "--porcelain", "-uno"], capture_output=True, text=True).stdout.strip()
+    return (out.stdout.strip() + ("+" if dirty else "")) or None
 
 
 def one_run(args, n, seed=None):
@@ -448,7 +523,7 @@ def one_run(args, n, seed=None):
         "errors": sum(1 for l in log if l.startswith("error")), "shop_money": shop_money, "ante2_reach": ante2_reach, "label": args.label, "advisor_seed": ADVISOR_SEED, "commit": commit(),
         "not_followed": NOT_FOLLOWED[:],
         "jokers": [j.get("label") for j in cards(gs, "jokers")],
-        "minutes": round((time.monotonic() - t0) / 60, 1), "analysis_minutes": round(ANALYSIS_S / 60, 1), "log": log, "states": str(KEEP_DIR), "time": int(time.time()),
+        "game_rss_mb": game_rss_mb(), "minutes": round((time.monotonic() - t0) / 60, 1), "analysis_minutes": round(ANALYSIS_S / 60, 1), "log": log, "states": str(KEEP_DIR), "time": int(time.time()),
     }
     with open(OUT / "runs.jsonl", "a") as f:
         f.write(json.dumps(result) + "\n")
@@ -468,6 +543,10 @@ def main():
     p.add_argument("--sims", type=int, default=100, help="advisor round simulations (fewer = faster)")
     p.add_argument("--strategy", default="advisor")
     p.add_argument("-v", "--verbose", action="store_true", help="print every hand")
+    p.add_argument("--restart-game", choices=["each", "never"], default="each",
+                   help="each: restart the game before a run once it holds more than a fresh one (it keeps 0.3-0.9 GB a run; Linux with Steam)")
+    p.add_argument("--max-game-mb", type=int, default=8000,
+                   help="where the game isn't restarted: stop between runs once its memory passes this, printing the seeds to resume with")
     p.add_argument("--restart-below", type=float, default=0.0,
                    help="after Ante 1, start over if the board reaches less than this share of the next plain boss (e.g. 0.5)")
     args = p.parse_args()
@@ -480,12 +559,13 @@ def main():
     except Exception:
         sys.exit("BalatroBot isn't answering on 127.0.0.1:12346: start the game with balatro-agent's tools/bot.sh start")
     seeds = [s.strip() for s in args.seeds.split(",") if s.strip()]
-    if seeds:
-        for n, seed in enumerate(s for s in seeds for _ in range(args.repeat)):
-            one_run(args, n, seed)
-    else:
-        for n in range(args.runs):
-            one_run(args, n)
+    todo = [s for s in seeds for _ in range(args.repeat)] or [None] * args.runs
+    for n, seed in enumerate(todo):
+        rss = game_rss_mb()
+        if rss and rss > FRESH_MB and not (args.restart_game == "each" and restart_game()) and rss > args.max_game_mb:
+            left = ",".join(todo[n:]) if seeds else f"{len(todo) - n} more runs"
+            sys.exit(f"the game holds {rss} MB (over --max-game-mb {args.max_game_mb}): restart it, then resume with --seeds {left}")
+        one_run(args, n, seed)
 
 
 if __name__ == "__main__":
