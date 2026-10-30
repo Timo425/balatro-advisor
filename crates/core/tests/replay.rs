@@ -57,6 +57,13 @@ fn replayed_states_give_the_expected_advice() {
                         let (x, y) = (pos(&want[0]), pos(&want[1]));
                         Value::Bool(x.is_some() && (y.is_none() || x < y))
                     }
+                    // ["A", "B"]: option A's `rank` (the ranking's value) above option B's, whatever
+                    // the bands of ties put first: for an expectation about how options are
+                    // valued, which a band's edge moving with the top option mustn't decide
+                    "rank_above" => {
+                        let rank = |l: &Value| a["options"].as_array().unwrap().iter().find(|o| &o["label"] == l).and_then(|o| o["rank"].as_f64());
+                        Value::Bool(rank(&want[0]).zip(rank(&want[1])).is_some_and(|(x, y)| x > y))
+                    }
                     // {"Joker": x}: the joker's `score_share` (the typical best hand's drop
                     // without it, a fraction) is below x
                     "share_below" => {
@@ -74,7 +81,7 @@ fn replayed_states_give_the_expected_advice() {
                     }
                     other => panic!("{name}: unknown expectation {other}"),
                 };
-                let want = if matches!(k.as_str(), "above" | "best_not_cards" | "best_not_played" | "best_played" | "share_below" | "sells") { &Value::Bool(true) } else { want };
+                let want = if matches!(k.as_str(), "above" | "rank_above" | "best_not_cards" | "best_not_played" | "best_played" | "share_below" | "sells") { &Value::Bool(true) } else { want };
                 if &got != want {
                     out.push(format!("{k} = {got}, expected {want}"));
                 }

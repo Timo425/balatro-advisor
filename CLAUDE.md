@@ -67,7 +67,7 @@ change to how the advice decides or values things follows these steps, in order:
 1. **Capture.** When the owner says a suggestion is wrong, save that state as a replay
    fixture before touching code: `tests/fixtures/private/<name>.json` = `{"note", "state":
    <balatro-advisor state --json>, "expect": {...}}` (keys: `best_action`, `best_hand`,
-   `best_use_first`, `best_size`, `best_not_cards`: [..], `best_not_played`: [..], `best_played`: [..], `top_option`, `above`: ["A", "B"], `top_hand`, `share_below`: {"Joker": x}, `sells`: {"j_key": "Joker"}). The folder is
+   `best_use_first`, `best_size`, `best_not_cards`: [..], `best_not_played`: [..], `best_played`: [..], `top_option`, `above`: ["A", "B"], `rank_above`: ["A", "B"] (by the ranking's value, not its order of tie bands), `top_hand`, `share_below`: {"Joker": x}, `sells`: {"j_key": "Joker"}). The folder is
    git-ignored (real runs aren't committed). When a fix can't meet a fixture's expectation yet
    because of a known gap, narrow `expect` to what still holds and move the rest to
    `"pending_expect"` with `"pending_gap": "gap N"` (the gap in `docs/design.md` names the
