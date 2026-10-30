@@ -180,8 +180,8 @@ bot's rule in 192 and a $1 rental in 31 of them; the owner kept the money in 65 
 shops and took 18 rentals among the 150 jokers they added (its output wasn't kept: rerun from
 the history with the first pick under `worth`, 100 simulations, seed 42).
 Paired runs on BAVANG01-25 (restart off, 100 simulations), at 2bd251f (2026-10-29) and with the
-walk paying rent (the valuation commit of 2026-10-30; its review's fixes on top, the second
-figures): mean ante 3.48 → 4.00 / 3.92, past Ante 4 in 1 → 7 / 7 runs; by seed 10 further, 3 / 4
+walk paying rent (9285bbd: its first version, then its final code but the last fix, eternal
+buys kept out of the walk's swaps, the second figures): mean ante 3.48 → 4.00 / 3.92, past Ante 4 in 1 → 7 / 7 runs; by seed 10 further, 3 / 4
 shorter, 12 / 11 the same (BAVANG10's after runs ended on the Best play panic, at Ante 4);
 median money in the shops at Antes 2/3/4 $5/$2/$2 → $8/$9/$8 / $9/$8/$8.5, shops below $0
 47 → 15 / 14; rentals held at Ante 3 1.48 → 0.72 / 0.81; Buffoon packs bought a shop 0.16 → 0.19 /
