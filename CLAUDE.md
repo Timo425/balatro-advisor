@@ -20,8 +20,9 @@
 - Code, comments and docs in English (D4 in `docs/decisions.md`).
 - **Know where things stand before judging them.** A chat that brainstorms, judges a gap (its
   effort against its benefit) or picks work first runs `tools/status.py` and reads
-  `docs/owner-view.md`, says what's unknown or stale, and asks the owner before concluding. It
-  never cites a measurement without its commit and age. `docs/owner-view.md` holds only the
+  `docs/owner-view.md` and says what's unknown or stale. What it can find out itself (a run, a
+  measurement, the history), it finds out; it asks the owner only for their judgement (what
+  matters to them, which gap first) and gives its own recommendation with it. It never cites a measurement without its commit and age. `docs/owner-view.md` holds only the
   owner's words.
 - **Review the crucial steps, not only code.** Once a task, before its final report, the queue
   cards written from it and any verdict it commits to docs, run `/fan-out-review` on all three
