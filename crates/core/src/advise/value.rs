@@ -25,9 +25,16 @@ pub(super) const TAROT_ROUNDS: usize = 300;
 const CHIP_JOKERS: &[&str] = &["j_stuntman", "j_bull", "j_banner", "j_scary_face", "j_arrowhead", "j_castle", "j_runner", "j_square",
     "j_wee", "j_ice_cream", "j_blue_joker", "j_sly", "j_wily", "j_clever", "j_devious", "j_crafty", "j_odd_todd", "j_stone", "j_hiker"];
 
+/// A rental's rent at the end of each round you play (card.lua `Card:calculate_rental`,
+/// `G.GAME.rental_rate`: $3)
+pub(super) const RENT_PER_ROUND: f64 = 3.0;
 /// Rent ($3 a round) comes out of the money that would buy planets, rerolls and pack skips:
 /// each rental counts as one ante of rent less money held.
-pub(super) const RENT_PER_ANTE: f64 = 9.0;
+pub(super) const RENT_PER_ANTE: f64 = 3.0 * RENT_PER_ROUND;
+/// From stake 8 a joker made for the shop or a pack is a rental 3 times in 10 (game.lua
+/// `start_run`: `enable_rentals_in_shop`; common_events.lua `create_card`: a roll over 0.7)
+pub(super) const RENTAL_STAKE: u8 = 8;
+pub(super) const RENTAL_SHARE: f64 = 0.3;
 
 /// The cheapest booster pack ($4: game.lua P_CENTERS, a normal pack): what money pays to open,
 /// or skip, one.
@@ -1667,6 +1674,7 @@ impl<'a> Spending<'a> {
         if let Some(v) = self.rerolls.lock().unwrap().get(&k) {
             return *v;
         }
+        // (no rent: the long run this factor scales already takes it from the money, `project_as`)
         let v = money_value_with(self.lr.ctx, self.pool, &Kept::Weighted(&|c: &Candidate| c.long_mult.unwrap_or(1.0)), 1.0, k as f64 * 5.0, Shops::after(self.shops), Start::BOARD);
         self.rerolls.lock().unwrap().insert(k, v);
         v

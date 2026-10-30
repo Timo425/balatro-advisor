@@ -40,7 +40,7 @@ skipped, the jokers never arranged, "won" read from a flag the game also sets on
 before 2026-10-23 35 jokers locked and an early advisor. Don't read them as evidence.
 
 The game is restarted before a run once it holds more than a fresh one (`--restart-game`, Linux
-with Steam: it keeps 0.3-0.9 GB a run, measured 2026-10-29); elsewhere a series stops between runs
+with Steam: it grows as it plays, a run from a fresh game ending at 0.6-3.1 GB, measured 2026-10-30); elsewhere a series stops between runs
 past `--max-game-mb` and prints the seeds to resume with. The runs are seeded, so a restart
 between them changes nothing.
 
@@ -396,7 +396,7 @@ def game_pids():
 
 def game_rss_mb():
     """The game's resident memory (Linux; None elsewhere). The bot's modded game grows by about
-    0.3-0.9 GB a run (11.9 GB after 19 runs, 2026-10-29)."""
+    0.6-3.1 GB by a run's end from a fresh start (11.9 GB after 19 runs in one session, 2026-10-29)."""
     try:
         for pid in game_pids():
             kb = next(l for l in pathlib.Path(f"/proc/{pid}/status").read_text().splitlines() if l.startswith("VmRSS"))
@@ -415,7 +415,7 @@ FRESH_MB = 1000  # a game just started holds ~0.6 GB
 
 def restart_game():
     """Closes the bot's game and starts it again (Linux, Steam), so a run starts from a fresh game:
-    the modded game keeps 0.3-0.9 GB a run. False where it can't (no Steam, not Linux)."""
+    the modded game grows as it plays. False where it can't (no Steam, not Linux)."""
     if not sys.platform.startswith("linux") or not shutil.which("steam"):
         return False
     import os
@@ -544,7 +544,7 @@ def main():
     p.add_argument("--strategy", default="advisor")
     p.add_argument("-v", "--verbose", action="store_true", help="print every hand")
     p.add_argument("--restart-game", choices=["each", "never"], default="each",
-                   help="each: restart the game before a run once it holds more than a fresh one (it keeps 0.3-0.9 GB a run; Linux with Steam)")
+                   help="each: restart the game before a run once it holds more than a fresh one (it grows as it plays; Linux with Steam)")
     p.add_argument("--max-game-mb", type=int, default=8000,
                    help="where the game isn't restarted: stop between runs once its memory passes this, printing the seeds to resume with")
     p.add_argument("--restart-below", type=float, default=0.0,

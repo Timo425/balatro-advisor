@@ -161,6 +161,44 @@ simulations, restart off): Antes 2-5, mean 3.5, no wins, none past Ante 5; 23 at
 (the owner's 37: 6 wins, 14 past Ante 5); the 12 runs with `not_followed` empty died at Antes 2-4
 like the rest. One run ended on an advisor panic (`advise/play.rs`, no move for a hand), three had
 a pack pick fail for a sale in an open pack, and 12 went below $0 in a shop (causes queued).
+Where the money went (2026-10-29, six of those seeds replayed with every shop kept, each the
+same run as logged): rent. Each held 2-3 rentals by Ante 2, $1 buys and Buffoon pack picks, many
+eternal, $6-9 a round against a Gold Stake ante's $9 of blind rewards, so below $0 from then on
+and nothing bought again. In the 15 runs of the 2bd251f series below that went below $0 at
+Antes 1-4, rent was three quarters of the money out (about $41 a run, against $13 on purchases,
+the rentals' $1 prices 2% of it; the 10 that didn't paid $15 in rent and spent $32): the cost is
+holding them, not buying them. Split by the board (the first shop of each round at Antes 2-4,
+2bd251f): no rental held, median $11.5/$17.5/$19.5 and none under $5 (46 shops); one or more,
+$3/$0/-$2 and 47 of 120 below $0. The money's walk charged no rent (gap 17). The card's other
+suspects: botrun's buying anything above leaving when the round is in trouble (`worth`) acts
+in 3 of 74 shops at Ante 2 and 2 of 60 at Ante 3, not the cause there; money held valued too
+low stays open: rental-free boards hold less than the owner ($10/$13/$19 at Antes 2-4 after the
+fix, the owner's $17/$25/$27), and on the owner's shops the advisor took something in 192 where
+the owner spent in 154 (queued). On the owner's 219 first
+shops of a round at Antes 2-3, the advisor of then (6dd28fa) would have taken something under the
+bot's rule in 192 and a $1 rental in 31 of them; the owner kept the money in 65 of the same
+shops and took 18 rentals among the 150 jokers they added (its output wasn't kept: rerun from
+the history with the first pick under `worth`, 100 simulations, seed 42).
+Paired runs on BAVANG01-25 (restart off, 100 simulations), at 2bd251f (2026-10-29) and with the
+walk paying rent (the valuation commit of 2026-10-30; its review's fixes on top, the second
+figures): mean ante 3.48 → 4.00 / 3.92, past Ante 4 in 1 → 7 / 7 runs; by seed 10 further, 3 / 4
+shorter, 12 / 11 the same (BAVANG10's after runs ended on the Best play panic, at Ante 4);
+median money in the shops at Antes 2/3/4 $5/$2/$2 → $8/$9/$8 / $9/$8/$8.5, shops below $0
+47 → 15 / 14; rentals held at Ante 3 1.48 → 0.72 / 0.81; Buffoon packs bought a shop 0.16 → 0.19 /
+0.18 (a pack's unseen picks charged their rent in the second). Where a board's rent already
+outruns its income the walk sees no more loss from more rent (no find is affordable either
+way), and the long run neither: BAVANG25 still took four rentals by Ante 2 and ended at -$76
+(gap 16). No placebo series was run: an advisor seed's own spread on these seeds is unmeasured,
+and 10 against 4 is a sign test's p of about 0.18, so the ante reached is suggestive; the money
+by ante is the measure. The bot followed less after the fix (runs with a `not_followed` 13 → 20,
+items 26 → 46, mostly Arcana and Spectral packs and rerolls), keeping some money the advice
+would have spent: too little to make $2 → $8, but some of it. 2bd251f against
+6dd28fa (two simulated-player commits between, gaps 6 and 8): mean ante 3.52 → 3.48, median money
+at Antes 3/4 $3.5/$4.5 → $2/$2, shops below $0 39 → 47: a little poorer, within what one series
+can tell from noise. The bot's modded game grows as it plays (a run started fresh ends at
+0.6-3.1 GB, longer runs more; 4.9 GB after 12 runs in one session, 11.9 GB seen after 19): botrun
+restarts it before a run once it holds more than a fresh one (`--restart-game`, 12-16 s a
+restart).
 
 ## Patterns
 
@@ -233,7 +271,7 @@ vs actual blind results and every shop seen).
 | Money worth 30·(1 − e^(−m/30)) | `value.rs` `spendable` | money buys less the more you have | what money turned into in logged shops |
 | Planet levels from money held: 0.5 an ante + (money − interest line)/20, at most 2 an ante; $18 an ante below the line | `value.rs` `levels_for` | planets bought with spare money | logged planet buys per ante |
 | Spare money (held above the interest line, each ante) and one-off money are one budget: on a board with a joker that grows from shop events, it's split levels first (up to what `levels_per_ante` can use) or events first (up to what the shops hold), the rest on the other, whichever the projection scores higher by more than 1% (else levels first: `spare_to_events`, decided once per set of such jokers, on your projected board with that option, slots filled), each dollar once; one-off money takes the same route (a price takes back events, then levels; Constellation follows the planets bought); levels $20 an ante held (`levels_per_ante`) or $12 once, added to the level already there (`add_levels`, a fraction included); $4 any planet (the same planets both level and grow Constellation) | `value.rs` `fill_long`, `spare_to_events`, `spend_once`, `add_levels`, `event_price` | what spare money buys | logged shops |
-| Rent $9 an ante | `value.rs` `RENT_PER_ANTE` | $3 a round × 3 (card.lua `Card:calculate_rental`, at each round's end) | exact |
+| Rent $9 an ante | `value.rs` `RENT_PER_ANTE`, `RENT_PER_ROUND` (the money's walk, each round's end) | $3 a round × 3 (card.lua `Card:calculate_rental`, at each round's end) | exact |
 | Selling a joker now (the shop's sell option): its rounds without it (the contribution pass), its sale now, the run with it let go its better way (`sold_now`: replaced or sold outright; one that doesn't last gone by then anyway); where the projection lets it go anyway, the one round it would be held for until the next shop, which decides again (`round_flow`: its rent, less its money on that round and what it pays besides, Rocket's raises, Egg's sell value, To the Moon's interest, a round's as `floor_for` counts its rounds; `floor_for` holds a joker bought about an ante), not the rounds until the projection's let-go (so the rent a perishable pays until it runs out, or a perished one until it's sold, is that one round); a joker that runs out leaves its slot to the stand-ins (a find assumed then), one sold outright leaves it empty (being replaced is the find); leaving wins a tie with a sale (D8: leaving keeps the joker), so a let-go joker's round of rent, where it's inside the 3% band, is shown tied, not taken (gap 7). The projection's own keep-or-let-go (`LongRun::build`, `Fate`) judges each joker alone against your board with all kept (let go where that leaves no less: replaced in its best slot, or sold outright, whichever leaves more), not jointly; what a joker it lets go nets is money once: its sale, less a typical find's price where one replaces it (`find_price`: the shop pool's prices, each joker by its rarity's odds, 70/25/5, over that rarity's count; every joker the game has when the pool isn't known); on a sale's board the projection's and the sale's money go through one `once` (the sale against leaving told exactly), on another option's board apart from the option's (`once` of each, not of the sum: interest steps move it either way); for a joker let go anyway, the sale isn't counted again in what money past the cap buys (`Spending`) | `value.rs` `sold_now`, `round_flow`; `advise.rs` `analyze`, `rank_options` | holding it one shop more | a standalone sale against holding it, played on (`tests/shop_playon.rs` plays buys, not a sale alone, and no rent, yet) |
 | A joker's money: the money a round won pays on the board the projection holds (the jokers kept, one replaced by its typical find, a joker bought, a `Gain`'s round) against your board, and your board against it without the jokers the engine pays money for (`engine::PAYS_MONEY`; so a copy counts once, with the joker it copies), each the mean difference on the rounds both boards win (`sim::RoundResult::cash`: scoring, discards, the round's end with every joker's `calculate_dollar_bonus`, a hand left at `money_per_hand`, a discard at `money_per_discard`) of 32 of each of this ante's three plain blinds (`MONEY_ROUNDS`, `advise::plain_rounds_of`: the rounds `value::Growths` plays, by the simulated player without the round's goals, round targets drawn each round), the same deals for both; counted past $0.5 an ante (`MONEY_NOISE`, the deck path's threshold too) and 2 standard errors of that mean (`MONEY_CLEAR`), 3 rounds an ante, as money held every ante; plus what the jokers pay besides a round's play: Rocket's raises, the mean over the rounds ahead of those paid by then ((antes − 1)/2 + 1/3: the plain blinds measured have no boss; a boss round won pays its own raise in the engine), Egg's sell value a round as money, To the Moon's interest at your money now. Not modelled: Matador (pays on a boss's rule; the plain blinds have none), Gift Card (others' sell values), Credit Card, 9s added later for Cloud 9 and planets used later for Satellite, interest on the money a joker brings; the empty slots' stand-ins earn none | `value.rs` `income`, `money_board`, `money_difference` (whatif's too), `added_money`, `payout_besides`, `round_money_now`, `MONEY_ROUNDS`, `MONEY_NOISE`, `MONEY_CLEAR`; `advise.rs` `plain_round_cash`; engine `Joker::round_end_dollars`, `payout_after_bosses`, `sell_value_a_round`, `interest_added`, `PAYS_MONEY` | money as the round pays it, at this ante's rate | noise: the same measure on more rounds; the rounds won only: a lost round's money with Mr. Bones' save |
 | 48 rounds per projected board | `value.rs` `long_score` | projection noise | compare against more rounds |
@@ -472,7 +510,8 @@ the same retriggered ×Mult.
   (Superseded 2026-10-26: the finds' lean wasn't the screen's but how the money was spent, gap 17.)
   (Reopened 2026-10-29: the play-on judged to the next ante's boss only, which can't see interest
   paid over Antes 4-8, and from the owner's money; 25 bot runs at 6dd28fa spent to a median
-  $3.5-5 at Antes 2-4, half their shops under $5, so "not there" isn't shown. Queued.)
+  $3.5-5 at Antes 2-4, half their shops under $5, so "not there" isn't shown. Found 2026-10-30:
+  rent, which neither the play-on nor the money's walk charged; the walk's part done, below.)
 - **Done 2026-10-24:** the joker a buy replaces chosen by the shop ranking's measure (gap 36):
   every sale and place raced on the same rounds (`shop_measure`, one function for the shop and
   the race; Mr. Bones' save counted in the race), ties reported, the by-name sell rules and the
@@ -563,6 +602,17 @@ the same retriggered ×Mult.
   charged the fallback discard the policy makes instead (`ChaseRound::spent`, gap 8). The
   `discards` board +0.3 / −0.4 / +1.0 points instead of the −10.4 / −2.5 / −15.9 the dig's side
   alone cost; `growers` +1.1 on 4 hands and 3 discards.
+- **Done 2026-10-30:** the money's walk pays rent (gap 17): the rentals on the board each option
+  leaves pay $3 at each round's end, before the cash-out's interest (card.lua
+  `Card:calculate_rental`), a Buffoon pack's unseen picks at the stake's share of rentals, a
+  pack's jokers read with their own stickers; skip-or-play's interest after rent. Found by the
+  bot's spend-down to $0 (six broke seeds replayed: 2-3 rentals each by Ante 2). Paired bot runs:
+  shops below $0 at Antes 2-4 47 → 14, median money $2 → $8 at Ante 3, mean ante 3.48 → 3.92 (no
+  placebo series; by seed 10 further and 4 shorter, a sign test's p about 0.18: suggestive; the
+  bot bench paragraph). Best play moved on no fixture and on 0 of 135 saved states; shop
+  rankings moved only on boards with a rental. Left: the long run's finds are free and its rent
+  stops costing at no levels (gap 16, queued), the walk's own finds carry no stickers (gap 17),
+  and money held still below the owner's on boards without rentals (queued).
 - **Next:** a free hand banked before the
   hand that wins (gap 34); Ceremonial Dagger's value (gap 8); the blind odds shown and the
   outlook chained as Best play's blinds ahead are (gap 28).
@@ -1331,12 +1381,30 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    in play the same day, a Negative joker and an Ectoplasm both in Ante 8's shops). A joker's
    round money is valued since 2026-10-25 (measured, gap 36); a joker whose role is money and
    whose rounds pay none (Gift Card, Credit Card) still says "not modelled" when sold.
+   The long run's stand-ins are free: a slot is filled whatever the money, so a board in debt
+   still finds its jokers there. Rent reaches the long run two ways: a joker's own projection
+   (`long_of`) takes it from the money an ante (`project_as`'s flow), which buys planet levels
+   only (`levels_per_ante`, stopping at none: a second rental on a poor board costs nothing
+   there), and the sell-later floor (`floor_for`) takes one ante's rent once, from the events and
+   levels the money buys (`fill_long`); neither takes a find away (2026-10-30, from the bot's
+   rent spiral, gap 17). After the money's walk was made to pay rent, an eternal
+   rental on a board already renting still ranks first, on its By Ante 8 (Raised Fist ×1.19 at
+   $5, BAVANG25 a2-r3) or on its own next-ante chance, which is the walk's floor (a third
+   rental at $4, BAVANG06 a2-r3): fixtures `shop_eternal_rental_while_renting` and
+   `shop_third_rental_into_debt` wait on it. The general fix: the long run's finds bought with
+   the money each ante leaves (income less rent), queued.
 17. **The money's finds add every joker's gain, count a full board's swaps in two units, and the
    judge can't play tarots.** Since 2026-10-26 what an option's money left buys
    (`survival_with`, `money_value_with`) is the money spent shop by shop as a player buys, on
    2000 walks: in the shop you're in only its rerolls (its cards are the options), then before
-   each shop after a blind its reward, a hand's money and the interest (a debt paid back first:
-   it no longer counts as $0), its free cards, its rerolls; a joker is bought from the shop it
+   each shop after a blind the rent of the rentals on the board the option leaves (since
+   2026-10-30: card.lua `Card:calculate_rental` at the round's end, before the cash-out reads the
+   money for interest; yours, a rental bought from the shop or picked from an open pack (its
+   stickers read from the pack while one is open), a Buffoon pack's picks at the stake's share of
+   rentals (from stake 8, 3 in 10: common_events.lua `create_card`), less a rental sold, and
+   stopped when the walk sells one for a find (not an Eternal one, bought or yours); `Start.rent`, set by the caller: `Spending`
+   passes none, its long run takes rent already), its reward, a hand's money and the interest (a
+   debt paid back first: it no longer counts as $0), its free cards, its rerolls; a joker is bought from the shop it
    shows in when it adds to what's kept, never from a shop already left, and the rerolls a shop
    are a policy chosen on half the walks and valued on the other half (up to 8). The walk starts
    from the board each option leaves (`Start`): its own chance the floor a find must beat, a
@@ -1411,7 +1479,10 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    next-ante survival 0.95-0.96, so Green Joker's long run ×1.65 beats The Tribe's ×0.97, which
    the judge's two bosses put +0.07 ± 0.05 ahead) or within their noise (8I93CDBG a3-r6 with
    Chaos the Clown, Wrathful Joker → reroll, −0.16 ± 0.11: the lean below).
-   Left: on a full board a find's multiplier is already net of the joker its simulation replaced
+   Left: the walk's own finds carry no stickers, though from stake 8 (Gold Stake) 30% of the
+   shop's and packs' jokers are rentals (common_events.lua `create_card`,
+   `enable_rentals_in_shop`): such a find costs $1 and $3 a round there, the walk counts its price
+   and no rent (2026-10-30). On a full board a find's multiplier is already net of the joker its simulation replaced
    (`evaluate_candidate`), and the walk takes one of yours away again, while the option's own
    board multiplies the finds' gains (`Kept::together`): two unit errors the review's accounting
    fixes (above, not kept), which offset something else there; leaving's next-ante chance (and a
@@ -1436,7 +1507,11 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    Earlier (2026-10-24): no over-buying on the owner's Gold Stake runs that ran low (144 first
    shops of each round at Antes 1-5 of 15 runs: joker buys +0.18 of the bosses' joint chance
    against leaving, Buffoon packs +0.04, the top rerolls a wash costing $3), and three fixes of
-   the old sum not kept against finds that leaned high.
+   the old sum not kept against finds that leaned high. Amended 2026-10-30: that judge
+   (`shop_playon`) plays to the next ante's boss and charges no rent, so it couldn't see what
+   the bot runs showed: $1 rentals bought and picked while poor, $6-9 rent a round by Ante 2, a
+   debt for the rest of the run (six broke seeds replayed, the bot bench paragraph); nor
+   interest paid past that boss. Its verdict holds only for what it plays.
 18. **Growth is played for at Best play's own move, the simulated player's finish and its plays
    that cost no pace, in its digs only as this round's points (gap 8), and a joker the projection replaces counts only in this ante's blinds ahead.** Since 2026-10-14 a round's value
    (`RoundGoals::value`) counts what its hands and discards leave the jokers a round changes,

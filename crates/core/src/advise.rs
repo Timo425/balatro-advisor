@@ -1129,7 +1129,8 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     for c in run.open_pack.iter().filter(|c| c.set == "Joker") {
         if let Some(mut j) = Joker::from_key(&c.key, data) {
             j.edition = c.edition;
-            offers.push((j, 0, false));
+            j.eternal = c.eternal;
+            offers.push((j, 0, c.rental));
         }
     }
     // Every joker the shop could still offer
@@ -1302,7 +1303,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         c.long_mult = m;
     }
     for (c, (j, _, rental)) in shop.iter_mut().zip(&offers) {
-        let eternal = run.shop.as_ref().and_then(|sh| sh.jokers.iter().find(|x| x.key == c.key)).is_some_and(|x| x.eternal);
+        let eternal = offer_stickers(run, &c.key).is_some_and(|s| s.eternal);
         if let Some(m) = long_mult(c, j, *rental, eternal) {
             c.long_mult = Some(m);
         }
@@ -1312,7 +1313,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     // at the end of each round, card.lua) Cavendish joins the shop pool, and it can take the
     // slot Gros Michel leaves.
     for c in shop.iter_mut() {
-        let Some(r) = run.shop.as_ref().and_then(|sh| sh.jokers.iter().find(|x| x.key == c.key)).and_then(|x| x.perishable).filter(|&r| (r as f64) < 3.0 * antes_left) else {
+        let Some(r) = offer_stickers(run, &c.key).and_then(|x| x.perishable).filter(|&r| (r as f64) < 3.0 * antes_left) else {
             continue;
         };
         let unlock = (c.key == "j_gros_michel" && !run.pool_flags.iter().any(|f| f == "gros_michel_extinct"))
@@ -1746,7 +1747,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     // it: card.lua `Card:remove_from_deck`)
     let free = run.joker_slots - run.jokers.len() as i64;
     // (a Negative joker on offer brings its own slot: card.lua `Card:add_to_deck`)
-    let negative = |o: &ShopOption| o.key.as_deref().is_some_and(|k| run.shop.as_ref().is_some_and(|s| s.jokers.iter().any(|j| j.key == k && j.edition == Some(Edition::Negative))));
+    let negative = |o: &ShopOption| o.key.as_deref().and_then(|k| offer_stickers(run, k)).is_some_and(|s| s.edition == Some(Edition::Negative));
     let slots_of = |o: &ShopOption| -> i64 {
         if (o.kind == "joker" && !negative(o)) || o.key.as_deref().is_some_and(|k| k.starts_with("p_buffoon")) {
             -((free > 0) as i64)
@@ -1762,23 +1763,46 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     // your jokers a find may take the place of (not an Eternal one, which can't be sold, nor a
     // Negative one, whose slot goes with it: card.lua `Card:can_sell_card`, `remove_from_deck`),
     // each with its scores against your board without it in a round (the contribution pass,
-    // read as a sale's are) and its sale's money
+    // read as a sale's are), its sale's money and its rent a round (it stops with the sale)
     let swappable: Vec<usize> = (0..run.jokers.len()).filter(|&i| !run.jokers[i].eternal && ctx.base.jokers[i].edition != Some(Edition::Negative)).collect();
-    let owned_in = |round: usize, x: &dyn Fn(f64, f64) -> f64| -> Vec<(usize, f64, f64)> {
+    let rent_of = |rental: bool| if rental { value::RENT_PER_ROUND } else { 0.0 };
+    let owned_in = |round: usize, x: &dyn Fn(f64, f64) -> f64| -> Vec<(usize, f64, f64, f64)> {
         let mean = base_odds.get(round).map_or(0.0, |o| o.1.mean).max(1e-9);
-        swappable.iter().filter_map(|&i| contrib[i].1.get(round).map(|(p, st)| (i, 1.0 / x(*p, st.mean / mean).max(1e-3), run.jokers[i].sell_value as f64))).collect()
+        swappable.iter().filter_map(|&i| contrib[i].1.get(round).map(|(p, st)| (i, 1.0 / x(*p, st.mean / mean).max(1e-3), run.jokers[i].sell_value as f64, rent_of(run.jokers[i].rental)))).collect()
     };
+    // the rent a round an option adds to your board's (a rental bought onto it: from the shop or
+    // a pack, into a free slot, in place of a joker sold or with a Negative's own slot) or takes
+    // off it (a rental sold, its own or to make room)
+    let bought_rental = |o: &ShopOption| {
+        o.kind == "joker" && !money_only(o) && (free > 0 || o.sell_index.is_some() || negative(o)) && o.key.as_deref().and_then(|k| offer_stickers(run, k)).is_some_and(|s| s.rental)
+    };
+    // (a Buffoon pack's picks, not seen yet: each a rental as often as the stake makes them)
+    let pack_rent = |o: &ShopOption| match o.key.as_deref() {
+        Some(k) if k.starts_with("p_buffoon") && run.stake >= value::RENTAL_STAKE && (free > 0 || o.sell_index.is_some()) => {
+            let choose = data.center(k).and_then(|c| c.config.get("choose")).and_then(|v| v.as_u64()).unwrap_or(1);
+            choose as f64 * value::RENTAL_SHARE * value::RENT_PER_ROUND
+        }
+        _ => 0.0,
+    };
+    // the rent a round of the board an option leaves: yours, the change it makes
+    let board_rent = board_rent(run);
+    let rent_change = |o: &ShopOption| board_rent + rent_of(bought_rental(o)) + pack_rent(o) - o.sell_index.map_or(0.0, |i| rent_of(run.jokers.get(i).is_some_and(|sj| sj.rental)));
     // the jokers on the board an option leaves that a find may take the place of: yours but the
     // one it sells or replaces (`sell_index`), and the joker it buys (scores against that board
     // without it ×`bought`, from the option's own over yours) where it takes a free slot or
     // replaces one of yours
-    let entries = |o: &ShopOption, owned: &[(usize, f64, f64)], ratio: f64| -> Vec<(f64, f64)> {
-        let mut out: Vec<(f64, f64)> = owned.iter().filter(|e| Some(e.0) != o.sell_index).map(|e| (e.1, e.2)).collect();
+    let entries = |o: &ShopOption, owned: &[(usize, f64, f64, f64)], ratio: f64| -> Vec<(f64, f64, f64)> {
+        let mut out: Vec<(f64, f64, f64)> = owned.iter().filter(|e| Some(e.0) != o.sell_index).map(|e| (e.1, e.2, e.3)).collect();
         let buys = (o.kind == "joker" && !negative(o)) || o.key.as_deref().is_some_and(|k| k.starts_with("p_buffoon"));
-        if buys && !money_only(o) && (free > 0 || o.sell_index.is_some()) {
+        // (an Eternal one can't be sold for a find, card.lua `Card:can_sell_card`, as yours can't:
+        // it holds its slot, and a rental's rent, to the end)
+        let eternal = o.kind == "joker" && o.key.as_deref().and_then(|k| offer_stickers(run, k)).is_some_and(|s| s.eternal);
+        if buys && !eternal && !money_only(o) && (free > 0 || o.sell_index.is_some()) {
             let gone = owned.iter().find(|e| Some(e.0) == o.sell_index).map_or(1.0, |e| e.1);
             // (its sale's money: card.lua `Card:set_cost`, half its price, at least $1)
-            out.push((ratio * gone, (o.cost / 2).max(1) as f64));
+            // (a rental sells for $1, and its rent stops then)
+            let rental = bought_rental(o);
+            out.push((ratio * gone, if rental { 1.0 } else { (o.cost / 2).max(1) as f64 }, rent_of(rental)));
         }
         out
     };
@@ -1789,16 +1813,16 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         let scores = Scores::of(&ctx, key_round, &base_odds);
         let kept = Kept::Chances(Scores::of(&ctx, key_round, &base_odds));
         let owned = owned_in(key_round, &|p, m| scores.ratio_for(p, ctx.opts.sims, Some(m)));
-        let yours: Vec<(f64, f64)> = owned.iter().map(|e| (e.1, e.2)).collect();
+        let yours: Vec<(f64, f64, f64)> = owned.iter().map(|e| (e.1, e.2, e.3)).collect();
         for o in options.iter_mut() {
             let stay = Stay::of(o);
             o.survive = Some(if stay == Stay::Reroll || money_only(o) {
-                let from = Start { owned: &yours, ..Start::BOARD };
+                let from = Start { owned: &yours, ..Start::board(board_rent) };
                 survival_with(&ctx, &pool_entries, &kept, p_now, if stay == Stay::Reroll { run.dollars } else { o.money_after }, false, stay, from)
             } else {
                 let ratio = scores.ratio_for(o.p_win, ctx.opts.sims, o.reach.filter(|_| base > 0.0).map(|r| r / base));
                 let mine = entries(o, &owned, ratio);
-                survival_with(&ctx, &pool_entries, &kept, o.p_win, o.money_after, false, stay, Start { ratio, slots: slots_of(o), owned: &mine }).max(o.p_win)
+                survival_with(&ctx, &pool_entries, &kept, o.p_win, o.money_after, false, stay, Start { ratio, slots: slots_of(o), owned: &mine, rent: rent_change(o) }).max(o.p_win)
             });
         }
     }
@@ -1808,21 +1832,21 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         let kept = Kept::Chances(Scores::of(&ctx, hz, &base_odds));
         let n = next_rounds(&ctx);
         let owned = owned_in(hz, &|p, m| scores.ratio_for(p, n, Some(m)));
-        let yours: Vec<(f64, f64)> = owned.iter().map(|e| (e.1, e.2)).collect();
+        let yours: Vec<(f64, f64, f64)> = owned.iter().map(|e| (e.1, e.2, e.3)).collect();
         for o in options.iter_mut() {
             let stay = Stay::of(o);
             // its own chance there: simulated (a joker bought, a sale), else read off its scores
             // against yours on your board's (`Scores`)
             let strength = o.next_strength.unwrap_or(1.0);
             let own = o.next_p.unwrap_or_else(|| scores.chance(strength));
-            let board = Start { owned: &yours, ..Start::BOARD };
+            let board = Start { owned: &yours, ..Start::board(board_rent) };
             o.survive_next = Some(match stay {
                 Stay::Reroll => survival_with(&ctx, &pool_entries, &kept, p_next, run.dollars, true, stay, board),
                 _ if money_only(o) => survival_with(&ctx, &pool_entries, &kept, p_next, o.money_after, true, stay, board),
                 _ => {
                     let ratio = scores.ratio_for(own, n, Some(strength));
                     let mine = entries(o, &owned, ratio);
-                    survival_with(&ctx, &pool_entries, &kept, own, o.money_after, true, stay, Start { ratio, slots: slots_of(o), owned: &mine }).max(own)
+                    survival_with(&ctx, &pool_entries, &kept, own, o.money_after, true, stay, Start { ratio, slots: slots_of(o), owned: &mine, rent: rent_change(o) }).max(own)
                 }
             });
         }
@@ -1835,17 +1859,20 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             let kept = Kept::Weighted(&ratio);
             // (your jokers' scores there against your board without each, as the pool's are read)
             let owned = owned_in(hz, &|_, m| m);
-            let yours: Vec<(f64, f64)> = owned.iter().map(|e| (e.1, e.2)).collect();
-            let finds = |money: f64, stay: Stay, slots: i64, owned: &[(f64, f64)]| money_value_with(&ctx, &pool_entries, &kept, 1.0, money, Stay::shops(run, true, stay), Start { ratio: 1.0, slots, owned });
-            let keep = finds(run.dollars, Stay::Out, 0, &yours).max(1e-9);
-            let mut cache: std::collections::HashMap<(i64, Stay, i64, Option<usize>, u64), f64> = std::collections::HashMap::new();
+            let yours: Vec<(f64, f64, f64)> = owned.iter().map(|e| (e.1, e.2, e.3)).collect();
+            let finds = |money: f64, stay: Stay, slots: i64, owned: &[(f64, f64, f64)], rent: f64| money_value_with(&ctx, &pool_entries, &kept, 1.0, money, Stay::shops(run, true, stay), Start { ratio: 1.0, slots, owned, rent });
+            let keep = finds(run.dollars, Stay::Out, 0, &yours, board_rent).max(1e-9);
+            // (the money, the stay, the slots, the joker sold, the joker bought's strength, the rent)
+            type FindsKey = (i64, Stay, i64, Option<usize>, u64, u64);
+            let mut cache: std::collections::HashMap<FindsKey, f64> = std::collections::HashMap::new();
             for o in options.iter_mut() {
                 let stay = Stay::of(o);
                 let slots = slots_of(o);
                 let (money, own) = if stay == Stay::Reroll { (run.dollars, 1.0) } else if money_only(o) { (o.money_after, 1.0) } else { (o.money_after, o.next_strength.unwrap_or(1.0)) };
                 let mine = if stay == Stay::Reroll || money_only(o) { yours.clone() } else { entries(o, &owned, own) };
                 let bought = if mine.len() > yours.len() || o.sell_index.is_some() { own.to_bits() } else { 0 };
-                let f = *cache.entry((money.round() as i64, stay, slots, o.sell_index, bought)).or_insert_with(|| finds(money, stay, slots, &mine) / keep);
+                let rent = if stay == Stay::Reroll || money_only(o) { board_rent } else { rent_change(o) };
+                let f = *cache.entry((money.round() as i64, stay, slots, o.sell_index, bought, rent.to_bits())).or_insert_with(|| finds(money, stay, slots, &mine, rent) / keep);
                 o.next_strength = Some(own * f);
             }
         }
@@ -1937,7 +1964,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         let (_, k) = shops_ahead(run, false);
         // (playing: the blind's money is in `gain`, so the shop after it adds none; skipping: no
         // shop after it, and it pays nothing)
-        let survive_with = |money: f64, shops: Shops, p0: f64| money_value_with(&ctx, &pool_entries, &kept, p0, money, shops, Start::BOARD).max(p0).min(1.0);
+        let survive_with = |money: f64, shops: Shops, p0: f64| money_value_with(&ctx, &pool_entries, &kept, p0, money, shops, Start::board(board_rent)).max(p0).min(1.0);
         let after_play = |after: usize| Shops { prepaid: 1, ..Shops::after(after) };
         let after_skip = |after: usize| Shops { dropped: 1, ..Shops::after(after) };
         // money spent once, and held (rerolls and packs), as for every option
@@ -1949,7 +1976,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         // Playing: this blind, then its reward, interest and a hand's money for the shops ahead
         // Rent is charged at the end of a round you play (card.lua calculate_rental): a
         // skipped blind has no round end, so skipping saves it.
-        let rent_now = run.jokers.iter().filter(|j| j.rental).count() as f64 * 3.0;
+        let rent_now = board_rent;
         // Only a played round has an end: it pays for how it's played (the hands left, the
         // cards, the money jokers: `LongRun::round_money_now`, on this ante's plain blinds) and
         // a Blue Seal held then makes a planet (and grows Constellation)
@@ -1959,7 +1986,9 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         let used = run.consumables.iter().filter(|c| tarots.iter().any(|t| t.key == c.key && t.money_gain > 0.0)).count() as i64;
         let free = (run.consumable_slots - run.consumables.len() as i64 + used).max(0) as usize;
         let seal_planets = seal_planets_a_round(round_now(run), blue, run.full_deck().len(), free);
-        let gain = held + bv.reward as f64 + interest(run.dollars + held, run.interest_amount, run.interest_cap) as f64 - rent_now + round_money;
+        // (the interest on what's left after the rent: it comes off first, state_events.lua
+        // `end_round`, and the cash-out reads the money then, `evaluate_round`)
+        let gain = held + bv.reward as f64 + interest(run.dollars + held - rent_now, run.interest_amount, run.interest_cap) as f64 - rent_now + round_money;
         let play_survive = p_blind * survive_with(run.dollars + gain, after_play(k), p_boss);
         let mut play_long = money_long(gain);
         if seal_planets > 0.0 {
@@ -2114,7 +2143,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                 let p_next = base_odds.get(hz).map_or(0.0, |o| o.0);
                 let kept_next = Kept::Chances(Scores::of(&ctx, hz, &base_odds));
                 let shops_next = k + 3;
-                let next_with = |money: f64, shops: Shops, p0: f64| money_value_with(&ctx, &pool_entries, &kept_next, p0, money, shops, Start::BOARD).max(p0).min(1.0);
+                let next_with = |money: f64, shops: Shops, p0: f64| money_value_with(&ctx, &pool_entries, &kept_next, p0, money, shops, Start::board(board_rent)).max(p0).min(1.0);
                 let skip_p0 = if next_boards.is_empty() {
                     p_next
                 } else {
@@ -2160,7 +2189,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             let kept = Kept::Chances(Scores::of(&ctx, key_round, &base_odds));
             // the boss's chance with `shops` shops before it (in a blind, all the shops before the
             // boss are `survival_with`'s, as many as the blinds ahead)
-            let with = |m: f64, shops: usize| money_value_with(&ctx, &pool_entries, &kept, p_now, m, Shops::after(shops), Start::BOARD).min(1.0);
+            let with = |m: f64, shops: usize| money_value_with(&ctx, &pool_entries, &kept, p_now, m, Shops::after(shops), Start::board(board_rent)).min(1.0);
             value::Ahead::new(&ctx, (!pool_entries.is_empty()).then_some((p_now, &with as &dyn Fn(f64, usize) -> f64)))
         })
         .flatten();
@@ -2212,7 +2241,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             "Card order within a play: +Mult cards first, Glass/Polychrome last.",
             "Scaling jokers keep their current value in the blinds ahead. By Ante 8, the ones a round changes grow or fade as the simulated player's rounds at this ante's plain blind sizes leave them (yours by a player that plays to the round's goals, their worths from a projection that keeps them; a shop joker's by a player that plays only to win); the rest by a table.",
             "Blue Seal planets by Ante 8 assume a consumable held at round end in a measured share of rounds (one run).",
-            "The shop ranking counts what each option's money left buys in the shops ahead: the money spent shop by shop on 2000 simulated walks (rerolls and the jokers they show, bought in the shop they show in while the money lasts, into a free slot or in place of the joker whose loss costs least, yours sold for it; the most rerolls a shop chosen on half the walks, at most 8: a budget), starting from the board the option leaves; several jokers' score gains added (most jokers' Chips and Mult add), read off your board's score spread in that round as a lognormal (heuristic); an option with no simulated chance at the next ante's boss read the same way from its score there. Planets, packs and tarots the money could buy aren't counted.",
+            "The shop ranking counts what each option's money left buys in the shops ahead: the money spent shop by shop on 2000 simulated walks (rerolls and the jokers they show, bought in the shop they show in while the money lasts, into a free slot or in place of the joker whose loss costs least, yours sold for it; the most rerolls a shop chosen on half the walks, at most 8: a budget), starting from the board the option leaves; several jokers' score gains added (most jokers' Chips and Mult add), read off your board's score spread in that round as a lognormal (heuristic); an option with no simulated chance at the next ante's boss read the same way from its score there. Rent comes off at each round's end: your rentals', one the option buys, a Buffoon pack's picks as often as the stake makes them rentals. Planets, packs and tarots the money could buy aren't counted, nor the stickers of the jokers the walk finds (not modelled).",
             "With your joker slots full, the joker a shop or pool joker replaces is chosen by the shop ranking's measure: the chance through this ante's hardest round × the next ante's boss × the geometric mean of the long run with that sale (its income and growth by Ante 8) and the strength at the next ante, with Mr. Bones' save counted at the two bosses it plays (the shop ranking counts it through every round ahead: on chained runs, the share of lost rounds a save rescues applied to each option's survival, a heuristic); the swaps and places raced on the same simulated rounds (to the full count), those it can't tell apart reported as ties; when no swap gets through 20% this round, the score reached decides and no ties are shown, as in the shop ranking (heuristic budget: at most 6 swaps after 32 rounds, 4 after 64, 3 after 128; a sale's places that play the first 32 rounds the same count as one). A Negative joker is never the one sold to make room (its slot goes with it). What a sale does that isn't modelled is said on the option (a joker that acts when sold: Diet Cola, Invisible Joker; Campfire's growth from it). A joker's money is the money a round won pays on the board with it against without it, on the same rounds of this ante's plain blinds (scoring, discards, the round's end, hands left); a joker whose money that doesn't reach (Gift Card, Credit Card, Matador's boss payout) is said \"not modelled\" on an option that sells it. The pool's quick screen tries only the joker whose removal leaves most by the same measure. A perished joker is the one sold.",
         ]
         .into_iter()
@@ -3103,7 +3132,7 @@ fn shop_options(
         let later = c.reach.iter().zip(&c.reach_delta).zip(&ctx.specs).find(|(_, sp)| sp.horizon).map(|((r, d), sp)| {
             format!("{} reach {:.0}% → {:.0}%", sp.label, (r - d) * 100.0, r * 100.0)
         });
-        let stickers = run.shop.as_ref().and_then(|sh| sh.jokers.iter().find(|j| j.key == c.key)).map(|j| {
+        let stickers = offer_stickers(run, &c.key).map(|j| {
             let mut v = Vec::new();
             if let Some(n) = j.perishable {
                 v.push(format!("perishable: {n} rounds"));
@@ -4529,7 +4558,7 @@ fn shops_ahead(run: &RunState, next_ante: bool) -> (bool, usize) {
 /// What `money` is worth in `kept`'s terms, spent shop by shop in the shops still to come
 /// (`money_value_with`).
 fn money_value(ctx: &Ctx, pool: &[Candidate], kept: &Kept, now: f64, money: f64, next_ante: bool) -> f64 {
-    money_value_with(ctx, pool, kept, now, money, Shops::ahead(ctx.run, next_ante), Start::BOARD)
+    money_value_with(ctx, pool, kept, now, money, Shops::ahead(ctx.run, next_ante), Start::board(board_rent(ctx.run)))
 }
 
 
@@ -4690,6 +4719,20 @@ fn normal_quantile_above(q: f64) -> f64 {
     0.5 * (lo + hi)
 }
 
+/// A joker on offer's stickers (common_events.lua `create_card`: the shop's and a pack's jokers
+/// alike): while a pack is open its cards are the offers, else the shop's
+pub(super) struct Stickers {
+    pub rental: bool,
+    pub eternal: bool,
+    pub perishable: Option<i64>,
+    pub edition: Option<Edition>,
+}
+
+pub(super) fn offer_stickers(run: &RunState, key: &str) -> Option<Stickers> {
+    let pack = run.open_pack.iter().find(|c| c.key == key).map(|c| Stickers { rental: c.rental, eternal: c.eternal, perishable: c.perishable, edition: c.edition });
+    pack.or_else(|| run.shop.as_ref().and_then(|sh| sh.jokers.iter().find(|j| j.key == key)).map(|j| Stickers { rental: j.rental, eternal: j.eternal, perishable: j.perishable, edition: j.edition }))
+}
+
 /// What the jokers a walk keeps are worth together (`money_value_with`)
 pub(super) enum Kept<'a> {
     /// Chances in a round: the board the walk starts from with every score raised by what each
@@ -4771,19 +4814,32 @@ impl Kept<'_> {
 /// Where the money's walk starts (`money_value_with`): the board a shop option leaves, its
 /// scores against yours (`ratio`, its own chance being the walk's `now`: the floor a find must
 /// beat), the free slots it changes (`slots`: a joker bought or a Buffoon pack's pick −1, a
-/// sale +1) and the jokers on it a find may take the place of (`owned`: each its scores against
-/// that board without it and its sale's money; the joker it buys among them), so a full board
-/// swaps as a player sells one of their jokers for a better one
+/// sale +1), the jokers on it a find may take the place of (`owned`: each its scores against
+/// that board without it, its sale's money and its rent a round; the joker it buys among them),
+/// so a full board swaps as a player sells one of their jokers for a better one, and the rent a
+/// round that board pays (`rent`: your rentals, a rental bought, less a rental sold; none where
+/// the caller's own measure takes the rent already, `Spending`)
 #[derive(Clone, Copy)]
 pub(super) struct Start<'a> {
     ratio: f64,
     slots: i64,
-    owned: &'a [(f64, f64)],
+    owned: &'a [(f64, f64, f64)],
+    rent: f64,
 }
 
 impl Start<'static> {
-    /// Your board as it is, none of its jokers swapped
-    pub(super) const BOARD: Start<'static> = Start { ratio: 1.0, slots: 0, owned: &[] };
+    /// Your board as it is, none of its jokers swapped, its rent not counted
+    pub(super) const BOARD: Start<'static> = Start { ratio: 1.0, slots: 0, owned: &[], rent: 0.0 };
+
+    /// Your board as it is, paying `rent` a round
+    pub(super) fn board(rent: f64) -> Start<'static> {
+        Start { rent, ..Start::BOARD }
+    }
+}
+
+/// The rent your rentals take at each round's end (card.lua `Card:calculate_rental`)
+fn board_rent(run: &RunState) -> f64 {
+    run.jokers.iter().filter(|j| j.rental).count() as f64 * value::RENT_PER_ROUND
 }
 
 /// The shops a walk goes through (`money_value_with`): whether you're in one now (`here`), how many
@@ -4822,9 +4878,11 @@ const WALKS: usize = 2000;
 
 /// `money_value` for a given number of shops ahead (and whether you're in one now): the money
 /// spent shop by shop as a player buys it, on `WALKS` walks through the shops. In the shop you're
-/// in, only its rerolls (its cards are the options); then each shop after a blind: the blind's
-/// reward, a hand's money and the interest on what you hold first (state_events.lua
-/// `evaluate_round`; a debt pays nothing and is paid back from them), its free cards, then its
+/// in, only its rerolls (its cards are the options); then each shop after a blind: the rent of
+/// the rentals on the board (card.lua `Card:calculate_rental`, at the round's end in
+/// state_events.lua `end_round`, before the cash-out; it stops when the walk sells one for a
+/// find), then the blind's reward, a hand's money and the interest on what you hold
+/// (`evaluate_round`; a debt pays nothing and is paid back from them), its free cards, then its
 /// rerolls (common_events.lua `calculate_reroll_cost`: one free for each Chaos the Clown, the
 /// shop you're in only while its price shows it unused, then each paid one $1 more, from the
 /// shop's price). In each shop the jokers are looked at best first, and one is bought when the
@@ -4903,6 +4961,7 @@ fn money_value_with(ctx: &Ctx, pool: &[Candidate], kept_as: &Kept, now: f64, mon
         let mut capped = false;
         for walk in 0..WALKS {
             let mut m = money;
+            let mut rent = from.rent;
             kept.clear();
             kept.extend_from_slice(&owned);
             kept_at.clear();
@@ -4912,7 +4971,9 @@ fn money_value_with(ctx: &Ctx, pool: &[Candidate], kept_as: &Kept, now: f64, mon
                 cards.clear();
                 if !here {
                     let after = s - in_shop as usize;
+                    // (a blind already counted in the money has its rent counted there too)
                     if after >= prepaid {
+                        m -= rent;
                         m += rewards[after] as f64 + run.money_per_hand + interest(m, run.interest_amount, run.interest_cap) as f64;
                     }
                     draw(&mut cards, walk, s, 0);
@@ -4950,6 +5011,7 @@ fn money_value_with(ctx: &Ctx, pool: &[Candidate], kept_as: &Kept, now: f64, mon
                                 // (a joker of yours sold for it: card.lua `Card:sell_card`)
                                 if let Some(o) = from.owned.get(usize::MAX - kept_at.swap_remove(i)) {
                                     m += o.1;
+                                    rent -= o.2;
                                 }
                             }
                             kept.push((gain, x, false));
@@ -5759,7 +5821,7 @@ mod tests {
     fn one_off_money_counts_once() {
         // +$12 once must not be worth as much as +$12 every ante would: bounded, above ×1.00.
         let mut r = shop_run(&[("j_red_card", None, None), ("j_joker", None, None)], &[]);
-        r.shop.as_mut().unwrap().other_cards.push(crate::save::ItemCard { key: "c_hermit".into(), name: "The Hermit".into(), set: "Tarot".into(), cost: 3, edition: None, card: None });
+        r.shop.as_mut().unwrap().other_cards.push(crate::save::ItemCard { key: "c_hermit".into(), name: "The Hermit".into(), set: "Tarot".into(), cost: 3, edition: None, card: None, rental: false, eternal: false, perishable: None });
         let a = analyze(&r, GameData::bundled(), None, &quick());
         let h = a.options.iter().find(|o| o.label == "The Hermit").expect("Hermit offered");
         let m = h.long_mult.expect("money cards get a By Ante 8 value");
@@ -5772,7 +5834,7 @@ mod tests {
         r.screen = crate::save::Screen::StandardPack;
         let mut card = crate::model::Card::new(crate::model::Rank(2), crate::model::Suit::Clubs);
         card.edition = Some(Edition::Polychrome);
-        r.open_pack = vec![crate::save::ItemCard { key: "c_base".into(), name: "2 of Clubs".into(), set: "Default".into(), cost: 0, edition: None, card: Some(card) }];
+        r.open_pack = vec![crate::save::ItemCard { key: "c_base".into(), name: "2 of Clubs".into(), set: "Default".into(), cost: 0, edition: None, card: Some(card), rental: false, eternal: false, perishable: None }];
         let a = analyze(&r, GameData::bundled(), None, &quick());
         let pick = a.options.iter().find(|o| o.kind == "card").expect("the pack card is an option");
         assert!(pick.label.starts_with("pick 2♣") && pick.long_mult.is_some(), "{}", pick.label);
@@ -6444,7 +6506,7 @@ mod tests {
         assert_eq!(with, ["Small"]);
         let skip = a.blinds[0].skip.as_ref().unwrap();
         assert!(skip.tag.contains("+$30 now"), "with the money you have now: {}", skip.tag);
-        r.open_pack = vec![crate::save::ItemCard { key: "c_pluto".into(), name: "Pluto".into(), set: "Planet".into(), cost: 0, edition: None, card: None }];
+        r.open_pack = vec![crate::save::ItemCard { key: "c_pluto".into(), name: "Pluto".into(), set: "Planet".into(), cost: 0, edition: None, card: None, rental: false, eternal: false, perishable: None }];
         let a = analyze(&r, GameData::bundled(), None, &quick());
         assert!(a.blinds.iter().all(|b| b.skip.is_none()), "a pack is open");
     }
@@ -6468,7 +6530,7 @@ mod tests {
     fn every_pack_and_reroll_counts_the_jokers_that_grow_from_it() {
         // Any booster pack can be skipped (card.lua skipping_booster), so every kind is worth at
         // least skipping it (free here, so no price comes off); a reroll counts Flash Card's growth
-        let pack = |key: &str, name: &str| crate::save::ItemCard { key: key.into(), name: name.into(), set: "Booster".into(), cost: 0, edition: None, card: None };
+        let pack = |key: &str, name: &str| crate::save::ItemCard { key: key.into(), name: name.into(), set: "Booster".into(), cost: 0, edition: None, card: None, rental: false, eternal: false, perishable: None };
         for (owned, note) in [("j_red_card", "or skip it for Red Card +3 Mult"), ("j_flash", "Flash Card +2 Mult")] {
             let mut r = shop_run(&[(owned, None, None), ("j_joker", None, None)], &[]);
             r.shop.as_mut().unwrap().boosters = vec![
@@ -6514,8 +6576,8 @@ mod tests {
         let mut r = shop_run(&[("j_joker", None, None)], &[]);
         r.screen = crate::save::Screen::StandardPack;
         let card = Card::parse_list("3S:blue").unwrap()[0];
-        r.open_pack = vec![crate::save::ItemCard { key: "c_base".into(), name: "3 of Spades".into(), set: "Default".into(), cost: 0, edition: None, card: Some(card) }];
-        r.consumables = vec![crate::save::ItemCard { key: "c_cryptid".into(), name: "Cryptid".into(), set: "Spectral".into(), cost: 4, edition: None, card: None }];
+        r.open_pack = vec![crate::save::ItemCard { key: "c_base".into(), name: "3 of Spades".into(), set: "Default".into(), cost: 0, edition: None, card: Some(card), rental: false, eternal: false, perishable: None }];
+        r.consumables = vec![crate::save::ItemCard { key: "c_cryptid".into(), name: "Cryptid".into(), set: "Spectral".into(), cost: 4, edition: None, card: None, rental: false, eternal: false, perishable: None }];
         let a = analyze(&r, GameData::bundled(), None, &quick());
         let pick = a.options.iter().find(|o| o.kind == "card").expect("the pack card is an option");
         assert!(pick.note.contains("with your Cryptid"), "{}", pick.note);
@@ -6525,8 +6587,8 @@ mod tests {
         let mut r = shop_run(&[("j_joker", None, None)], &[]);
         r.screen = crate::save::Screen::StandardPack;
         let card = Card::parse_list(card).unwrap()[0];
-        r.open_pack = vec![crate::save::ItemCard { key: "c_base".into(), name: card.label(), set: "Default".into(), cost: 0, edition: None, card: Some(card) }];
-        r.consumables = vec![crate::save::ItemCard { key: held.0.into(), name: held.1.into(), set: held.2.into(), cost: 4, edition: None, card: None }];
+        r.open_pack = vec![crate::save::ItemCard { key: "c_base".into(), name: card.label(), set: "Default".into(), cost: 0, edition: None, card: Some(card), rental: false, eternal: false, perishable: None }];
+        r.consumables = vec![crate::save::ItemCard { key: held.0.into(), name: held.1.into(), set: held.2.into(), cost: 4, edition: None, card: None, rental: false, eternal: false, perishable: None }];
         let a = analyze(&r, GameData::bundled(), None, &quick());
         a.options.into_iter().find(|o| o.kind == "card").expect("the pack card is an option")
     }
@@ -6666,6 +6728,60 @@ mod tests {
     }
 
     #[test]
+    fn the_moneys_walk_pays_the_rent_of_the_board_each_option_leaves() {
+        // Rent comes off at each round's end, before the cash-out's interest (card.lua
+        // `Card:calculate_rental` in state_events.lua `end_round`): money a rental takes is
+        // money the shops ahead can't spend, whether the rental is yours or the one bought
+        let run = |yours_rental: bool, offer_rental: bool| {
+            // (Egg scores nothing: buying it differs from leaving by its money alone)
+            let mut r = shop_run(&[("j_joker", None, None)], &["j_egg"]);
+            r.joker_slots = 5;
+            r.dollars = 9.0;
+            r.ante = 2;
+            r.jokers[0].rental = yours_rental;
+            let offer = &mut r.shop.as_mut().unwrap().jokers[0];
+            offer.rental = offer_rental;
+            offer.cost = 1;
+            // (targets the next ante's boss isn't sure to be beaten at, with the joker bought or not)
+            for (b, t) in r.blinds.iter_mut().zip([1200.0, 1800.0, 2400.0]) {
+                b.target = t;
+            }
+            analyze(&r, GameData::bundled(), None, &quick())
+        };
+        let next = |a: &Analysis, kind: &str| a.options.iter().find(|o| o.kind == kind).and_then(|o| o.survive_next).unwrap();
+        let (plain, renting) = (run(false, false), run(true, false));
+        assert!(next(&plain, "joker") < 1.0 && next(&plain, "leave") < 1.0 && next(&plain, "leave") > 0.0, "survival must not saturate");
+        // selling the rental stops its rent: the same walk as selling a joker that pays none
+        assert_eq!(next(&renting, "sell"), next(&plain, "sell"), "a sale ends the rent");
+        assert!(next(&renting, "leave") < next(&plain, "leave"), "leaving: your rental {} vs none {}", next(&renting, "leave"), next(&plain, "leave"));
+        let bought = run(false, true);
+        assert!(next(&bought, "joker") < next(&plain, "joker"), "buying: a rental {} vs not {}", next(&bought, "joker"), next(&plain, "joker"));
+    }
+
+    #[test]
+    fn a_packs_rental_pick_pays_its_rent_and_says_so() {
+        // A pack's jokers get the shop's stickers (common_events.lua `create_card`,
+        // `area == G.pack_cards`): while the pack is open its picks are the offers, whatever
+        // the shop holds under the same key (here the same joker, not rental)
+        let pick = |rental: bool| {
+            let mut r = shop_run(&[("j_joker", None, None)], &["j_egg"]);
+            r.joker_slots = 5;
+            r.dollars = 9.0;
+            r.screen = crate::save::Screen::BuffoonPack;
+            r.open_pack = vec![crate::save::ItemCard { key: "j_egg".into(), name: "Egg".into(), set: "Joker".into(), cost: 0, edition: None, card: None, rental, eternal: false, perishable: None }];
+            for (b, t) in r.blinds.iter_mut().zip([1200.0, 1800.0, 2400.0]) {
+                b.target = t;
+            }
+            let a = analyze(&r, GameData::bundled(), None, &quick());
+            a.options.into_iter().find(|o| o.kind == "joker" && o.label.starts_with("pick ")).expect("the pack's pick")
+        };
+        let (plain, rental) = (pick(false), pick(true));
+        assert!(plain.survive_next.unwrap() < 1.0, "survival must not saturate");
+        assert!(rental.survive_next < plain.survive_next, "a rental pick {:?} vs not {:?}", rental.survive_next, plain.survive_next);
+        assert!(rental.note.contains("rental $3/round") && !plain.note.contains("rental"), "{} / {}", rental.note, plain.note);
+    }
+
+    #[test]
     fn a_boss_in_the_outcome_only_says_what_isnt_simulated() {
         // The Tooth's money (engine `score`) is in the round's outcome, not in the simulated
         // player's choices: said so. The Hook's discard is in both and in the scores shown (the
@@ -6705,7 +6821,7 @@ mod tests {
         r.shop = None;
         r.hand = Card::parse_list("AS KS QS 9C 7H 5D 3S 2S").unwrap();
         r.draw_pile = crate::bench::standard_deck().into_iter().filter(|c| !r.hand.iter().any(|h| h.rank == c.rank && h.suit == c.suit)).collect();
-        r.consumables = vec![crate::save::ItemCard { key: "c_world".into(), name: "The World".into(), set: "Tarot".into(), cost: 3, edition: None, card: None }];
+        r.consumables = vec![crate::save::ItemCard { key: "c_world".into(), name: "The World".into(), set: "Tarot".into(), cost: 3, edition: None, card: None, rental: false, eternal: false, perishable: None }];
         r.blinds[0].state = "Current".into();
         r.current_blind = Some(crate::save::CurrentBlind {
             key: "bl_small".into(), name: "Small Blind".into(), target: 3000.0, scored: 0.0, disabled: false, hands_seen: vec![], only_hand: None,
@@ -6737,7 +6853,7 @@ mod tests {
         r.hand = Card::parse_list(hand).unwrap();
         r.draw_pile = crate::bench::standard_deck().into_iter().filter(|c| !r.hand.iter().any(|h| h.rank == c.rank && h.suit == c.suit)).collect();
         r.draw_pile.extend(Card::parse_list(extra).unwrap());
-        r.consumables = vec![crate::save::ItemCard { key: held.0.into(), name: held.1.into(), set: held.2.into(), cost: 4, edition: None, card: None }];
+        r.consumables = vec![crate::save::ItemCard { key: held.0.into(), name: held.1.into(), set: held.2.into(), cost: 4, edition: None, card: None, rental: false, eternal: false, perishable: None }];
         r.blinds[0].state = "Current".into();
         r.current_blind = Some(crate::save::CurrentBlind {
             key: "bl_small".into(), name: "Small Blind".into(), target, scored: 0.0, disabled: false, hands_seen: vec![], only_hand: None,
@@ -6993,7 +7109,7 @@ mod tests {
         // remove): the slots by Ante 8 are the others
         let mut r = blue_seal_run(3);
         r.consumable_slots = 3;
-        r.consumables = vec![crate::save::ItemCard { key: "c_moon".into(), name: "The Moon".into(), set: "Tarot".into(), cost: 3, edition: Some(Edition::Negative), card: None }];
+        r.consumables = vec![crate::save::ItemCard { key: "c_moon".into(), name: "The Moon".into(), set: "Tarot".into(), cost: 3, edition: Some(Edition::Negative), card: None, rental: false, eternal: false, perishable: None }];
         assert_eq!(with_long_run(&r, |lr| lr.consumable_slots(0)), 2);
         r.consumables[0].edition = None;
         assert_eq!(with_long_run(&r, |lr| lr.consumable_slots(1)), 4);
@@ -7006,7 +7122,7 @@ mod tests {
         // (below keeping the money). Fails while it has no By Ante 8 value.
         let long = |blue: usize| {
             let mut r = blue_seal_run(blue);
-            r.shop.as_mut().unwrap().vouchers = vec![crate::save::ItemCard { key: "v_crystal_ball".into(), name: "Crystal Ball".into(), set: "Voucher".into(), cost: 10, edition: None, card: None }];
+            r.shop.as_mut().unwrap().vouchers = vec![crate::save::ItemCard { key: "v_crystal_ball".into(), name: "Crystal Ball".into(), set: "Voucher".into(), cost: 10, edition: None, card: None, rental: false, eternal: false, perishable: None }];
             let a = analyze(&r, GameData::bundled(), None, &quick());
             let o = a.options.iter().find(|o| o.key.as_deref() == Some("v_crystal_ball")).unwrap();
             (o.long_mult.expect("Crystal Ball gets a By Ante 8 value"), o.note.clone(), with_long_run(&r, |lr| lr.seal_planets_for(&lr.board_with(&Gain::default()), (0, 0, 0), 1)))
@@ -7022,7 +7138,7 @@ mod tests {
     fn voucher_option(r: &RunState, key: &str) -> (Option<f64>, String) {
         let data = GameData::bundled();
         let mut r = r.clone();
-        r.shop.as_mut().unwrap().vouchers = vec![crate::save::ItemCard { key: key.into(), name: data.name(key).to_string(), set: "Voucher".into(), cost: 10, edition: None, card: None }];
+        r.shop.as_mut().unwrap().vouchers = vec![crate::save::ItemCard { key: key.into(), name: data.name(key).to_string(), set: "Voucher".into(), cost: 10, edition: None, card: None, rental: false, eternal: false, perishable: None }];
         let a = analyze(&r, data, None, &quick());
         let o = a.options.iter().find(|o| o.key.as_deref() == Some(key)).unwrap();
         (o.long_mult, o.note.clone())
@@ -7149,7 +7265,7 @@ mod tests {
         r.shop = None;
         r.hand = Card::parse_list("AS KS QS JS 9S 7S 5S 3S").unwrap();
         r.draw_pile = crate::bench::standard_deck().into_iter().filter(|c| !r.hand.iter().any(|h| h.rank == c.rank && h.suit == c.suit)).collect();
-        r.consumables = vec![crate::save::ItemCard { key: "c_star".into(), name: "The Star".into(), set: "Tarot".into(), cost: 3, edition: None, card: None }];
+        r.consumables = vec![crate::save::ItemCard { key: "c_star".into(), name: "The Star".into(), set: "Tarot".into(), cost: 3, edition: None, card: None, rental: false, eternal: false, perishable: None }];
         r.blinds[0].state = "Current".into();
         r.current_blind = Some(crate::save::CurrentBlind {
             key: "bl_small".into(), name: "Small Blind".into(), target: 3000.0, scored: 0.0, disabled: false, hands_seen: vec![], only_hand: None,
@@ -7189,7 +7305,7 @@ mod tests {
         r.shop = None;
         r.hand = Card::parse_list("AS KS QS JS 9S 7D 5H 3C").unwrap();
         r.draw_pile = crate::bench::standard_deck().into_iter().filter(|c| !r.hand.iter().any(|h| h.rank == c.rank && h.suit == c.suit)).collect();
-        r.consumables = vec![crate::save::ItemCard { key: "c_star".into(), name: "The Star".into(), set: "Tarot".into(), cost: 3, edition: None, card: None }];
+        r.consumables = vec![crate::save::ItemCard { key: "c_star".into(), name: "The Star".into(), set: "Tarot".into(), cost: 3, edition: None, card: None, rental: false, eternal: false, perishable: None }];
         r.blinds[0].state = "Current".into();
         r.current_blind = Some(crate::save::CurrentBlind {
             key: "bl_small".into(), name: "Small Blind".into(), target: 3000.0, scored: 0.0, disabled: false, hands_seen: vec![], only_hand: None,
@@ -7212,7 +7328,7 @@ mod tests {
         let mut pile: Vec<Card> = crate::bench::standard_deck().into_iter().filter(|c| !r.hand.iter().any(|h| h.rank == c.rank && h.suit == c.suit) && !(c.rank == seal.rank && c.suit == seal.suit)).collect();
         pile.push(seal);
         r.draw_pile = pile;
-        r.consumables = vec![crate::save::ItemCard { key: "c_cryptid".into(), name: "Cryptid".into(), set: "Spectral".into(), cost: 4, edition: None, card: None }];
+        r.consumables = vec![crate::save::ItemCard { key: "c_cryptid".into(), name: "Cryptid".into(), set: "Spectral".into(), cost: 4, edition: None, card: None, rental: false, eternal: false, perishable: None }];
         r.blinds[0].state = "Current".into();
         r.current_blind = Some(crate::save::CurrentBlind {
             key: "bl_small".into(), name: "Small Blind".into(), target: 1500.0, scored: 0.0, disabled: false, hands_seen: vec![], only_hand: None,
@@ -7343,7 +7459,7 @@ mod tests {
 
     #[test]
     fn order_tips_spot_plays_where_order_matters() {
-        let item = |k: &str| crate::save::ItemCard { key: k.into(), name: GameData::bundled().name(k).to_string(), set: "Tarot".into(), cost: 3, edition: None, card: None };
+        let item = |k: &str| crate::save::ItemCard { key: k.into(), name: GameData::bundled().name(k).to_string(), set: "Tarot".into(), cost: 3, edition: None, card: None, rental: false, eternal: false, perishable: None };
         let mut r = shop_run(&[("j_joker", None, None)], &["j_joker"]);
         r.joker_slots = 5;
         r.dollars = 6.0;

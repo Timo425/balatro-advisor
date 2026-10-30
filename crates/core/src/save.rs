@@ -220,6 +220,15 @@ pub struct ItemCard {
     /// For playing cards offered in packs / shop.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub card: Option<Card>,
+    /// A joker's stickers: a pack's jokers get them as the shop's do (common_events.lua
+    /// `create_card`, `area == G.pack_cards`)
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub rental: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub eternal: bool,
+    /// Rounds left if perishable
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub perishable: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -444,6 +453,9 @@ fn item_card(c: &Value, data: &GameData) -> ItemCard {
         cost: int(c.get("cost")),
         edition: edition(c),
         card: if is_playing { playing_card(c) } else { None },
+        rental: c.at("ability.rental").truthy(),
+        eternal: c.at("ability.eternal").truthy(),
+        perishable: c.at("ability.perishable").truthy().then(|| int(c.at("ability.perish_tally"))),
         key,
     }
 }
