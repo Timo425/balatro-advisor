@@ -11,6 +11,16 @@ said. `tools/status.py` reads the ratings below; CLAUDE.md says when to read thi
   buy evaluations seemed off (days of work done on them since). (Relayed from a brainstorm.)
 - **2026-10-28** Restarts at Ante 1 when the jokers look weak, by judgement and not always
   perfectly: "at times I play a not very hopeful joker out a bit."
+- **2026-10-30** How they buy: "when i buy jokers, early i just buy jokers that truly help me,
+  like money is more important"; "buying jokers is more about 'what is worth buying and keeps me
+  afloat' and not 'what will this combine with', other than chips and mult combining better
+  than just 2 mults or 2 chips and then xmult is better and better the later ante [...] i just
+  buy things that boost my score, its rarely about the combos because most jokers are not even
+  good enough on their own."
+- **2026-10-30** On the bot (seeing three rentals held with little money): "nowhere close to
+  probably desperate enough to need all these AND they all are chips anyway so dont scale that
+  much"; it "doesnt seem to have any strategy on mind when it comes to building joker set and
+  economy properly".
 
 ## Each gap's impact
 

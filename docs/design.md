@@ -145,12 +145,14 @@ so the advisor never saw a pack's cards and every pack was skipped; the jokers w
 the advisor's order; a pick from a pack never sold for a free slot; the game sets `G.GAME.won`
 at the end of the Ante 8 boss round even on a loss (state_events.lua `end_round`); and the bot's
 profile had 35 jokers locked (gap 38). The runs of 2026-10-01 (an early advisor besides) are no
-evidence of over-buying. The bot is improved as a player, not used as a judge: nothing judges a
-fix whose effect shows antes later yet. If one is ever needed, paired play-ons would beat whole
-runs (from a saved state where the choice comes up, the old and the new choice each played on
-with the same game seed, so only the choice differs); whole runs only once the single-decision
-gaps are mostly closed and the bot follows most of the advice (`not_followed` near empty), and
-run around the clock through the D17 harness, headless, so the owner can play alongside.
+evidence of over-buying. Since 2026-10-30 paired whole runs (a series at the base and one with
+the change, the same seeds, the same day) judge changes whose effect shows antes later: the
+rent fix (9285bbd) by money by ante. They judge only where the bot follows: its `not_followed`
+(tarots and spectrals, Arcana, Spectral and Standard packs, vouchers; and skipping a blind,
+never asked) is the judge's blind spot, the same in both arms, queued. Paired play-ons from a
+saved state (the old and the new choice played on with the same game seed) stay the sharper
+judge of one decision; whole runs would be cheaper run around the clock through the D17
+harness, headless, so the owner can play alongside.
 The bench's restart rule (`--restart-below` on `ante2_reach`, the horizon row at the Ante 2 blind
 select) has the heuristic threshold 0.30, judged 2026-10-28 at 1786431 against the owner's 51 saved
 runs (Anaglyph Deck, Gold Stake; 44 reached that screen, 7 below the line, none of them won or got
@@ -362,6 +364,19 @@ behind it is a blind spot nobody has written down yet.
   projection plays rounds with no boss rule and no target (`value.rs`, `long_spec`);
   gaps 12 and 13 cover the target and the horizon, not the bosses. Check: Justice on a card is
   worth more to a deck facing The Eye or The Psychic than to one facing plain rounds.
+
+- **Early, buy only jokers that clearly help; money and interest first; skip a blind for an
+  economy tag** (the owner, 2026-10-30: "what is worth buying and keeps me afloat", "rarely
+  about the combos because most jokers are not even good enough on their own"). Needs a
+  joker's price weighed against what the money does held (interest, a better joker later) to
+  the run's end, near-ties not decided by noise, and skip-or-play with the tags held read.
+  Since 2026-10-30 the money's walk pays rent. Blocked: gap 7 (ranks near zero decided by noise:
+  in the 2026-10-30 bot series 6 jokers bought and sold again in the same shop, e.g. Card Sharp
+  $6 → $3), gap 16 (the long run's free finds and rent: a third of the bot's joker buys are
+  $1 rentals, the owner's 14%), gap 36 (a) (money past the cap), gap 21 (held tags in
+  skip-or-play: Anaglyph's Double Tags); and the bot skips no blind and uses no tarot (queued).
+  Check: the bot's money by ante against the owner's ($8 against $25 at Ante 3, 2026-10-30)
+  and its same-shop reversals, both on paired series.
 
 Endless play (past Ante 8) is out of scope (the question above is winning the run); it rewards
 the same retriggered ×Mult.
