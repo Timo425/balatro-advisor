@@ -509,7 +509,10 @@ Proton Drive backup stops being how fixtures travel (CLAUDE.md, "Private fixture
 **Why.** Fixtures reached other machines only through the main PC's one-way backup, and nothing
 could go back, and nothing showed when that one path failed: `house_all_face_down_burglar`
 (95a831e, from bot run BAVANG10) is named in gap 25 and its queue card, yet on 2026-10-31 neither
-laptop nor the backup had it (the backup's newest fixture was from 10-29). Fixtures are small, edited text whose `expect` changes with commits: git
+laptop nor the backup had it (the backup's newest fixture was from 10-29). It was only on the
+main PC, with four fixtures edited there on 10-30: since the 10-30 reboot the backup's watcher
+(a systemd path unit) had armed 31 s before the disk holding the repo mounted, so it watched the
+empty mountpoint and never fired; nothing said so. Fixtures are small, edited text whose `expect` changes with commits: git
 gives every machine a way to push, shows conflicts instead of a newer copy silently winning
 (`rclone --update`), and its history ties a fixture's version to the code it matches.
 
