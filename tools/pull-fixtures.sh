@@ -18,10 +18,13 @@ else
 fi
 
 # The run data (the owner's play history, the bot's runs, calibration, the game file) is made on
-# the main PC and reaches other machines through its Proton Drive backup (uploaded every 3 hours).
-# A machine with a pull script (WSL: ~/.local/bin/balatro-pull, Windows: balatro-pull.ps1, see
-# the vault's advisor-second-machine.md / advisor-windows-laptop.md) pulls it in the background,
-# at most every 6 hours, and every chat is told how fresh it is. The main PC has neither: skip.
+# the main PC and backed up to its Proton Drive every 3 hours. Devices share data only through
+# Syncthing (2026-10-31): a machine in the main PC's "Proton Drive" Syncthing share copies it from
+# that local folder (Windows laptop: balatro-pull.ps1), one outside it still downloads from Proton
+# (WSL: ~/.local/bin/balatro-pull); see the vault's advisor-windows-laptop.md /
+# advisor-second-machine.md. The pull script runs in the background, at most every 6 hours, and
+# every chat is told how fresh the data is. The main PC has neither: skip. A machine's own bot
+# runs go the other way, through a send-only Syncthing folder (`bot-<machine>/`, botrun's BAV_BOT_DIR).
 data="$HOME/.local/share/balatro-advisor"
 stamp="$data/last-pull" result="$data/last-pull.result" log="$data/last-pull.log"
 pull=""

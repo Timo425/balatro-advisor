@@ -38,8 +38,7 @@
   a time per PC across all chats, under `nice -n 19`. When load is high, check your own jobs first
   (a launcher in `ps` doesn't mean the owner is playing).
 - **Split runs over ~50 minutes** into parts (`BAV_ONLY`, `BAV_SEEDS`): the prompt cache lasts an
-  hour. **Ask before a run that holds the game or the PC for hours**, saying how long; no overnight
-  runs (suspending the PC at bedtime is fine).
+  hour. **Ask before a run that holds the game or the PC for hours**, saying how long (D19).
 - **After code changes**, `cargo install --path crates/cli` (the owner restarts `ui`). The bot plays
   only on Profile 3, never the owner's Profile 1.
 - **Normal play runs Lovely with only `Mods/advisor-live`.** Never put Steamodded back (it turns
@@ -54,10 +53,11 @@ every machine pulls and pushes. New machine: `gh repo clone Timo425/balatro-advi
 tests/fixtures/private` (a folder that already has fixtures: vault
 `Arvutimängud/Balatro/advisor-second-machine.md`). `tools/pull-fixtures.sh` pulls it at each chat's
 start (SessionStart hook in `.claude/settings.json`; needs `bash`, Git Bash on Windows) and, in the
-background, the run data (history, bot runs, calibration, game file) that the main PC uploads to
-Proton every 3 hours. A captured or changed fixture is committed and pushed there in the same sitting
-as its advisor commit, its message naming that commit. A fixture named by a claim in
-`advisor-active/` is that claim's until it's done. A cloud session has none of this (step 4).
+background, the main PC's run data (history, bot runs, calibration, game file) from the copy of its
+backup Syncthing brings (WSL, outside that share, pulls it from Proton). Bot runs go back through a
+send-only Syncthing folder `bot-<machine>/` (`BAV_BOT_DIR`). A captured or changed fixture is pushed
+to its repo in the same sitting as its advisor commit, its message naming that commit. A fixture named
+by a claim in `advisor-active/` is that claim's until it's done. A cloud session has none of this (step 4).
 
 Local data in `~/.local/share/balatro-advisor/` (from the live page): `calibration.jsonl` (predicted
 vs actual blinds, every shop: evidence for replacing a register entry), `timings.jsonl`, and

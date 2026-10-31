@@ -520,3 +520,19 @@ gives every machine a way to push, shows conflicts instead of a newer copy silen
 needs another way), or real-run data must stay off GitHub even in a private repo.
 
 Approved by the owner 2026-10-31 ("make a private git repo for fixtures").
+
+## D19. Overnight bot runs are allowed (accepted)
+
+**What.** CLAUDE.md's "Ask before a run that holds the game or the PC for hours, saying how long;
+no overnight runs (suspending the PC at bedtime is fine)" loses "no overnight runs": a run that
+holds a machine for hours, overnight included, is asked for like any other long run.
+
+**Why.** The bot's series (`tools/botrun.py`) measure the advice in whole runs, minutes each, and
+the main PC can't stay on at night, so the owner set up the Windows laptop to play them overnight.
+A ban on the one time a machine is otherwise idle stopped those measurements without protecting
+anything the ask before a long run doesn't already protect.
+
+**Revisit if** an overnight run costs something the ask can't foresee (a machine the owner needs
+in the morning, a run left holding the game).
+
+Approved by the owner 2026-10-31 ("no overnight runs is a dumb rule get rid of it").
