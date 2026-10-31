@@ -25,10 +25,15 @@ verdict on the advice. As of 2026-10-24 the bot:
   names (made in the open pack, as the game allows; since 2026-10-31: before, every pick needing
   a sale failed and the pack was skipped uncounted, the series up to then included); the
   jokers' order after each shop (the advisor's `order`, one for the board: no order is advised
-  per hand, docs/design.md gap 37).
+  per hand, docs/design.md gap 37); since 2026-10-31, skip-or-play at each Small and Big blind
+  (`blind_select`: one more full analysis a blind, ~8 s at 100 simulations; "close" plays; the
+  run logs every verdict with both sides' values and its `skips`). Before, every blind was played
+  and the advisor wasn't asked. `--skip-blinds never` plays every blind, a baseline.
 - doesn't: tarots and spectrals (bought or in packs), vouchers, Arcana, Spectral and Standard
-  packs, "use X first" in a blind, skipping a blind (always plays it; the advisor isn't asked).
-  Counted in `not_followed`, except skipping a blind, as is a pack pick it couldn't make ("pack
+  packs, "use X first" in a blind, a skip whose tag is valued as a tarot or spectral pick (Charm,
+  Ethereal: it plays). Skip-or-play doesn't read the tags held (gap 21: a Double Tag's copy isn't
+  counted), so a skip may be undervalued.
+  Counted in `not_followed`, as is a pack pick it couldn't make ("pack
   pick needing a sale", "pack pick refused", "pack pick not in the pack": the bot then takes the
   best pick it can above skipping; "pack pick refused after its sale": it skips the pack). Since 2026-10-25 it also sells a joker on its own when the
   advisor's "sell X" option clears keeping the money (`worth`).
@@ -39,8 +44,12 @@ verdict on the advice. As of 2026-10-24 the bot:
   (BotMods/Balatrobot/src/lua/endpoints/sell.lua, `requires_state` and its `valid_state` check
   given SMODS_BOOSTER_OPENED; patched 2026-10-31, the original kept as sell.lua.bak), or every
   pick needing a sale is "pack pick needing a sale"; and its `pack` letting a Negative joker into
-  full slots as the game does (pack.lua, pack.lua.bak; button_callbacks.lua `can_select_card`).
-Since 2026-10-29 every state the advisor analysed in a shop or an open pack, and every state an
+  full slots as the game does (pack.lua, pack.lua.bak; button_callbacks.lua `can_select_card`)
+  and ending a pick or a skip back on the blind select, where a pack a skip tag opened closes
+  (button_callbacks.lua `end_consumeable`, `PACK_INTERRUPT`; patched 2026-10-31), or its call
+  waits for the shop until the RPC times out.
+Since 2026-10-29 every state the advisor analysed in a shop or an open pack (since 2026-10-31 a
+blind select too), and every state an
 analysis failed on (`error`), is kept (`bot/shops/<seed>/a<ante>-r<round>-<n>-<screen>.jkr`;
 `analyze --file` replays it) and the run's log is whole: each shop analysis logs the money, the jokers' stickers and every option ranked.
 Every run before 2026-10-24 (none has a `commit`) is marked `void` in runs.jsonl: every pack
@@ -419,6 +428,48 @@ def open_pack(sims, log):
             return
 
 
+# Tags whose value in skip-or-play is a pick the bot doesn't make yet: a Mega Arcana or Spectral
+# pack's best pick, targets included (advise.rs, the skip-or-play block)
+TAGS_NOT_FOLLOWED = {"tag_charm": "a tarot pick", "tag_ethereal": "a spectral pick"}
+
+
+def blind_select(args, log, skips, a=None):
+    """Skips the blind on deck when the advisor's skip-or-play says skip (the blind's `skip`:
+    `verdict` skip, play or close within 3%), else selects it; "close" plays. A skip whose tag is
+    valued as a pick the bot can't make (`TAGS_NOT_FOLLOWED`) plays instead, counted in
+    `not_followed`. `a` is an analysis of this screen already made (the Ante 2 check's)."""
+    if args.skip_blinds == "never":
+        rpc("select")
+        return
+    a = a or analyze(args.sims, keep="blind")
+    gs = rpc("gamestate")
+    b = next((b for b in a.get("blinds", []) if b.get("state") == "Select" and b.get("skip")), None)
+    if b is None:  # the boss
+        rpc("select")
+        return
+    s, tag = b["skip"], b.get("skip_tag") or {}
+    pv, sv = s["play_survive"] * s["play_next"] * s["play_long"], s["skip_survive"] * s["skip_next"] * s["skip_long"]
+    log.append(f"blind a{gs.get('ante_num')} {b.get('slot')} {tag.get('name')}: {s['verdict']} · play {s['play_survive']:.2f}"
+               f"×{s['play_next']:.2f}×{s['play_long']:.3f}={pv:.3f} skip {s['skip_survive']:.2f}×{s['skip_next']:.2f}"
+               f"×{s['skip_long']:.3f}={sv:.3f} · {s['tag']}")
+    if s["verdict"] != "skip":
+        rpc("select")
+        return
+    why = TAGS_NOT_FOLLOWED.get(tag.get("key"))
+    if why:
+        NOT_FOLLOWED.append(f"blind: skip {b.get('slot')} for {tag.get('name')} ({why})")
+        rpc("select")
+        return
+    rpc("skip")
+    skips.append([gs.get("ante_num"), b.get("slot"), tag.get("key")])
+    # a tag that opens a pack (Buffoon, Meteor, ...) does so a moment after the skip
+    # (button_callbacks.lua G.FUNCS.skip_blind, tag.lua `new_blind_choice`): wait for it, so the
+    # next blind isn't analysed under an opening pack
+    t = time.monotonic()
+    while time.monotonic() - t < 5 and rpc("gamestate")["state"] == "BLIND_SELECT":
+        time.sleep(0.5)
+
+
 def won(gs):
     """The game sets `G.GAME.won` at the end of the win ante's boss round whether it was beaten
     or not (state_events.lua `end_round`): a loss there is a game over with it set."""
@@ -520,7 +571,7 @@ def one_run(args, n, seed=None):
         time.sleep(0.5)
     # monotonic: a suspended PC pauses the clock, so a run that spans a suspend keeps its true time
     log, best_ante, t0, shop_money = [], 1, time.monotonic(), []
-    checked, restarted, ante2_reach = False, False, None
+    checked, restarted, ante2_reach, skips = False, False, None, []
     while True:
         gs = rpc("gamestate")
         st = gs["state"]
@@ -532,7 +583,7 @@ def one_run(args, n, seed=None):
                 # Gold Stake habit: a weak start isn't worth playing out. After Ante 1, if the
                 # board reaches less than this share of a plain Ante 3 boss, start over.
                 checked = True
-                a = analyze(args.sims)
+                a = analyze(args.sims, keep="blind")
                 hz = next((r for r in a.get("rounds", []) if r.get("horizon")), None)
                 # logged on every run, so a restart threshold can be judged afterwards on runs played out
                 ante2_reach = hz.get("reach") if hz else None
@@ -540,9 +591,9 @@ def one_run(args, n, seed=None):
                     log.append(f"restart: next-ante reach {hz['reach']:.2f}")
                     restarted = True
                     break
-                rpc("select")
+                blind_select(args, log, skips, a)
             elif st == "BLIND_SELECT":
-                rpc("select")
+                blind_select(args, log, skips)
             elif st == "SELECTING_HAND":
                 play_hand(args.sims)
             elif st == "ROUND_EVAL":
@@ -564,7 +615,7 @@ def one_run(args, n, seed=None):
         "strategy": args.strategy, "deck": args.deck, "stake": args.stake, "seed": seed,
         "won": won(gs), "ante": best_ante, "restarted": restarted,
         "ended": "won" if won(gs) else "game over" if gs["state"] == "GAME_OVER" else "errors" if not restarted else "restart",
-        "errors": sum(1 for l in log if l.startswith("error")), "shop_money": shop_money, "ante2_reach": ante2_reach, "label": args.label, "advisor_seed": ADVISOR_SEED, "commit": commit(),
+        "errors": sum(1 for l in log if l.startswith("error")), "shop_money": shop_money, "ante2_reach": ante2_reach, "skips": skips, "skip_blinds": args.skip_blinds, "label": args.label, "advisor_seed": ADVISOR_SEED, "commit": commit(),
         "not_followed": NOT_FOLLOWED[:],
         "jokers": [j.get("label") for j in cards(gs, "jokers")],
         "game_rss_mb": game_rss_mb(), "minutes": round((time.monotonic() - t0) / 60, 1), "analysis_minutes": round(ANALYSIS_S / 60, 1), "log": log, "states": str(KEEP_DIR), "time": int(time.time()),
@@ -591,6 +642,8 @@ def main():
                    help="each: restart the game before a run once it holds more than a fresh one (it grows as it plays; Linux with Steam)")
     p.add_argument("--max-game-mb", type=int, default=8000,
                    help="where the game isn't restarted: stop between runs once its memory passes this, printing the seeds to resume with")
+    p.add_argument("--skip-blinds", choices=["advisor", "never"], default="advisor",
+                   help="advisor: skip a Small or Big blind where the advisor's skip-or-play says skip; never: play every blind (a baseline)")
     p.add_argument("--restart-below", type=float, default=0.0,
                    help="after Ante 1, start over if the board reaches less than this share of the next plain boss (e.g. 0.5)")
     args = p.parse_args()
