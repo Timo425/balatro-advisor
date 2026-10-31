@@ -121,7 +121,12 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
                 }
             };
             let mut idx = idx.clone();
-            let (name, score, sure, dig, arrange) = if action == "play" {
+            // a play of face-down cards (a hand of only them: `sim::blind_moves`) shows no hand or
+            // score: those would be the stand-ins' the advisor picked, which you don't know
+            let blind = action == "play" && idx.iter().any(|&i| hand[i].face_down);
+            let (name, score, sure, dig, arrange) = if blind {
+                ("face-down cards".to_string(), 0.0, 0.0, 0, (vec![], vec![]))
+            } else if action == "play" {
                 let (order, arrange, o) = arranged(board, hand, &idx, hand_order);
                 let dig = idx.len().saturating_sub(o.scoring.len());
                 idx = order;
@@ -132,7 +137,7 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
             let cards: Vec<Card> = idx.iter().map(|&i| hand[i]).collect();
             // cards a consumable added aren't in your hand yet: no position
             let indices = idx.iter().filter(|&&i| i < hand_order.len()).map(|&i| hand_order[i]).collect();
-            PlayOption { spare_hands: spare, round_money: cash, action: action.into(), cards: cards.iter().map(Card::label).collect(), indices, dig, hand: name, score, sure, p_win: p, mean_total: mean, use_first, planets, grown, tie: false, then: None, arrange: arrange.0, arrange_indices: arrange.1 }
+            PlayOption { spare_hands: spare, round_money: cash, action: action.into(), cards: cards.iter().map(Card::label).collect(), indices, dig, hand: name, score, sure, p_win: p, mean_total: mean, use_first, planets, grown, tie: false, blind, then: None, arrange: arrange.0, arrange_indices: arrange.1 }
         };
         // Exact ties are broken by the cards themselves, so the order your hand is sorted in
         // never changes the advice
@@ -169,6 +174,12 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
             for m in moves_of(&s2, &b2) {
                 cands.push((m, b2.clone(), s2.clone(), rest.clone(), Some(u.name.clone())));
             }
+        }
+        // a hand the game allows a move from always has one (`sim::blind_moves`); none means
+        // nothing to race: the fallback below (the best play of your hand, if any) instead of
+        // ranking an empty field
+        if cands.is_empty() {
+            return (vec![], vec![], None, vec![]);
         }
         // All compared in one race (see `compare`), on one measure per simulated round, as
         // the shop ranking does: winning it, times the long-run value of what it leaves you
@@ -368,13 +379,16 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
                 .filter(|c| data.center(&c.key).is_none_or(|x| x.set != "Planet") && !tarots.iter().any(|t| t.key == c.key && t.use_effect.is_some()))
                 .map(|c| c.name.as_str())
                 .collect();
-            let tip = if missing.is_empty() {
-                None
-            } else {
-                let m = format!("Not used in this look-ahead (no modelled effect on this hand): {}", missing.join(", "));
-                Some(m)
-            };
-            Some(PlayAdvice { reference, reference_gap, judged, worth_drawing: worth_drawing.clone(), grows: grows.clone(), counts_ahead, grown: best.grown, then: best.then.clone(), ties: opts.iter().filter(|o| o.tie).count(), planets: Some(best.planets), use_first: best.use_first, spare_hands: Some(best.spare_hands), round_money: Some(best.round_money), action: best.action, cards: best.cards, arrange: best.arrange, arrange_indices: best.arrange_indices, dig: best.dig, indices: best.indices, hand: best.hand, score: best.score, p_win: Some(best.p_win), alternatives: opts, tip })
+            let mut tips: Vec<String> = vec![];
+            if !missing.is_empty() {
+                tips.push(format!("Not used in this look-ahead (no modelled effect on this hand): {}", missing.join(", ")));
+            }
+            if sim::all_face_down(&run.hand) {
+                // `sim::blind_moves`
+                tips.push("Face-down cards (heuristic): the highest by the rank sort are played, the lowest thrown; how many, and the odds shown, come from one guess at the hidden cards: any cards of the draw pile (gap 25)".into());
+            }
+            let tip = (!tips.is_empty()).then(|| tips.join(". "));
+            Some(PlayAdvice { reference, reference_gap, judged, worth_drawing: worth_drawing.clone(), grows: grows.clone(), counts_ahead, grown: best.grown, then: best.then.clone(), ties: opts.iter().filter(|o| o.tie).count(), planets: Some(best.planets), use_first: best.use_first, spare_hands: Some(best.spare_hands), round_money: Some(best.round_money), action: best.action, cards: best.cards, arrange: best.arrange, arrange_indices: best.arrange_indices, dig: best.dig, indices: best.indices, hand: best.hand, score: best.score, blind: best.blind, p_win: Some(best.p_win), alternatives: opts, tip })
         }
         None => {
             let hand: Vec<Card> = hand_order.iter().map(|&i| run.hand[i]).collect();
@@ -402,6 +416,7 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
             indices: order.iter().map(|&i| hand_order[i]).collect(),
             hand: p.hand.name().to_string(),
             score: p.floor,
+            blind: false,
             p_win: None,
             alternatives: vec![],
             tip: None,

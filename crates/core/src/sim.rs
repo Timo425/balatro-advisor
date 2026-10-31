@@ -201,6 +201,9 @@ const BIG_HAND_PER_KIND: usize = 8;
 /// `BIG_HAND_PLAYS` by their score now (with every roll failing); and the discards the
 /// hand's structure gives (`structure_discards`). Each play in the order to play it.
 pub fn big_hand_moves(b: &Board, hand: &[Card], deck: &[Card], discards: i64) -> Vec<Move> {
+    if all_face_down(hand) {
+        return blind_moves(hand, discards);
+    }
     let flags = b.rule_flags();
     let mut masks = scoring_plays(hand, flags);
     let more: Vec<u64> = masks.iter().flat_map(|&m| with_kickers(hand, m, flags.splash)).collect();
@@ -582,9 +585,13 @@ pub enum Move {
 }
 
 /// Every play of 1 to 5 cards, each in the order to play it. Face-down cards are left out:
-/// you can't plan around a card you can't see. Of the first `ALL_MOVES_MAX` cards: a bigger
-/// hand's moves are `big_hand_moves`.
+/// you can't plan around a card you can't see; a hand of only face-down cards gives its blind
+/// plays (`blind_moves`). Of the first `ALL_MOVES_MAX` cards: a bigger hand's moves are
+/// `big_hand_moves`.
 pub fn all_plays(hand: &[Card]) -> Vec<Move> {
+    if all_face_down(hand) {
+        return blind_moves(hand, 1).into_iter().filter(|m| matches!(m, Move::Play(_))).collect();
+    }
     let n = hand.len().min(ALL_MOVES_MAX);
     let hidden: u32 = (0..n).filter(|&i| hand[i].face_down).fold(0, |m, i| m | (1 << i));
     (1u32..(1 << n))
@@ -597,12 +604,39 @@ pub fn all_plays(hand: &[Card]) -> Vec<Move> {
         .collect()
 }
 
+/// Whether every card in `hand` is face down (and there is one): The House's first hand, The
+/// Mark with Pareidolia, or by chance The Wheel or The Fish (blind.lua `Blind:stay_flipped`). The game still allows a play (and
+/// a discard) of them, blind.
+pub fn all_face_down(hand: &[Card]) -> bool {
+    !hand.is_empty() && hand.iter().all(|c| c.face_down)
+}
+
+/// The moves of a hand of only face-down cards: playing (and, with a discard left, discarding)
+/// 1 to 5 of them, one move per count. What you can tell of the cards is their rank order: the
+/// game's sort places face-down cards by their real value (cardarea.lua `CardArea:sort`, card.lua
+/// `Card:get_nominal`), and `hand` comes in that order, highest first (`Card::order_key` of the
+/// real cards, `advise.rs`). A play takes the highest, a discard throws the lowest (a heuristic:
+/// their stand-ins are drawn without that order, so the count is chosen as if the cards were
+/// alike; gap 25). Choosing among them by their stand-ins would read cards you don't know.
+pub fn blind_moves(hand: &[Card], discards: i64) -> Vec<Move> {
+    let n = hand.len();
+    let ks = 1..=n.min(5);
+    let mut v: Vec<Move> = ks.clone().map(|k| Move::Play((0..k).collect())).collect();
+    if discards > 0 {
+        v.extend(ks.map(|k| Move::Discard((n - k..n).collect())));
+    }
+    v
+}
+
 /// Every discard of 1 to 5 cards from the hand (none without a discard left), for screening
 /// all of them instead of guessing which are worth simulating. Of the first `ALL_MOVES_MAX`
-/// cards, as `all_plays`.
+/// cards, as `all_plays` (a hand of only face-down cards: `blind_moves`).
 pub fn all_discards(hand: &[Card], discards: i64) -> Vec<Move> {
     if discards <= 0 {
         return vec![];
+    }
+    if all_face_down(hand) {
+        return blind_moves(hand, discards).into_iter().filter(|m| matches!(m, Move::Discard(_))).collect();
     }
     let n = hand.len().min(ALL_MOVES_MAX);
     (1u32..(1 << n)).filter(|m| m.count_ones() <= 5).map(|m| Move::Discard((0..n).filter(|i| m & (1 << i) != 0).collect())).collect()
@@ -1255,6 +1289,14 @@ fn decide_cards_with(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discar
         }
     };
     let whole: Vec<usize> = (0..hand.len()).collect();
+    // cards to act with that are all face down (the whole hand, or the cards outside those
+    // kept for the round's end, `play_on_instead`) have no play to plan around: every card is
+    // outside the plan, so the policy digs with as many as a dig throws, with a discard while
+    // one is left (the lowest), else as a junk hand (the highest): `blind_moves`' largest
+    if all_face_down(hand) {
+        let (n, k) = (hand.len(), hand.len().min(5));
+        return if discards > 0 { Action::Discard((n - k..n).collect()) } else { Action::Play((0..k).collect(), true) };
+    }
     let Some(best) = parts.best(&whole) else { return Action::Play(vec![], false) };
     let play_best = Action::Play(with_fillers(b, hand, &best.cards), false);
     // Discards that pay money (`discard_money`, the engine's discard effects): while the
@@ -4142,6 +4184,34 @@ mod tests {
             })
             .collect();
         Card::parse_list(&text.join(" ")).unwrap()
+    }
+
+    #[test]
+    fn a_hand_of_only_face_down_cards_is_played_blind() {
+        // The House's first hand: every card face down. The game allows playing and discarding
+        // them, so there are moves (one per count), and the policy digs
+        // with five of them instead of ending the round at its first decision (it played
+        // nothing, so every simulated round from such a hand was lost).
+        let mut hand = Card::parse_list("AS KH QD 9C 7S 5H 4D 2C").unwrap();
+        hand.iter_mut().for_each(|c| c.face_down = true);
+        let firsts = |v: &[Move]| v.iter().map(|m| match m { Move::Play(x) | Move::Discard(x) => x.clone() }).collect::<Vec<_>>();
+        // the hand comes highest first (the game's sort shows that much): a play takes the
+        // highest, a discard throws the lowest
+        let plays: Vec<Vec<usize>> = (1..=5).map(|k| (0..k).collect()).collect();
+        let throws: Vec<Vec<usize>> = (1..=5).map(|k| (8 - k..8).collect()).collect();
+        assert_eq!(firsts(&all_plays(&hand)), plays);
+        assert_eq!(firsts(&all_discards(&hand, 1)), throws);
+        assert!(all_discards(&hand, 0).is_empty());
+        let b = sample_board(&["j_joker"]);
+        assert_eq!(big_hand_moves(&b, &hand, &[], 0).len(), 5);
+        assert!(matches!(decide(&b, &hand, &[], 3, 1, 300.0, 8), Action::Discard(v) if v == [3, 4, 5, 6, 7]));
+        assert!(matches!(decide(&b, &hand, &[], 3, 0, 300.0, 8), Action::Play(v, true) if v == [0, 1, 2, 3, 4]));
+        let start = RoundStart { hand: hand.clone(), deck: standard_deck(), hand_size: 8, hands: 4, discards: 0, scored: 0.0, target: 300.0, fresh: false, ..Default::default() };
+        let won = outcomes_after(&b, &start, &Move::Play(vec![0]), 0..16, 3, &[]).iter().filter(|o| o.won > 0.0).count();
+        assert!(won > 8, "{won}");
+        // one face-up card: the face-down ones are still left out of the plays (gap 25)
+        hand[0].face_down = false;
+        assert_eq!(firsts(&all_plays(&hand)), vec![vec![0]]);
     }
 
     #[test]

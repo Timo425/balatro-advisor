@@ -244,6 +244,10 @@ pub struct PlayAdvice {
     /// Planets from Blue Seals held at the end, on average (counted in the ranking)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub planets: Option<f64>,
+    /// Cards played blind (a hand of only face-down cards, `sim::blind_moves`): `hand` and
+    /// `score` say nothing (they'd be the advisor's stand-ins, which you don't know)
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub blind: bool,
     /// The other first moves simulated, best first.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub alternatives: Vec<PlayOption>,
@@ -292,6 +296,10 @@ pub struct PlayOption {
     /// As good as the best move, as far as the simulation can tell
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub tie: bool,
+    /// Cards played blind (a hand of only face-down cards, `sim::blind_moves`): `hand` and
+    /// `score` say nothing (they'd be the advisor's stand-ins, which you don't know)
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub blind: bool,
     /// After a discard: the hand you most often go on to play, its average score, and the
     /// share of simulated rounds it's played in
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2250,6 +2258,9 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         ))
         .chain(counts_ahead.then_some(
             "Best play also counts what the round leaves (the jokers' numbers, Blue Seal planets, money, cards worth drawing) by what it does to the chance of getting through this ante's blinds still ahead (the Big Blind taken as played, then the boss), each from the board the one before leaves: each change but the money's counted only where the paired simulated runs show it, measured on your board carrying what the shops before each blind find, as the shop ranking counts them for the boss (none in the quick pass), put on as a multiplier on every score sized so the boss gets through that often (heuristic), and raised where your board gets through these blinds less than 10% of the time (heuristic); each sized by a search of at most 6 sets of runs, ×1000 at most, ended by two steps that change nothing (a budget), and where that falls short, measured at the chance it reaches, as the change of the odds there, and the changes combined in the odds, so together they stay between none and a sure pass; a joker's numbers stepped up, a step down and down to none (linear in the odds between the steps), apart from its Ante 8 worth (the two multiplied); a joker's counter the round moves (Loyalty Card's place in its cycle, Yorick's discards to its next step, Seltzer's hands left) at each value the round can leave it at, so the hands a round takes land Loyalty Card's ×Mult in the blinds ahead or off them (at most 8 values measured, the rest read between them: a budget; counted only there); a card worth drawing once its Ante 8 worth passed; money by how much more often your board gets through with what the shop estimate says $10 more adds before each blind, from where the shops' find put the boss: with the boss alone ahead that much more, with two blinds on the same runs carrying the find raised for it, read off the find's own search (heuristic: linear between the points it tried, past them its slope; where it tried none, a search to within a standard error); counted wherever the estimate shows it, not by the paired runs (none in the quick pass). Not counted: the next ante, the game's round-end steps between the blinds (Popcorn, Turtle Bean, Gros Michel, perishables, the round's money).",
+        ))
+        .chain(sim::all_face_down(&run.hand).then_some(
+            "Every card in hand is face down: Best play tries one play (and, with a discard left, one discard) of each count, the highest by the rank sort played and the lowest thrown (a cut by the cards' order, not every move); each card stands for one random draw-pile card picked for the whole analysis, so how many to play and the odds shown are those of that one guess at the hidden cards.",
         ))
         .chain((run.hand.len() > sim::ALL_MOVES_MAX).then_some(
             "A big hand: Best play's moves come from the hand's structure (its plays whose cards can all score, the best few of each kind and then by score now; its structure's discards), not every move; the simulated player's best play looks only at its 16 highest cards.",
@@ -7335,6 +7346,60 @@ mod tests {
         });
         let bp = analyze(&r, GameData::bundled(), None, &quick()).best_play.unwrap();
         assert!(bp.worth_drawing.iter().any(|(c, by, g)| c == &seal.label() && by == "Cryptid" && *g > 0.0), "{:?}", bp.worth_drawing);
+    }
+
+    #[test]
+    fn a_hand_of_only_face_down_cards_still_has_a_best_play() {
+        // The House's first hand, every card face down, with no discard left (Burglar): the
+        // game allows a blind play, so Best play has one (it panicked with no move: BAVANG10,
+        // Ante 4). The moves are one per count (the highest played) and the shown play claims
+        // no hand or score (they'd be the stand-ins'), labelled as a heuristic. Fails if
+        // face-down cards give no move again.
+        let make_in = |discards: i64, hand: &str| {
+            let mut r = shop_run(&[("j_joker", None, None)], &[]);
+            r.screen = crate::save::Screen::SelectingHand;
+            r.shop = None;
+            r.hand = Card::parse_list(hand).unwrap();
+            r.draw_pile = crate::bench::standard_deck().into_iter().filter(|c| !r.hand.iter().any(|h| h.rank == c.rank && h.suit == c.suit)).collect();
+            r.hand.iter_mut().for_each(|c| c.face_down = true);
+            r.hands_left = 4;
+            r.discards_left = discards;
+            r.blinds[0].state = "Current".into();
+            r.current_blind = Some(crate::save::CurrentBlind {
+                key: "bl_house".into(), name: "The House".into(), target: 600.0, scored: 0.0, disabled: false, hands_seen: vec![], only_hand: None,
+            });
+            r
+        };
+        let make = |discards: i64| make_in(discards, "AS KH QD 9C 7S 5H 4D 2C");
+        let bp = analyze(&make(0), GameData::bundled(), None, &quick()).best_play.unwrap();
+        let all: Vec<&PlayOption> = bp.alternatives.iter().collect();
+        assert_eq!(bp.action, "play", "{:?}", bp.cards);
+        assert!(bp.blind && bp.cards.iter().all(|c| c == "face-down card") && bp.score == 0.0, "{:?} {} {}", bp.cards, bp.hand, bp.score);
+        assert!(all.iter().all(|o| o.action == "play" && o.blind && o.score == 0.0), "{all:?}");
+        assert!(bp.tip.as_deref().is_some_and(|t| t.contains("heuristic")), "{:?}", bp.tip);
+        // the highest in rank order played: your hand's places of the highest cards
+        let r = make(0);
+        let mut top: Vec<usize> = (0..8).collect();
+        top.sort_by_key(|&i| r.hand[i].order_key());
+        let mut want = top[..bp.cards.len()].to_vec();
+        want.sort();
+        let mut got = bp.indices.clone();
+        got.sort();
+        assert_eq!(got, want);
+        let mut sizes: Vec<usize> = all.iter().map(|o| o.cards.len()).chain([bp.cards.len()]).collect();
+        sizes.sort();
+        assert_eq!(sizes, vec![1, 2, 3, 4, 5]);
+        // the hand listed in another order (as sorted by suit): the same count, the same cards
+        let r2 = make_in(0, "2C 5H 7S AS 4D KH 9C QD");
+        let bp2 = analyze(&r2, GameData::bundled(), None, &quick()).best_play.unwrap();
+        let mut played: Vec<_> = bp2.indices.iter().map(|&i| r2.hand[i].order_key()).collect();
+        played.sort();
+        assert_eq!(played, top[..bp.cards.len()].iter().map(|&i| r.hand[i].order_key()).collect::<Vec<_>>());
+        // with a discard left too; and the simulated round from such a hand isn't lost at its
+        // first decision (the policy stopped there: `sim::decide_cards`)
+        let a = analyze(&make(2), GameData::bundled(), None, &quick());
+        assert!(a.best_play.is_some());
+        assert!(a.rounds[0].p_win > 0.5, "{:?}", a.rounds[0]);
     }
 
     #[test]
