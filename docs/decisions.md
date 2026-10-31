@@ -1,7 +1,9 @@
 # Decisions
 
 Each entry: what was decided, why, and what would make us revisit it. Status is `proposed`
-until the owner approves it, then `accepted`. What needs an entry: `CLAUDE.md`, "What needs a
+until approved, then `accepted`: by the owner for scope, dependencies, what the advice values
+and the workflow; by the reviewer for a technical rule (`CLAUDE.md`, "When the rules don't fit
+the fix"). What needs an entry: `CLAUDE.md`, "What needs a
 decision" (a change that makes a quoted sentence of the design or the workflow untrue). A change
 to a decision amends its entry in place (marked amended, with the date), not a new entry on top.
 
@@ -385,7 +387,7 @@ lose it).
 Folded into `docs/design.md` gap 15 on 2026-10-17 (it records what a stage does, which needs no
 entry under D16); kept so older commits and notes resolve.
 
-## D16. What needs a decision: a change that makes a quoted sentence untrue (accepted, amended 2026-10-17)
+## D16. What needs a decision: a change that makes a quoted sentence untrue (accepted, amended 2026-10-17, 2026-10-31)
 
 **What.** An entry here only when a change makes a sentence untrue in `docs/design.md`'s four
 stages, patterns or numbered rules, in the workflow in `CLAUDE.md`, or in a project-wide choice
@@ -397,7 +399,9 @@ evidence there). "When the rules don't fit the fix" starts from that question. T
 check 8 flags a missing entry only with the quoted sentence and never offers "or record a
 decision" as a fix. A change to a decision amends its entry in place, marked amended with the
 date. One definition, in `CLAUDE.md` ("What needs a decision"); the reviewer's check 8 and this
-file's header point to it.
+file's header point to it. Amended 2026-10-31: a rule bent for now (until a queued fix) is named
+in its gap, with no entry; the owner approves only scope, dependencies, what the advice values
+and the workflow, and a technical rule changed for good is approved by the reviewer.
 
 **Why.** First (2026-10-16): the bar was set in two places that disagreed: `CLAUDE.md` asked for
 an entry when a fix can't be made within the design's rules, the reviewer whenever a change edits
@@ -411,12 +415,16 @@ Best play's round value was proposed as a new decision, though the founding ques
 values a choice by its chance to get through times the long run, after the reviewer offered "or
 record a decision" as an alternative. And the list contradicted rule 1, whose own path for a new
 kind of gain (a `Gain` field) needed an entry. A quoted sentence is a test, not a topic.
+Amended (2026-10-31): the owner was asked a third time to approve a technical rule they can't
+judge (a temporary shortcut for a hand of only face-down cards, against rule 2's "never a cut
+by the cards' order"), and said they didn't understand it; an approval that can't be judged adds
+nothing, while the reviewers already check every change against the rules.
 
 **Revisit if** a behaviour recorded only in `docs/design.md` gets reverted or re-argued because
 no one could find why it was chosen, or a fix that broke a rule went ahead because no single
 sentence was quoted.
 
-Accepted by the owner 2026-10-16; amended with the owner's approval 2026-10-17.
+Accepted by the owner 2026-10-16; amended with the owner's approval 2026-10-17 and 2026-10-31.
 
 ## D17. The game's own code as a test-only parity tier (accepted, amended 2026-10-23)
 

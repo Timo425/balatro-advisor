@@ -44,7 +44,9 @@ Check, with file:line references:
    what the general fix inside the design is. If there is an entry, is it general (widens or
    replaces a rule) rather than an exception or a rule only one case needs, and does it amend
    the decision it changes in place? Flag an entry added anyway: what a stage does, a register
-   value or a known gap belongs in `docs/design.md`.
+   value or a known gap belongs in `docs/design.md`. A rule bent for now (until a queued fix)
+   needs no entry: check that its gap quotes the sentence and names what replaces it. Never ask
+   for the owner's approval of a technical rule (CLAUDE.md, "When the rules don't fit the fix").
 
 Report only the findings, ranked by how likely they are to cause the next "patch on
 patch", each with what a general fix looks like; don't restate the change. Be specific and

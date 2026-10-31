@@ -130,15 +130,23 @@ change to how the advice decides or values things follows these steps, in order:
 the question every piece of advice answers (`docs/design.md`, top: a choice is worth its chance
 to get through, times the long-run value of what it leaves you). If it does, it carries out the
 design, not changes it. Only when a correct fix makes a sentence of `docs/design.md`'s stages,
-patterns or numbered rules untrue:
-1. Stop and quote that sentence, and say why the fix can't keep it true. No silent exception
-   in code or docs.
-2. Propose a change to the design itself: a new or wider rule, pattern or stage, explained by
-   how it serves that question and which other situations it covers.
-3. Accept it only if it's general: it widens or replaces a rule. A rule that only one case
-   needs, or an exception to a rule, is a patch in the docs and is rejected.
-4. The owner approves; record it in `docs/decisions.md` (what, why, what would make us
-   revisit). Rule changes without an entry don't count, and the reviewer flags them.
+patterns or numbered rules untrue (a shortcut where rule 2 says search, say), quote that
+sentence and say why the fix can't keep it true; no silent exception in code or docs. Then:
+- **For now** (the fix that keeps it true needs work not there yet): name the bend in its known
+  gap in `docs/design.md`, with the quoted sentence and what replaces it (a queue card), and
+  label it in the output if it's a heuristic. The reviewer checks it. No entry, and the owner
+  isn't asked.
+- **For good** (the rule itself should change): widen or replace it in `docs/design.md`, a new
+  or wider rule, pattern or stage explained by how it serves that question and which other
+  situations it covers. Only a general change: a rule only one case needs, or an exception to a
+  rule, is a patch in the docs and is rejected. Record it in `docs/decisions.md` (what, why,
+  what would make us revisit); the reviewer checks it's general. Rule changes without an entry
+  don't count, and the reviewer flags them.
+
+The owner approves only what is theirs: scope, new dependencies, what the advice should value or
+care about in play, and this workflow. A technical rule (how the search, the simulation or the
+proof works) doesn't go to them; when one changes for good, the final report says in one line,
+in game terms, what changes on screen.
 
 **What needs a decision.** An entry in `docs/decisions.md` is needed only when a change makes a
 sentence untrue in `docs/design.md`'s four stages, patterns or numbered rules, in the workflow in
