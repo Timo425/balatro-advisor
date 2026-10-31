@@ -86,6 +86,9 @@ backup carried fixtures, so one made on another machine was stranded there).
   captured or changed fixture is committed and pushed there in the same sitting as the advisor
   commit it goes with, its message naming that commit. A fixture a claim in `advisor-active/`
   names is that claim's until it's done.
+- **The run data** (the owner's history, the bot's runs, calibration, the game file) is made on
+  the main PC and reaches other machines through its Proton backup (uploaded every 3 hours); the
+  same hook pulls it in the background on a machine with a pull script and says how fresh it is.
 - A cloud session has no access to it (tracked files only, step 4).
 
 ## Answering "what if I…" questions
