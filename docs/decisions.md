@@ -507,9 +507,9 @@ with. Real runs stay out of this repo; they are committed to that private one. T
 Proton Drive backup stops being how fixtures travel (CLAUDE.md, "Private fixtures").
 
 **Why.** Fixtures reached other machines only through the main PC's one-way backup, and nothing
-could go back, so a fixture made elsewhere stayed there: `house_all_face_down_burglar` (95a831e,
-made on the Windows laptop from bot run BAVANG10) is named in gap 25 and its queue card, yet only
-that laptop had it. Fixtures are small, edited text whose `expect` changes with commits: git
+could go back, and nothing showed when that one path failed: `house_all_face_down_burglar`
+(95a831e, from bot run BAVANG10) is named in gap 25 and its queue card, yet on 2026-10-31 neither
+laptop nor the backup had it (the backup's newest fixture was from 10-29). Fixtures are small, edited text whose `expect` changes with commits: git
 gives every machine a way to push, shows conflicts instead of a newer copy silently winning
 (`rclone --update`), and its history ties a fixture's version to the code it matches.
 
