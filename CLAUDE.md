@@ -4,8 +4,8 @@
   step 4 of the workflow below, and the reviewer ran on the fixes). **Ask first** only
   before adding heavy dependencies or changing scope (D6).
 - **Never commit real game files** (`*.jkr`, snapshots of them, extracted game
-  source). Read them in place. Private fixtures go in `tests/fixtures/private/`
-  (gitignored).
+  source) to this repo. Read them in place. Private fixtures go in `tests/fixtures/private/`
+  (git-ignored here: a clone of the private fixtures repo, see "Private fixtures").
 - **Ground truth is the game source.** `Balatro.exe` is a zip; read it with
   `unzip -p ~/.steam/debian-installation/steamapps/common/Balatro/Balatro.exe
   functions/state_events.lua`. Cite the file and function in comments. Never
@@ -68,6 +68,26 @@
 - **A cloud session's PR** is reviewed and its fixture checks run here, then merged by rebasing
   onto main and a fast-forward push, never a force-push; delete the agent's branches once merged.
 
+## Private fixtures
+
+`tests/fixtures/private/` is its own git repo, the private `Timo425/balatro-advisor-fixtures`;
+every machine pulls and pushes it (since 2026-10-31: before, only the main PC's one-way Proton
+backup carried fixtures, so one made on another machine was stranded there).
+- **New machine:** `gh repo clone Timo425/balatro-advisor-fixtures tests/fixtures/private`.
+- **A folder that already has fixtures** (the old backup copy): join it in place, keeping its files,
+  `cd tests/fixtures/private && git init -b main && git remote add origin
+  https://github.com/Timo425/balatro-advisor-fixtures.git && git fetch origin && git reset
+  origin/main && git branch -u origin/main && git status`. Then restore what's only missing here
+  (`git restore $(git ls-files -d)`), and commit and push what's new or changed here, after
+  looking at the diff (a fixture the repo has changed since is the repo's: restore it). Stop
+  pulling fixtures from Proton Drive (`balatro-pull`, an old SessionStart hook).
+- **Every task:** `tools/pull-fixtures.sh` pulls it (meant as a SessionStart hook in
+  `.claude/settings.json` or `settings.local.json`; run it by hand where there is none). A
+  captured or changed fixture is committed and pushed there in the same sitting as the advisor
+  commit it goes with, its message naming that commit. A fixture a claim in `advisor-active/`
+  names is that claim's until it's done.
+- A cloud session has no access to it (tracked files only, step 4).
+
 ## Answering "what if I…" questions
 
 Use `balatro-advisor whatif` instead of writing scratch programs: it simulates a named
@@ -89,7 +109,8 @@ change to how the advice decides or values things follows these steps, in order:
    fixture before touching code: `tests/fixtures/private/<name>.json` = `{"note", "state":
    <balatro-advisor state --json>, "expect": {...}}` (keys: `best_action`, `best_hand`,
    `best_use_first`, `best_size`, `best_not_cards`: [..], `best_not_played`: [..], `best_played`: [..], `top_option`, `above`: ["A", "B"], `rank_above`: ["A", "B"] (by the ranking's value, not its order of tie bands), `top_hand`, `share_below`: {"Joker": x}, `sells`: {"j_key": "Joker"}). The folder is
-   git-ignored (real runs aren't committed). When a fix can't meet a fixture's expectation yet
+   git-ignored here (real runs aren't committed to this repo): commit and push the fixture in
+   the private fixtures repo ("Private fixtures", D18). When a fix can't meet a fixture's expectation yet
    because of a known gap, narrow `expect` to what still holds and move the rest to
    `"pending_expect"` with `"pending_gap": "gap N"` (the gap in `docs/design.md` names the
    fixture); the note says why. The replay test fails once the pending expectation holds, so

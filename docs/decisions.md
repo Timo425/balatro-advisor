@@ -497,3 +497,23 @@ differences stay explained for long enough that the tier runs only after game up
 engine that scores in game order with a usable license (D2) makes the game's own code unneeded.
 
 Approved by the owner 2026-10-23, as proposed.
+
+## D18. The private fixtures live in a private git repo every machine pushes to (accepted)
+
+**What.** `tests/fixtures/private/` (still git-ignored here) is a clone of the private GitHub repo
+`Timo425/balatro-advisor-fixtures`. Every machine pulls it before a task (`tools/pull-fixtures.sh`)
+and commits and pushes a fixture it captures or changes, alongside the advisor commit it goes
+with. Real runs stay out of this repo; they are committed to that private one. The main PC's
+Proton Drive backup stops being how fixtures travel (CLAUDE.md, "Private fixtures").
+
+**Why.** Fixtures reached other machines only through the main PC's one-way backup, and nothing
+could go back, so a fixture made elsewhere stayed there: `house_all_face_down_burglar` (95a831e,
+made on the Windows laptop from bot run BAVANG10) is named in gap 25 and its queue card, yet only
+that laptop had it. Fixtures are small, edited text whose `expect` changes with commits: git
+gives every machine a way to push, shows conflicts instead of a newer copy silently winning
+(`rclone --update`), and its history ties a fixture's version to the code it matches.
+
+**Revisit if** the fixtures stop being small text (then large append-only data, like the history,
+needs another way), or real-run data must stay off GitHub even in a private repo.
+
+Approved by the owner 2026-10-31 ("make a private git repo for fixtures").
