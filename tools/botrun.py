@@ -28,12 +28,11 @@ verdict on the advice. As of 2026-10-24 the bot:
   per hand, docs/design.md gap 37); with `--skip-blinds advisor` (since 2026-10-31), skip-or-play
   at each Small and Big blind (`blind_select`: one more full analysis a blind, ~8 s at 100
   simulations; "close" plays; the run logs every verdict with both sides' values and its
-  `skips`). The default `never` plays every blind, as before, without asking: skip-or-play's
-  verdicts on a poor board aren't understood yet (docs/design.md gap 39: BAVANG01 skipped both
-  blinds of Antes 2 and 3 at 3127f3e).
+  `skips`); the default, as the bot follows the advisor everywhere it can, so a run shows the
+  skip verdicts the live page gives, gap 39's included. `--skip-blinds never` plays every blind
+  without asking: only the baseline arm of a paired measurement of skipping.
 - doesn't: tarots and spectrals (bought or in packs), vouchers, Arcana, Spectral and Standard
-  packs, "use X first" in a blind, skipping a blind by default (above), and with `advisor` a skip
-  whose tag is valued as a tarot or spectral pick (Charm, Ethereal) or not valued at all (Foil,
+  packs, "use X first" in a blind, a skip whose tag is valued as a tarot or spectral pick (Charm, Ethereal) or not valued at all (Foil,
   Double, Juggle on a Small blind…), and a blind whose analysis failed: it plays. Skip-or-play
   doesn't read the tags held (gap 21).
   Counted in `not_followed` (a blind played under `never` isn't), as is a pack pick it couldn't make ("pack
@@ -658,8 +657,8 @@ def main():
                    help="each: restart the game before a run once it holds more than a fresh one (it grows as it plays; Linux with Steam)")
     p.add_argument("--max-game-mb", type=int, default=8000,
                    help="where the game isn't restarted: stop between runs once its memory passes this, printing the seeds to resume with")
-    p.add_argument("--skip-blinds", choices=["advisor", "never"], default="never",
-                   help="advisor: skip a Small or Big blind where the advisor's skip-or-play says skip; never: play every blind (the default until gap 39 is fixed)")
+    p.add_argument("--skip-blinds", choices=["advisor", "never"], default="advisor",
+                   help="advisor: skip a Small or Big blind where the advisor's skip-or-play says skip; never: play every blind (a paired measurement's baseline)")
     p.add_argument("--restart-below", type=float, default=0.0,
                    help="after Ante 1, start over if the board reaches less than this share of the next plain boss (e.g. 0.5)")
     args = p.parse_args()

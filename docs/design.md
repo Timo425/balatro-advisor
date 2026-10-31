@@ -128,9 +128,9 @@ selling, skipping.
 The bot bench (`tools/botrun.py`, through BalatroBot in the real game on the bot's own profile)
 plays whole runs with the advisor choosing. It isn't a check in the workflow: a run measures
 the advisor only where the bot follows it, and the bot doesn't follow tarots,
-vouchers, Arcana, Spectral and Standard packs, "use X first" or skipping a blind (it can follow
-skip-or-play since 2026-10-31, `--skip-blinds advisor`, but plays every blind by default until
-gap 39 is fixed) (its docstring
+vouchers, Arcana, Spectral and Standard packs, "use X first" or a skip whose tag the advice
+values as a tarot or spectral pick or doesn't value (it follows skip-or-play since 2026-10-31;
+before, it played every blind) (its docstring
 keeps the list; each run records the advisor's top choices it couldn't take, `not_followed`).
 What was measured on 2026-10-23/24, at 1904f2d (Red Deck, 100 simulations a board): a run on the
 same game seed with the same advisor seed is the same run (10 seeds played twice, every pair
@@ -151,8 +151,8 @@ profile had 35 jokers locked (gap 38). The runs of 2026-10-01 (an early advisor 
 evidence of over-buying. Since 2026-10-30 paired whole runs (a series at the base and one with
 the change, the same seeds, the same day) judge changes whose effect shows antes later: the
 rent fix (9285bbd) by money by ante. They judge only where the bot follows: its `not_followed`
-(tarots and spectrals, Arcana, Spectral and Standard packs, vouchers; and skipping a blind, by
-default not followed: gap 39) is the judge's blind spot, the same in both arms, queued. Until 2026-10-31 a pack
+(tarots and spectrals, Arcana, Spectral and Standard packs, vouchers; and until 2026-10-31
+skipping a blind, never asked) is the judge's blind spot, the same in both arms, queued. Until 2026-10-31 a pack
 pick needing a sale also failed uncounted (BalatroBot's `sell` refused an open pack, which the
 game allows) and the pack was skipped: in 10 runs of the series to then, on BAVANG11, 13, 21
 and 22, at Ante 3 (twice at Ante 5) in runs that reached Antes 4-5 (a Card Sharp pick on
@@ -2379,5 +2379,5 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    Ante 2 in 2 of 3 runs and BAVANG02 at Ante 2 in 3 of 3, where skipping reached Ante 3 on both;
    and the skipping run left two free Rare jokers in its Ante 3 shop, read at full price (the
    save is written before a Rare or Uncommon Tag makes its joker free, tag.lua
-   `store_joker_create`; queued). Until it's understood the bot plays every blind
-   (`tools/botrun.py --skip-blinds`, default `never`).
+   `store_joker_create`; queued). The bot follows these verdicts (`tools/botrun.py`), so its runs
+   show them, as the live page does.
