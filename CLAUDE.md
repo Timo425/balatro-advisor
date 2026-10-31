@@ -81,8 +81,8 @@ backup carried fixtures, so one made on another machine was stranded there).
   (`git restore $(git ls-files -d)`), and commit and push what's new or changed here, after
   looking at the diff (a fixture the repo has changed since is the repo's: restore it). Stop
   pulling fixtures from Proton Drive (`balatro-pull`, an old SessionStart hook).
-- **Every task:** `tools/pull-fixtures.sh` pulls it (meant as a SessionStart hook in
-  `.claude/settings.json` or `settings.local.json`; run it by hand where there is none). A
+- **Every task:** `tools/pull-fixtures.sh` pulls it, run by the SessionStart hook in
+  `.claude/settings.json` (tracked: every machine has it; it needs `bash`, Git Bash on Windows). A
   captured or changed fixture is committed and pushed there in the same sitting as the advisor
   commit it goes with, its message naming that commit. A fixture a claim in `advisor-active/`
   names is that claim's until it's done.
