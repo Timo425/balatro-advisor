@@ -3648,6 +3648,7 @@ fn tarot_values(
         }
     }
     let from_hand = !run.hand.is_empty();
+    let names = crate::model::hand_labels(&run.hand);
 
     let horizon = ctx.specs.iter().find(|x| x.horizon).cloned();
     let full = TarotBudget { sims: (ctx.opts.sims / 2).max(100), first: TARGET_FIRST, cap: TARGET_MAX };
@@ -3998,7 +3999,17 @@ fn tarot_values(
             return Some(TarotValue { simulated: true, deck: Some(deck.clone()), note: format!("{what}: {note}"), ..base });
         }
         let (p, r) = odds(&sets[best]);
-        let label = |v: &[usize]| v.iter().map(|&i| deck[i].label()).collect::<Vec<_>>().join(" ");
+        // a card of your hand by what you can see of it (a face-down one by its place and the
+        // sorts: `model::hand_labels`), never the card the deck knows
+        let label = |v: &[usize]| {
+            v.iter()
+                .map(|&i| match hand_idx.iter().position(|&h| h == Some(i)) {
+                    Some(p) if run.hand[p].face_down => names[p].clone(),
+                    _ => deck[i].label(),
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
         // the deck it leaves (a random effect: each outcome's, by its chance)
         let mut decks = outcome_decks(&outcomes, deck, &sets[best]);
         let (d, decks) = if decks.len() == 1 { (decks.pop().map(|x| x.1), vec![]) } else { (None, decks) };
@@ -7374,7 +7385,13 @@ mod tests {
         let bp = analyze(&make(0), GameData::bundled(), None, &quick()).best_play.unwrap();
         let all: Vec<&PlayOption> = bp.alternatives.iter().collect();
         assert_eq!(bp.action, "play", "{:?}", bp.cards);
-        assert!(bp.blind && bp.cards.iter().all(|c| c == "face-down card") && bp.score == 0.0, "{:?} {} {}", bp.cards, bp.hand, bp.score);
+        assert!(bp.blind && bp.score == 0.0, "{:?} {} {}", bp.cards, bp.hand, bp.score);
+        // each card named by its place and its order in the rank sort (gap 35): the kth card
+        // played is the kth highest, at the place `indices` gives
+        for (k, (c, &i)) in bp.cards.iter().zip(&bp.indices).enumerate() {
+            let nth = if k == 0 { "the highest".to_string() } else { format!("the {} highest", crate::model::ordinal(k + 1)) };
+            assert_eq!(c, &format!("face-down card, {} from left: {nth} by the rank sort", crate::model::ordinal(i + 1)));
+        }
         assert!(all.iter().all(|o| o.action == "play" && o.blind && o.score == 0.0), "{all:?}");
         assert!(bp.tip.as_deref().is_some_and(|t| t.contains("heuristic")), "{:?}", bp.tip);
         // the highest in rank order played: your hand's places of the highest cards
@@ -7460,6 +7477,18 @@ mod tests {
                 }
             }
             strip(&mut a);
+            // a face-down card's name says its place (`model::hand_labels`): a position too
+            fn unplace(v: &mut serde_json::Value) {
+                match v {
+                    serde_json::Value::String(s) if s.starts_with("face-down card, ") => {
+                        *s = s.split_once(": ").map_or(s.clone(), |(_, what)| format!("face-down card: {what}"));
+                    }
+                    serde_json::Value::Object(m) => m.values_mut().for_each(unplace),
+                    serde_json::Value::Array(xs) => xs.iter_mut().for_each(unplace),
+                    _ => {}
+                }
+            }
+            unplace(&mut a);
             a
         };
         assert!(make("AH 9H 5H KS 7S 3D QC 2C", false) == make("2C QC 3D 7S KS 5H 9H AH", true), "the advice changed with the order of the cards");

@@ -81,6 +81,8 @@
   .play { display: flex; gap: 5px; flex-wrap: wrap; align-items: center; }
   .card { background: #f4efe4; color: #222; border-radius: 5px; padding: 3px 7px; font-weight: 700; }
   .play .card { font-size: 20px; padding: 6px 11px; border-radius: 7px; }
+  .card.facedown small { font-size: 12px; font-weight: 600; margin-left: 5px; }
+  .play .card.facedown small { font-size: 13px; }
   .play { gap: 7px; font-size: 15px; }
   .muted { color: var(--muted); }
   .mix td { padding: 2px 6px; border: none; }
@@ -341,7 +343,12 @@ function render(d) {
   }
   if (a.best_play) {
     const bp = a.best_play;
-    const cardsHtml = (cs) => cs.map((c) => `<span class="card" style="color:${suitColour(c)}">${esc(c)}</span>`).join("");
+    // a face-down card ("face-down card, 2nd from left: ♠ 10 to A", model.rs `hand_labels`) as a
+    // "?" with its place and what the sorts show; not in a suit's colour, as it may be several
+    const down = "face-down card, ";
+    const cardsHtml = (cs) => cs.map((c) => c.startsWith(down)
+      ? `<span class="card facedown" title="${esc(c)}">?<small>${esc(c.slice(down.length))}</small></span>`
+      : `<span class="card" style="color:${suitColour(c)}">${esc(c)}</span>`).join("");
     const planets = (o) => o.planets > 0.05 ? ` <span class="muted" title="Planets from Blue Seals held at the end of the round, on average (counted in the ranking)">· ${o.planets.toFixed(1)} planets</span>` : "";
     // What the round leaves the jokers that grow or fade in it (Square Joker, Green Joker, Ice Cream…)
     const growers = (bp.grows || []).map((g) => g[0]).join(", ");

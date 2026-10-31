@@ -632,7 +632,7 @@ fn print_state(s: &save::RunState) {
         println!("  {}", joker_label(j));
     }
     if !s.hand.is_empty() {
-        println!("Hand: {}", s.hand.iter().map(|c| c.label()).collect::<Vec<_>>().join("  "));
+        println!("Hand: {}", balatro_advisor::model::hand_labels(&s.hand).join("  "));
     }
     println!("Draw pile: {} cards", s.draw_pile.len());
     if let Some(shop) = &s.shop {
@@ -781,7 +781,11 @@ fn overrides(json: bool, run: Option<&str>, runs: usize, only: Option<&str>, lim
         for g in candidates {
             println!("    a{} r{} {}: you chose {}; the advice preferred {} · {}", g.ante, g.round, g.screen, g.choice.describe(), g.advice, g.grade.describe());
             let expect = match (&g.choice, &g.option) {
-                (Choice::Play { cards, .. }, _) => serde_json::json!({ "best_action": "play", "best_played": cards }),
+                // a face-down card by its place ("#n", the replay test's), not by its name's wording
+                (Choice::Play { cards, positions }, _) => {
+                    let named: Vec<String> = cards.iter().zip(positions).map(|(c, p)| if c.starts_with("face-down card, ") { format!("#{}", p + 1) } else { c.clone() }).collect();
+                    serde_json::json!({ "best_action": "play", "best_played": named })
+                }
                 (Choice::Discard { .. }, _) => serde_json::json!({ "best_action": "discard" }),
                 (_, Some(label)) => serde_json::json!({ "top_option": label }),
                 _ => serde_json::json!({}),

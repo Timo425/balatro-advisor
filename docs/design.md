@@ -638,6 +638,13 @@ the same retriggered ×Mult.
   rankings moved only on boards with a rental. Left: the long run's finds are free and its rent
   stops costing at no levels (gap 16, queued), the walk's own finds carry no stickers (gap 17),
   and money held still below the owner's on boards without rentals (queued).
+- **Done 2026-10-31:** face-down cards named by their place and what the sorts show (gap 35):
+  "face-down card, 1st from left: ♠ 9 to A", or in an all-face-down hand "the 2nd highest by the
+  rank sort", from what you can see or get by pressing a sort button (bar two things the hidden
+  card still decides: cards alike, and whether the hand counts as sorted: gap 35); fixtures name one as
+  `"#n"`. What the advice decides didn't change; the alternatives shown can (moves that used a
+  different face-down card were merged under one label), and a discard lists face-down cards
+  last, by place.
 - **Next:** a free hand banked before the
   hand that wins (gap 34); Ceremonial Dagger's value (gap 8); the blind odds shown and the
   outlook chained as Best play's blinds ahead are (gap 28).
@@ -2067,6 +2074,19 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    is a face card, and the stand-in is any draw-pile card the sort allows. The general fix
    covers this: a face-down card is any card that fits everything you know about it, which
    means the sort and the boss's rule (The Mark: a face card).
+   The page names each face-down card by what the sorts show with the game's own key (gap 35,
+   `model::hand_labels`: a Stone card sorts last in both orders, a face-up card alike bounds
+   nothing in the sort the hand doesn't sit in); the stand-ins' bounds (`advise.rs` `fits`: a Stone by its rank and suit, a card
+   alike as a bound: with one in hand the bounds close on the real card's own key, pinning the
+   stand-in to the real card, or, with none of it in the pile, leaving it unbounded) and
+   `sim::blind_moves`' order (`Card::order_key` of the real cards, whose hidden enhancement,
+   seal and edition order cards alike) don't yet, so a face-down Stone card can be played as a
+   high card though the rank sort (and its name, where it names an order) puts it last, and of two face-down cards alike the one played can be
+   the one named second. Two more places read the real card: a tarot's targets are valued on
+   your hand as it is (`tarot_values`' live round maps the hand onto the deck, face-down cards
+   by their real selves), and Best play's fallback without a round in progress plays the real
+   cards (`sim::best_play`; their names are hidden). The fix's joint draw reads the one key and
+   goes for all of them.
 26. **A joker added to a board goes in one fixed place, so the jokers' order isn't the one you'd
    pick.** Jokers act left to right (state_events.lua `evaluate_play`), so +Mult before ×Mult
    scores more, and you can reorder them for free at any time. `best_order` finds that order,
@@ -2245,20 +2265,41 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    fix. Done when the pending expectation holds (then restore it into `expect`), the reference
    ranks the discard first on seeds 42-44, and `player_values`, the player benchmark and the
    history check show no board or pick worse.
-35. **Every face-down card is named "face-down card", so the page can't say which to throw.**
-   `Card::label` names a face-down card by that one label (`model.rs`), in Best play, its
-   alternatives and every card list. The analysis tells them apart, as each gets its own stand-in
-   bounded by where it sorts (gap 25), and the JSON carries `indices`, but the page shows only the
-   labels. With three in hand, "discard face-down card, 9♠" doesn't say which of the three.
-   Re-sorting is not the problem: it re-analyses with face-down cards in hand (da6a41b), and the
-   stand-ins don't depend on the current order. Raised in play 2026-10-15 (run Q84UC3NR, The
-   Mark at Ante 4, the state in gap 25): Best play read "discard face-down card, face-down card,
-   face-down card, 9♠, 8♠". That one throws all three, so it isn't ambiguous, but the owner
-   couldn't tell from the list, and a move that throws one or two would be. Replay fixtures
-   can't name one either (`best_not_cards` compares labels). The fix: name a face-down card by
-   its place and what the sort shows ("face-down card, 1st from left: ♠ above 9"), in text and
-   JSON, and give fixtures a way to name one by its place. It names the card, so it waits on
-   nothing, but it matters most once gap 25 lets a face-down card be kept for a reason.
+35. **Face-down cards named by their place and what the sorts show (done 2026-10-31).** Until
+   then `Card::label` named every face-down card "face-down card", in Best play, its
+   alternatives and every card list, so with three in hand "discard face-down card, 9♠" didn't say
+   which (raised in play 2026-10-15, run Q84UC3NR, The Mark at Ante 4: "discard face-down card,
+   face-down card, face-down card, 9♠, 8♠"), and an all-face-down hand's Best play (gap 25's blind
+   moves) showed five alike. Now `model::hand_labels` names each by its place in your hand and
+   what the game's two sorts show of it, from what you can see only: where it lands among the
+   face-up cards by rank and by suit (the game's own key, card.lua `Card:get_nominal`: a Stone
+   card sorts last in both), as the cards that fit both ("face-down card, 1st from left: ♠ 9 to
+   A"; "… ♣ 10 to A or ♦ 10 to A"; "… 2♦ or a Stone card"). In the sort your hand sits in, its
+   neighbours are the ones on screen; in the other they're found by key, where a face-up card
+   with the same key bounds nothing (which of the two the game puts first is `unique_val`'s, not
+   in the save): there the name can be wider than the screen shows, never narrower, and differ
+   with which card alike it is. That, and whether the hand counts as sitting in a sort (told by
+   every card's real key, so a hand you rearranged by hand is never bounded by a screen order it
+   isn't in), are the two ways the hidden card reaches the name: wider or exact, never wrong,
+   though a wider name than its twin's would be is itself a tell that it's the card alike, and
+   two face-down cards alike in a hand you rearranged are ordered by place where the game's sort
+   would use `unique_val` (identical cards, so nothing is lost). The names depend on the order
+   your cards sit in on purpose (with face-down cards the order is information: ui.rs
+   `fingerprint` already re-analyses on a re-sort), so the order-invariance test in `advise.rs`
+   compares them with the place taken out, on hands that sit in no sort.
+   Where the face-up cards bound it
+   nowhere (every card face down) or bound another face-down card the same way, by its order
+   among the face-down cards in the rank sort ("the 2nd highest by the rank sort"). Never the
+   stand-in or the real card. Best play, its alternatives, the arrange row (`advise/play.rs`
+   `shown`), a tarot's targets (`tarot_values`, whose note before then named the real card under
+   The House: "Strength on Q♠" from the fresh deck), the owner's logged choices (`choices.rs`) and
+   the CLI's hand line use it; moves that differ only in which face-down card they use are no
+   longer merged in the alternatives shown (they shared one label); a
+   discard lists face-down cards after the rest by place (no longer by their stand-ins' ranks);
+   the page shows such a card as "?" with its place and pins (ui.html). Replay fixtures name a
+   card by its place with `"#n"` (the nth from the left, through `indices`) in `best_not_cards`,
+   `best_not_played` and `best_played`, and `overrides`' candidate fixtures write a face-down
+   card so. What the boss says (The Mark: only face cards) isn't in the name (gap 25).
 36. **Money past the cap buys nothing in the long run, and the race for the joker a buy
    replaces counts saves at the two bosses only.** Since 2026-10-24 the joker a buy replaces is
    chosen by the shop ranking's measure (`shop_measure`), every sale and place raced, ties

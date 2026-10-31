@@ -139,7 +139,9 @@ fn in_blind(before: &RunState, bids: &CardIds, after: &RunState, aids: &CardIds,
                 let Some(hand_ids) = bids.hand_ids() else { return Step::Unclear(Unclear::Hand(handlog::Skip::NoIds)) };
                 let mut positions: Vec<usize> = h.ids.iter().filter_map(|id| hand_ids.iter().position(|x| x == id)).collect();
                 positions.sort();
-                let cards = positions.iter().map(|&p| before.hand[p].label()).collect();
+                // a face-down card by its place and the sorts, as the advice names it
+                let names = crate::model::hand_labels(&before.hand);
+                let cards = positions.iter().map(|&p| names[p].clone()).collect();
                 Step::Chose(Choice::Play { positions, cards })
             }
             Pairing::Skipped(s) => Step::Unclear(Unclear::Hand(s)),
@@ -171,7 +173,8 @@ fn in_blind(before: &RunState, bids: &CardIds, after: &RunState, aids: &CardIds,
     if leaving.is_empty() || leaving.len() > 5 || new_disc.iter().any(|i| !leaving.iter().any(|&l| hand_ids[l] == *i)) {
         return Step::Unclear(Unclear::Hand(handlog::Skip::CardsUnclear));
     }
-    let cards = leaving.iter().map(|&p| before.hand[p].label()).collect();
+    let names = crate::model::hand_labels(&before.hand);
+    let cards = leaving.iter().map(|&p| names[p].clone()).collect();
     Step::Chose(Choice::Discard { positions: leaving, cards })
 }
 

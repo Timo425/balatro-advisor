@@ -79,12 +79,12 @@ decides or values things follows these steps, in order:
 1. **Capture.** When the owner says a suggestion is wrong, save that state as a replay fixture before
    touching code: `tests/fixtures/private/<name>.json` = `{"note", "state": <balatro-advisor state
    --json>, "expect": {...}}` (keys: `best_action`, `best_hand`, `best_use_first`, `best_size`,
-   `best_not_cards`: [..], `best_not_played`: [..], `best_played`: [..], `top_option`, `above`:
-   ["A", "B"], `rank_above`: ["A", "B"] (by value, not tie-band order), `top_hand`, `share_below`:
-   {"Joker": x}, `sells`: {"j_key": "Joker"}), committed in the fixtures repo (D18). When a known gap
-   stops a fix meeting an expectation, narrow `expect` to what holds and move the rest to
-   `"pending_expect"` with `"pending_gap": "gap N"` (the gap names the fixture; the note says why).
-   The replay test fails once it holds, so the fix closing the gap restores it (D14).
+   `best_not_cards`: [..], `best_not_played`: [..], `best_played`: [..] (label, or `"#n"`: nth from
+   left), `top_option`, `above`: ["A", "B"], `rank_above`: ["A", "B"] (by value, not tie-band order),
+   `top_hand`, `share_below`: {"Joker": x}, `sells`: {"j_key": "Joker"}), committed in the fixtures
+   repo (D18). When a known gap stops a fix meeting an expectation, narrow `expect` to what holds and
+   move the rest to `"pending_expect"` with `"pending_gap": "gap N"` (the gap names the fixture; the
+   note says why). The replay test fails once it holds, so the fix closing the gap restores it (D14).
 2. **Diagnose before fixing.** Find out why by reading the code and simulating the state (`whatif`
    or scratch programs), not by guessing. Name the stage that failed and run `git log --oneline |
    grep -i '<stage>'` (commits before d8c27ef aren't prefixed: read the recent log too); if it was

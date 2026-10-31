@@ -244,6 +244,146 @@ impl Card {
         }
         s
     }
+
+    /// Where the game's sort puts this card, highest first (card.lua `Card:get_nominal`,
+    /// cardarea.lua `CardArea:sort`: by rank, or by suit with `by_suit`). A Stone card sorts
+    /// below every other in both. Left out: the tie-breaks between cards alike (the original
+    /// suit's ten-thousandth, `unique_val`).
+    pub fn sort_nominal(&self, by_suit: bool) -> f64 {
+        let suit = match self.suit {
+            Suit::Spades => 0.04,
+            Suit::Hearts => 0.03,
+            Suit::Clubs => 0.02,
+            Suit::Diamonds => 0.01,
+        };
+        let face = match self.rank.0 {
+            14 => 0.4,
+            13 => 0.3,
+            12 => 0.2,
+            11 => 0.1,
+            _ => 0.0,
+        };
+        let mult = if self.enhancement == Some(Enhancement::Stone) {
+            -1000.0
+        } else if by_suit {
+            1000.0
+        } else {
+            1.0
+        };
+        self.rank.chips() + suit * mult + face
+    }
+}
+
+/// `n` as "1st", "2nd", "3rd", "4th", … "11th", "12th", "13th", "21st"
+pub(crate) fn ordinal(n: usize) -> String {
+    let suffix = match (n % 10, n % 100) {
+        (_, 11..=13) => "th",
+        (1, _) => "st",
+        (2, _) => "nd",
+        (3, _) => "rd",
+        _ => "th",
+    };
+    format!("{n}{suffix}")
+}
+
+/// Each card of `hand` (as it sits, left to right) by what you can see of it: a face-up card by
+/// its `Card::label`, a face-down one (The House, Wheel, Mark, Fish) by its place in the hand and
+/// what the game's two sorts show of it ("face-down card, 1st from left: ♠ 10 to A").
+///
+/// The game sorts face-down cards by their real key (cardarea.lua `CardArea:sort`), so switching
+/// between the rank and suit sort shows where each lands among the face-up cards (the sort only
+/// reorders, so a raised card stays raised and can be followed). Those two places bound it: the
+/// cards it can be are every rank and suit (or a Stone card) whose key fits between its face-up
+/// neighbours in both sorts. In the sort your hand sits in, the neighbours are the ones on
+/// screen; in the other they're found by key, where a face-up card alike (the same key) could
+/// sit on either side (`unique_val`, not in the save), so it bounds nothing: there the name
+/// can be wider than the screen shows, never narrower, and it differs with which card alike it is.
+/// Whether the hand sits in a sort is told by every card's real key (a hand you rearranged by
+/// hand is never bounded by an order it isn't in), the other way the hidden card reaches the
+/// name: exact or wider, never wrong. When the face-up cards bound it nowhere (every card face down) or
+/// bound another face-down card the same way, it's also named by its order among the face-down
+/// cards in the rank sort ("the 2nd highest by the rank sort"), which the sort shows too. Never
+/// the card itself: only what you can see. The boss's own rule (The Mark turns down only face
+/// cards) isn't read here (gap 25).
+pub fn hand_labels(hand: &[Card]) -> Vec<String> {
+    let up: Vec<&Card> = hand.iter().filter(|c| !c.face_down).collect();
+    // whether the hand sits in this sort's order (highest first), as the game leaves it after a
+    // sort: then where each card sits is what you see, ties between cards alike included
+    let in_order = |by_suit: bool| hand.windows(2).all(|w| w[0].sort_nominal(by_suit) >= w[1].sort_nominal(by_suit));
+    let sorted = [in_order(false), in_order(true)];
+    // the keys of the face-up cards just below and above card `i` in one sort, those both sides
+    // included (it may be a card alike). In the sort the hand sits in, its neighbours on screen;
+    // in the other, by key, and a face-up card with its own key bounds nothing there: which of
+    // the two the game puts first is `unique_val`'s, which the save doesn't give.
+    let bounds = |i: usize, by_suit: bool| -> (f64, f64) {
+        let key = |c: &Card| c.sort_nominal(by_suit);
+        if sorted[by_suit as usize] {
+            let above = hand[..i].iter().rev().find(|c| !c.face_down).map_or(f64::INFINITY, key);
+            let below = hand[i + 1..].iter().find(|c| !c.face_down).map_or(f64::NEG_INFINITY, key);
+            return (below, above);
+        }
+        let k = key(&hand[i]);
+        let keys = up.iter().map(|u| key(u));
+        let below = keys.clone().filter(|&x| x < k).fold(f64::NEG_INFINITY, f64::max);
+        let above = keys.filter(|&x| x > k).fold(f64::INFINITY, f64::min);
+        (below, above)
+    };
+    let suits = [(Suit::Spades, '♠'), (Suit::Hearts, '♥'), (Suit::Clubs, '♣'), (Suit::Diamonds, '♦')];
+    // what the two sorts leave `c` to be, in words; None when they leave it anything
+    let pinned = |i: usize| -> Option<String> {
+        let (r, s) = (bounds(i, false), bounds(i, true));
+        let fits = |x: &Card| {
+            let (kr, ks) = (x.sort_nominal(false), x.sort_nominal(true));
+            (r.0..=r.1).contains(&kr) && (s.0..=s.1).contains(&ks)
+        };
+        let mut parts = vec![];
+        let mut every = true;
+        for (suit, sym) in suits {
+            let ranks: Vec<u8> = (2..=14).filter(|&n| fits(&Card::new(Rank(n), suit))).collect();
+            every &= ranks.len() == 13;
+            // one contiguous run per suit: both bounds are intervals of the same order within it
+            match (ranks.first(), ranks.last()) {
+                (Some(_), Some(_)) if ranks.len() == 13 => parts.push(format!("any {sym}")),
+                (Some(&lo), Some(&hi)) if lo == hi => parts.push(format!("{}{sym}", Rank(lo).short())),
+                (Some(&lo), Some(&hi)) => parts.push(format!("{sym} {} to {}", Rank(lo).short(), Rank(hi).short())),
+                _ => {}
+            }
+        }
+        let stone = (2..=14).any(|n| suits.iter().any(|&(suit, _)| fits(&Card { enhancement: Some(Enhancement::Stone), ..Card::new(Rank(n), suit) })));
+        if every {
+            // (at most a face-up Stone card below it: nothing worth a word)
+            return None;
+        }
+        if stone {
+            parts.push("a Stone card".into());
+        }
+        Some(parts.join(" or "))
+    };
+    let down: Vec<usize> = (0..hand.len()).filter(|&i| hand[i].face_down).collect();
+    let pins: Vec<Option<String>> = (0..hand.len()).map(|i| if hand[i].face_down { pinned(i) } else { None }).collect();
+    // highest first by the rank sort; cards alike keep their places' order
+    let mut by_rank = down.clone();
+    by_rank.sort_by(|&a, &b| hand[b].sort_nominal(false).total_cmp(&hand[a].sort_nominal(false)).then(a.cmp(&b)));
+    (0..hand.len())
+        .map(|i| {
+            if !hand[i].face_down {
+                return hand[i].label();
+            }
+            let mut what = vec![];
+            if let Some(p) = &pins[i] {
+                what.push(p.clone());
+            }
+            let shared = down.iter().any(|&j| j != i && pins[j] == pins[i]);
+            if shared || pins[i].is_none() {
+                let k = by_rank.iter().position(|&j| j == i).unwrap_or(0);
+                let nth = if k == 0 { "the highest".into() } else { format!("the {} highest", ordinal(k + 1)) };
+                // among the face-down cards (with every card face down, of them all)
+                let of = if up.is_empty() { "" } else { " face-down card" };
+                what.push(format!("{nth}{of} by the rank sort"));
+            }
+            format!("face-down card, {} from left: {}", ordinal(i + 1), what.join(", "))
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -342,5 +482,95 @@ impl Card {
     /// Space-separated list of `Card::parse` tokens.
     pub fn parse_list(spec: &str) -> Result<Vec<Card>, String> {
         spec.split_whitespace().map(Card::parse).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `Card::parse_list` tokens, a leading `?` turning that card face down
+    fn hand(spec: &str) -> Vec<Card> {
+        spec.split_whitespace()
+            .map(|t| {
+                let mut c = Card::parse(t.trim_start_matches('?')).unwrap();
+                c.face_down = t.starts_with('?');
+                c
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_face_down_card_is_named_by_its_place_and_what_the_sorts_show() {
+        // The Mark at Ante 4 (run Q84UC3NR, docs/design.md gap 25), sorted by suit: ? 9♠ 8♠ 4♠
+        // ? 9♥ 2♥ ?. The leftmost lands above 9♠ in both sorts, so it's a spade from 9 (a
+        // second 9♠) up; the next sits between 4♠ and 9♥ by suit and above every face-up card
+        // by rank, so a heart from 10; the last is below 2♥ by suit and above 9♠ by rank: a
+        // Club or Diamond from 10. Named only by that: never the card (K♠, J♥, Q♣).
+        let h = hand("?KS 9S 8S 4S ?JH 9H 2H ?QC");
+        let names = hand_labels(&h);
+        assert_eq!(names[0], "face-down card, 1st from left: ♠ 9 to A");
+        assert_eq!(names[4], "face-down card, 5th from left: ♥ 10 to A");
+        assert_eq!(names[7], "face-down card, 8th from left: ♣ 10 to A or ♦ 10 to A");
+        assert_eq!(names[1], "9♠");
+        // the same cards in the rank sort (K♠ Q♣ J♥ by their keys): each keeps what it is, at
+        // its new place
+        let h2 = hand("?KS ?QC ?JH 9S 9H 8S 4S 2H");
+        let names2 = hand_labels(&h2);
+        assert_eq!(names2[0], "face-down card, 1st from left: ♠ 9 to A");
+        assert_eq!(names2[1], "face-down card, 2nd from left: ♣ 10 to A or ♦ 10 to A");
+        assert_eq!(names2[2], "face-down card, 3rd from left: ♥ 10 to A");
+    }
+
+    #[test]
+    fn a_face_down_card_next_to_one_alike_is_named_by_where_it_sits() {
+        // 10♠ ? 9♠ 8♠ in both sorts: whether it's the second 9♠ or the second 10♠, it sits
+        // between them on screen, and that's all its name says (by key alone each would be
+        // bounded differently: a name that told them apart would read the hidden card)
+        for real in ["?9S", "?TS"] {
+            let h = hand(&format!("TS {real} 9S 8S"));
+            assert_eq!(hand_labels(&h)[1], "face-down card, 2nd from left: ♠ 9 to 10", "{real}");
+        }
+    }
+
+    #[test]
+    fn face_down_cards_the_sorts_cant_tell_apart_are_named_by_their_order() {
+        // every card face down (The House's first hand): nothing bounds them but their order
+        // among themselves, which the rank sort shows
+        let h = hand("?7C ?AS ?2S ?KH ?7D");
+        let names = hand_labels(&h);
+        assert_eq!(
+            names,
+            [
+                "face-down card, 1st from left: the 3rd highest by the rank sort",
+                "face-down card, 2nd from left: the highest by the rank sort",
+                "face-down card, 3rd from left: the 5th highest by the rank sort",
+                "face-down card, 4th from left: the 2nd highest by the rank sort",
+                "face-down card, 5th from left: the 4th highest by the rank sort",
+            ]
+        );
+        // two in the same gap between face-up cards (above 9♥, below A♠ in both sorts): the
+        // gap, and their order among the face-down cards
+        let h = hand("?QS AS ?JS 9H");
+        let names = hand_labels(&h);
+        assert_eq!(names[0], "face-down card, 1st from left: ♠ 9 to A or ♥ 9 to A, the highest face-down card by the rank sort");
+        assert_eq!(names[2], "face-down card, 3rd from left: ♠ 9 to A or ♥ 9 to A, the 2nd highest face-down card by the rank sort");
+    }
+
+    #[test]
+    fn a_stone_card_sorts_last_in_both_orders() {
+        // card.lua `Card:get_nominal`: a Stone card's key is below every other card's in both
+        // sorts, so one face down at the bottom of both might be one
+        let h = hand("?3H:stone 2D 5C");
+        assert_eq!(hand_labels(&h)[0], "face-down card, 1st from left: 2♦ or a Stone card");
+        // next to a face-up card alike, it may sort on either side of it (`unique_val`), so that
+        // card bounds nothing
+        let h = hand("?2D 2D 5C");
+        assert_eq!(hand_labels(&h)[0], "face-down card, 1st from left: ♣ 2 to 5 or ♦ 2 to 5 or a Stone card");
+        // above every card but a face-up Stone card: the sorts say nothing, so its order does
+        let h = hand("?8H 3H:stone");
+        assert_eq!(hand_labels(&h)[0], "face-down card, 1st from left: the highest face-down card by the rank sort");
+        assert_eq!(ordinal(11), "11th");
+        assert_eq!(ordinal(22), "22nd");
     }
 }

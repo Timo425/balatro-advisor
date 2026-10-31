@@ -23,6 +23,17 @@ fn replayed_states_give_the_expected_advice() {
         let run: RunState = serde_json::from_value(v["state"].clone()).unwrap_or_else(|e| panic!("{name}: {e}"));
         let a = serde_json::to_value(advise::analyze(&run, data, None, &opts)).unwrap();
         let bp = &a["best_play"];
+        // whether the best move uses card `c`: a label ("9♠"), or "#n", the nth card from the left
+        // of your hand as it sits (a face-down card, or one of two alike: by its place, through
+        // the move's `indices`)
+        let uses = |c: &Value| match c.as_str().and_then(|s| s.strip_prefix('#')) {
+            Some(n) => {
+                let k = n.parse::<u64>().ok().and_then(|n| n.checked_sub(1)).unwrap_or_else(|| panic!("{name}: {c} is no place (\"#1\" is the leftmost card)"));
+                bp["indices"].as_array().is_some_and(|v| v.iter().any(|i| i.as_u64() == Some(k)))
+            }
+            None => bp["cards"].as_array().is_some_and(|v| v.contains(c)),
+        };
+        let plays = bp["action"] == "play";
         // the expectations in `exp` that don't hold, each as "key = got, expected want"
         let missed = |exp: &Value| -> Vec<String> {
             let mut out = vec![];
@@ -37,20 +48,11 @@ fn replayed_states_give_the_expected_advice() {
                     // the hand that carries most of your points ("Hands that score your points")
                     "top_hand" => a["hand_mix"][0]["hand"].clone(),
                     // cards the best move must not use (play or discard)
-                    "best_not_cards" => {
-                        let cards = bp["cards"].as_array().cloned().unwrap_or_default();
-                        Value::Bool(want.as_array().unwrap().iter().all(|c| !cards.contains(c)))
-                    }
+                    "best_not_cards" => Value::Bool(want.as_array().unwrap().iter().all(|c| !uses(c))),
                     // cards the best move must not play (discarding them is fine)
-                    "best_not_played" => {
-                        let cards = if bp["action"] == "play" { bp["cards"].as_array().cloned().unwrap_or_default() } else { vec![] };
-                        Value::Bool(want.as_array().unwrap().iter().all(|c| !cards.contains(c)))
-                    }
+                    "best_not_played" => Value::Bool(want.as_array().unwrap().iter().all(|c| !(plays && uses(c)))),
                     // cards the best move must play
-                    "best_played" => {
-                        let cards = if bp["action"] == "play" { bp["cards"].as_array().cloned().unwrap_or_default() } else { vec![] };
-                        Value::Bool(want.as_array().unwrap().iter().all(|c| cards.contains(c)))
-                    }
+                    "best_played" => Value::Bool(want.as_array().unwrap().iter().all(|c| plays && uses(c))),
                     // ["A", "B"]: option A ranks above option B
                     "above" => {
                         let pos = |l: &Value| a["options"].as_array().unwrap().iter().position(|o| &o["label"] == l);
