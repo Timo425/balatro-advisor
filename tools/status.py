@@ -15,8 +15,9 @@ Four parts:
   between hands or with hands left (a restart, a quit, or the run still going). Ante 1 runs that
   ended are counted apart: the owner restarts weak starts there. The runs span many advisor
   versions.
-- the bot, from ~/.local/share/balatro-advisor/bot/runs.jsonl, `void` runs left out (see
-  tools/botrun.py's docstring), by the commit each run played.
+- the bot, from ~/.local/share/balatro-advisor/bot/runs.jsonl and every other machine's
+  bot-<machine>/runs.jsonl (synced in by Syncthing), `void` runs left out (see tools/botrun.py's
+  docstring), by the machine and the commit each run played: a series never mixes machines.
 - every numbered gap in docs/design.md "Known gaps" in one line: the replay fixtures waiting on
   it (`pending_gap`), the commits that name it (`git log --grep`: noisy, it matches the body and
   passing mentions) and the owner's impact rating from docs/owner-view.md.
@@ -156,11 +157,16 @@ def owner(args):
 
 def bot(args):
     print("\n## The bot (tools/botrun.py)")
-    path = DATA / "bot/runs.jsonl"
-    if not path.is_file():
-        print(f"not available here (no {path})")
+    # bot/ is this machine's own runs; bot-<machine>/ another machine's, one folder each
+    paths = [p for p in [DATA / "bot/runs.jsonl", *sorted(DATA.glob("bot-*/runs.jsonl"))] if p.is_file()]
+    if not paths:
+        print(f"not available here (no {DATA / 'bot/runs.jsonl'})")
         return
-    runs = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
+    runs = []
+    for p in paths:
+        machine = "this machine" if p.parent.name == "bot" else p.parent.name.removeprefix("bot-")
+        runs += [{**json.loads(l), "_machine": machine} for l in p.read_text().splitlines() if l.strip()]
+    several = len(paths) > 1
     valid = [r for r in runs if not r.get("void")]
     print(f"{len(runs)} runs logged, {len(runs) - len(valid)} void (not evidence: tools/botrun.py's docstring)")
     if not valid:
@@ -170,8 +176,8 @@ def bot(args):
     # a commit marked "+" ran on a checkout with changes, not the commit itself)
     groups = collections.defaultdict(list)
     for r in valid:
-        groups[(r.get("commit") or "?", r.get("label") or "")].append(r)
-    for (c, label), rs in sorted(groups.items(), key=lambda kv: max(r["time"] for r in kv[1])):
+        groups[(r["_machine"], r.get("commit") or "?", r.get("label") or "")].append(r)
+    for (machine, c, label), rs in sorted(groups.items(), key=lambda kv: max(r["time"] for r in kv[1])):
         base = c.rstrip("+")
         behind = git("rev-list", "--count", f"{base}..HEAD") if base != "?" else ""
         behind = int(behind) if behind else None
@@ -181,7 +187,7 @@ def bot(args):
         reach = sorted(r["ante2_reach"] for r in rs if r.get("ante2_reach") is not None)
         missed = collections.Counter(m.split(":", 1)[0] + ":" + " ".join(m.split(":", 1)[1].split()[:2]) if ":" in m else m
                                      for r in rs for m in r.get("not_followed") or [])
-        print(f"{base}{' (modified checkout)' if c.endswith('+') else ''}{f' [{label}]' if label else ''} ({behind if behind is not None else '?'} commits behind HEAD, last run {day(last)}){stale(days=age_days(last), commits=behind, args=args)}: "
+        print(f"{machine + ': ' if several else ''}{base}{' (modified checkout)' if c.endswith('+') else ''}{f' [{label}]' if label else ''} ({behind if behind is not None else '?'} commits behind HEAD, last run {day(last)}){stale(days=age_days(last), commits=behind, args=args)}: "
               f"{len(rs)} runs ({', '.join(f'{k} x{n}' for k, n in decks.items())}), antes {antes}, "
               f"wins {sum(1 for r in rs if r.get('won'))}, restarts {sum(1 for r in rs if r.get('restarted'))}"
               + (f", ante2_reach median {reach[len(reach) // 2]:.2f}" if reach else ""))
