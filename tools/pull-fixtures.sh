@@ -17,26 +17,27 @@ else
   echo "WARNING: fixture pull failed (offline, or local changes in the way): tests/fixtures/private may be stale; see git status there."
 fi
 
-# The run data (the owner's play history, the bot's runs, calibration, the game file) is made on
-# the main PC and backed up to its Proton Drive every 3 hours. Devices share data only through
-# Syncthing (2026-10-31): a machine in the main PC's "Proton Drive" Syncthing share copies it from
-# that local folder (Windows laptop: balatro-pull.ps1), one outside it still downloads from Proton
-# (WSL: ~/.local/bin/balatro-pull); see the vault's advisor-windows-laptop.md /
-# advisor-second-machine.md. The pull script runs in the background, at most every 6 hours, and
-# every chat is told how fresh the data is. The main PC has neither: skip. A machine's own bot
-# runs go the other way, through a send-only Syncthing folder (`bot-<machine>/`, botrun's BAV_BOT_DIR).
+# The run data (the owner's play history, the bot's runs, calibration) is made on the main PC.
+# Devices get its live data folder by Syncthing (since 2026-11-01): the Windows laptop receives it
+# (Receive Only) and balatro-pull.ps1 copies it into its own data folder, which every tool reads
+# and which also holds the laptop's own files, in seconds, so at every chat's start. The WSL
+# laptop, outside Syncthing, still downloads the main PC's 3-hourly Proton backup
+# (~/.local/bin/balatro-pull), at most every 6 hours. See the vault's advisor-windows-laptop.md /
+# advisor-second-machine.md. Every chat is told how fresh the data is. The main PC has neither:
+# skip. A machine's own bot runs go the other way, through a send-only Syncthing folder
+# (`bot-<machine>/`, botrun's BAV_BOT_DIR).
 data="$HOME/.local/share/balatro-advisor"
 stamp="$data/last-pull" result="$data/last-pull.result" log="$data/last-pull.log"
-pull=""
+pull="" every=0
 if [ -x "$HOME/.local/bin/balatro-pull" ]; then
-  pull="nice -n 19 $HOME/.local/bin/balatro-pull"
+  pull="nice -n 19 $HOME/.local/bin/balatro-pull" every=6
 elif [ -f "$HOME/.local/bin/balatro-pull.ps1" ] && command -v powershell.exe >/dev/null; then
   pull="powershell.exe -NoProfile -ExecutionPolicy Bypass -File $(cygpath -w "$HOME/.local/bin/balatro-pull.ps1" 2>/dev/null || echo "$HOME/.local/bin/balatro-pull.ps1")"
 fi
 if [ -n "$pull" ]; then
   mkdir -p "$data"
   age_h() { echo $(( ($(date +%s) - $(date -r "$1" +%s)) / 3600 )); }
-  if [ ! -f "$stamp" ] || [ "$(age_h "$stamp")" -ge 6 ]; then
+  if [ ! -f "$stamp" ] || [ "$(age_h "$stamp")" -ge "$every" ]; then
     touch "$stamp"
     ( if $pull >"$log" 2>&1; then echo ok >"$result"; else echo "failed (exit $?)" >"$result"; fi ) </dev/null >/dev/null 2>&1 &
     disown 2>/dev/null
