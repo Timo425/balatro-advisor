@@ -47,6 +47,27 @@
   independent. Chats that started
   each other and woke each other on every turn burned a third of a 5-hour limit on 2026-10-16.
 
+## Working on the owner's PC
+
+- **The advisor queue** is `Arvutimängud/Balatro/advisor-queue.md` in the owner's Obsidian
+  vault, not `docs/design.md`'s "Next" line; its header has the claim rules.
+- **Shared checkout, no branches.** Other chats commit to main in this folder: commit only your
+  files by name, and check `git log` for their commits before committing and when a diff looks
+  unexplained.
+- **Heavy jobs** (cargo test, the snapshot, the history check, the bench, the shop judge) run one
+  at a time per PC, across all chats, under `nice -n 19`. When load is high, check your own jobs
+  first (a launcher in `ps` doesn't mean the owner is playing).
+- **Split runs over ~50 minutes** into parts (`BAV_ONLY`, `BAV_SEEDS`): the prompt cache lasts an
+  hour.
+- **Ask before a run that holds the game or the PC for hours**, and say how long; no overnight
+  runs (suspending the PC at bedtime is fine).
+- **After code changes**, `cargo install --path crates/cli` (the owner restarts `ui`). The bot
+  plays only on Profile 3, never the owner's Profile 1.
+- **Normal play runs Lovely with only `Mods/advisor-live`.** Never put Steamodded back in Mods (it
+  turns achievements off); `balatro-agent/tools/mods.sh bot|play` switches.
+- **A cloud session's PR** is reviewed and its fixture checks run here, then merged by rebasing
+  onto main and a fast-forward push, never a force-push; delete the agent's branches once merged.
+
 ## Answering "what if I…" questions
 
 Use `balatro-advisor whatif` instead of writing scratch programs: it simulates a named
