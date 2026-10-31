@@ -2357,21 +2357,27 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    every joker is unlocked; on the bot's profile 35 weren't (13 of the 20 rares) until the
    owner unlocked all on 2026-10-23. The fix: the pool read with the profile's unlocks, as the
    parity tier already reads the profile for the game's own pools.
-39. **Skip-or-play counts the blind you choose and the boss, not the blinds between, and values a
-   poor board's money at nothing.** Playing pays for its blind's chance (`p_blind`, the skip-or-play
-   block in `advise.rs`); skipping goes on to the next blind with the board as it is and no shop
-   first, and that blind is counted on neither side (`survive_with` reads the boss, `key_round`).
-   And the blind's money reaches the long run through the planet levels money buys, which a board
-   whose rent outruns its income has clamped to 0 (gap 16): its income is worth ×1.00. Found
-   2026-10-31 by the bot following skip-or-play (3127f3e, seed BAVANG01, Anaglyph Deck, Gold
-   Stake): Photograph (rental, eternal) and Wrathful Joker with $1-7; playing's long run ×1.000 /
-   1.007 / 1.000 at Ante 2 Small and Big and Ante 3 Small against the tags' ×1.233 / 1.007 / 1.000;
-   it skipped both blinds of Antes 2 and 3 and lost the Ante 3 boss. At Ante 3 Small the blinds'
-   chances were 62% / 5% / 0% (Small / Big / Boss): skipping into the 5% Big blind cost nothing
-   in the comparison, a weak board running at harder blinds where a player plays for the money
-   and shops and skips on a strong one. The Rare Tag taken at Ante 2 Small was held, unread (gap
-   21), so skipping the Big blind put its free joker past the boss uncounted; at Ante 3 the two
-   sides were 0.000 and 0.003, decided by noise (the 3% "close" margin is relative). The fix: each
-   side's chance through every blind left before the boss, on the board and money each leaves; the
-   blind's money valued as the run's (gap 16's card first); held tags read (gap 21). Until then the
-   bot plays every blind (`tools/botrun.py --skip-blinds`, default `never`).
+39. **Skip-or-play's verdicts on a poor board rest on the money's walk, not on what a player
+   weighs.** Found 2026-10-31 by the bot following skip-or-play (3127f3e, BAVANG01-03, Anaglyph
+   Deck, Gold Stake): on BAVANG01 (Photograph rental and eternal, Wrathful Joker, $1-7) it skipped
+   both blinds of Antes 2 and 3. What decided it was each side's chance through the shops ahead
+   (`survive_with`, `next_with`: the money's walk): the skip side, one shop fewer and the round's
+   rent unpaid, came out higher (the next ante's boss 0.081 against 0.155 at Ante 2 Small, 0.18
+   against 0.24 at Ante 2 Big; on BAVANG03 0.66 against 0.72 at Ante 3 Small, for a Standard Tag
+   the advice doesn't value). Not explained yet; the walk draws its shops by their index
+   (`money_value_with`), so the two sides are walked on different shops. The long run didn't
+   decide: from Red Stake the Small blind pays nothing (game.lua `no_blind_reward.Small`), so on
+   a board paying $3 rent playing it nets $0 or less, and a loss is floored at no change
+   (`add_levels`, value.rs): ×1.000. Also: the blinds between the one chosen and the boss count
+   their money in the walk on both sides and their chance on neither, so the shop playing buys
+   before the next blind isn't credited (Best play counts the Big Blind as played, `ctx.ahead`;
+   skip-or-play doesn't); a tag the advice doesn't value still gets a skip or play verdict on
+   what skipping costs alone (unmodelled shown as a verdict); the tags held aren't read (gap 21:
+   the Rare Tag taken, doubled by Anaglyph's Double Tag); near-zero sides are decided by noise
+   (0.000 against 0.003; the "close" margin is 3% relative). Whether skipping cost the run isn't
+   shown: the play-every-blind series on the same seeds (2bd251f, older code) ended BAVANG01 at
+   Ante 2 in 2 of 3 runs and BAVANG02 at Ante 2 in 3 of 3, where skipping reached Ante 3 on both;
+   and the skipping run left two free Rare jokers in its Ante 3 shop, read at full price (the
+   save is written before a Rare or Uncommon Tag makes its joker free, tag.lua
+   `store_joker_create`; queued). Until it's understood the bot plays every blind
+   (`tools/botrun.py --skip-blinds`, default `never`).

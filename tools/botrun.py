@@ -28,14 +28,15 @@ verdict on the advice. As of 2026-10-24 the bot:
   per hand, docs/design.md gap 37); with `--skip-blinds advisor` (since 2026-10-31), skip-or-play
   at each Small and Big blind (`blind_select`: one more full analysis a blind, ~8 s at 100
   simulations; "close" plays; the run logs every verdict with both sides' values and its
-  `skips`). The default `never` plays every blind, as before: skip-or-play leaves out the blinds
-  between the one chosen and the boss and values a poor board's money at nothing (gap 39), so a
-  weak board skipped into harder blinds (BAVANG01, 3127f3e).
+  `skips`). The default `never` plays every blind, as before, without asking: skip-or-play's
+  verdicts on a poor board aren't understood yet (docs/design.md gap 39: BAVANG01 skipped both
+  blinds of Antes 2 and 3 at 3127f3e).
 - doesn't: tarots and spectrals (bought or in packs), vouchers, Arcana, Spectral and Standard
   packs, "use X first" in a blind, skipping a blind by default (above), and with `advisor` a skip
-  whose tag is valued as a tarot or spectral pick (Charm, Ethereal: it plays). Skip-or-play
+  whose tag is valued as a tarot or spectral pick (Charm, Ethereal) or not valued at all (Foil,
+  Double, Juggle on a Small blind…), and a blind whose analysis failed: it plays. Skip-or-play
   doesn't read the tags held (gap 21).
-  Counted in `not_followed`, as is a pack pick it couldn't make ("pack
+  Counted in `not_followed` (a blind played under `never` isn't), as is a pack pick it couldn't make ("pack
   pick needing a sale", "pack pick refused", "pack pick not in the pack": the bot then takes the
   best pick it can above skipping; "pack pick refused after its sale": it skips the pack). Since 2026-10-25 it also sells a joker on its own when the
   advisor's "sell X" option clears keeping the money (`worth`).
@@ -431,22 +432,35 @@ def open_pack(sims, log):
 
 
 # Tags whose value in skip-or-play is a pick the bot doesn't make yet: a Mega Arcana or Spectral
-# pack's best pick, targets included (advise.rs, the skip-or-play block)
+# pack's best pick, targets included (advise.rs, the skip-or-play block). A tag the advisor
+# doesn't value at all (`valued` false) isn't followed either: its skip is a verdict on what
+# skipping costs alone, so unmodelled, and the bot plays.
 TAGS_NOT_FOLLOWED = {"tag_charm": "a tarot pick", "tag_ethereal": "a spectral pick"}
 
 
 def blind_select(args, log, skips, a=None):
     """Skips the blind on deck when the advisor's skip-or-play says skip (the blind's `skip`:
     `verdict` skip, play or close within 3%), else selects it; "close" plays. A skip whose tag is
-    valued as a pick the bot can't make (`TAGS_NOT_FOLLOWED`) plays instead, counted in
-    `not_followed`. `a` is an analysis of this screen already made (the Ante 2 check's)."""
+    valued as a pick the bot can't make (`TAGS_NOT_FOLLOWED`) or not valued at all plays instead,
+    counted in `not_followed`, as does a blind whose analysis failed. `a` is an analysis of this
+    screen already made (the Ante 2 check's). With `never` it selects without analysing."""
     if args.skip_blinds == "never":
         rpc("select")
         return
-    a = a or analyze(args.sims, keep="blind")
+    if a is None:
+        try:
+            a = analyze(args.sims, keep="blind")
+        except RuntimeError as e:
+            log.append(f"blind: analysis failed, played: {e}")
+            NOT_FOLLOWED.append("blind: analysis failed, played")
+            rpc("select")
+            return
     gs = rpc("gamestate")
     b = next((b for b in a.get("blinds", []) if b.get("state") == "Select" and b.get("skip")), None)
-    if b is None:  # the boss
+    if b is None:
+        on_deck = next((x for x in a.get("blinds", []) if x.get("state") == "Select"), {})
+        if on_deck.get("slot") != "Boss":
+            log.append(f"blind: no skip-or-play for {on_deck.get('slot')}, played")
         rpc("select")
         return
     s, tag = b["skip"], b.get("skip_tag") or {}
@@ -457,7 +471,7 @@ def blind_select(args, log, skips, a=None):
     if s["verdict"] != "skip":
         rpc("select")
         return
-    why = TAGS_NOT_FOLLOWED.get(tag.get("key"))
+    why = TAGS_NOT_FOLLOWED.get(tag.get("key")) or (None if s.get("valued", True) else "its effect isn't valued")
     if why:
         NOT_FOLLOWED.append(f"blind: skip {b.get('slot')} for {tag.get('name')} ({why})")
         rpc("select")
