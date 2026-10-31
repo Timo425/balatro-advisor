@@ -1919,6 +1919,21 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    8 Juggles (+24 hand size for the next round, with Steel cards held a large ×Mult), valued
    as one or none. The general fix: a tag's effect as a `Gain` for the round it acts on
    (through the one measure, gap 16), and held Double Tags counted on the tag a skip takes.
+   The tags that change a shop act in events (tag.lua `Tag:yep`). Entering a shop saves after
+   those of the Rare, Uncommon, D6, Voucher and Coupon Tags (game.lua `Game:update_shop`; an
+   edition tag on an ordinary card acts after it, read by `apply_pending_edition_tags`), but a reroll saves before the new row's Rare, Uncommon
+   and edition tags act (button_callbacks.lua `G.FUNCS.reroll_shop`; a Rare or Uncommon Tag is
+   still held at a reroll only when there were more of them than the row's slots): since
+   2026-10-31 such a save is read as the game leaves it, the tag's joker free and the tag gone
+   (`save::apply_pending_store_tags`, beside `apply_pending_edition_tags`). The bot's snapshot
+   used to be written at once, mid-way through those events (BAVANG01 held two Rare Tags and
+   was shown The Order $8 and Blueprint $10, both free a moment later); its `save` now waits
+   until no blocking event is queued, as the live mod's file does (tools/botrun.py, "needs"). Not read: the
+   advisor-live mod writes after 3 s of events anyway (`ADVISOR_BUSY_T`), so a shop entered
+   with three or more tags acting can show the page some of them half done; and the money's
+   walk prices the rerolls after Chaos the Clown's free ones from the base cost, not a D6
+   Tag's $0 (`money_value_with`); a run continued from a reroll's save shows a Rare Tag held
+   whose card stays at full price, read as free.
 22. **A joker bought or sold during a blind doesn't change that blind's hand size or discards.**
    The game changes them at once (card.lua `add_to_deck` / `remove_from_deck`:
    `G.hand:change_size`, `ease_discard`; hands only from the next round, through

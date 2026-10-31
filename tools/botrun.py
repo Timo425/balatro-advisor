@@ -47,7 +47,10 @@ verdict on the advice. As of 2026-10-24 the bot:
   full slots as the game does (pack.lua, pack.lua.bak; button_callbacks.lua `can_select_card`)
   and ending a pick or a skip back on the blind select, where a pack a skip tag opened closes
   (button_callbacks.lua `end_consumeable`, `PACK_INTERRUPT`; patched 2026-10-31), or its call
-  waits for the shop until the RPC times out.
+  waits for the shop until the RPC times out; and its `save` writing once no blocking event is
+  queued (at most 5 s, answered `settled`), as the live mod's file waits (save.lua, save.lua.bak; game.lua `Game:update_shop`;
+  patched 2026-10-31), or a shop entered with a Rare Tag is saved before the tag makes its
+  joker free (tag.lua `Tag:yep`) and the advisor reads the joker at full price.
 Since 2026-10-29 every state the advisor analysed in a shop or an open pack (since 2026-10-31 a
 blind select too), and every state an
 analysis failed on (`error`), is kept (`bot/shops/<seed>/a<ante>-r<round>-<n>-<screen>.jkr`;
@@ -147,7 +150,11 @@ def keep_state(screen):
 
 def analyze(sims, quick=False, keep=None):
     global ANALYSIS_S
-    rpc("save", path=WIN_STATE)
+    saved = rpc("save", path=WIN_STATE)
+    if "settled" not in (saved or {}):
+        sys.exit("BalatroBot's save.lua isn't the patched copy (the docstring's \"needs\")")
+    if not saved["settled"]:
+        print("  (saved with events still queued after 5 s)")
     v = vanilla_state(STATE)
     if keep:
         keep_state(keep)

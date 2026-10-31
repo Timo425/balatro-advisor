@@ -610,11 +610,13 @@ pub fn from_value(g: &Value, data: &GameData, path: &Path, age_secs: Option<u64>
         .collect();
 
     let shop = (screen == Screen::Shop || !area(g, "shop_jokers").is_empty()).then(|| {
+        let row = area(g, "shop_jokers");
+        let made_free = if screen == Screen::Shop { apply_pending_store_tags(g, &row, &mut tags, data) } else { 0 };
         let mut jokers = Vec::new();
         let mut other_cards = Vec::new();
-        for c in area(g, "shop_jokers") {
+        for (i, c) in row.iter().enumerate() {
             if c.at("ability.set").str() == Some("Joker") {
-                jokers.push(joker_card(c, data));
+                jokers.push(JokerCard { cost: if i < made_free { 0 } else { int(c.get("cost")) }, ..joker_card(c, data) });
             } else {
                 other_cards.push(item_card(c, data));
             }
@@ -730,6 +732,56 @@ pub fn from_value(g: &Value, data: &GameData, path: &Path, age_secs: Option<u64>
         },
     };
     Ok(state)
+}
+
+/// Rare and Uncommon Tags make a shop's new cards free a moment after a reroll's save, so the
+/// save still shows them held and their jokers at full price (as `apply_pending_edition_tags`
+/// for the edition tags). The reroll queues the event that makes the new row, then its save
+/// (button_callbacks.lua `G.FUNCS.reroll_shop`); each new card asks the held tags in order,
+/// the first that answers making it (UI_definitions.lua `create_card_for_shop`, tag.lua
+/// `store_joker_create`): a joker of its rarity, made free (`couponed`, card.lua
+/// `Card:set_cost`) and the tag gone in its `Tag:yep` events, queued when that event runs:
+/// behind the save. A Rare Tag
+/// answers nothing when you own every rare (`self:nope()`: it goes, and the next tag is
+/// asked). Entering a shop saves after the events of the tags that make or change the shop
+/// as a whole (game.lua `Game:update_shop` queues `save_run` behind them: Rare, Uncommon, D6,
+/// Voucher, Coupon), but before an edition tag acts on an ordinary card (its event queued
+/// later, `apply_pending_edition_tags`). Not read: a run continued from a reroll's save keeps
+/// the tag's card at full price and the tag held, read here as free. A card already free, or not a
+/// joker of the tag's rarity, wasn't made by the tag held (more such tags than the row's
+/// slots: it waits for the next reroll): it and the tags after it are kept. Returns how many of
+/// the row's first cards were made so.
+fn apply_pending_store_tags(g: &Value, row: &[&Value], tags: &mut Vec<String>, data: &GameData) -> usize {
+    // the rares you own against every rare in the game (`G.P_JOKER_RARITY_POOLS[3]`)
+    let mut rares: Vec<String> = area(g, "jokers").into_iter().map(center_key).filter(|k| data.center(k).and_then(|c| c.rarity) == Some(3)).collect();
+    rares.sort();
+    rares.dedup();
+    let every_rare = rares.len() >= data.jokers().filter(|c| c.rarity == Some(3)).count();
+    let (mut i, mut made) = (0, 0);
+    while i < tags.len() && made < row.len() {
+        let rarity = match tags[i].as_str() {
+            "tag_rare" => 3,
+            "tag_uncommon" => 2,
+            _ => {
+                i += 1;
+                continue;
+            }
+        };
+        if rarity == 3 && every_rare {
+            tags.remove(i);
+            continue;
+        }
+        let c = row[made];
+        if c.at("ability.set").str() != Some("Joker")
+            || c.at("ability.couponed").truthy()
+            || data.center(&center_key(c)).and_then(|x| x.rarity) != Some(rarity)
+        {
+            break;
+        }
+        tags.remove(i);
+        made += 1;
+    }
+    made
 }
 
 /// Edition tags turn shop jokers into Foil/Holo/Poly/Negative (and free) right *after*
@@ -856,5 +908,69 @@ mod tests {
         assert_eq!(read(13, Some(6), "bl_manacle", false, 2), (8, 5));
         // the vanilla save on the cash-out screen is written before The Manacle is defeated
         assert_eq!(read(7, None, "bl_manacle", false, 8), (8, -1));
+    }
+
+    /// The synthetic shop save with these tags held, this card row (Lua `cards` entries), these
+    /// owned jokers' keys and these `GAME` fields.
+    fn shop_save(tags: &[&str], row: &[(&str, &str, i64, bool)], owned: &[&str], game: &str) -> RunState {
+        let lua_list = |items: Vec<String>| items.iter().enumerate().map(|(i, x)| format!("[{}]={x},", i + 1)).collect::<String>();
+        let tags = lua_list(tags.iter().map(|t| format!(r#"{{["key"]="{t}",}}"#)).collect());
+        let card = |key: &str, set: &str, cost: i64, couponed: bool| {
+            format!(r#"{{["save_fields"]={{["center"]="{key}",}},["ability"]={{["set"]="{set}",["couponed"]={couponed},}},["cost"]={cost},}}"#)
+        };
+        let row = lua_list(row.iter().map(|&(k, set, cost, c)| card(k, set, cost, c)).collect());
+        let owned = lua_list(owned.iter().map(|k| card(k, "Joker", 1, false)).collect());
+        let text = SYNTHETIC
+            .replace(r#"["tags"]={[1]={["key"]="tag_foil",},[2]={["key"]="tag_double",},},"#, &format!(r#"["tags"]={{{tags}}},"#))
+            .replace(r#"["GAME"]={"#, &format!(r#"["GAME"]={{{game}"#))
+            .replace(r#"["shop_jokers"]={["cards"]={[1]={["save_fields"]={["center"]="j_jolly",},["ability"]={["name"]="Jolly Joker",["set"]="Joker",},["cost"]=3,},},},"#,
+                &format!(r#"["shop_jokers"]={{["cards"]={{{row}}},}},["shop_booster"]={{["cards"]={{{}}},}},["shop_vouchers"]={{["cards"]={{{}}},}},"#,
+                    card("p_arcana_normal_1", "Booster", 4, false), card("v_grabber", "Voucher", 10, false)))
+            .replace(r#"["jokers"]={["cards"]={[1]={["save_fields"]={["center"]="j_green_joker",},["ability"]={["name"]="Green Joker",["set"]="Joker",["mult"]=3,["eternal"]=true,},["cost"]=4,["sell_cost"]=2,["edition"]={["type"]="holo",["holo"]=true,},},},"#,
+                &format!(r#"["jokers"]={{["cards"]={{{owned}}},"#));
+        from_value(&crate::lua::parse(&text).unwrap(), GameData::bundled(), Path::new("x"), None).unwrap()
+    }
+
+    fn row_costs(s: &RunState) -> Vec<i64> {
+        let shop = s.shop.as_ref().unwrap();
+        shop.jokers.iter().map(|j| j.cost).chain(shop.other_cards.iter().map(|c| c.cost)).collect()
+    }
+
+    #[test]
+    fn a_rare_or_uncommon_tag_held_in_a_shop_save_made_the_rows_first_joker_free() {
+        let row = [("j_order", "Joker", 8, false), ("j_blueprint", "Joker", 10, false)];
+        // a reroll's save with two Rare Tags held (and a Double Tag): each made one of the
+        // row's two rares
+        let s = shop_save(&["tag_rare", "tag_rare", "tag_double"], &row, &[], "");
+        assert_eq!(row_costs(&s), vec![0, 0]);
+        assert_eq!(s.tags, vec!["tag_double"]);
+        // a third waits for the next new card (a reroll); the tags are asked in the order held
+        let s = shop_save(&["tag_rare", "tag_juggle", "tag_rare", "tag_rare"], &row, &[], "");
+        assert_eq!((row_costs(&s), s.tags), (vec![0, 0], vec!["tag_juggle".to_string(), "tag_rare".to_string()]));
+        // an Uncommon Tag makes an uncommon; a common first in the row wasn't made by a tag
+        let s = shop_save(&["tag_uncommon"], &[("j_hack", "Joker", 6, false), ("j_jolly", "Joker", 3, false)], &[], "");
+        assert_eq!((row_costs(&s), s.tags), (vec![0, 3], vec![]));
+        let s = shop_save(&["tag_uncommon"], &[("j_jolly", "Joker", 3, false), ("j_hack", "Joker", 6, false)], &[], "");
+        assert_eq!((row_costs(&s), s.tags), (vec![3, 6], vec!["tag_uncommon".to_string()]));
+        // a card already free (`couponed`, its cost not yet zeroed here) is one a tag made and
+        // left: the tag held hasn't acted on this row, nothing is made free
+        let s = shop_save(&["tag_rare"], &[("j_order", "Joker", 8, true), ("j_blueprint", "Joker", 10, false)], &[], "");
+        assert_eq!((row_costs(&s), s.tags), (vec![8, 10], vec!["tag_rare".to_string()]));
+        // owning every rare, a Rare Tag gives nothing and goes; the next tag makes the card
+        let rares: Vec<&str> = GameData::bundled().jokers().filter(|c| c.rarity == Some(3)).map(|c| c.key.as_str()).collect();
+        let s = shop_save(&["tag_rare", "tag_uncommon"], &[("j_hack", "Joker", 6, false), ("j_jolly", "Joker", 3, false)], &rares, "");
+        assert_eq!((row_costs(&s), s.tags), (vec![0, 3], vec![]));
+    }
+
+    #[test]
+    fn d6_coupon_and_voucher_tags_held_in_a_shop_save_are_the_next_shops() {
+        // entering a shop saves after these act (game.lua `Game:update_shop`), and each acts
+        // once a shop: one held in a shop save waits for the next shop, whatever this shop's
+        // flags say (`shop_d6ed`, `shop_free`: set by the one that acted)
+        let row = [("j_jolly", "Joker", 3, false), ("c_fool", "Tarot", 3, false)];
+        let s = shop_save(&["tag_d_six", "tag_coupon", "tag_voucher"], &row, &[], r#"["shop_d6ed"]=true,["shop_free"]=true,"#);
+        let shop = s.shop.as_ref().unwrap();
+        assert_eq!((row_costs(&s), shop.boosters[0].cost, shop.reroll_cost), (vec![3, 3], 4, 5));
+        assert_eq!(s.tags, vec!["tag_d_six", "tag_coupon", "tag_voucher"]);
     }
 }
