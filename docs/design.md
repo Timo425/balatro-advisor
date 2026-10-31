@@ -128,8 +128,9 @@ selling, skipping.
 The bot bench (`tools/botrun.py`, through BalatroBot in the real game on the bot's own profile)
 plays whole runs with the advisor choosing. It isn't a check in the workflow: a run measures
 the advisor only where the bot follows it, and the bot doesn't follow tarots,
-vouchers, Arcana, Spectral and Standard packs, "use X first" or a skip for a Charm or Ethereal
-Tag (since 2026-10-31 it follows skip-or-play otherwise; before, it played every blind) (its docstring
+vouchers, Arcana, Spectral and Standard packs, "use X first" or skipping a blind (it can follow
+skip-or-play since 2026-10-31, `--skip-blinds advisor`, but plays every blind by default until
+gap 39 is fixed) (its docstring
 keeps the list; each run records the advisor's top choices it couldn't take, `not_followed`).
 What was measured on 2026-10-23/24, at 1904f2d (Red Deck, 100 simulations a board): a run on the
 same game seed with the same advisor seed is the same run (10 seeds played twice, every pair
@@ -150,8 +151,8 @@ profile had 35 jokers locked (gap 38). The runs of 2026-10-01 (an early advisor 
 evidence of over-buying. Since 2026-10-30 paired whole runs (a series at the base and one with
 the change, the same seeds, the same day) judge changes whose effect shows antes later: the
 rent fix (9285bbd) by money by ante. They judge only where the bot follows: its `not_followed`
-(tarots and spectrals, Arcana, Spectral and Standard packs, vouchers; and until 2026-10-31
-skipping a blind, never asked) is the judge's blind spot, the same in both arms, queued. Until 2026-10-31 a pack
+(tarots and spectrals, Arcana, Spectral and Standard packs, vouchers; and skipping a blind, by
+default not followed: gap 39) is the judge's blind spot, the same in both arms, queued. Until 2026-10-31 a pack
 pick needing a sale also failed uncounted (BalatroBot's `sell` refused an open pack, which the
 game allows) and the pack was skipped: in 10 runs of the series to then, on BAVANG11, 13, 21
 and 22, at Ante 3 (twice at Ante 5) in runs that reached Antes 4-5 (a Card Sharp pick on
@@ -2356,3 +2357,21 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    every joker is unlocked; on the bot's profile 35 weren't (13 of the 20 rares) until the
    owner unlocked all on 2026-10-23. The fix: the pool read with the profile's unlocks, as the
    parity tier already reads the profile for the game's own pools.
+39. **Skip-or-play counts the blind you choose and the boss, not the blinds between, and values a
+   poor board's money at nothing.** Playing pays for its blind's chance (`p_blind`, the skip-or-play
+   block in `advise.rs`); skipping goes on to the next blind with the board as it is and no shop
+   first, and that blind is counted on neither side (`survive_with` reads the boss, `key_round`).
+   And the blind's money reaches the long run through the planet levels money buys, which a board
+   whose rent outruns its income has clamped to 0 (gap 16): its income is worth ×1.00. Found
+   2026-10-31 by the bot following skip-or-play (3127f3e, seed BAVANG01, Anaglyph Deck, Gold
+   Stake): Photograph (rental, eternal) and Wrathful Joker with $1-7; playing's long run ×1.000 /
+   1.007 / 1.000 at Ante 2 Small and Big and Ante 3 Small against the tags' ×1.233 / 1.007 / 1.000;
+   it skipped both blinds of Antes 2 and 3 and lost the Ante 3 boss. At Ante 3 Small the blinds'
+   chances were 62% / 5% / 0% (Small / Big / Boss): skipping into the 5% Big blind cost nothing
+   in the comparison, a weak board running at harder blinds where a player plays for the money
+   and shops and skips on a strong one. The Rare Tag taken at Ante 2 Small was held, unread (gap
+   21), so skipping the Big blind put its free joker past the boss uncounted; at Ante 3 the two
+   sides were 0.000 and 0.003, decided by noise (the 3% "close" margin is relative). The fix: each
+   side's chance through every blind left before the boss, on the board and money each leaves; the
+   blind's money valued as the run's (gap 16's card first); held tags read (gap 21). Until then the
+   bot plays every blind (`tools/botrun.py --skip-blinds`, default `never`).

@@ -25,14 +25,16 @@ verdict on the advice. As of 2026-10-24 the bot:
   names (made in the open pack, as the game allows; since 2026-10-31: before, every pick needing
   a sale failed and the pack was skipped uncounted, the series up to then included); the
   jokers' order after each shop (the advisor's `order`, one for the board: no order is advised
-  per hand, docs/design.md gap 37); since 2026-10-31, skip-or-play at each Small and Big blind
-  (`blind_select`: one more full analysis a blind, ~8 s at 100 simulations; "close" plays; the
-  run logs every verdict with both sides' values and its `skips`). Before, every blind was played
-  and the advisor wasn't asked. `--skip-blinds never` plays every blind, a baseline.
+  per hand, docs/design.md gap 37); with `--skip-blinds advisor` (since 2026-10-31), skip-or-play
+  at each Small and Big blind (`blind_select`: one more full analysis a blind, ~8 s at 100
+  simulations; "close" plays; the run logs every verdict with both sides' values and its
+  `skips`). The default `never` plays every blind, as before: skip-or-play leaves out the blinds
+  between the one chosen and the boss and values a poor board's money at nothing (gap 39), so a
+  weak board skipped into harder blinds (BAVANG01, 3127f3e).
 - doesn't: tarots and spectrals (bought or in packs), vouchers, Arcana, Spectral and Standard
-  packs, "use X first" in a blind, a skip whose tag is valued as a tarot or spectral pick (Charm,
-  Ethereal: it plays). Skip-or-play doesn't read the tags held (gap 21: a Double Tag's copy isn't
-  counted), so a skip may be undervalued.
+  packs, "use X first" in a blind, skipping a blind by default (above), and with `advisor` a skip
+  whose tag is valued as a tarot or spectral pick (Charm, Ethereal: it plays). Skip-or-play
+  doesn't read the tags held (gap 21).
   Counted in `not_followed`, as is a pack pick it couldn't make ("pack
   pick needing a sale", "pack pick refused", "pack pick not in the pack": the bot then takes the
   best pick it can above skipping; "pack pick refused after its sale": it skips the pack). Since 2026-10-25 it also sells a joker on its own when the
@@ -642,8 +644,8 @@ def main():
                    help="each: restart the game before a run once it holds more than a fresh one (it grows as it plays; Linux with Steam)")
     p.add_argument("--max-game-mb", type=int, default=8000,
                    help="where the game isn't restarted: stop between runs once its memory passes this, printing the seeds to resume with")
-    p.add_argument("--skip-blinds", choices=["advisor", "never"], default="advisor",
-                   help="advisor: skip a Small or Big blind where the advisor's skip-or-play says skip; never: play every blind (a baseline)")
+    p.add_argument("--skip-blinds", choices=["advisor", "never"], default="never",
+                   help="advisor: skip a Small or Big blind where the advisor's skip-or-play says skip; never: play every blind (the default until gap 39 is fixed)")
     p.add_argument("--restart-below", type=float, default=0.0,
                    help="after Ante 1, start over if the board reaches less than this share of the next plain boss (e.g. 0.5)")
     args = p.parse_args()
