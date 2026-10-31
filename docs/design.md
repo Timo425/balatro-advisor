@@ -1997,7 +1997,9 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    `play_on_instead`). Best play's moves in an all-face-down hand are one play (and, with a
    discard left, one discard) per count, 1 to 5 (`sim::blind_moves`): what you can tell of the cards is their rank
    order (the sort places them by their real value), so a play takes the highest and a discard
-   throws the lowest. That is a cut by the cards' order, which rule 2 rules out: it stands in
+   throws the lowest, whatever the jokers want (Ride the Bus wants no face card scored, so the
+   lowest would be the play to try: the stand-ins can't tell, as they ignore the order). That is
+   a cut by the cards' order, which rule 2 rules out: it stands in
    for the search this gap's fix gives (every play, valued over what the cards could be) and
    goes with it; until then it is labelled in Best play's tip and the analysis' heuristics. The
    stand-ins are bounded only by the face-up cards beside them in each sort (none here), not by
