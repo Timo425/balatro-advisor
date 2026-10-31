@@ -22,16 +22,24 @@ verdict on the advice. As of 2026-10-24 the bot:
 - follows: plays and discards (Best play's quick pass, 100 simulations where the live page
   runs 300); joker buys, with the sale the advisor names; planets; rerolls (2 a shop);
   Buffoon and Celestial packs and their joker and planet picks, with the sale the advisor
-  names; the jokers' order after each shop (the advisor's `order`, one for the board: no
-  order is advised per hand, docs/design.md gap 37).
+  names (made in the open pack, as the game allows; since 2026-10-31: before, every pick needing
+  a sale failed and the pack was skipped uncounted, the series up to then included); the
+  jokers' order after each shop (the advisor's `order`, one for the board: no order is advised
+  per hand, docs/design.md gap 37).
 - doesn't: tarots and spectrals (bought or in packs), vouchers, Arcana, Spectral and Standard
   packs, "use X first" in a blind, skipping a blind (always plays it; the advisor isn't asked).
-  Counted in `not_followed`, except skipping a blind. Since 2026-10-25 it also sells a joker on
-  its own when the advisor's "sell X" option clears keeping the money (`worth`).
+  Counted in `not_followed`, except skipping a blind, as is a pack pick it couldn't make ("pack
+  pick needing a sale", "pack pick refused", "pack pick not in the pack": the bot then takes the
+  best pick it can above skipping; "pack pick refused after its sale": it skips the pack). Since 2026-10-25 it also sells a joker on its own when the
+  advisor's "sell X" option clears keeping the money (`worth`).
 - needs: the bot profile (3) with every joker unlocked, as the owner's (the advisor's shop pool
   assumes every joker unlocked, gap 38); Steamodded's guard against saving in an open pack
   lifted in the bot's own copy (BotMods/Steamodded/lovely/fixes.toml), or the advisor never
-  sees a pack's cards.
+  sees a pack's cards; BalatroBot's `sell` allowed in an open pack in the bot's copy
+  (BotMods/Balatrobot/src/lua/endpoints/sell.lua, `requires_state` and its `valid_state` check
+  given SMODS_BOOSTER_OPENED; patched 2026-10-31, the original kept as sell.lua.bak), or every
+  pick needing a sale is "pack pick needing a sale"; and its `pack` letting a Negative joker into
+  full slots as the game does (pack.lua, pack.lua.bak; button_callbacks.lua `can_select_card`).
 Since 2026-10-29 every state the advisor analysed in a shop or an open pack, and every state an
 analysis failed on (`error`), is kept (`bot/shops/<seed>/a<ante>-r<round>-<n>-<screen>.jkr`;
 `analyze --file` replays it) and the run's log is whole: each shop analysis logs the money, the jokers' stickers and every option ranked.
@@ -338,7 +346,40 @@ def take(o, a, gs, money, rerolls, sims, log):
     return None
 
 
+def pick_from_pack(o, gs, log):
+    """Takes one pick from the open pack, first selling the joker the advisor names for it (the
+    game sells on any screen, card.lua `Card:can_sell_card`; BalatroBot's `sell` needs the
+    bot's patched copy, see the docstring). None when taken, else why not, as `not_followed`
+    words it."""
+    i = index_of_key(gs, "pack", o.get("key"))
+    if i is None:
+        log.append(f"pack pick: no {o.get('key')} in the pack")
+        return "pack pick not in the pack"
+    try:
+        sold = sell_for(o, gs)
+    except RpcError as e:
+        log.append(f"pack pick's sale failed: {e}")
+        return "pack pick needing a sale"
+    if sold:
+        log.append(f"sell {o['sell_key']} for the pick")
+        gs = rpc("gamestate")
+        i = index_of_key(gs, "pack", o.get("key"))
+    try:
+        rpc("pack", card=i)
+    except RpcError as e:
+        log.append(f"pack pick failed{' after its sale' if sold else ''}: {e}")
+        return "pack pick refused after its sale" if sold else "pack pick refused"
+    log.append(o["label"])
+    return None
+
+
 def open_pack(sims, log):
+    """Takes the advisor's top pick while it is one the bot follows (a joker or a planet), else
+    the best one it follows ranked above skipping, else skips. Each time the top pick isn't the
+    one taken, `not_followed` says why: a kind the bot doesn't take ("pack: tarot pick …"), a sale
+    it couldn't make ("pack pick needing a sale: …"), a pick the game refused or not found. A pick
+    refused after its sale went through skips the pack: the analysis's other sales were named
+    for the board before it."""
     for _ in range(3):
         gs = rpc("gamestate")
         if gs["state"] != "SMODS_BOOSTER_OPENED":
@@ -347,31 +388,34 @@ def open_pack(sims, log):
         log.append(f"pack screen ${gs['money']} · " + " | ".join(f"{o['kind']} {o['label']} r{o.get('rank') or 0:.3f}" for o in a.get("options", [])))
         if VERBOSE:
             print(f"  pack screen {a.get('screen')} · " + " | ".join(f"{o['kind']} {o['label']} {o.get('key')}" for o in a.get("options", [])))
-        took = False
-        top = next((o for o in a.get("options", []) if o["kind"] == "skip" or o["label"].startswith("pick ")), None)
-        if top and top["kind"] not in ("skip", "joker", "planet"):
-            NOT_FOLLOWED.append(f"pack: {top['kind']} {top['label']}")
+        took, why_not = None, None
         for o in a.get("options", []):
             if o["kind"] == "skip":
                 break
-            if not o["label"].startswith("pick ") or o["kind"] not in ("joker", "planet"):
+            if not o["label"].startswith("pick "):
                 continue
-            i = index_of_key(gs, "pack", o.get("key"))
-            if i is None:
-                continue
-            try:
-                if sell_for(o, gs):
-                    gs = rpc("gamestate")
-                    i = index_of_key(gs, "pack", o.get("key"))
-                rpc("pack", card=i)
-                log.append(o["label"])
-                took = True
-            except RpcError as e:
-                log.append(f"pack pick failed: {e}")
-            break
-        if not took:
-            log.append("skip the pack")
-            rpc("pack", skip=True)
+            if o["kind"] not in ("joker", "planet"):
+                why = "pack"  # a kind the bot doesn't take
+            else:
+                why = pick_from_pack(o, gs, log)
+                if why is None:
+                    took = o
+                    break
+            if why_not is None:
+                why_not = f"{why}: {o['kind']} {o['label']}"
+            if why == "pack pick refused after its sale":
+                break  # the other picks' sales were named for the board before this one: skip
+            if why != "pack":
+                gs = rpc("gamestate")
+                if gs["state"] != "SMODS_BOOSTER_OPENED":  # a refused pick still closed the pack
+                    break
+        if why_not is not None:
+            NOT_FOLLOWED.append(why_not)
+        if took is None:
+            gs = rpc("gamestate")
+            if gs["state"] == "SMODS_BOOSTER_OPENED":
+                log.append("skip the pack")
+                rpc("pack", skip=True)
             return
 
 

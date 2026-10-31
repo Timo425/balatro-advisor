@@ -142,14 +142,22 @@ same 10 Gold seeds reached Antes 1-5, mean 3.5, no wins. Five faults of the benc
 fixed in that time, voided every run before 2026-10-24 (`void` in `runs.jsonl`): the bot's
 Steamodded doesn't save while a pack is open (its `fixes.toml` guard, lifted in the bot's copy),
 so the advisor never saw a pack's cards and every pack was skipped; the jokers were never put in
-the advisor's order; a pick from a pack never sold for a free slot; the game sets `G.GAME.won`
+the advisor's order; a pick from a pack never sold for a free slot (the sale itself then refused until 2026-10-31,
+below); the game sets `G.GAME.won`
 at the end of the Ante 8 boss round even on a loss (state_events.lua `end_round`); and the bot's
 profile had 35 jokers locked (gap 38). The runs of 2026-10-01 (an early advisor besides) are no
 evidence of over-buying. Since 2026-10-30 paired whole runs (a series at the base and one with
 the change, the same seeds, the same day) judge changes whose effect shows antes later: the
 rent fix (9285bbd) by money by ante. They judge only where the bot follows: its `not_followed`
 (tarots and spectrals, Arcana, Spectral and Standard packs, vouchers; and skipping a blind,
-never asked) is the judge's blind spot, the same in both arms, queued. Paired play-ons from a
+never asked) is the judge's blind spot, the same in both arms, queued. Until 2026-10-31 a pack
+pick needing a sale also failed uncounted (BalatroBot's `sell` refused an open pack, which the
+game allows) and the pack was skipped: in 10 runs of the series to then, on BAVANG11, 13, 21
+and 22, at Ante 3 (twice at Ante 5) in runs that reached Antes 4-5 (a Card Sharp pick on
+BAVANG13), on the same seeds in both arms of a pair but for BAVANG11 (rent-after only); since,
+the bot's patched copy sells there and a pick it can't make is counted (tools/botrun.py's
+docstring). At 9f9f892 BAVANG13 sold Dusk for Card Sharp and reached Ante 6 (Antes 4-5 in the
+four series before): one run, not a measure. Paired play-ons from a
 saved state (the old and the new choice played on with the same game seed) stay the sharper
 judge of one decision; whole runs would be cheaper run around the clock through the D17
 harness, headless, so the owner can play alongside.
