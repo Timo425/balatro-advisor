@@ -24,7 +24,9 @@ A run measures the advisor only where the bot follows it. Read runs.jsonl's `not
 (each time the advisor's top choice was one the bot can't take) before reading a run as a
 verdict on the advice. As of 2026-10-24 the bot:
 - follows: plays and discards (Best play's quick pass, 100 simulations where the live page
-  runs 300); joker buys, with the sale the advisor names; planets; rerolls (2 a shop);
+  runs 300); joker buys, with the sale the advisor names; planets; rerolls, as many a shop as
+  the advisor ranks above leaving (since 2026-11-01; before, at most 2 a shop and only while $5
+  stayed after it, and at most 8 actions a shop);
   Buffoon and Celestial packs and their joker and planet picks, with the sale the advisor
   names (made in the open pack, as the game allows; since 2026-10-31: before, every pick needing
   a sale failed and the pack was skipped uncounted, the series up to then included); the
@@ -232,7 +234,13 @@ def worth(o, a):
     pack"). Worth taking: ranked above that and clear of it by more than the ranking's noise
     (each option's `rank`, the ranking's own measure; ties within `tie` of the top's, the
     advisor's `shop_tie`). When the round is in trouble the ranking goes by the score reached
-    (`trouble`), and ranked above keeping the money is enough."""
+    (`trouble`), and ranked above keeping the money is enough.
+
+    Neither is a rule of the bot's own: the margin is the advisor's `shop_tie` (`SHOP_TIE`, 3%,
+    the register's "Shop ranking" entry in docs/design.md), and in trouble the advisor says its
+    ties don't apply (advise.rs `ShopTie`), so its ranking is followed as it stands. What the bot
+    decides by hand is only which side of a tie to fall on: keeping the money. Both belong to
+    the advisor's ranking already; nothing here to move there."""
     options, noise = a.get("options", []), a.get("shop_tie")
     keep = next((i for i, x in enumerate(options) if x["kind"] in ("leave", "skip")), len(options))
     if options.index(o) >= keep:
@@ -244,11 +252,19 @@ def worth(o, a):
     return o["rank"] - k["rank"] > noise["tie"] * top
 
 
+# A safety stop for the shop loop, far above any real shop: the bot acts in a shop as long as the
+# advisor ranks an action above leaving (`worth`), each action followed by a new analysis
+SHOP_GUARD = 50
+
+
 def shop(sims, log):
-    rerolls = 0
     failed = set()  # options the game refused this shop: not tried again
     shop_start = len(NOT_FOLLOWED)
-    for _ in range(8):
+    for n in range(SHOP_GUARD + 1):
+        if n == SHOP_GUARD:
+            # never in a real shop: rerolls cost more each time and money runs out first
+            log.append(f"error in SHOP: {SHOP_GUARD} actions in one shop, left (loop guard)")
+            break
         a = analyze(sims, keep="shop")
         gs = rpc("gamestate")
         money = gs["money"]
@@ -269,13 +285,11 @@ def shop(sims, log):
             if (kind, key, o.get("sell_index")) in failed:
                 continue
             try:
-                acted = take(o, a, gs, money, rerolls, sims, log)
+                acted = take(o, a, gs, sims, log)
             except RpcError as e:
                 log.append(f"shop {o['label']} failed: {e}")
                 failed.add((kind, key, o.get("sell_index")))
                 continue
-            if acted == "reroll":
-                rerolls += 1
             if acted:
                 took = o
                 break
@@ -326,7 +340,7 @@ def sell_for(o, gs):
     return True
 
 
-def take(o, a, gs, money, rerolls, sims, log):
+def take(o, a, gs, sims, log):
     """Acts on one shop option if the bot can and it's worth it: what it did, or None."""
     kind, key = o["kind"], o.get("key")
     if not key and kind != "reroll" or not worth(o, a):
@@ -363,7 +377,7 @@ def take(o, a, gs, money, rerolls, sims, log):
             return None
         log.append(o["label"])
         return "sell"
-    if kind == "reroll" and rerolls < 2 and money - o["cost"] >= 5:
+    if kind == "reroll":  # as the advisor ranks it: no count or money floor of the bot's own
         rpc("reroll")
         log.append("reroll")
         return "reroll"
