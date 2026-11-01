@@ -25,3 +25,7 @@ config.local.toml
 
 # Machine-local Claude Code settings (e.g. the laptops' fixture-pull hook)
 .claude/settings.local.json
+
+# Python bytecode caches
+__pycache__/
+*.pyc
