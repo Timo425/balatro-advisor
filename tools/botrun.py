@@ -75,8 +75,12 @@ verdict on the advice. As of 2026-10-24 the bot:
   beside the game's Balatro folder (its profile.jkr and meta.jkr, and a settings.jkr on profile
   3), BotMods/bav-bench switches the game there (conf.lua's identity), so its saves stay off Steam
   Cloud and never touch the owner's settings.jkr or profiles; botrun and bot.sh then leave the
-  owner's files alone. Without the copy everything works as before. bav-bench also minimizes the
-  game at the first line of main.lua, and on Linux Lovely's console is off (`--disable-console`).
+  owner's files alone. Without the copy everything works as before. bav-bench also keeps the
+  game's window out of the way at boot (unless `BALATROBOT_MINIMIZED=0` or headless): LÖVE's
+  first window opens at 1280x720 (conf.lua; desktop-sized otherwise) and is minimized at the first
+  line of main.lua, and the start-up `apply_window_changes(true)` doesn't call `updateMode`, which
+  opened a second, monitor-sized window in front (2560x1440, full screen, measured 2026-11-02);
+  now one window, visible ~80 ms. On Linux Lovely's console is off (`--disable-console`).
 Since 2026-10-29 every state the advisor analysed in a shop or an open pack (since 2026-10-31 a
 blind select too), and every state an
 analysis failed on (`error`), is kept (`bot/shops/<seed>/a<ante>-r<round>-<n>-<screen>.jkr`;
