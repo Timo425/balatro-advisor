@@ -184,7 +184,8 @@ holding them, not buying them. Split by the board (the first shop of each round 
 $3/$0/-$2 and 47 of 120 below $0. The money's walk charged no rent (gap 17). The card's other
 suspects: botrun's buying anything above leaving when the round is in trouble (`worth`) acts
 in 3 of 74 shops at Ante 2 and 2 of 60 at Ante 3, not the cause there; money held valued too
-low stays open: rental-free boards hold less than the owner ($10/$13/$19 at Antes 2-4 after the
+low stays open (fixture `shop_gluttonous_spent_below_interest`, BAVANG07 at 0b4af1a: Gluttonous Joker
+bought at $14 on its By Ante 8 alone): rental-free boards hold less than the owner ($10/$13/$19 at Antes 2-4 after the
 fix, the owner's $17/$25/$27), and on the owner's shops the advisor took something in 192 where
 the owner spent in 154 (queued). On the owner's 219 first
 shops of a round at Antes 2-3, the advisor of then (6dd28fa) would have taken something under the
@@ -211,6 +212,27 @@ can tell from noise. The bot's modded game grows as it plays (a run started fres
 0.6-3.1 GB, longer runs more; 4.9 GB after 12 runs in one session, 11.9 GB seen after 19): botrun
 restarts it before a run once it holds more than a fresh one (`--restart-game`, 12-16 s a
 restart).
+Until 2026-11-01 the bot rerolled at most twice a shop, only while $5 stayed after it, and acted
+at most 8 times a shop: caps of its own, in no register. Paired runs on BAVANG01-25 at 0b4af1a
+(2026-11-01/02, 100 simulations, restart off; 02-06 played on the Windows laptop, BAVANG01 on
+both machines and the same move for move), capped against rerolling and acting as the advisor
+ranks (2b66933; a guard at 50 actions a shop, never reached): the caps had stopped the advisor's
+top choice in 24 of 259 shops (`not_followed` rerolls 24 → 0). Rerolls a shop 0.31 → 0.40
+(Antes 4/5 0.55/0.83 → 0.63/1.43); 15 shops took 3 or more, at most 8 (BAVANG09, Ante 5, $87 on a
+board three of whose five slots were eternal, gap 27). Median money at a shop's entry at Antes
+2/3/4/5 $9.5/$12/$27/$29 → $9.5/$12/$20/$21, shops below $0 17 → 18. Mean ante 4.48 → 4.60: 10
+seeds played the same, 3 went further (BAVANG10 5 → 7, 14 5 → 6, 20 4 → 5), 1 shorter (09 6 → 5),
+11 differed but reached the same ante; no wins. So the money the caps kept from Ante 4 on went to
+rerolls with no gain in antes this series can tell from noise: what a reroll is worth against
+money held is the advisor's to value (the queue card "One round's money for the shops ahead"),
+not the bot's to cap. A series' length follows how far each seed gets (5-68 minutes a run here,
+593 and 602 minutes the two arms): the same seeds' minutes in the series before predict it, an average of a
+few runs doesn't. Faults of the bench found on the way and fixed in the bot's BalatroBot copy or
+botrun: a pointer resting where the deck is drawn opened the game's deck preview, which leaves
+out the Play and Discard buttons (game.lua `Game:update_selecting_hand`), so every play failed
+(BAVANG25, three times); a restart after a suspend found Steam still offline and stopped at its
+Cloud sync dialog (tools/botrun.py's docstring). A `select` sent while a pack a skip's tag opened
+is still open fails once and is retried (13 → 20, the longer runs; both arms alike).
 
 ## Patterns
 
@@ -1438,7 +1460,9 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    rental on a board already renting still ranks first, on its By Ante 8 (Raised Fist ×1.19 at
    $5, BAVANG25 a2-r3) or on its own next-ante chance, which is the walk's floor (a third
    rental at $4, BAVANG06 a2-r3): fixtures `shop_eternal_rental_while_renting` and
-   `shop_third_rental_into_debt` wait on it. The general fix: the long run's finds bought with
+   `shop_third_rental_into_debt` wait on it, and `shop_splash_eternal_rental_half_renting`
+   (BAVANG07 a2-r5 at 0b4af1a: Splash, eternal and rental, first on a board renting Half Joker,
+   its By Ante 8 ×0.96). The general fix: the long run's finds bought with
    the money each ante leaves (income less rent), queued.
 17. **The money's finds add every joker's gain, count a full board's swaps in two units, and the
    judge can't play tarots.** Since 2026-10-26 what an option's money left buys
@@ -2136,7 +2160,12 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    when one is on screen now. The general fix: one step that places a joker added to a board
    (the order `best_order` would pick for the board it leaves, or the freed slot and the right
    end when the permutations are too many), used by every caller that adds one: the shop, the
-   outlook, the long-run projection and packs.
+   outlook, the long-run projection and packs. Seen in the bot bench 2026-11-01 (BAVANG23 at
+   0b4af1a): Blueprint picked from a pack (valued leftmost) landed at the right end, and the
+   shop, valuing every option on the jokers as they sat, ranked selling it first though its own
+   order advice (Blueprint copying Joker Stencil) scored ×1.91: fixture
+   `shop_blueprint_sold_unarranged` waits on it, with leaving and selling valued on the order a
+   player arranges for free (queue card "Every option valued on the jokers as you'd arrange them").
 27. **The long run can't see a joker's future partner, so nothing builds toward a combo.** The
    projection fills empty slots with stand-ins of three kinds (`value.rs` `fill_slots`: ×1.5,
    +15 Mult or +60 Chips, in the shares your shop pool offers), and an option is compared with a
@@ -2166,6 +2195,10 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    same as for jokers: the projection draws the deck changes the run is likely to find (the
    tarots, spectrals and Standard pack cards in its pool, at their odds by the ante they'd
    arrive), so a step is worth what it adds to where the deck is heading.
+   An eternal's slot is held for good, yet compared only with the stand-ins: fixture
+   `shop_mail_in_eternal_full_board` (BAVANG09 a3-r8 at 0b4af1a: Mail-In Rebate, eternal, first
+   on its By Ante 8 ×1.59 with three of five slots then eternal; by Ante 5 $87 and the boss 0.00)
+   waits on this gap and gap 36 (a).
 28. **Every blind ahead starts from your board as it is now, not the one the blinds before it
    leave.** The blind odds, the next-ante horizon and the style outlook each simulate their
    round from the current board (`Board::at_blind_set`, through `Board::new_round`, only resets
