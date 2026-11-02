@@ -199,9 +199,16 @@ pub fn run(run: &RunState, data: &GameData, plan: &Plan, sims: usize, seed: u64)
             let start = if current {
                 let cb = run.blind_in_play();
                 b.deck_remaining = pile.len() as i64;
+                // face-down cards drawn as you can tell them, anew each simulated round, as
+                // advise's round in progress (`advise::face_down_drawn`)
+                let order: Vec<usize> = (0..hand.len()).collect();
+                // The Mark's rule as the cards were turned down: under the jokers you hold now
+                let (hand, deck, hidden) = crate::advise::face_down_drawn(run, &base, hand, &order, pile, seed);
                 RoundStart {
-                    hand: hand.to_vec(),
-                    deck: pile.to_vec(),
+                    hand,
+                    deck,
+                    hidden,
+                    changes: vec![],
                     hand_size: run.round_hand_size(),
                     hands: run.hands_left,
                     discards: run.discards_left,
@@ -226,6 +233,8 @@ pub fn run(run: &RunState, data: &GameData, plan: &Plan, sims: usize, seed: u64)
                     disabled: false,
                     // the next round played draws with the Juggle Tags held
                     juggle: if i == 0 { run.round_start_tags() } else { 0 },
+                    hidden: None,
+                    changes: vec![],
                 };
                 // the plan's jokers; all of blind.lua Blind:set_blind, then the jokers',
                 // come as it's set on the board, per round (sim::round_odds -> Board::at_blind_set_drawn)

@@ -763,6 +763,8 @@ fn judge(job: &Job, ran: Ran, data: &GameData) -> Judged {
                 blind: cb.key.clone(),
                 disabled: cb.disabled,
                 juggle: b.0.round_start_tags(),
+                hidden: None,
+                changes: vec![],
             };
             let g = Board::from_run(&h.0, data);
             let setup = |seed: u64| {

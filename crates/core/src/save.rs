@@ -417,7 +417,11 @@ pub(crate) fn playing_card(c: &Value) -> Option<Card> {
         seal: c.get("seal").str().and_then(Seal::from_name),
         perma_bonus: num(c.at("ability.perma_bonus")),
         debuff: c.get("debuff").truthy(),
-        face_down: c.get("facing").str() == Some("back"),
+        // face down and unseen: drawn flipped by a boss (cardarea.lua `CardArea:emplace` sets
+        // `ability.wheel_flipped`), never turned up since (card.lua `Card:flip` clears it: a
+        // tarot flips the cards it changes face up and back, `Card:use_consumeable`, so you've
+        // seen those); a card you've seen is read as what it is (gap 25)
+        face_down: c.get("facing").str() == Some("back") && c.at("ability.wheel_flipped").truthy(),
         played_this_ante: c.at("ability.played_this_ante").truthy(),
     })
 }

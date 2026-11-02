@@ -244,10 +244,12 @@ pub struct PlayAdvice {
     /// Planets from Blue Seals held at the end, on average (counted in the ranking)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub planets: Option<f64>,
-    /// Cards played blind (a hand of only face-down cards, `sim::blind_moves`): `hand` and
-    /// `score` say nothing (they'd be the advisor's stand-ins, which you don't know)
+    /// A play holding a face-down card: `hand` is the hands it makes over what the card could be
+    /// (likeliest first), `score` its lowest and `score_range` lowest to highest
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub blind: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub score_range: Option<(f64, f64)>,
     /// The other first moves simulated, best first.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub alternatives: Vec<PlayOption>,
@@ -296,10 +298,13 @@ pub struct PlayOption {
     /// As good as the best move, as far as the simulation can tell
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub tie: bool,
-    /// Cards played blind (a hand of only face-down cards, `sim::blind_moves`): `hand` and
-    /// `score` say nothing (they'd be the advisor's stand-ins, which you don't know)
+    /// A play holding a face-down card: `hand` is the hands it makes over what the card could be
+    /// (likeliest first, `play.rs` `SHOWN_DRAWS` draws), `score` and `sure` its lowest
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub blind: bool,
+    /// Its lowest to highest score over those draws
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub score_range: Option<(f64, f64)>,
     /// After a discard: the hand you most often go on to play, its average score, and the
     /// share of simulated rounds it's played in
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -499,6 +504,10 @@ pub struct TarotValue {
     /// By Ante 8 value (see `Candidate::long_mult`)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub long_mult: Option<f64>,
+    /// The card effect and the deck cards it was valued on (one outcome only), for the Best play
+    /// look-ahead's move with it
+    #[serde(skip)]
+    pub target: Option<(crate::engine::consumable::CardEffect, Vec<usize>)>,
     /// What it does to the round being played, for the Best play look-ahead
     #[serde(skip)]
     pub use_effect: Option<sim::Use>,
@@ -890,6 +899,29 @@ fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> 
     })
 }
 
+/// `hand` (your hand as it sits, or a plan's copy of it with the same places) in `order`, and
+/// `pile` (`board`: your jokers as they are now, under which the boss turned the cards down), with its face-down cards drawn from the unseen cards (`pile` and themselves) as
+/// everything you can tell of them allows (`sim::Hidden`: their places in both sorts, among
+/// the face-up cards and among themselves, and the boss's rule), with `seed`: the stand-ins the
+/// analysis reads, and what's known of them, for each simulated round to draw anew
+/// (`sim::deal_hidden`). With none face down, `hand` in `order` and `pile` as they are.
+#[allow(clippy::type_complexity)]
+pub fn face_down_drawn(run: &RunState, board: &Board, hand: &[Card], order: &[usize], pile: &[Card], seed: u64) -> (Vec<Card>, Vec<Card>, Option<std::sync::Arc<sim::Hidden>>) {
+    let ordered: Vec<Card> = order.iter().map(|&i| hand[i]).collect();
+    let slots: Vec<usize> = (0..ordered.len()).filter(|&s| ordered[s].face_down).collect();
+    if slots.is_empty() {
+        return (ordered, pile.to_vec(), None);
+    }
+    // the boss's rule (The Mark turns down only face cards: `Board::turns_down_only_faces`)
+    let face_only = run.blind_in_play().is_some_and(|bl| board.turns_down_only_faces(&bl.key));
+    let real: Vec<usize> = slots.iter().map(|&s| order[s]).collect();
+    let mut h = sim::Hidden::new(hand, &real, slots.clone(), face_only);
+    let mut rng = crate::engine::Rng::new(seed ^ 0xfd0);
+    let (ordered, pile) = h.deal(&ordered, pile, &vec![true; slots.len()], &mut rng);
+    h.stand = slots.iter().map(|&s| ordered[s]).collect();
+    (ordered, pile, Some(std::sync::Arc::new(h)))
+}
+
 pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts: &Options) -> Analysis {
     let t0 = Instant::now();
     let timing = std::env::var_os("BAV_TIMING").is_some();
@@ -910,61 +942,16 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
     // ties by position): every play is worked out on this order and mapped back to yours.
     let mut hand_order: Vec<usize> = (0..run.hand.len()).collect();
     hand_order.sort_by_key(|&i| run.hand[i].order_key());
-    // Face-down cards are unknown to you, so to the advisor too: each is swapped for a random
-    // card of the draw pile (its real self goes back in the pile; the deck stays the same).
-    let (live_hand, live_pile) = {
-        // What you can find out by sorting: the game sorts by a fixed key (cardarea.lua sort,
-        // card.lua get_nominal: rank value, then face, then suit; or suit first), face-down
-        // cards by their real one. Where a card lands in rank order and in suit order bounds it,
-        // just as flipping between the two sorts shows you.
-        let suit_nom = |c: &Card| match c.suit {
-            crate::model::Suit::Spades => 0.04,
-            crate::model::Suit::Hearts => 0.03,
-            crate::model::Suit::Clubs => 0.02,
-            crate::model::Suit::Diamonds => 0.01,
-        };
-        let face_nom = |c: &Card| match c.rank.0 {
-            14 => 0.4,
-            13 => 0.3,
-            12 => 0.2,
-            11 => 0.1,
-            _ => 0.0,
-        };
-        let rank_key = |c: &Card| c.rank.chips() + suit_nom(c) + face_nom(c);
-        let suit_key = |c: &Card| suit_nom(c) * 1000.0 + c.rank.chips() + face_nom(c);
-        // the known cards just above and below a hidden one, sorted by `key`
-        let bounds = |pos: usize, key: &dyn Fn(&Card) -> f64| -> (f64, f64) {
-            let k = key(&run.hand[pos]);
-            let shown = run.hand.iter().filter(|c| !c.face_down).map(key);
-            let above = shown.clone().filter(|&x| x >= k).fold(f64::INFINITY, f64::min);
-            let below = shown.filter(|&x| x <= k).fold(f64::NEG_INFINITY, f64::max);
-            (below, above)
-        };
-        let fits = |pos: usize, c: &Card| -> bool {
-            let (rl, rh) = bounds(pos, &rank_key);
-            let (sl, sh) = bounds(pos, &suit_key);
-            (rl..=rh).contains(&rank_key(c)) && (sl..=sh).contains(&suit_key(c))
-        };
-        let mut hand: Vec<Card> = hand_order.iter().map(|&i| run.hand[i]).collect();
+    // Face-down cards are unknown to you, so to the advisor too: they're drawn together from the
+    // unseen cards (the draw pile and themselves) as everything you can tell of them allows
+    // (`sim::Hidden`: their places in both sorts, among the face-up cards and among themselves,
+    // and the boss's rule), once here (the stand-ins the analysis reads) and anew in every
+    // simulated round of this blind (`live_hidden`, `sim::deal_hidden`).
+    let (live_hand, live_pile, live_hidden) = {
         // in a fixed order before anything random picks from it, not the game's order
         let mut pile = run.draw_pile.clone();
         pile.sort_by_key(Card::order_key);
-        let mut rng = crate::engine::Rng::new(opts.seed ^ 0xfd0);
-        for (slot, c) in hand.iter_mut().enumerate() {
-            if !c.face_down || pile.is_empty() {
-                continue;
-            }
-            let pos = hand_order[slot];
-            let ok: Vec<usize> = (0..pile.len()).filter(|&k| fits(pos, &pile[k])).collect();
-            let k = if ok.is_empty() { rng.below(pile.len()) } else { ok[rng.below(ok.len())] };
-            let mut real = *c;
-            real.face_down = false;
-            let mut stand = pile[k];
-            stand.face_down = true;
-            pile[k] = real;
-            *c = stand;
-        }
-        (hand, pile)
+        face_down_drawn(run, &base, &run.hand, &hand_order, &pile, opts.seed)
     };
     let dctx = desc_ctx(run);
     let mut fresh_deck = run.full_deck();
@@ -987,6 +974,8 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             start: RoundStart {
                 hand: live_hand.clone(),
                 deck: live_pile.clone(),
+                hidden: live_hidden.clone(),
+                changes: vec![],
                 hand_size: run.round_hand_size(),
                 hands: run.hands_left,
                 discards: run.discards_left,
@@ -1044,6 +1033,8 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
                 blind: String::new(),
                 disabled: false,
                 juggle: 0,
+                hidden: None,
+                changes: vec![],
             },
             horizon: true,
         });
@@ -2259,9 +2250,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
         .chain(counts_ahead.then_some(
             "Best play also counts what the round leaves (the jokers' numbers, Blue Seal planets, money, cards worth drawing) by what it does to the chance of getting through this ante's blinds still ahead (the Big Blind taken as played, then the boss), each from the board the one before leaves: each change but the money's counted only where the paired simulated runs show it, measured on your board carrying what the shops before each blind find, as the shop ranking counts them for the boss (none in the quick pass), put on as a multiplier on every score sized so the boss gets through that often (heuristic), and raised where your board gets through these blinds less than 10% of the time (heuristic); each sized by a search of at most 6 sets of runs, ×1000 at most, ended by two steps that change nothing (a budget), and where that falls short, measured at the chance it reaches, as the change of the odds there, and the changes combined in the odds, so together they stay between none and a sure pass; a joker's numbers stepped up, a step down and down to none (linear in the odds between the steps), apart from its Ante 8 worth (the two multiplied); a joker's counter the round moves (Loyalty Card's place in its cycle, Yorick's discards to its next step, Seltzer's hands left) at each value the round can leave it at, so the hands a round takes land Loyalty Card's ×Mult in the blinds ahead or off them (at most 8 values measured, the rest read between them: a budget; counted only there); a card worth drawing once its Ante 8 worth passed; money by how much more often your board gets through with what the shop estimate says $10 more adds before each blind, from where the shops' find put the boss: with the boss alone ahead that much more, with two blinds on the same runs carrying the find raised for it, read off the find's own search (heuristic: linear between the points it tried, past them its slope; where it tried none, a search to within a standard error); counted wherever the estimate shows it, not by the paired runs (none in the quick pass). Not counted: the next ante, the game's round-end steps between the blinds (Popcorn, Turtle Bean, Gros Michel, perishables, the round's money).",
         ))
-        .chain(sim::all_face_down(&run.hand).then_some(
-            "Every card in hand is face down: Best play tries one play (and, with a discard left, one discard) of each count, the highest by the rank sort played and the lowest thrown (a cut by the cards' order, not every move); each card stands for one random draw-pile card picked for the whole analysis, so how many to play and the odds shown are those of that one guess at the hidden cards.",
-        ))
+        .chain((run.screen.in_blind() && run.hand.iter().any(|c| c.face_down)).then_some(play::FACE_DOWN_NOTE))
         .chain((run.hand.len() > sim::ALL_MOVES_MAX).then_some(
             "A big hand: Best play's moves come from the hand's structure (its plays whose cards can all score, the best few of each kind and then by score now; its structure's discards), not every move; the simulated player's best play looks only at its 16 highest cards.",
         ))
@@ -3622,6 +3611,7 @@ fn tarot_values(
     per_rarity: [usize; 4],
     planet_p: &[f64],
 ) -> Vec<TarotValue> {
+    use crate::engine::consumable::CardEffect;
     use crate::model::{Enhancement, Rank, Suit};
     let quick = ctx.opts.quick && run.screen.in_blind();
     let tarots: Vec<&crate::data::Center> =
@@ -3681,14 +3671,48 @@ fn tarot_values(
         odds_at(&board_for_deck(d), &sp, sims).1 / sp.start.target.max(1.0)
     };
     let reach_now = reach_of(deck, full.sims);
-    // In a blind, the round being played continues from the real hand (changed) and draw
-    // pile; otherwise a fresh round with the changed deck.
-    let simulate = |d: Vec<Card>, sims: usize| -> (f64, f64) {
+    // In a blind, the round being played continues from your hand (changed) and draw pile;
+    // otherwise a fresh round with the changed deck. The hand in the round's order (`analyze`'s
+    // `hand_order`), where a face-down card the change left alone stays the stand-in each
+    // simulated round draws anew (`sim::deal_hidden`), not the card it really is.
+    let mut round_order: Vec<usize> = (0..run.hand.len()).collect();
+    round_order.sort_by_key(|&i| run.hand[i].order_key());
+    // the places in the round's hand of deck cards `v`, when one of them is face down (and all
+    // are in hand): a card effect on them is done to what each simulated round deals there
+    let down_places = |v: &[usize]| -> Option<Vec<usize>> {
+        let run_idx: Vec<usize> = v.iter().map(|&i| hand_idx.iter().position(|&h| h == Some(i))).collect::<Option<_>>()?;
+        if spec.start.hidden.is_none() || spec.start.hand.len() != round_order.len() || !run_idx.iter().any(|&r| run.hand[r].face_down) {
+            return None;
+        }
+        run_idx.iter().map(|&r| round_order.iter().position(|&x| x == r)).collect()
+    };
+    // `how`: the card effect and its targets (deck indices) that made `d`, when one effect did
+    let simulate = |d: Vec<Card>, how: Option<(CardEffect, &[usize])>, sims: usize| -> (f64, f64) {
         let mut sp = fresh.clone();
         sp.start.deck = d.clone();
         if spec.in_progress() && d.len() == deck.len() && hand_idx.iter().all(|i| i.is_some()) {
             let mut live = spec.clone();
-            live.start.hand = hand_idx.iter().map(|i| d[i.unwrap()]).collect();
+            // (Cryptid's copies of one stay copies of the real card: they change the hand's size,
+            // gap 25 (b))
+            match how.filter(|(e, _)| !matches!(e, CardEffect::Copies(_))).and_then(|(e, v)| down_places(v).map(|p| (e, p))) {
+                // on a face-down card: your hand as it is, the effect done to each round's draw
+                Some((e, places)) => live.start.changes = vec![(e, places)],
+                // a face-down card stays the stand-in each round draws anew; a random outcome's
+                // change to one (Ouija's rank) isn't counted this blind (gap 25 (b))
+                None => {
+                    live.start.hand = match spec.start.hidden.is_some() && spec.start.hand.len() == round_order.len() {
+                        false => hand_idx.iter().map(|i| d[i.unwrap()]).collect(),
+                        true => round_order
+                            .iter()
+                            .enumerate()
+                            .map(|(s, &i)| {
+                                let j = hand_idx[i].unwrap();
+                                if run.hand[i].face_down { spec.start.hand[s] } else { d[j] }
+                            })
+                            .collect(),
+                    };
+                }
+            }
             sp = live;
         }
         (odds_at(&board_for_deck(&d), &sp, sims).0, reach_of(&d, sims))
@@ -3717,7 +3741,7 @@ fn tarot_values(
     // Spectral cards (card.lua Card:use_consumeable), each simulated by what it changes.
     let spectral_value = |t: &crate::data::Center, sims: usize| -> TarotValue {
         let tv = |p: f64, reach: f64, note: String, simulated: bool, deck: Option<Vec<Card>>, gain: f64| TarotValue {
-            use_effect: None, long_mult: None, decks: vec![], spectral: true, deck, key: t.key.clone(), name: t.name.clone(), p_win: p, note, simulated,
+            use_effect: None, target: None, long_mult: None, decks: vec![], spectral: true, deck, key: t.key.clone(), name: t.name.clone(), p_win: p, note, simulated,
             per_shop: spectral_per_shop, reach, reach_now, money_gain: gain,
         };
         let mut rng = crate::engine::Rng::new(ctx.opts.seed ^ 0x5bec ^ t.order as u64);
@@ -3761,7 +3785,7 @@ fn tarot_values(
                         (1.0 / RANDOM_OUTCOMES as f64, d)
                     })
                     .collect();
-                let (p, r) = simulate(decks[0].1.clone(), sims);
+                let (p, r) = simulate(decks[0].1.clone(), None, sims);
                 TarotValue { decks, ..tv(p, r, "+$20, destroys 5 random cards in your hand".into(), true, None, 20.0) }
             }
             "c_black_hole" => {
@@ -3791,7 +3815,7 @@ fn tarot_values(
                         (1.0 / RANDOM_OUTCOMES as f64, d)
                     })
                     .collect();
-                let (p, r) = simulate(decks[0].1.clone(), sims);
+                let (p, r) = simulate(decks[0].1.clone(), None, sims);
                 TarotValue { decks, ..tv(p, r, format!("destroys a random card in hand, adds {what} (random suits and enhancements)"), true, None, 0.0) }
             }
             "c_sigil" => {
@@ -3805,7 +3829,7 @@ fn tarot_values(
                     for &i in &hand_cards {
                         d[i].suit = su;
                     }
-                    let (pp, rr) = simulate(d.clone(), sims);
+                    let (pp, rr) = simulate(d.clone(), Some((CardEffect::Suit(su), &hand_cards)), sims);
                     p += pp / 4.0;
                     r += rr / 4.0;
                     decks.push((0.25, d));
@@ -3900,14 +3924,14 @@ fn tarot_values(
                 "c_judgement" => {
                     let mut rng = crate::engine::Rng::new(ctx.opts.seed ^ 0x7a70);
                     let reach = pool_reach(pool, 1, &mut rng).unwrap_or(reach_now).max(reach_now);
-                    return TarotValue { use_effect: None, long_mult: None, decks: vec![], spectral: false, deck: None, key: t.key.clone(), name: t.name.clone(), p_win: expected_best(ctx, pool, round, now, 1, 1.0, f64::INFINITY, per_rarity, &mut rng).max(now), note, simulated: true, per_shop, reach, reach_now, money_gain: 0.0 };
+                    return TarotValue { use_effect: None, target: None, long_mult: None, decks: vec![], spectral: false, deck: None, key: t.key.clone(), name: t.name.clone(), p_win: expected_best(ctx, pool, round, now, 1, 1.0, f64::INFINITY, per_rarity, &mut rng).max(now), note, simulated: true, per_shop, reach, reach_now, money_gain: 0.0 };
                 }
                 "c_wheel_of_fortune" => {
                     // card.lua: 1 in 4 hits a random joker without an edition; the edition is
                     // poll_edition(guaranteed, no negative): Polychrome 15%, Holo 35%, Foil 50%.
                     let plain: Vec<usize> = ctx.base.jokers.iter().enumerate().filter(|(_, j)| j.edition.is_none()).map(|(i, _)| i).collect();
                     if plain.is_empty() {
-                        return TarotValue { use_effect: None, long_mult: None, decks: vec![], spectral: false, deck: None, key: t.key.clone(), name: t.name.clone(), p_win: now, note: "no joker without an edition to hit".into(), simulated: true, per_shop, reach: reach_now, reach_now, money_gain: 0.0 };
+                        return TarotValue { use_effect: None, target: None, long_mult: None, decks: vec![], spectral: false, deck: None, key: t.key.clone(), name: t.name.clone(), p_win: now, note: "no joker without an edition to hit".into(), simulated: true, per_shop, reach: reach_now, reach_now, money_gain: 0.0 };
                     }
                     let hit = (run.probability_normal / 4.0).min(1.0);
                     let (mut p, mut r) = (0.0, 0.0);
@@ -3925,12 +3949,12 @@ fn tarot_values(
                     let p = (1.0 - hit) * now + hit * p / k;
                     let reach = (1.0 - hit) * reach_now + hit * r / k;
                     let note = format!("{:.0}% chance: one of your {} jokers without an edition gets Polychrome 15% / Holo 35% / Foil 50%", hit * 100.0, plain.len());
-                    return TarotValue { use_effect: None, long_mult: None, decks: vec![], spectral: false, deck: None, key: t.key.clone(), name: t.name.clone(), p_win: p, note, simulated: true, per_shop, reach, reach_now, money_gain: 0.0 };
+                    return TarotValue { use_effect: None, target: None, long_mult: None, decks: vec![], spectral: false, deck: None, key: t.key.clone(), name: t.name.clone(), p_win: p, note, simulated: true, per_shop, reach, reach_now, money_gain: 0.0 };
                 }
                 "c_high_priestess" if !planet_p.is_empty() => best_of_subsets(planet_p, 2).0.max(now),
                 _ => now,
             };
-            TarotValue { use_effect: None, long_mult: None, decks: vec![], spectral: false, deck: None, key: t.key.clone(), name: t.name.clone(), p_win: p, note, simulated: p != now, per_shop, reach: reach_now, reach_now, money_gain: 0.0 }
+            TarotValue { use_effect: None, target: None, long_mult: None, decks: vec![], spectral: false, deck: None, key: t.key.clone(), name: t.name.clone(), p_win: p, note, simulated: p != now, per_shop, reach: reach_now, reach_now, money_gain: 0.0 }
         }
     };
     // With no hand on screen, a card-targeting tarot is valued on hands you'd hold (random
@@ -3957,7 +3981,7 @@ fn tarot_values(
         let (outcomes, min, max) = consumable::card_outcomes(&t.key, &t.config)?;
         let spectral = t.set == "Spectral";
         let base = TarotValue {
-            use_effect: None, long_mult: None, decks: vec![], spectral, deck: None, key: t.key.clone(), name: t.name.clone(), p_win: now,
+            use_effect: None, target: None, long_mult: None, decks: vec![], spectral, deck: None, key: t.key.clone(), name: t.name.clone(), p_win: now,
             note: format!("needs {min} card{} in hand", if min > 1 { "s" } else { "" }), simulated: false,
             per_shop: if spectral { spectral_per_shop } else { per_shop }, reach: reach_now, reach_now, money_gain: 0.0,
         };
@@ -3985,7 +4009,7 @@ fn tarot_values(
                     live.start.hand.extend(std::iter::repeat_n(deck[v[0]], k));
                     (odds_at(&board_for_deck(&d), &live, sims).0, reach_of(&d, sims))
                 } else {
-                    simulate(d, sims)
+                    simulate(d, Some((effect, v)), sims)
                 };
                 (p + w * pp, r + w * rr)
             })
@@ -4020,7 +4044,9 @@ fn tarot_values(
         } else {
             format!("{what}, on the cards worth most in hands you'd hold")
         };
-        Some(TarotValue { p_win: p, reach: r, simulated: true, deck: d, decks, note, ..base })
+        // the effect and its targets, for Best play's move with it (one outcome only)
+        let target = (outcomes.len() == 1).then(|| (outcomes[0].1, sets[best].clone()));
+        Some(TarotValue { p_win: p, reach: r, simulated: true, deck: d, decks, note, target, ..base })
     };
     // A consumable you hold or can pick from the open pack goes on the hand on screen; the
     // rest of the pool on hands you'd hold
@@ -4089,6 +4115,11 @@ fn tarot_values(
                 if !add.iter().all(|c| (0..n).any(|i| in_hand[i] && deck[i] == *c)) {
                     return None;
                 }
+                // on a face-down card: the effect on its places in the round's hand, done to
+                // whatever each round deals there (`sim::Use::at`), not to the card it really is
+                if let Some((e, places)) = t.target.as_ref().filter(|(e, _)| !matches!(e, CardEffect::Copies(_))).and_then(|(e, v)| down_places(v).map(|p| (*e, p))) {
+                    return Some(sim::Use { at: vec![(e, places)], ..Default::default() });
+                }
                 let mut swap: Vec<(Card, Card)> = (0..n).filter(|&i| in_hand[i] && d[i] != deck[i]).map(|i| (deck[i], d[i])).collect();
                 // copies of a card need it in hand
                 for c in &add {
@@ -4149,6 +4180,8 @@ fn blind_from_start(key: &str, target: f64, run: &RunState, deck: &[Card]) -> Ro
         blind: key.to_string(),
         disabled: false,
         juggle: 0,
+        hidden: None,
+        changes: vec![],
     }
 }
 
@@ -5112,6 +5145,8 @@ fn archetype_outlook(
             blind: String::new(),
             disabled: false,
             juggle: 0,
+            hidden: None,
+            changes: vec![],
         },
         horizon: true,
     };
@@ -7362,10 +7397,10 @@ mod tests {
     #[test]
     fn a_hand_of_only_face_down_cards_still_has_a_best_play() {
         // The House's first hand, every card face down, with no discard left (Burglar): the
-        // game allows a blind play, so Best play has one (it panicked with no move: BAVANG10,
-        // Ante 4). The moves are one per count (the highest played) and the shown play claims
-        // no hand or score (they'd be the stand-ins'), labelled as a heuristic. Fails if
-        // face-down cards give no move again.
+        // game allows a play, so Best play has one (it panicked with no move: BAVANG10, Ante
+        // 4). Every play is tried, valued over what the cards could be (gap 25), and the one
+        // shown names the hands it makes and its score range over those draws, never one
+        // stand-in's score; noted as a heuristic. Fails if face-down cards give no move again.
         let make_in = |discards: i64, hand: &str| {
             let mut r = shop_run(&[("j_joker", None, None)], &[]);
             r.screen = crate::save::Screen::SelectingHand;
@@ -7385,33 +7420,21 @@ mod tests {
         let bp = analyze(&make(0), GameData::bundled(), None, &quick()).best_play.unwrap();
         let all: Vec<&PlayOption> = bp.alternatives.iter().collect();
         assert_eq!(bp.action, "play", "{:?}", bp.cards);
-        assert!(bp.blind && bp.score == 0.0, "{:?} {} {}", bp.cards, bp.hand, bp.score);
-        // each card named by its place and its order in the rank sort (gap 35): the kth card
-        // played is the kth highest, at the place `indices` gives
-        for (k, (c, &i)) in bp.cards.iter().zip(&bp.indices).enumerate() {
-            let nth = if k == 0 { "the highest".to_string() } else { format!("the {} highest", crate::model::ordinal(k + 1)) };
-            assert_eq!(c, &format!("face-down card, {} from left: {nth} by the rank sort", crate::model::ordinal(i + 1)));
-        }
-        assert!(all.iter().all(|o| o.action == "play" && o.blind && o.score == 0.0), "{all:?}");
+        let (lo, hi) = bp.score_range.unwrap();
+        assert!(bp.blind && !bp.hand.is_empty() && bp.score == lo && lo <= hi && hi > 0.0, "{:?} {} {:?}", bp.cards, bp.hand, bp.score_range);
+        // each card named by its place and its order in the rank sort (gap 35)
+        assert!(bp.cards.iter().all(|c| c.starts_with("face-down card, ") && c.ends_with("by the rank sort")), "{:?}", bp.cards);
+        assert!(all.iter().all(|o| o.action == "play" && o.blind && o.score_range.is_some()), "{all:?}");
         assert!(bp.tip.as_deref().is_some_and(|t| t.contains("heuristic")), "{:?}", bp.tip);
-        // the highest in rank order played: your hand's places of the highest cards
         let r = make(0);
-        let mut top: Vec<usize> = (0..8).collect();
-        top.sort_by_key(|&i| r.hand[i].order_key());
-        let mut want = top[..bp.cards.len()].to_vec();
-        want.sort();
-        let mut got = bp.indices.clone();
-        got.sort();
-        assert_eq!(got, want);
-        let mut sizes: Vec<usize> = all.iter().map(|o| o.cards.len()).chain([bp.cards.len()]).collect();
-        sizes.sort();
-        assert_eq!(sizes, vec![1, 2, 3, 4, 5]);
-        // the hand listed in another order (as sorted by suit): the same count, the same cards
+        let mut chosen: Vec<_> = bp.indices.iter().map(|&i| r.hand[i].order_key()).collect();
+        chosen.sort();
+        // the hand listed in another order (as sorted by suit): the same cards
         let r2 = make_in(0, "2C 5H 7S AS 4D KH 9C QD");
         let bp2 = analyze(&r2, GameData::bundled(), None, &quick()).best_play.unwrap();
         let mut played: Vec<_> = bp2.indices.iter().map(|&i| r2.hand[i].order_key()).collect();
         played.sort();
-        assert_eq!(played, top[..bp.cards.len()].iter().map(|&i| r.hand[i].order_key()).collect::<Vec<_>>());
+        assert_eq!(played, chosen);
         // with a discard left too; and the simulated round from such a hand isn't lost at its
         // first decision (the policy stopped there: `sim::decide_cards`)
         let a = analyze(&make(2), GameData::bundled(), None, &quick());

@@ -7,6 +7,7 @@
 use crate::engine::hand::{self, HandType};
 use crate::engine::score::{self, Board};
 use crate::engine::{Joker, Kind, Rng, Rolls, Unlucky};
+use crate::engine::consumable::CardEffect;
 use crate::model::{Card, Edition, Enhancement, Suit};
 
 /// Best play found for one hand.
@@ -105,8 +106,8 @@ const BIG_HAND_PLAYS: usize = 256;
 /// a 32-card hand gives thousands, not every 5-card subset. A superset (`hand::detect`
 /// decides), except with Splash, where every card scores: then only the plays a poker hand
 /// makes, and the extra cards are `with_kickers`' (the highest few: a heuristic). Face-down
-/// cards are left out (you can't plan around them); the first 64 cards, the first 10 Stone
-/// cards.
+/// cards are left out (a structure read from a card you can't see would be its stand-in's:
+/// `big_hand_moves`); the first 64 cards, the first 10 Stone cards.
 pub fn scoring_plays(hand: &[Card], f: hand::RuleFlags) -> Vec<u64> {
     let n = hand.len().min(64);
     let stone = |i: usize| hand[i].enhancement == Some(Enhancement::Stone);
@@ -199,10 +200,25 @@ const BIG_HAND_PER_KIND: usize = 8;
 /// hand's structure gives over every card (`scoring_plays`), each also topped up with the
 /// lowest cards outside it (`with_kickers`: as kickers, or junk played to dig), the best
 /// `BIG_HAND_PLAYS` by their score now (with every roll failing); and the discards the
-/// hand's structure gives (`structure_discards`). Each play in the order to play it.
+/// hand's structure gives (`structure_discards`). Each play in the order to play it. A
+/// face-down card has no structure to read (`scoring_plays` leaves it out); a hand of only
+/// them gives every play and discard of its `ALL_MOVES_MAX` highest by the rank sort
+/// (`by_rank_sort`), a cut by the cards' order (gap 25 (c)).
 pub fn big_hand_moves(b: &Board, hand: &[Card], deck: &[Card], discards: i64) -> Vec<Move> {
     if all_face_down(hand) {
-        return blind_moves(hand, discards);
+        let mut top = by_rank_sort(hand);
+        top.truncate(ALL_MOVES_MAX);
+        top.sort_unstable();
+        let sub: Vec<Card> = top.iter().map(|&i| hand[i]).collect();
+        let back = |v: Vec<usize>| v.into_iter().map(|i| top[i]).collect();
+        return all_plays(&sub)
+            .into_iter()
+            .chain(all_discards(&sub, discards))
+            .map(|m| match m {
+                Move::Play(v) => Move::Play(back(v)),
+                Move::Discard(v) => Move::Discard(back(v)),
+            })
+            .collect();
     }
     let flags = b.rule_flags();
     let mut masks = scoring_plays(hand, flags);
@@ -300,8 +316,6 @@ fn best_play_among(
     let mut played: Vec<Card> = Vec::with_capacity(5);
     let mut held: Vec<Card> = Vec::with_capacity(n);
     let mut idx: Vec<usize> = Vec::with_capacity(5);
-    // Face-down cards can't be planned around (you don't know them): only as filler
-    let hidden: u32 = (0..n).filter(|&i| hand[i].face_down).fold(0, |m, i| m | (1 << i));
     // every play within the part (or of `only`), in increasing order of its mask
     let mut mask = 0u32;
     let mut only = only.map(|o| o.iter());
@@ -317,7 +331,7 @@ fn best_play_among(
             break;
         }
         let k = mask.count_ones();
-        if k > 5 || mask & hidden != 0 {
+        if k > 5 {
             continue;
         }
         if prefilter && !keep_kickers && !could_all_score(hand, mask, n, flags) {
@@ -584,18 +598,15 @@ pub enum Move {
     Discard(Vec<usize>),
 }
 
-/// Every play of 1 to 5 cards, each in the order to play it. Face-down cards are left out:
-/// you can't plan around a card you can't see; a hand of only face-down cards gives its blind
-/// plays (`blind_moves`). Of the first `ALL_MOVES_MAX` cards: a bigger hand's moves are
-/// `big_hand_moves`.
+/// Every play of 1 to 5 cards, each in the order to play it, face-down cards included: a play
+/// holding one is valued over what the card could be, drawn anew in every simulated round
+/// (`deal_hidden`), so a play that rests on what the sorts pin (the suit for a Flush) comes out
+/// sure and one that hopes for a rank is averaged. Of the first `ALL_MOVES_MAX` cards: a bigger
+/// hand's moves are `big_hand_moves`.
 pub fn all_plays(hand: &[Card]) -> Vec<Move> {
-    if all_face_down(hand) {
-        return blind_moves(hand, 1).into_iter().filter(|m| matches!(m, Move::Play(_))).collect();
-    }
     let n = hand.len().min(ALL_MOVES_MAX);
-    let hidden: u32 = (0..n).filter(|&i| hand[i].face_down).fold(0, |m, i| m | (1 << i));
     (1u32..(1 << n))
-        .filter(|m| m.count_ones() <= 5 && m & hidden == 0)
+        .filter(|m| m.count_ones() <= 5)
         .map(|m| {
             let mut idx: Vec<usize> = (0..n).filter(|i| m & (1 << i) != 0).collect();
             arrange(hand, &mut idx);
@@ -611,32 +622,22 @@ pub fn all_face_down(hand: &[Card]) -> bool {
     !hand.is_empty() && hand.iter().all(|c| c.face_down)
 }
 
-/// The moves of a hand of only face-down cards: playing (and, with a discard left, discarding)
-/// 1 to 5 of them, one move per count. What you can tell of the cards is their rank order: the
-/// game's sort places face-down cards by their real value (cardarea.lua `CardArea:sort`, card.lua
-/// `Card:get_nominal`), and `hand` comes in that order, highest first (`Card::order_key` of the
-/// real cards, `advise.rs`). A play takes the highest, a discard throws the lowest (a heuristic:
-/// their stand-ins are drawn without that order, so the count is chosen as if the cards were
-/// alike; gap 25). Choosing among them by their stand-ins would read cards you don't know.
-pub fn blind_moves(hand: &[Card], discards: i64) -> Vec<Move> {
-    let n = hand.len();
-    let ks = 1..=n.min(5);
-    let mut v: Vec<Move> = ks.clone().map(|k| Move::Play((0..k).collect())).collect();
-    if discards > 0 {
-        v.extend(ks.map(|k| Move::Discard((n - k..n).collect())));
-    }
-    v
+/// The places of `hand`'s cards from the highest by the game's rank sort to the lowest
+/// (`Card::sort_nominal`, cards alike by place): of face-down cards, what pressing the rank sort
+/// shows of them (each simulated round's draw keeps their order among themselves: `Hidden`),
+/// wherever they sit
+fn by_rank_sort(hand: &[Card]) -> Vec<usize> {
+    let mut by: Vec<usize> = (0..hand.len()).collect();
+    by.sort_by(|&a, &b| hand[b].sort_nominal(false).total_cmp(&hand[a].sort_nominal(false)).then(a.cmp(&b)));
+    by
 }
 
 /// Every discard of 1 to 5 cards from the hand (none without a discard left), for screening
 /// all of them instead of guessing which are worth simulating. Of the first `ALL_MOVES_MAX`
-/// cards, as `all_plays` (a hand of only face-down cards: `blind_moves`).
+/// cards, as `all_plays`.
 pub fn all_discards(hand: &[Card], discards: i64) -> Vec<Move> {
     if discards <= 0 {
         return vec![];
-    }
-    if all_face_down(hand) {
-        return blind_moves(hand, discards).into_iter().filter(|m| matches!(m, Move::Discard(_))).collect();
     }
     let n = hand.len().min(ALL_MOVES_MAX);
     (1u32..(1 << n)).filter(|m| m.count_ones() <= 5).map(|m| Move::Discard((0..n).filter(|i| m & (1 << i) != 0).collect())).collect()
@@ -725,6 +726,11 @@ pub fn outcomes_after(b: &Board, start: &RoundStart, first: &Move, range: std::o
     range
         .map(|i| {
             let mut rng = Rng::new(seed.wrapping_add(i as u64 * 7919));
+            // the face-down cards drawn anew for this round (the same for every move on it)
+            let dealt = deal_hidden(start, &rng);
+            let start = dealt.as_ref().unwrap_or(start);
+            // the consumables held, on the cards this round dealt
+            let uses = &uses_on(uses, &start.hand);
             // a fresh round's blind set per round (its random part drawn from the round's own)
             let set;
             let (b, start) = if start.fresh {
@@ -775,14 +781,14 @@ pub fn outcomes_after(b: &Board, start: &RoundStart, first: &Move, range: std::o
                         o.total = total;
                         return o;
                     }
-                    RoundStart { hand: held, deck, hands: hands - 1, discards, scored: total, fresh: false, ..start.clone() }
+                    RoundStart { hand: held, deck, hands: hands - 1, discards, scored: total, fresh: false, hidden: None, changes: vec![], ..start.clone() }
                 }
                 Move::Discard(idx) => {
                     let was = jokers_now(&bb);
                     o.cash += bb.discard(&picked(&hand, idx));
                     o.grown += grown_since(&bb, &was);
                     let kept: Vec<Card> = (0..hand.len()).filter(|k| !idx.contains(k)).map(|k| hand[k]).collect();
-                    RoundStart { hand: kept, deck, hands, discards: (discards - 1).max(0), fresh: false, ..start.clone() }
+                    RoundStart { hand: kept, deck, hands, discards: (discards - 1).max(0), fresh: false, hidden: None, changes: vec![], ..start.clone() }
                 }
             };
             // the rest of the round plays on the board the first move left
@@ -1040,6 +1046,322 @@ pub struct RoundStart {
     /// each adds its `h_size` for that round and is used up), set by `at_blind_set`: the next
     /// round played's only (`RunState::round_start_tags`)
     pub juggle: i64,
+    /// What's known of the face-down cards in `hand`, drawn anew in each simulated round
+    /// (`deal_hidden`); none: they stay as they are
+    pub hidden: Option<std::sync::Arc<Hidden>>,
+    /// A consumable used first on cards that include face-down ones: its effect and the places
+    /// in `hand` it goes on, done to the cards each round deals there (`effect_on`, in
+    /// `deal_hidden`)
+    pub changes: Vec<(CardEffect, Vec<usize>)>,
+}
+
+/// `hand` with a consumable's card effect done on the cards at `places` (`consumable::apply`),
+/// each card keeping whether it's debuffed; the cards at `places` and those it adds face up, the
+/// rest as they were (the game flips every card it changes face up and back, card.lua
+/// `Card:use_consumeable`, showing you what it became, and `Card:flip` clears the mark of one
+/// drawn flipped: seen, as the save reads it): what it does to the cards each simulated round
+/// dealt there (gap 25). Not one that
+/// destroys cards (none of those is a move: `advise::tarot_values`): the hand as it is.
+pub fn effect_on(hand: &[Card], effect: CardEffect, places: &[usize]) -> Vec<Card> {
+    // never one that takes cards away: each card keeps its own place's flags
+    if matches!(effect, CardEffect::Destroy) {
+        return hand.to_vec();
+    }
+    let mut new = crate::engine::consumable::apply(effect, hand, places);
+    for (i, c) in new.iter_mut().enumerate() {
+        match hand.get(i) {
+            Some(was) => (c.face_down, c.debuff) = (was.face_down && !places.contains(&i), was.debuff),
+            None => c.face_down = false,
+        }
+    }
+    new
+}
+
+/// `uses` with each effect on places (`Use::at`, in the round's starting `hand`) turned into
+/// changes of the cards that round dealt there (and the cards it adds), so it still finds them
+/// once the hand has moved on
+fn uses_on(uses: &[Use], hand: &[Card]) -> Vec<Use> {
+    uses.iter()
+        .map(|u| {
+            let mut u = u.clone();
+            for (effect, places) in std::mem::take(&mut u.at) {
+                let new = effect_on(hand, effect, &places);
+                u.swap.extend(places.iter().filter(|&&p| p < hand.len() && new[p] != hand[p]).map(|&p| (hand[p], new[p])));
+                u.add.extend(new.iter().skip(hand.len()).copied());
+            }
+            u
+        })
+        .collect()
+}
+
+/// What you can tell of the face-down cards of a round in progress, for drawing what they could
+/// be (gap 25): each one's bounds among the face-up cards in the game's two sorts
+/// (`model::sort_bounds`), the face-down cards' order among themselves in both sorts (the game
+/// sorts them by their real key, cardarea.lua `CardArea:sort`, card.lua `Card:get_nominal`, and
+/// only reorders: a card raised before a switch stays raised, so each can be followed from one
+/// sort to the other), and the boss's rule (The Mark turns down only face cards: blind.lua
+/// `Blind:stay_flipped`, card.lua `Card:is_face`, every card a face card with Pareidolia). The
+/// cards they could be are the unseen ones: the draw pile and the face-down cards themselves.
+#[derive(Debug)]
+pub struct Hidden {
+    /// Each face-down card's place in the round's hand
+    pub pos: Vec<usize>,
+    /// Its bounds, keys of `Card::sort_nominal`: `[rank sort, suit sort]`, both ends included
+    pub bounds: Vec<[(f64, f64); 2]>,
+    /// Its place among the face-down cards in each sort, highest first (cards alike in both
+    /// keys take their places in the hand's order, the same in both sorts as the game's
+    /// tie-break, `unique_val`, is)
+    pub place: Vec<[usize; 2]>,
+    /// Only a face card can be face down (The Mark without Pareidolia)
+    pub face_only: bool,
+    /// The cards the analysis drew for them (`advise.rs`): where a hand no longer holds its
+    /// one (a consumable used on it without `RoundStart::changes`), that card stays as it is
+    pub stand: Vec<Card>,
+    /// Each simulated round's draw (by its seed, the cards drawn and the deck it leaves), worked
+    /// out once and met by every move tried on that round
+    pub drawn: std::sync::Mutex<std::collections::HashMap<DrawKey, Drawn>>,
+    /// The furthest `draw` fell back (0 none; 1 without the boss's rule, 2 without their
+    /// order too, 3 without any bound), reported as not modelled (`fell_back_note`, in Best
+    /// play's tip)
+    pub fell_back: std::sync::atomic::AtomicU8,
+}
+
+/// Whether a card could be face-down card k, the cards drawn for the others as they are
+/// (`Hidden::draw`)
+type Fits<'a> = dyn Fn(usize, &Card, &[Option<Card>]) -> bool + 'a;
+
+/// A round's draw of the face-down cards (`deal_hidden`): its seed and which were drawn
+type DrawKey = (u64, Vec<bool>);
+
+/// That draw from each deck it was made from: the deck, the cards drawn (one per face-down
+/// card) and the deck it leaves
+type Drawn = Vec<(Vec<Card>, Vec<Card>, Vec<Card>)>;
+
+/// The most choices a draw of the face-down cards tries before it drops a constraint
+/// (`Hidden::draw`): a budget, not a finding; a draw that keeps every constraint always exists
+/// (the real cards), and is found in far fewer
+const HIDDEN_TRIES: usize = 4096;
+
+/// How many times a draw of the face-down cards redraws each card given the others
+/// (`Hidden::draw`): its first pass, card by card, favours what the first cards drawn leave room
+/// for; each sweep brings it closer to every assignment that fits being as likely. A budget:
+/// on four face-down cards in a chain of orders (K♠ 9♥ 7♣ 4♦, every card face down), the share
+/// of draws whose highest card is a Q or better was 0.27 with none, 0.56 with 4, 0.66 with 16
+/// and 32 (and 0.64 with 100), measured 2026-11-01 on a copy of the draw.
+const HIDDEN_SWEEPS: usize = 16;
+
+impl Hidden {
+    /// What's known of the face-down cards of `hand` (the real cards, as the save has them; the
+    /// sorts show where each goes, never what it is): those at `slots`, at places `pos` in the
+    /// round's hand; `face_only` the boss's rule. `stand` is filled in once the analysis draws.
+    pub fn new(hand: &[Card], slots: &[usize], pos: Vec<usize>, face_only: bool) -> Hidden {
+        let all = crate::model::sort_bounds(hand);
+        let bounds = slots.iter().map(|&i| all[i]).collect();
+        let mut place = vec![[0; 2]; slots.len()];
+        for (s, p) in [false, true].into_iter().zip(0..2) {
+            let mut by: Vec<usize> = (0..slots.len()).collect();
+            by.sort_by(|&a, &b| hand[slots[b]].sort_nominal(s).total_cmp(&hand[slots[a]].sort_nominal(s)).then(slots[a].cmp(&slots[b])));
+            for (k, &x) in by.iter().enumerate() {
+                place[x][p] = k;
+            }
+        }
+        Hidden { pos, bounds, place, face_only, stand: vec![], drawn: Default::default(), fell_back: Default::default() }
+    }
+
+    /// What the draws dropped (`fell_back`), said as not modelled; none when nothing was
+    pub fn fell_back_note(&self) -> Option<String> {
+        let what = match self.fell_back.load(std::sync::atomic::Ordering::Relaxed) {
+            0 => return None,
+            1 => "the boss's rule",
+            2 if self.face_only => "the boss's rule or their order among themselves",
+            2 => "their order among themselves",
+            _ => "anything known of them",
+        };
+        Some(format!(
+            "Not modelled: a face-down card no card fits as the sorts{} show it (one turned down for another reason than the boss, as in the X-ray Vision challenge, or a Pareidolia sold or debuffed since), so they were drawn without {what} (gap 25)",
+            if self.face_only { " and the boss's rule" } else { "" }
+        ))
+    }
+
+    /// Whether card `c` could be face-down card `k` by its bounds in the sorts
+    fn fits(&self, k: usize, c: &Card) -> bool {
+        (0..2).all(|s| {
+            let (lo, hi) = self.bounds[k][s];
+            let x = c.sort_nominal(s == 1);
+            lo <= x && x <= hi
+        })
+    }
+
+    /// Whether card `c` keeps the boss's rule (a face card under The Mark: `Card:is_face(true)`)
+    fn boss_allows(&self, c: &Card) -> bool {
+        !self.face_only || crate::engine::hand::is_face(c, 0, false, true)
+    }
+
+    /// Whether card `c` as face-down card `k` keeps both sorts' order with the cards drawn for
+    /// the others (`at`)
+    fn in_order(&self, k: usize, c: &Card, at: &[Option<Card>]) -> bool {
+        (0..2).all(|s| {
+            let x = c.sort_nominal(s == 1);
+            at.iter().enumerate().all(|(o, d)| match d {
+                Some(d) if o != k => {
+                    let y = d.sort_nominal(s == 1);
+                    if self.place[o][s] < self.place[k][s] { y >= x } else { x >= y }
+                }
+                _ => true,
+            })
+        })
+    }
+
+    /// A draw of what the face-down cards marked `live` could be, from `pool` (each card used
+    /// once): the cards of `pool` for them, by index. Drawn card by card in the rank sort's
+    /// order, each among the cards that fit with those before it (backtracking where none
+    /// does), then redrawn one at a time given the others (`HIDDEN_SWEEPS`). Within
+    /// `HIDDEN_TRIES` choices: else without the boss's rule (a card turned down for another
+    /// reason, as the X-ray Vision challenge's; a Pareidolia sold or debuffed since; the sorts
+    /// show the card as it is),
+    /// else without their order among themselves too, and else without any bound, so a draw
+    /// always comes out.
+    fn draw(&self, live: &[bool], pool: &[Card], rng: &mut Rng) -> Vec<usize> {
+        let mut seq: Vec<usize> = (0..self.pos.len()).filter(|&k| live[k]).collect();
+        seq.sort_by_key(|&k| self.place[k][0]);
+        for level in 0..4 {
+            // with no boss's rule in force, level 1 is level 0 again
+            if level == 1 && !self.face_only {
+                continue;
+            }
+            let ok = |k: usize, c: &Card, at: &[Option<Card>]| match level {
+                0 => self.fits(k, c) && self.in_order(k, c, at) && self.boss_allows(c),
+                1 => self.fits(k, c) && self.in_order(k, c, at),
+                2 => self.fits(k, c),
+                _ => true,
+            };
+            let mut at: Vec<Option<Card>> = vec![None; self.pos.len()];
+            let mut pick = vec![usize::MAX; self.pos.len()];
+            let mut used = vec![false; pool.len()];
+            let mut budget = HIDDEN_TRIES;
+            #[allow(clippy::too_many_arguments)]
+            fn dfs(
+                i: usize,
+                seq: &[usize],
+                pool: &[Card],
+                ok: &Fits,
+                at: &mut [Option<Card>],
+                pick: &mut [usize],
+                used: &mut [bool],
+                budget: &mut usize,
+                rng: &mut Rng,
+            ) -> bool {
+                let Some(&k) = seq.get(i) else { return true };
+                let mut cands: Vec<usize> = (0..pool.len()).filter(|&j| !used[j] && ok(k, &pool[j], at)).collect();
+                shuffle(&mut cands, rng);
+                // each kind of card once (a kind with more copies is the likelier first pick)
+                let mut tried: Vec<Card> = vec![];
+                for j in cands {
+                    if *budget == 0 {
+                        return false;
+                    }
+                    if tried.iter().any(|t| t.order_eq(&pool[j])) {
+                        continue;
+                    }
+                    tried.push(pool[j]);
+                    *budget -= 1;
+                    (used[j], at[k], pick[k]) = (true, Some(pool[j]), j);
+                    // every card still to draw keeps a card it could be (else this pick is a
+                    // dead end, found now rather than deep in the search)
+                    let open = seq[i + 1..].iter().all(|&r| (0..pool.len()).any(|q| !used[q] && ok(r, &pool[q], at)));
+                    if open && dfs(i + 1, seq, pool, ok, at, pick, used, budget, rng) {
+                        return true;
+                    }
+                    (used[j], at[k]) = (false, None);
+                }
+                false
+            }
+            if !dfs(0, &seq, pool, &ok, &mut at, &mut pick, &mut used, &mut budget, rng) {
+                continue;
+            }
+            self.fell_back.fetch_max(level as u8, std::sync::atomic::Ordering::Relaxed);
+            for _ in 0..HIDDEN_SWEEPS {
+                for &k in &seq {
+                    let cur = pick[k];
+                    let cands: Vec<usize> = (0..pool.len()).filter(|&j| (j == cur || !used[j]) && ok(k, &pool[j], &at)).collect();
+                    let j = cands[rng.below(cands.len())];
+                    (used[cur], used[j], pick[k], at[k]) = (false, true, j, Some(pool[j]));
+                }
+            }
+            return pick;
+        }
+        unreachable!("a draw without bounds always comes out")
+    }
+
+    /// `hand` with its face-down cards marked `live` drawn anew (`draw`) from `deck` and
+    /// themselves, and the deck left: the cards drawn out, the face-down cards' old ones in
+    pub fn deal(&self, hand: &[Card], deck: &[Card], live: &[bool], rng: &mut Rng) -> (Vec<Card>, Vec<Card>) {
+        debug_assert_eq!(live.len(), self.pos.len());
+        let mut pool: Vec<Card> = deck.to_vec();
+        for (k, &p) in self.pos.iter().enumerate() {
+            if live[k] {
+                pool.push(Card { face_down: false, ..hand[p] });
+            }
+        }
+        // in a fixed order, so how the pile happens to be listed never changes the draw
+        pool.sort_by(Card::order_cmp);
+        let pick = self.draw(live, &pool, rng);
+        let mut hand = hand.to_vec();
+        let mut taken = vec![false; pool.len()];
+        for (k, &p) in self.pos.iter().enumerate() {
+            if live[k] {
+                hand[p] = Card { face_down: true, ..pool[pick[k]] };
+                taken[pick[k]] = true;
+            }
+        }
+        let deck = pool.into_iter().zip(taken).filter(|(_, t)| !t).map(|(c, _)| c).collect();
+        (hand, deck)
+    }
+}
+
+/// The hands the first `n` simulated rounds from `start` meet (`outcomes_after`'s rounds with
+/// `seed`): its face-down cards as each draws them (`deal_hidden`)
+pub fn hidden_hands(start: &RoundStart, seed: u64, n: usize) -> Vec<Vec<Card>> {
+    (0..n).map(|i| deal_hidden(start, &Rng::new(seed.wrapping_add(i as u64 * 7919))).map_or_else(|| start.hand.clone(), |s| s.hand)).collect()
+}
+
+/// `start` with its face-down cards drawn anew (`Hidden`) for one simulated round, from a seed of
+/// the round's own (`rng` isn't drawn from, so the round's deals stay as they were and every move
+/// tried on round i meets the same cards: drawn once, `Hidden::drawn`); none when it has none
+/// to draw. A consumable used first (`RoundStart::changes`) is done to what the round drew.
+pub fn deal_hidden(start: &RoundStart, rng: &Rng) -> Option<RoundStart> {
+    let h = start.hidden.as_deref()?;
+    debug_assert_eq!(h.stand.len(), h.pos.len());
+    let live: Vec<bool> = h.pos.iter().zip(&h.stand).map(|(&p, s)| start.hand.get(p).is_some_and(|c| c.order_eq(s))).collect();
+    if !live.contains(&true) {
+        return None;
+    }
+    let seed = rng.clone().next_u64() ^ 0x6869_6464_656e;
+    let key = (seed, live.clone());
+    // the same deck (every move on a round shares it), card for card
+    let cached = h.drawn.lock().ok().and_then(|m| m.get(&key).and_then(|v| v.iter().find(|x| x.0 == start.deck).map(|x| (x.1.clone(), x.2.clone()))));
+    let (cards, deck) = match cached {
+        Some(x) => x,
+        None => {
+            let (hand, deck) = h.deal(&start.hand, &start.deck, &live, &mut Rng::new(seed));
+            let cards: Vec<Card> = h.pos.iter().map(|&p| hand[p]).collect();
+            if let Ok(mut m) = h.drawn.lock() {
+                m.entry(key).or_default().push((start.deck.clone(), cards.clone(), deck.clone()));
+            }
+            (cards, deck)
+        }
+    };
+    let mut hand = start.hand.clone();
+    for (k, &p) in h.pos.iter().enumerate() {
+        if live[k] {
+            hand[p] = cards[k];
+        }
+    }
+    // a consumable used first, done to what the round drew
+    for (effect, places) in &start.changes {
+        hand = effect_on(&hand, *effect, places);
+    }
+    Some(RoundStart { hand, deck, hidden: None, changes: vec![], ..start.clone() })
 }
 
 impl RoundStart {
@@ -1289,13 +1611,22 @@ fn decide_cards_with(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discar
         }
     };
     let whole: Vec<usize> = (0..hand.len()).collect();
-    // cards to act with that are all face down (the whole hand, or the cards outside those
-    // kept for the round's end, `play_on_instead`) have no play to plan around: every card is
-    // outside the plan, so the policy digs with as many as a dig throws, with a discard while
-    // one is left (the lowest), else as a junk hand (the highest): `blind_moves`' largest
+    // cards to act with that are all face down (The House's first hand, or the cards outside
+    // those kept for the round's end, `play_on_instead`): you see nothing but their order, so
+    // the policy digs blind with as many as a dig throws, with a discard while one is left (the
+    // lowest by the rank sort, `by_rank_sort`, wherever they sit), else as a junk hand (the
+    // highest). A heuristic and a cut by the cards' order (rule 2's bend, gap 25 (a)), kept so
+    // the policy never reads a hand it sees none of (on The House's first hand with Burglar the
+    // player bench can't tell it from playing them by what the round drew: 99.5% against
+    // 100%). With a face-up card among them it plays them by what they are in this round
+    // (drawn anew in each: `deal_hidden`), as it plays every card it draws under a boss that
+    // turns cards down (gap 25 (a)).
     if all_face_down(hand) {
-        let (n, k) = (hand.len(), hand.len().min(5));
-        return if discards > 0 { Action::Discard((n - k..n).collect()) } else { Action::Play((0..k).collect(), true) };
+        let by = by_rank_sort(hand);
+        let k = hand.len().min(5);
+        let mut pick = if discards > 0 { by[by.len() - k..].to_vec() } else { by[..k].to_vec() };
+        pick.sort_unstable();
+        return if discards > 0 { Action::Discard(pick) } else { Action::Play(pick, true) };
     }
     let Some(best) = parts.best(&whole) else { return Action::Play(vec![], false) };
     let play_best = Action::Play(with_fillers(b, hand, &best.cards), false);
@@ -2846,6 +3177,10 @@ pub struct Use {
     /// The consumable's key: once used, it's no longer held (its `RoundGoals::seen` entries go)
     pub key: String,
     pub swap: Vec<(Card, Card)>,
+    /// A card effect on places in the round's starting hand (one that goes on a face-down card),
+    /// done to whatever cards are there (`effect_on`; `uses_on` turns it into `swap` and `add`
+    /// on the cards a round dealt)
+    pub at: Vec<(CardEffect, Vec<usize>)>,
     pub add: Vec<Card>,
     pub levels: [i64; 12],
     /// A Planet card: Constellation grows ×0.1 when it's used
@@ -2858,8 +3193,16 @@ impl Use {
         let mut done = vec![false; h.len()];
         for (from, to) in &self.swap {
             let i = (0..h.len()).find(|&i| !done[i] && h[i].same_kind(from))?;
-            h[i] = Card { debuff: h[i].debuff, face_down: h[i].face_down, ..*to };
+            // a card a consumable changed is seen (the game flips it face up and back, card.lua
+            // `Card:use_consumeable`, which clears the mark of one drawn flipped: gap 25)
+            h[i] = Card { debuff: h[i].debuff, face_down: false, ..*to };
             done[i] = true;
+        }
+        for (effect, places) in &self.at {
+            if places.iter().any(|&p| p >= h.len()) {
+                return None;
+            }
+            h = effect_on(&h, *effect, places);
         }
         h.extend(self.add.iter().copied());
         let mut b = b.clone();
@@ -3173,9 +3516,10 @@ impl RoundGoals {
         self.gain(self.at_now(was), Outcome { grown: lost, ..Default::default() }).min(0.0)
     }
 
-    /// The most a card in `cards` adds (`seen`)
+    /// The most a card in `cards` adds (`seen`); a face-down card none (you can't tell it's the
+    /// one to use the consumable on)
     pub fn seen_gain(&self, cards: &[Card]) -> f64 {
-        cards.iter().flat_map(|c| self.seen.iter().filter(move |(_, k, _)| k.same_kind(c)).map(|(_, _, g)| *g)).fold(0.0, f64::max)
+        cards.iter().filter(|c| !c.face_down).flat_map(|c| self.seen.iter().filter(move |(_, k, _)| k.same_kind(c)).map(|(_, _, g)| *g)).fold(0.0, f64::max)
     }
 }
 
@@ -3731,6 +4075,12 @@ pub fn sim_round_uses(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[
 fn play_round(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[Use]) -> (RoundResult, Board) {
     let mut used = vec![false; uses.len()];
     let (mut b, mut start) = board.at_blind_set_drawn(start, set_seed(rng));
+    // the face-down cards drawn anew for this round
+    if let Some(s) = deal_hidden(&start, rng) {
+        start = s;
+    }
+    // the consumables held, on the cards this round dealt
+    let uses = &uses_on(uses, &start.hand);
     // the cards played this ante, set on the board as the round ends: not cloned with every board
     // its choices try
     let mut played_ante = std::mem::take(&mut b.played_ante);
@@ -4189,29 +4539,117 @@ mod tests {
     #[test]
     fn a_hand_of_only_face_down_cards_is_played_blind() {
         // The House's first hand: every card face down. The game allows playing and discarding
-        // them, so there are moves (one per count), and the policy digs
-        // with five of them instead of ending the round at its first decision (it played
-        // nothing, so every simulated round from such a hand was lost).
+        // them, so there are moves: every play and discard, as with any hand (gap 25), and the
+        // policy digs with five of them instead of ending the round at its first decision (it
+        // played nothing, so every simulated round from such a hand was lost).
         let mut hand = Card::parse_list("AS KH QD 9C 7S 5H 4D 2C").unwrap();
         hand.iter_mut().for_each(|c| c.face_down = true);
-        let firsts = |v: &[Move]| v.iter().map(|m| match m { Move::Play(x) | Move::Discard(x) => x.clone() }).collect::<Vec<_>>();
-        // the hand comes highest first (the game's sort shows that much): a play takes the
-        // highest, a discard throws the lowest
-        let plays: Vec<Vec<usize>> = (1..=5).map(|k| (0..k).collect()).collect();
-        let throws: Vec<Vec<usize>> = (1..=5).map(|k| (8 - k..8).collect()).collect();
-        assert_eq!(firsts(&all_plays(&hand)), plays);
-        assert_eq!(firsts(&all_discards(&hand, 1)), throws);
+        // 8 cards: 8 + 28 + 56 + 70 + 56 plays of 1 to 5
+        assert_eq!(all_plays(&hand).len(), 218);
+        assert_eq!(all_discards(&hand, 1).len(), 218);
         assert!(all_discards(&hand, 0).is_empty());
         let b = sample_board(&["j_joker"]);
-        assert_eq!(big_hand_moves(&b, &hand, &[], 0).len(), 5);
+        assert_eq!(big_hand_moves(&b, &hand, &[], 0).len(), 218);
+        // the policy digs blind: the lowest by the rank sort thrown, else the highest played
         assert!(matches!(decide(&b, &hand, &[], 3, 1, 300.0, 8), Action::Discard(v) if v == [3, 4, 5, 6, 7]));
         assert!(matches!(decide(&b, &hand, &[], 3, 0, 300.0, 8), Action::Play(v, true) if v == [0, 1, 2, 3, 4]));
+        // by the rank sort, not by where they sit: the same cards listed lowest first
+        let low_first: Vec<Card> = hand.iter().rev().copied().collect();
+        assert!(matches!(decide(&b, &low_first, &[], 3, 1, 300.0, 8), Action::Discard(v) if v == [0, 1, 2, 3, 4]));
+        assert!(matches!(decide(&b, &low_first, &[], 3, 0, 300.0, 8), Action::Play(v, true) if v == [3, 4, 5, 6, 7]));
         let start = RoundStart { hand: hand.clone(), deck: standard_deck(), hand_size: 8, hands: 4, discards: 0, scored: 0.0, target: 300.0, fresh: false, ..Default::default() };
         let won = outcomes_after(&b, &start, &Move::Play(vec![0]), 0..16, 3, &[]).iter().filter(|o| o.won > 0.0).count();
         assert!(won > 8, "{won}");
-        // one face-up card: the face-down ones are still left out of the plays (gap 25)
+        // one face-up card: a face-down card is played like any other
         hand[0].face_down = false;
-        assert_eq!(firsts(&all_plays(&hand)), vec![vec![0]]);
+        assert_eq!(all_plays(&hand).len(), 218);
+    }
+
+    #[test]
+    fn a_consumable_on_a_face_down_card_changes_what_each_round_draws_there() {
+        // the effect itself, done to whatever the cards are in each simulated round
+        let c = |x: &str| Card::parse_list(x).unwrap()[0];
+        let down = |x: &str| Card { face_down: true, ..c(x) };
+        // Strength: one rank up from what it is (an Ace to a 2, as the game does), and seen (the
+        // game flips it up to change it); a card it didn't go on stays face down
+        assert_eq!(effect_on(&[down("AC"), down("9H")], CardEffect::UpRank, &[0]), vec![c("2C"), down("9H")]);
+        // Death, the face-down card copied: both are seen
+        assert_eq!(effect_on(&[c("4D"), down("KC")], CardEffect::CopyLeftToRight, &[0, 1]), vec![c("KC"), c("KC")]);
+        // used first in a round: each round's draw changed there (The World on the face-down card)
+        let hand = vec![c("KS"), down("QH")];
+        let mut h = Hidden::new(&hand, &[1], vec![1], false);
+        h.stand = vec![hand[1]];
+        let deck: Vec<Card> = standard_deck().into_iter().filter(|x| !hand.iter().any(|y| y.same_kind(x))).collect();
+        let start = RoundStart { hand, deck, hidden: Some(std::sync::Arc::new(h)), changes: vec![(CardEffect::Suit(Suit::Spades), vec![1])], ..Default::default() };
+        for i in 0..20u64 {
+            let x = deal_hidden(&start, &Rng::new(i)).unwrap().hand[1];
+            assert!(!x.face_down && x.suit == Suit::Spades, "{x:?}");
+        }
+    }
+
+    #[test]
+    fn face_down_cards_are_drawn_anew_each_round_as_the_sorts_and_the_boss_allow() {
+        // Run 1RVL49LQ's House hand, sorted by suit: K♠ ? ? 6♠ 5♠ 4♠ 3♥ 5♦ 2♦. Both face-down
+        // cards are spades between 6♠ and K♠ (here Q♠ and 9♠), the higher one first in both
+        // sorts.
+        let mut hand = Card::parse_list("KS QS 9S 6S 5S 4S 3H 5D 2D").unwrap();
+        hand[1].face_down = true;
+        hand[2].face_down = true;
+        let mut h = Hidden::new(&hand, &[1, 2], vec![1, 2], false);
+        h.stand = vec![hand[1], hand[2]];
+        let deck: Vec<Card> = standard_deck().into_iter().filter(|c| !hand.iter().any(|x| x.same_kind(c))).collect();
+        let start = RoundStart { hand: hand.clone(), deck, hand_size: 9, hands: 3, target: 1e12, hidden: Some(std::sync::Arc::new(h)), ..Default::default() };
+        let mut seen = std::collections::HashSet::new();
+        for i in 0..200u64 {
+            let rng = Rng::new(i);
+            let s = deal_hidden(&start, &rng).unwrap();
+            let (a, c) = (s.hand[1], s.hand[2]);
+            assert!(a.face_down && c.face_down);
+            for x in [a, c] {
+                assert!(x.suit == Suit::Spades && (7..=12).contains(&x.rank.0), "{x:?}");
+            }
+            // the order between them kept in both sorts
+            assert!(a.sort_nominal(false) >= c.sort_nominal(false) && a.sort_nominal(true) >= c.sort_nominal(true), "{a:?} {c:?}");
+            // every card once: the hand and the deck still the 52
+            assert_eq!(s.hand.len() + s.deck.len(), 52);
+            // the same draw for the same round
+            assert_eq!(deal_hidden(&start, &rng).unwrap().hand, s.hand);
+            seen.insert((a.rank.0, c.rank.0));
+        }
+        // a fresh draw for each round: the pairs of the six spades from 7 to Q come up
+        assert!(seen.len() >= 10, "{seen:?}");
+        // The House's first hand, all eight face down: nothing bounds them but their order among
+        // themselves, which every draw keeps in both sorts (the draw never falls back)
+        let mut hand = Card::parse_list("AS KH QD 9C 7S 5H 4D 2C").unwrap();
+        hand.iter_mut().for_each(|c| c.face_down = true);
+        let all: Vec<usize> = (0..8).collect();
+        let mut h = Hidden::new(&hand, &all, all.clone(), false);
+        h.stand = hand.clone();
+        let deck: Vec<Card> = standard_deck().into_iter().filter(|c| !hand.iter().any(|x| x.same_kind(c))).collect();
+        let place = h.place.clone();
+        let start = RoundStart { hand: hand.clone(), deck, hidden: Some(std::sync::Arc::new(h)), ..Default::default() };
+        for i in 0..200u64 {
+            let d = deal_hidden(&start, &Rng::new(i)).unwrap().hand;
+            for (a, b) in (0..8).flat_map(|a| (0..8).map(move |b| (a, b))) {
+                for (s, by_suit) in [false, true].into_iter().enumerate() {
+                    if place[a][s] < place[b][s] {
+                        assert!(d[a].sort_nominal(by_suit) >= d[b].sort_nominal(by_suit), "round {i}: {:?} {:?}", d[a], d[b]);
+                    }
+                }
+            }
+        }
+        // The Mark turns down only face cards: the face-down card sorts below 8♠ by suit and
+        // below A♠ by rank, so it's a J, Q or K of hearts, clubs or diamonds
+        let mut hand = Card::parse_list("AS 9S 8S KH").unwrap();
+        hand[3].face_down = true;
+        let mut h = Hidden::new(&hand, &[3], vec![3], true);
+        h.stand = vec![hand[3]];
+        let deck: Vec<Card> = standard_deck().into_iter().filter(|c| !hand.iter().any(|x| x.same_kind(c))).collect();
+        let start = RoundStart { hand, deck, hidden: Some(std::sync::Arc::new(h)), ..Default::default() };
+        for i in 0..50u64 {
+            let c = deal_hidden(&start, &Rng::new(i)).unwrap().hand[3];
+            assert!((11..=13).contains(&c.rank.0) && c.suit != Suit::Spades, "{c:?}");
+        }
     }
 
     #[test]

@@ -6,6 +6,16 @@
 use super::*;
 use super::value::{self, Gain, LongRun, Spending};
 
+/// The draws of the face-down cards a play holding one is shown over (its hands and score
+/// range): the first simulated rounds' (`sim::hidden_hands`). A budget: it shows, it doesn't rank.
+const SHOWN_DRAWS: usize = 64;
+
+/// Best play's note on a hand holding a face-down card (in its tip and the analysis' heuristics)
+pub(super) const FACE_DOWN_NOTE: &str = "Face-down cards: every play and discard with them (in a hand of up to 12 cards; in a bigger one its plays leave them out, and a hand of only them takes its 12 highest by the rank sort) and a tarot on them is tried, valued over what they could be (which of them a tarot goes on, and what Cryptid copies of one, still read what they really are), drawn anew in each simulated round from the unseen cards (the draw pile and themselves) as both sorts and the boss allow (their order among themselves included; drawn card by card, then each redrawn 16 times given the others: close to every set that fits being as likely, a budget); a play holding one shows the hands it makes (up to 3, likeliest first) and its lowest to highest score over 64 of those draws. A card a tarot changed counts as seen (the game shows it). After the first move the simulated player plays them by what they are in that round (optimistic: it reads cards you can't see), as it plays every card it draws under a boss that turns cards down, except a hand it sees none of, which it digs blind: the lowest by the rank sort thrown while a discard is left, else the highest played (heuristic, gap 25)";
+
+/// Best play's fallback (no round simulated) with a face-down card in hand (gap 25 (f))
+const FACE_DOWN_FALLBACK_NOTE: &str = "Face-down cards: no round was simulated here, so this play is picked on one guess at what they are, and a play holding one shows no hand or score (heuristic, gap 25)";
+
 pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[TarotValue], hand_order: &[usize], ahead: Option<&value::Ahead>) -> Option<PlayAdvice> {
     let (run, data) = (ctx.run, ctx.data);
     if !(run.screen.in_blind() && !run.hand.is_empty()) {
@@ -112,7 +122,8 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
                 Some(sim::Use { name: center.name.clone(), key: c.key.clone(), levels, planet: true, ..Default::default() })
             })
             .collect();
-        let to_opt = |m: &sim::Move, hand: &[Card], board: &Board, (p, mean, spare, cash, planets, grown): (f64, f64, f64, f64, f64, f64), use_first: Option<String>| {
+        let to_opt = |m: &sim::Move, st: &RoundStart, board: &Board, (p, mean, spare, cash, planets, grown): (f64, f64, f64, f64, f64, f64), use_first: Option<String>| {
+            let hand = &st.hand[..];
             // A play is shown in the order to play it; a discard by rank (order doesn't matter),
             // face-down cards after the rest by their place (their stand-ins' ranks aren't theirs)
             let sorted_discard;
@@ -129,11 +140,36 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
                 }
             };
             let mut idx = idx.clone();
-            // a play of face-down cards (a hand of only them: `sim::blind_moves`) shows no hand or
-            // score: those would be the stand-ins' the advisor picked, which you don't know
+            // a play holding a face-down card shows its hand and score over what the card could
+            // be (the draws the first simulated rounds meet, `sim::hidden_hands`), never the
+            // stand-in's alone: the hands it makes, likeliest first, and its lowest to highest
+            // score (what it surely scores: the lowest of each draw's)
             let blind = action == "play" && idx.iter().any(|&i| hand[i].face_down);
+            let mut range = None;
             let (name, score, sure, dig, arrange) = if blind {
-                ("face-down cards".to_string(), 0.0, 0.0, 0, (vec![], vec![]))
+                let outs: Vec<crate::engine::Outcome> = sim::hidden_hands(st, seed, SHOWN_DRAWS)
+                    .iter()
+                    .map(|h| {
+                        let rest: Vec<Card> = (0..h.len()).filter(|i| !idx.contains(i)).map(|i| h[i]).collect();
+                        crate::engine::score(board, &idx.iter().map(|&i| h[i]).collect::<Vec<_>>(), &rest, &mut crate::engine::Unlucky, false)
+                    })
+                    .collect();
+                let lo = outs.iter().map(|o| o.score).fold(f64::INFINITY, f64::min);
+                let hi = outs.iter().map(|o| o.score).fold(f64::NEG_INFINITY, f64::max);
+                let sure = outs.iter().map(|o| o.sure).fold(f64::INFINITY, f64::min);
+                let mut kinds: Vec<(crate::engine::HandType, usize)> = vec![];
+                for o in &outs {
+                    match kinds.iter_mut().find(|k| k.0 == o.hand) {
+                        Some(k) => k.1 += 1,
+                        None => kinds.push((o.hand, 1)),
+                    }
+                }
+                kinds.sort_by(|a, b| b.1.cmp(&a.1).then((b.0 as u8).cmp(&(a.0 as u8))));
+                let name = kinds.iter().take(3).map(|k| k.0.name()).collect::<Vec<_>>().join(" or ");
+                let digs: Vec<usize> = outs.iter().map(|o| idx.len().saturating_sub(o.scoring.len())).collect();
+                let dig = if digs.windows(2).all(|w| w[0] == w[1]) { digs.first().copied().unwrap_or(0) } else { 0 };
+                range = Some((lo, hi));
+                (name, lo, sure, dig, (vec![], vec![]))
             } else if action == "play" {
                 let (order, arrange, o) = arranged(board, hand, &idx, hand_order, names);
                 let dig = idx.len().saturating_sub(o.scoring.len());
@@ -145,7 +181,7 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
             let cards: Vec<String> = idx.iter().map(|&i| shown(hand, i, hand_order, names)).collect();
             // cards a consumable added aren't in your hand yet: no position
             let indices = idx.iter().filter(|&&i| i < hand_order.len()).map(|&i| hand_order[i]).collect();
-            PlayOption { spare_hands: spare, round_money: cash, action: action.into(), cards, indices, dig, hand: name, score, sure, p_win: p, mean_total: mean, use_first, planets, grown, tie: false, blind, then: None, arrange: arrange.0, arrange_indices: arrange.1 }
+            PlayOption { spare_hands: spare, round_money: cash, action: action.into(), cards, indices, dig, hand: name, score, score_range: range, sure, p_win: p, mean_total: mean, use_first, planets, grown, tie: false, blind, then: None, arrange: arrange.0, arrange_indices: arrange.1 }
         };
         // Exact ties are broken by the cards themselves, so the order your hand is sorted in
         // never changes the advice
@@ -176,15 +212,21 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
             if uses[..k].iter().any(|x| x.name == u.name) {
                 continue;
             }
-            let Some((b2, h2)) = u.apply(&bb, &start.hand) else { continue };
+            let Some((b2, mut h2)) = u.apply(&bb, &start.hand) else { continue };
             let rest: Vec<sim::Use> = uses.iter().enumerate().filter(|(j, _)| *j != k).map(|(_, x)| x.clone()).collect();
-            let s2 = RoundStart { hand: h2, ..start.clone() };
+            // one that goes on a face-down card: done in each round, on what that round deals there
+            // (`RoundStart::changes`), so the move is valued over what the card could be
+            let mut changes = vec![];
+            if start.hidden.is_some() && !u.at.is_empty() {
+                h2 = start.hand.clone();
+                changes = u.at.clone();
+            }
+            let s2 = RoundStart { hand: h2, changes, ..start.clone() };
             for m in moves_of(&s2, &b2) {
                 cands.push((m, b2.clone(), s2.clone(), rest.clone(), Some(u.name.clone())));
             }
         }
-        // a hand the game allows a move from always has one (`sim::blind_moves`); none means
-        // nothing to race: the fallback below (the best play of your hand, if any) instead of
+        // a hand the game allows a move from always has one; none means nothing to race: the fallback below (the best play of your hand, if any) instead of
         // ranking an empty field
         if cands.is_empty() {
             return (vec![], vec![], None, vec![]);
@@ -249,7 +291,7 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
                 // what the jokers' numbers add to the round's value (`RoundGoals::value` with them
                 // against without), a lost round nothing
                 let grown = v.iter().map(|o| goals.value(o) - goals.value(&sim::Outcome { grown: sim::Grown::default(), ..*o })).sum::<f64>() / k;
-                let mut o = to_opt(m, &st.hand, b, (avg(|o| o.won), avg(|o| o.total), avg(|o| o.spare), avg(|o| o.cash), avg(|o| o.planets), grown), use_first.clone());
+                let mut o = to_opt(m, st, b, (avg(|o| o.won), avg(|o| o.total), avg(|o| o.spare), avg(|o| o.cash), avg(|o| o.planets), grown), use_first.clone());
                 o.tie = tied[c];
                 if matches!(m, sim::Move::Discard(_)) {
                     let mut by: std::collections::HashMap<crate::engine::HandType, (usize, f64)> = std::collections::HashMap::new();
@@ -394,15 +436,20 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
             if !missing.is_empty() {
                 tips.push(format!("Not used in this look-ahead (no modelled effect on this hand): {}", missing.join(", ")));
             }
-            if sim::all_face_down(&run.hand) {
-                // `sim::blind_moves`
-                tips.push("Face-down cards (heuristic): the highest by the rank sort are played, the lowest thrown; how many, and the odds shown, come from one guess at the hidden cards: any cards of the draw pile (gap 25)".into());
+            if run.hand.iter().any(|c| c.face_down) {
+                tips.push(FACE_DOWN_NOTE.into());
+                // what the draws had to drop, if anything
+                tips.extend(ctx.specs.iter().find(|x| x.in_progress()).and_then(|s| s.start.hidden.as_deref()).and_then(sim::Hidden::fell_back_note));
             }
             let tip = (!tips.is_empty()).then(|| tips.join(". "));
-            Some(PlayAdvice { reference, reference_gap, judged, worth_drawing: worth_drawing.clone(), grows: grows.clone(), counts_ahead, grown: best.grown, then: best.then.clone(), ties: opts.iter().filter(|o| o.tie).count(), planets: Some(best.planets), use_first: best.use_first, spare_hands: Some(best.spare_hands), round_money: Some(best.round_money), action: best.action, cards: best.cards, arrange: best.arrange, arrange_indices: best.arrange_indices, dig: best.dig, indices: best.indices, hand: best.hand, score: best.score, blind: best.blind, p_win: Some(best.p_win), alternatives: opts, tip })
+            Some(PlayAdvice { reference, reference_gap, judged, worth_drawing: worth_drawing.clone(), grows: grows.clone(), counts_ahead, grown: best.grown, then: best.then.clone(), ties: opts.iter().filter(|o| o.tie).count(), planets: Some(best.planets), use_first: best.use_first, spare_hands: Some(best.spare_hands), round_money: Some(best.round_money), action: best.action, cards: best.cards, arrange: best.arrange, arrange_indices: best.arrange_indices, dig: best.dig, indices: best.indices, hand: best.hand, score: best.score, score_range: best.score_range, blind: best.blind, p_win: Some(best.p_win), alternatives: opts, tip })
         }
         None => {
-            let hand: Vec<Card> = hand_order.iter().map(|&i| run.hand[i]).collect();
+            // your hand as the round has it: a face-down card its stand-in, never the real card
+            let hand: Vec<Card> = match ctx.specs.iter().find(|x| x.in_progress()) {
+                Some(s) => s.start.hand.clone(),
+                None => face_down_drawn(run, &ctx.base, &run.hand, hand_order, &run.draw_pile, ctx.opts.seed).0,
+            };
             sim::best_play(&b, &hand).map(|p| {
             let (order, (arrange, arrange_indices), _) = arranged(&b, &hand, &p.cards, hand_order, names);
             PlayAdvice {
@@ -425,12 +472,14 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
             arrange_indices,
             dig: 0,
             indices: order.iter().map(|&i| hand_order[i]).collect(),
-            hand: p.hand.name().to_string(),
-            score: p.floor,
-            blind: false,
+            // a play holding a face-down card: no hand or score (they'd be one stand-in's)
+            hand: if p.cards.iter().any(|&i| hand[i].face_down) { "face-down cards".into() } else { p.hand.name().to_string() },
+            score: if p.cards.iter().any(|&i| hand[i].face_down) { 0.0 } else { p.floor },
+            score_range: None,
+            blind: p.cards.iter().any(|&i| hand[i].face_down),
             p_win: None,
             alternatives: vec![],
-            tip: None,
+            tip: run.hand.iter().any(|c| c.face_down).then(|| FACE_DOWN_FALLBACK_NOTE.to_string()),
             }
             })
         }

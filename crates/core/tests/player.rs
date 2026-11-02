@@ -166,6 +166,8 @@ fn rounds() -> Vec<(String, Board, sim::RoundStart)> {
             let key = format!("{name}_{hands}h{discards}d");
             let target = TARGETS.iter().find(|t| t.0 == key).map_or(0.0, |t| t.1);
             out.push((key, b.clone(), sim::RoundStart {
+                hidden: None,
+                changes: vec![],
                 hand: vec![],
                 deck: deck.clone(),
                 hand_size: 8,
@@ -289,7 +291,10 @@ fn player_against_oracle() {
         let run: RunState = serde_json::from_value(v["state"].clone()).unwrap();
         let b = Board::from_run(&run, GameData::bundled());
         if let (true, Some(cb)) = (run.screen.in_blind(), &run.current_blind) {
-            cases.push((format!("{name} live"), b.clone(), sim::RoundStart { hand: run.hand.clone(), deck: run.draw_pile.clone(), hand_size: run.round_hand_size(), hands: run.hands_left, discards: run.discards_left, scored: cb.scored, target: cb.target, fresh: false, blind: cb.key.clone(), disabled: cb.disabled, juggle: 0 }));
+            // face-down cards drawn as the advice draws them (`advise::face_down_drawn`)
+            let order: Vec<usize> = (0..run.hand.len()).collect();
+            let (hand, deck, hidden) = balatro_advisor::advise::face_down_drawn(&run, &b, &run.hand, &order, &run.draw_pile, 42);
+            cases.push((format!("{name} live"), b.clone(), sim::RoundStart { hand, deck, hand_size: run.round_hand_size(), hands: run.hands_left, discards: run.discards_left, scored: cb.scored, target: cb.target, fresh: false, blind: cb.key.clone(), disabled: cb.disabled, juggle: 0, hidden, changes: vec![] }));
         }
         let fresh = b.clone();
         let mut deck = run.full_deck();
@@ -298,7 +303,7 @@ fn player_against_oracle() {
             c.debuff = false;
         }
         deck.sort_by_key(|c| c.order_key());
-        let mut start = sim::RoundStart { hand: vec![], deck, hand_size: run.hand_size, hands: run.round_hands, discards: run.round_discards, scored: 0.0, target: 1.0, fresh: true, blind: String::new(), disabled: false, juggle: 0 };
+        let mut start = sim::RoundStart { hand: vec![], deck, hand_size: run.hand_size, hands: run.round_hands, discards: run.round_discards, scored: 0.0, target: 1.0, fresh: true, blind: String::new(), disabled: false, juggle: 0, hidden: None, changes: vec![] };
         start.target = half_point(&fresh, &start, 200, 7);
         cases.push((format!("{name} fresh"), fresh, start));
     }

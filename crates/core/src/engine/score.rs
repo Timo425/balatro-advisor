@@ -215,6 +215,14 @@ impl Board {
             pareidolia: self.has(Kind::Pareidolia),
         }
     }
+
+    /// Whether boss `blind` turns down only face cards as they're drawn: The Mark (blind.lua
+    /// `Blind:stay_flipped`, card.lua `Card:is_face(true)`: a debuffed card counts too), unless a
+    /// Pareidolia that isn't debuffed makes every card one (`find_joker`). The House, The Wheel
+    /// and The Fish turn down any card.
+    pub fn turns_down_only_faces(&self, blind: &str) -> bool {
+        blind == "bl_mark" && !self.has(Kind::Pareidolia)
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]

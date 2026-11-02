@@ -286,6 +286,34 @@ pub(crate) fn ordinal(n: usize) -> String {
     format!("{n}{suffix}")
 }
 
+/// For each card of `hand` (as it sits, left to right), the keys (`Card::sort_nominal`) of the
+/// face-up cards just below and above it in the rank sort (`[0]`) and the suit sort (`[1]`), those
+/// both sides included (it may be a card alike): what the two sorts bound a face-down card by
+/// (`hand_labels`, and the advice's draws of what it could be, `sim::Hidden`). In the sort the
+/// hand sits in, its neighbours on screen; in the other, by key, and a face-up card with its own
+/// key bounds nothing there: which of the two the game puts first is `unique_val`'s, which the
+/// save doesn't give. Whether the hand sits in a sort is told by every card's real key.
+pub fn sort_bounds(hand: &[Card]) -> Vec<[(f64, f64); 2]> {
+    // whether the hand sits in this sort's order (highest first), as the game leaves it after a
+    // sort: then where each card sits is what you see, ties between cards alike included
+    let in_order = |by_suit: bool| hand.windows(2).all(|w| w[0].sort_nominal(by_suit) >= w[1].sort_nominal(by_suit));
+    let sorted = [in_order(false), in_order(true)];
+    let bounds = |i: usize, by_suit: bool| -> (f64, f64) {
+        let key = |c: &Card| c.sort_nominal(by_suit);
+        if sorted[by_suit as usize] {
+            let above = hand[..i].iter().rev().find(|c| !c.face_down).map_or(f64::INFINITY, key);
+            let below = hand[i + 1..].iter().find(|c| !c.face_down).map_or(f64::NEG_INFINITY, key);
+            return (below, above);
+        }
+        let k = key(&hand[i]);
+        let keys = hand.iter().filter(|c| !c.face_down).map(key);
+        let below = keys.clone().filter(|&x| x < k).fold(f64::NEG_INFINITY, f64::max);
+        let above = keys.filter(|&x| x > k).fold(f64::INFINITY, f64::min);
+        (below, above)
+    };
+    (0..hand.len()).map(|i| [bounds(i, false), bounds(i, true)]).collect()
+}
+
 /// Each card of `hand` (as it sits, left to right) by what you can see of it: a face-up card by
 /// its `Card::label`, a face-down one (The House, Wheel, Mark, Fish) by its place in the hand and
 /// what the game's two sorts show of it ("face-down card, 1st from left: ♠ 10 to A").
@@ -304,30 +332,11 @@ pub(crate) fn ordinal(n: usize) -> String {
 /// bound another face-down card the same way, it's also named by its order among the face-down
 /// cards in the rank sort ("the 2nd highest by the rank sort"), which the sort shows too. Never
 /// the card itself: only what you can see. The boss's own rule (The Mark turns down only face
-/// cards) isn't read here (gap 25).
+/// cards) isn't named here; the advice's draws of what the cards could be read it (`sim::Hidden`).
 pub fn hand_labels(hand: &[Card]) -> Vec<String> {
     let up: Vec<&Card> = hand.iter().filter(|c| !c.face_down).collect();
-    // whether the hand sits in this sort's order (highest first), as the game leaves it after a
-    // sort: then where each card sits is what you see, ties between cards alike included
-    let in_order = |by_suit: bool| hand.windows(2).all(|w| w[0].sort_nominal(by_suit) >= w[1].sort_nominal(by_suit));
-    let sorted = [in_order(false), in_order(true)];
-    // the keys of the face-up cards just below and above card `i` in one sort, those both sides
-    // included (it may be a card alike). In the sort the hand sits in, its neighbours on screen;
-    // in the other, by key, and a face-up card with its own key bounds nothing there: which of
-    // the two the game puts first is `unique_val`'s, which the save doesn't give.
-    let bounds = |i: usize, by_suit: bool| -> (f64, f64) {
-        let key = |c: &Card| c.sort_nominal(by_suit);
-        if sorted[by_suit as usize] {
-            let above = hand[..i].iter().rev().find(|c| !c.face_down).map_or(f64::INFINITY, key);
-            let below = hand[i + 1..].iter().find(|c| !c.face_down).map_or(f64::NEG_INFINITY, key);
-            return (below, above);
-        }
-        let k = key(&hand[i]);
-        let keys = up.iter().map(|u| key(u));
-        let below = keys.clone().filter(|&x| x < k).fold(f64::NEG_INFINITY, f64::max);
-        let above = keys.filter(|&x| x > k).fold(f64::INFINITY, f64::min);
-        (below, above)
-    };
+    let all_bounds = sort_bounds(hand);
+    let bounds = |i: usize, by_suit: bool| all_bounds[i][by_suit as usize];
     let suits = [(Suit::Spades, '♠'), (Suit::Hearts, '♥'), (Suit::Clubs, '♣'), (Suit::Diamonds, '♦')];
     // what the two sorts leave `c` to be, in words; None when they leave it anything
     let pinned = |i: usize| -> Option<String> {
