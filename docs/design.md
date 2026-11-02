@@ -148,7 +148,10 @@ the advisor's order; a pick from a pack never sold for a free slot (the sale its
 below); the game sets `G.GAME.won`
 at the end of the Ante 8 boss round even on a loss (state_events.lua `end_round`); and the bot's
 profile had 35 jokers locked (gap 38). The runs of 2026-10-01 (an early advisor besides) are no
-evidence of over-buying. Since 2026-10-30 paired whole runs (a series at the base and one with
+evidence of over-buying. Since 2026-11-02 (4a06dd3, gap 26) the advice values the jokers as
+you'd arrange them outside a blind, and the bot arranges them as advised on leaving the shop and
+at each blind select (a pack a skip tag opens leaves its pick at the right end): series from then
+are on a new baseline, not paired with earlier ones. Since 2026-10-30 paired whole runs (a series at the base and one with
 the change, the same seeds, the same day) judge changes whose effect shows antes later: the
 rent fix (9285bbd) by money by ante. They judge only where the bot follows: its `not_followed`
 (tarots and spectrals, Arcana, Spectral and Standard packs, vouchers; and until 2026-10-31

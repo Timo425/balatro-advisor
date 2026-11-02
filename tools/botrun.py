@@ -354,7 +354,10 @@ def log_shop(a, gs, log):
 
 
 def arrange_jokers(a, log):
-    """Puts the jokers in the order the advisor scores best (its `order`), as a player drags them."""
+    """Puts the jokers in the order the advisor scores best (its `order`), as a player drags them:
+    on leaving the shop and at each blind select, so each blind is played on the order the advice
+    valued (outside a blind every analysis values the jokers as you'd arrange them, whatever
+    order the game holds them in; in a blind, as they sit)."""
     order = a.get("order") or {}
     if order.get("is_current", True) or not order.get("order"):
         return
@@ -518,6 +521,10 @@ def blind_select(args, log, skips, a=None):
             NOT_FOLLOWED.append("blind: analysis failed, played")
             rpc("select")
             return
+    # the jokers as the advice valued them (outside a blind it values them as you'd arrange
+    # them: gap 26), before the blind is played; a pack a skip tag opened at the last blind
+    # select leaves its pick at the right end, with no shop to leave in between
+    arrange_jokers(a, log)
     gs = rpc("gamestate")
     b = next((b for b in a.get("blinds", []) if b.get("state") == "Select" and b.get("skip")), None)
     if b is None:
