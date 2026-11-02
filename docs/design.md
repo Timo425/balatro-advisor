@@ -129,11 +129,11 @@ Hiker, Midas Mask, Bloodstone, Brainstorm, Perkeo…), Violet Vessel, consumable
 selling, skipping.
 
 The bot bench (`tools/botrun.py`, through BalatroBot in the real game on the bot's own profile)
-plays whole runs with the advisor choosing. It isn't a check in the workflow: a run measures
-the advisor only where the bot follows it, and the bot doesn't follow tarots,
-vouchers, Arcana, Spectral and Standard packs, "use X first" or a skip whose tag the advice
-values as a tarot or spectral pick or doesn't value (it follows skip-or-play since 2026-10-31;
-before, it played every blind) (its docstring
+plays whole runs with the advisor choosing. It isn't a check for changes to the advice: a run
+measures the advisor only where the bot follows it, and the bot doesn't follow tarots that go on
+cards, Arcana and Spectral packs, "use X first" for a tarot or a skip whose tag the advice
+values as a tarot or spectral pick or doesn't value (it follows skip-or-play since 2026-10-31,
+vouchers and the tarots and spectrals that go on no card since 2026-11-02) (its docstring
 keeps the list; each run records the advisor's top choices it couldn't take, `not_followed`).
 What was measured on 2026-10-23/24, at 1904f2d (Red Deck, 100 simulations a board): a run on the
 same game seed with the same advisor seed is the same run (10 seeds played twice, every pair
@@ -154,11 +154,15 @@ profile had 35 jokers locked (gap 38). The runs of 2026-10-01 (an early advisor 
 evidence of over-buying. Since 2026-11-02 (4a06dd3, gap 26) the advice values the jokers as
 you'd arrange them outside a blind, and the bot arranges them as advised on leaving the shop and
 at each blind select (a pack a skip tag opens leaves its pick at the right end): series from then
-are on a new baseline, not paired with earlier ones. Since 2026-10-30 paired whole runs (a series at the base and one with
-the change, the same seeds, the same day) judge changes whose effect shows antes later: the
-rent fix (9285bbd) by money by ante. They judge only where the bot follows: its `not_followed`
-(tarots and spectrals, Arcana, Spectral and Standard packs, vouchers; and until 2026-10-31
-skipping a blind, never asked) is the judge's blind spot, the same in both arms, queued. Until 2026-10-31 a pack
+are on a new baseline, not paired with earlier ones. How a card uses the bot (D20, CLAUDE.md
+"Test a card by what it changes"): a change to the bot is checked on the moments a bot run kept,
+old code against new (`tools/botcheck.py`, since 2026-11-02), and by one run of about 20 minutes
+where it comes up; many runs only when a card's effect can't show earlier (past the next ante's
+boss), on the seeds where it shows, sized to it, and only where the bot acts on the advice the
+card changes (else the bot's card goes first, as an `After:`). On 2026-10-30 paired whole runs (BAVANG01-25, a series at the base and one
+with the change) judged the rent fix (9285bbd) by money by ante, and the habit was then copied
+into ten cards, bot changes among them, 10-20 hours a pair; dropped 2026-11-02. They judged only
+where the bot follows: its `not_followed` was their blind spot, the same in both arms. Until 2026-10-31 a pack
 pick needing a sale also failed uncounted (BalatroBot's `sell` refused an open pack, which the
 game allows) and the pack was skipped: in 10 runs of the series to then, on BAVANG11, 13, 21
 and 22, at Ante 3 (twice at Ante 5) in runs that reached Antes 4-5 (a Card Sharp pick on

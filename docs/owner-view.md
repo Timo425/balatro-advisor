@@ -4,6 +4,13 @@ The owner's own judgement of where the advisor stands and which gaps matter. Onl
 words go here, quoted or relayed, each dated; a chat edits it only to write down what the owner
 said. `tools/status.py` reads the ratings below; CLAUDE.md says when to read this file.
 
+## The goal, in the owner's words
+
+- **2026-11-02** "in the long run i'd like the advisor to be as good as me or better. and if we
+  manage to hit that point, maybe we can learn from better players". On the bot: it's a work in
+  progress, ironed out so it plays end to end; "bot running is proportional to the task and to
+  the bot's current state".
+
 ## The state, in the owner's words
 
 - **2026-10-27** "I don't think the advisor can beat ante 8 as is."

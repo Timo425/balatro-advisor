@@ -1,8 +1,42 @@
 # balatro-advisor: working rules
 
+**The goal** (the owner, `docs/owner-view.md`): an advisor as good as the owner or better, and
+then learning from better players. Every task serves that; judge its effort by it.
+
 - **Commit and push** each change once its checks passed (for changes to the advice: step 4 below,
   and the reviewer ran on the fixes). **Ask first** only before heavy dependencies or a change of
   scope (D6).
+- **Test a card by what it changes, not by what it's called.** A card can change the advice (what
+  the advisor recommends: `crates/`, `data/`), the bot (how the bot carries the advice out:
+  `tools/botrun.py`, the bot's mods), or both. There are three levels of test, each for its own
+  question:
+  1. Did something that worked break? Snapshots, before every commit: old and new code decide on
+     the same saved moments and every changed decision is explained. For the advice, step 4's
+     tests and history check on the owner's games. For the bot, `tools/botcheck.py` on the
+     moments a bot run kept.
+  2. Does it work in the real game? For a bot change only: one bot run of about 20 minutes on a
+     seed where the change comes up (the game's refusals, errors, the bot's actions inside a
+     blind).
+  3. What does it do over whole runs? Many bot runs: wins, antes, money by ante. Only when the
+     levels above can't show the card's effect (an advice change whose effect lies past the next
+     ante's boss, where the snapshot tools stop), on the seeds where it shows, sized to what the
+     card expects to move. Never "25 seeds before and after" by habit. Runs measure an effect;
+     they can't compare old and new decision by decision, since one different buy early makes
+     the rest another game.
+
+  A card that wants runs names what it needs the bot to do: the bot must act on the advice the
+  card changes (a run's `not_followed` says what it couldn't). Where the bot doesn't yet, the card
+  gets an `After:` on the card that makes it (written and queued first if missing): "Shelve on a
+  missing prerequisite" below, applied to the bot. When a bot run shows the bot faithfully
+  following bad advice, that's an advice card, not a bot fault.
+
+  Which saved data serves what. The owner's saved games are how a good player's spots look: the
+  advice's history check, `overrides` (the owner's choice against the advisor's on each moment),
+  fixtures. The bot's saved games (`~/.local/share/balatro-advisor/bot/shops/`) hold spots the
+  owner never reached, where the advice took the bot (debt, rentals, eternal-filled boards):
+  fixtures from them, and the history check pointed at them (`BAV_HISTORY`) when a change is about
+  such spots; since 2026-11-02 they also carry what the bot saw, for `tools/botcheck.py`.
+  Fixtures, from either, are what must stay right, on every commit.
 - **Never commit real game files** (`*.jkr`, snapshots of them, extracted game source). Read them
   in place. Private fixtures go in `tests/fixtures/private/` ("Private fixtures").
 - **Ground truth is the game source.** `Balatro.exe` is a zip: `unzip -p
@@ -38,7 +72,8 @@
   a time per PC across all chats, under `nice -n 19`. When load is high, check your own jobs first
   (a launcher in `ps` doesn't mean the owner is playing).
 - **Split runs over ~50 minutes** into parts (`BAV_ONLY`, `BAV_SEEDS`): the prompt cache lasts an
-  hour. **Ask before a run that holds the game or the PC for hours**, saying how long (D19).
+  hour. **Ask before any run that holds the game or the PC for over an hour**, saying how long and
+  why a shorter check (above: "Test a card by what it changes") won't answer the card (D19).
 - **After code changes**, `cargo install --path crates/cli` (the owner restarts `ui`). The bot plays
   only on Profile 3, never the owner's Profile 1.
 - **Normal play runs Lovely with only `Mods/advisor-live`.** Never put Steamodded back (it turns
@@ -92,7 +127,8 @@ decides or values things follows these steps, in order:
 3. **Fix the stage, generally.** Ask what the case is an example of and where the game (or the
    simulation) already defines that group. A fix that only makes sense for one joker, suit, hand or
    card is the wrong fix. New hand-set numbers go in the register.
-4. **Prove it**, in two tiers (D12). Always:
+4. **Prove it**, in two tiers (D12); bot runs only as the top's "Test a card by what it changes" says.
+   Always:
    - `cargo test` (not `--release`: the test profile is optimised and keeps overflow checks, D13)
      exits 0 (check the exit status), replay fixtures included; `cargo clippy --release
      --all-targets` reports no warnings from your change.

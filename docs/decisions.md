@@ -538,3 +538,32 @@ anything the ask before a long run doesn't already protect.
 in the morning, a run left holding the game).
 
 Approved by the owner 2026-10-31 ("no overnight runs is a dumb rule get rid of it").
+
+## D20. A card is tested by what it changes, at the level its question needs; bot runs only where earlier levels can't show the effect (accepted)
+
+**What.** Three levels of test, each for its own question (CLAUDE.md, "Test a card by what it
+changes"): snapshots before every commit (the advice: step 4's tests and history check; the bot:
+`tools/botcheck.py` on the moments a bot run kept); one short live run for a change to the bot;
+many runs only when the levels above can't show a card's effect, on the seeds where it shows,
+sized to it. A card that wants runs names what it needs the bot to do; where the bot doesn't yet,
+the bot's card goes first as an `After:` (written if missing). Which saved data serves what (the
+owner's games, the bot's, fixtures) is in the same CLAUDE.md rule. The sentences this makes
+untrue: CLAUDE.md's "Ask before a run that holds the game or the PC for hours, saying how long"
+(now: over an hour, and why shorter won't do); docs/design.md's "Since 2026-10-30 paired whole
+runs (…) judge changes whose effect shows antes later".
+
+**Why.** The bot is a thin driver of the advice and a work in progress. One paired series (25
+seeds before and after, 10-20 hours) judged the rent fix on 2026-10-30 and was then copied into
+ten cards, bot changes among them: a card teaching the bot to buy vouchers asked for 14 hours to
+see it do that. Meanwhile bot changes had no regression check at all. One different buy early
+makes the rest of a run another game, so whole runs can't compare old and new decision by
+decision; snapshots can, in minutes. A fixed "until the bot is mature" gate would be as arbitrary
+as the 25 seeds: what a card needs from the bot is a fact per card, and making the bot do it is
+queue work. The goal (docs/owner-view.md) is an advisor as good as the owner or better; hours of
+runs that tell little take effort from the gaps.
+
+**Revisit if** cards keep naming runs whose results don't move a decision, or the bot's snapshot
+check misses what live runs then catch.
+
+Approved by the owner 2026-11-02 ("bot running is proportional to the task and to the bot's
+current state"; the plan with the three levels and per-card preconditions).
