@@ -57,6 +57,9 @@ verdict on the advice. As of 2026-10-24 the bot:
   queued (at most 5 s, answered `settled`), as the live mod's file waits (save.lua, save.lua.bak; game.lua `Game:update_shop`;
   patched 2026-10-31), or a shop entered with a Rare Tag is saved before the tag makes its
   joker free (tag.lua `Tag:yep`) and the advisor reads the joker at full price.
+- the game's restart between runs (Linux, through Steam) waits for Steam to be logged on, and,
+  when Steam holds the launch on a dialog (a failed Cloud sync, as after a suspend while it was
+  still offline, 2026-11-02), says so and waits up to an hour for the click (`restart_game`).
 Since 2026-10-29 every state the advisor analysed in a shop or an open pack (since 2026-10-31 a
 blind select too), and every state an
 analysis failed on (`error`), is kept (`bot/shops/<seed>/a<ante>-r<round>-<n>-<screen>.jkr`;
@@ -680,24 +683,73 @@ def stop_game_windows(was):
     print(f"  (game closed, profile {was} restored)")
 
 
+STEAM_LOG = pathlib.Path.home() / ".steam/steam/logs/console_log.txt"
+STEAM_WAIT_S = 3600  # how long a restart waits on Steam (offline, or a dialog) before the series stops
+
+
+def steam_log_since(t0):
+    """Steam's console log lines (Linux) written at or after the wall-clock time `t0`; [] where
+    there's none. Each line starts "[YYYY-MM-DD HH:MM:SS]", local time."""
+    try:
+        with open(STEAM_LOG, "rb") as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - 200_000))
+            lines = f.read().decode("utf-8", "replace").splitlines()
+    except OSError:
+        return []
+    since = time.strftime("[%Y-%m-%d %H:%M:%S]", time.localtime(t0))
+    return [l for l in lines if l[:21] >= since]
+
+
+def steam_offline():
+    """Whether Steam's latest logon line is a failure: after a suspend it can take minutes to log on
+    again ("LogonFailure No Connection"), and a game launched meanwhile stops at its Cloud sync
+    ("syncfailed") and waits for a click. A logon logs "post-logon"."""
+    for l in reversed(steam_log_since(time.time() - 6 * 3600)):
+        if "post-logon" in l:
+            return False
+        if "LogonFailure" in l:
+            return True
+    return False
+
+
 def restart_game():
     """Closes the bot's game and starts it again (Linux with Steam, Windows), so a run starts from
-    a fresh game: the modded game grows as it plays. False where it can't."""
+    a fresh game: the modded game grows as it plays. False where it can't. On Linux it waits for
+    Steam to be logged on before launching, and when the launch waits on a Steam dialog (a Cloud
+    sync that failed) it says which and keeps waiting, up to STEAM_WAIT_S, for the owner's click."""
     if not WINDOWS and (not sys.platform.startswith("linux") or not shutil.which("steam")):
         return False
     close_game()
     if WINDOWS:
         settings_profile(BOT_PROFILE)  # the game saves its settings as it quits
+    else:
+        t = time.monotonic()
+        if steam_offline():
+            print("  (Steam is offline, e.g. just after a suspend: waiting for it to log on)")
+            while steam_offline() and time.monotonic() - t < STEAM_WAIT_S:
+                time.sleep(10)
+            if steam_offline():
+                sys.exit(f"Steam didn't log on within {STEAM_WAIT_S // 60} minutes")
+            print(f"  (Steam logged on after {time.monotonic() - t:.0f} s)")
+    launched = time.time()
     launch_game()
-    t = time.monotonic()
-    while time.monotonic() - t < 180:
+    t, told = time.monotonic(), False
+    while True:
         try:
             rpc("health")
             print(f"  (game restarted in {time.monotonic() - t:.0f} s)")
             return True
         except Exception:
             time.sleep(2)
-    sys.exit("the game didn't come back within 3 minutes after a restart")
+        waits = [] if WINDOWS else [l for l in steam_log_since(launched) if "2379780" in l and "waiting for user response" in l]
+        if waits and not told:
+            told = True
+            print(f"  (Steam is waiting for a click before it starts the game: {waits[-1].split('response to', 1)[-1].strip()};"
+                  " in Steam's dialog, click Retry once Steam is online, and the series goes on)", flush=True)
+        if time.monotonic() - t > (STEAM_WAIT_S if waits else 180):
+            break
+    sys.exit("the game didn't come back after a restart" + (" (Steam's dialog was never answered)" if told else " within 3 minutes"))
 
 
 def commit():
