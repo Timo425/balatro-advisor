@@ -92,14 +92,17 @@ before 2026-10-23 35 jokers locked and an early advisor. Don't read them as evid
 The game is restarted before a run once it holds more than a fresh one (`--restart-game`, Linux
 with Steam, Windows and natively: it grows as it plays, a run from a fresh game ending at 0.6-3.1 GB, measured 2026-10-30); elsewhere a series stops between runs
 past `--max-game-mb` and prints the seeds to resume with. The runs are seeded, so a restart
-between them changes nothing, except natively (`NATIVE`): there LÖVE's own LuaJIT (2.1, Nov
-2023) seeds its string hashing anew each launch, so a list the game builds with `pairs()` over
-string keys comes out in another order, and so does a pick from it with the seed's own random
-number: the hands an Orbital Tag levels (UI_definitions.lua, `orbital_choices`) and To Do List's
-hand (card.lua). BAVANG01 gave three different `orbital_choices` in three launches, against the
-same in all 9 of the main PC's runs (2026-11-02). A run with neither plays as the main PC's (a
-whole BAVANG01, every logged step the same); one with either isn't the same run anywhere, nor
-paired, until a LuaJIT with fixed hashing replaces native/love/lib's.
+between them changes nothing. Natively (`NATIVE`) that needs the Windows game's own LuaJIT, 2.0.5,
+in native/love/lib (the vault note says how it's built): LÖVE's own (2.1, Nov 2023) seeds its
+string hashing anew each launch, so a list the game builds with `pairs()` over string keys comes
+out in another order, and so does a pick from it with the seed's own random number: the hands an
+Orbital Tag levels (UI_definitions.lua, `orbital_choices`) and To Do List's hand (card.lua);
+BAVANG01 gave three different `orbital_choices` in three launches. With 2.0.5 (2026-11-02) all 25
+BAVANG seeds start as on the main PC (`orbital_choices`, rolled at every blind, the same on the
+23 with a reference), and BAVANG07 and BAVANG13 (each offered To Do List, its hand the same; neither owned it, so
+its end-of-round re-pick is untested) played every logged step and kept state as the main PC's
+runs of the same advisor; only the suits' colour (a display setting) and the passing `STOP_USE`
+flag differ. So a native series refuses any other LuaJIT (`check_native_luajit`).
 
 Restarting (`--restart-below`, off by default: the bot plays every run out, a baseline; every run
 logs `ante2_reach` either way). The threshold 0.30, a heuristic, was judged 2026-10-28 at 1786431
@@ -766,6 +769,28 @@ def wait_for_bot(s=180):
     return None
 
 
+def check_native_luajit():
+    """Natively, the LuaJIT the game loads (or will) must be the Windows game's own 2.0.5 (the
+    docstring): the one in native/love/lib, and any a running game has mapped."""
+    libs = {str(NATIVE_DIR / "love/lib/libluajit-5.1.so.2")}
+    for pid in game_pids():
+        try:
+            maps = pathlib.Path(f"/proc/{pid}/maps").read_text()
+        except OSError:
+            continue
+        libs |= {line.split(None, 5)[5] for line in maps.splitlines()
+                 if len(line.split(None, 5)) == 6 and "libluajit" in line}
+    for lib in libs:
+        try:
+            ok = b"LuaJIT 2.0.5" in pathlib.Path(lib).read_bytes()
+        except OSError:  # replaced on disk since the game loaded it (" (deleted)")
+            ok = False
+        if not ok:
+            sys.exit(f"{lib} isn't LuaJIT 2.0.5, the Windows game's: with LÖVE's own the runs aren't "
+                     "the main PC's (the docstring); the vault's advisor-second-machine.md says how to build "
+                     "it (close a game started with another first)")
+
+
 def start_game():
     """What bot.sh `start` does on Linux with Steam, on Windows and natively: the game on the bot's
     profile with its mods, waited for until BalatroBot answers. Returns the profile settings.jkr
@@ -1009,6 +1034,8 @@ def main():
     ADVISOR_SEED = args.advisor_seed
     OUT.mkdir(parents=True, exist_ok=True)
     started_from = None  # Windows, native: the profile settings.jkr had before botrun started the game
+    if NATIVE:
+        check_native_luajit()
     try:
         rpc("health")
     except Exception:
