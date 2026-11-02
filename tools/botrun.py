@@ -70,6 +70,12 @@ verdict on the advice. As of 2026-10-24 the bot:
   (`BALATROBOT_MOUSE=1` to use it), as a pointer resting where the deck is drawn opens the deck
   preview and the game then makes no Play/Discard buttons (game.lua `Game:update_selecting_hand`):
   every play and discard failed (BAVANG25, three times at its first discard, 2026-11-02).
+- the bot's own save folder (since 2026-11-02): with the bot's Profile 3 copied to BalatroBot/3
+  beside the game's Balatro folder (its profile.jkr and meta.jkr, and a settings.jkr on profile
+  3), BotMods/bav-bench switches the game there (conf.lua's identity), so its saves stay off Steam
+  Cloud and never touch the owner's settings.jkr or profiles; botrun and bot.sh then leave the
+  owner's files alone. Without the copy everything works as before. bav-bench also minimizes the
+  game at the first line of main.lua, and on Linux Lovely's console is off (`--disable-console`).
 Since 2026-10-29 every state the advisor analysed in a shop or an open pack (since 2026-10-31 a
 blind select too), and every state an
 analysis failed on (`error`), is kept (`bot/shops/<seed>/a<ante>-r<round>-<n>-<screen>.jkr`;
@@ -593,8 +599,14 @@ if NATIVE:
     APPDATA = HOME / ".local/share/love/Balatro"
 else:
     APPDATA = pathlib.Path(os.environ.get("APPDATA", HOME / "AppData/Roaming")) / "Balatro"
+# The bot's own save folder, BalatroBot beside Balatro, once its profile is copied there: the bot's
+# mods (BotMods/bav-bench) then switch the game to it, which Steam Cloud doesn't sync and the
+# owner's game never reads. The mods stay in Balatro/BotMods (Windows) or NATIVE_DIR.
+MODS_HOME = APPDATA
+if (APPDATA.parent / "BalatroBot" / "3" / "profile.jkr").exists():
+    APPDATA = APPDATA.parent / "BalatroBot"
 if WINDOWS:
-    BOT_MODS = str(APPDATA / "BotMods")
+    BOT_MODS = str(MODS_HOME / "BotMods")
 elif NATIVE:
     BOT_MODS = str(NATIVE_DIR / "BotMods")
 else:
@@ -689,7 +701,10 @@ def launch_game():
             subprocess.Popen([str(NATIVE_DIR / "love/bin/love"), str(exe), "--mod-dir", BOT_MODS], cwd=str(exe.parent),
                              env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
     else:
-        subprocess.Popen(["steam", "-applaunch", "2379780", "--mod-dir", BOT_MODS], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        # Lovely's console off under Proton: its window popped up at boot, and from 2026-11-02 10:55
+        # Lovely hung writing to it (its log stopped at the 5th line, five launches) until disabled
+        subprocess.Popen(["steam", "-applaunch", "2379780", "--mod-dir", BOT_MODS, "--disable-console"],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
 
 
 def native_game_exe():
