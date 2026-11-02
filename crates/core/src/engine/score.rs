@@ -760,8 +760,9 @@ impl Board {
     /// size, and halves The Wall's target and thirds Violet Vessel's, once for each Chicot (the
     /// game's disable has no guard). Not modelled: Ceremonial Dagger destroying the joker to its
     /// right and growing by it, and Madness growing and destroying a random joker on a Small or
-    /// Big Blind (a joker the advice adds goes at the right end, gap 26, and what a loss costs
-    /// over the run isn't priced, gap 8: both first); Cartomancer's Tarot (no consumable is used
+    /// Big Blind (the order is chosen for scoring and the blind's start's hands, so a Dagger's
+    /// place is held as it sits, gap 26, and what a loss costs over the run isn't priced, gap 8:
+    /// both first); Cartomancer's Tarot (no consumable is used
     /// in a simulated round, so neither its slot nor its use); the edition a made joker can roll
     /// (`poll_edition`), what the profile locks and a challenge bans in the pool or makes
     /// Eternal; the order the game's queued events give Burglar's discards against a joker made.

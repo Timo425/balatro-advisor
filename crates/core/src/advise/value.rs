@@ -810,6 +810,8 @@ impl<'a> LongRun<'a> {
             })
             .collect();
         b.jokers.extend(added.cloned());
+        // (as you'd arrange it: `Ctx::placed`)
+        let b = self.ctx.placed(b);
         let added: Vec<&Joker> = added.into_iter().collect();
         let starts: Vec<RoundStart> = starts
             .iter()
@@ -1145,7 +1147,8 @@ impl<'a> LongRun<'a> {
     }
 
     /// Empty slots filled with stand-ins (the jokers you'd find over the run), but `empty` of
-    /// them left empty (`Projected::empty`)
+    /// them left empty (`Projected::empty`); the jokers then as you'd arrange them by then
+    /// (`Ctx::arranged`: the option, the finds and the stand-ins each where it scores most, gap 26)
     fn fill_slots(&self, mut b: Board, empty: i64) -> Board {
         let mut k = 0;
         while (b.jokers.len() as i64) < b.joker_slots - empty {
@@ -1156,7 +1159,7 @@ impl<'a> LongRun<'a> {
             });
             k += 1;
         }
-        b
+        self.ctx.arranged(b)
     }
 
     /// Whether the spare money goes events first rather than levels first, whichever the

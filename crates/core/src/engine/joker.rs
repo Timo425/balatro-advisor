@@ -505,6 +505,12 @@ impl Joker {
 /// card is sold (`selling_card`, button_callbacks.lua `G.FUNCS.sell_card`: Campfire). A debuffed
 /// one does neither. Not modelled: an option that sells a joker says so where they're involved.
 pub const ACTS_WHEN_SOLD: &[&str] = &["j_diet_cola", "j_invisible"];
+
+/// The jokers whose place does what the engine doesn't model: Ceremonial Dagger destroys the
+/// joker to its right as a blind is set (card.lua `Card:calculate_joker`, `setting_blind`, its
+/// `my_pos + 1`), which `Board::at_blind_set` doesn't (gap 8). An order chosen for the jokers
+/// keeps each of them, and the joker to its right, where they sit.
+pub const PLACE_UNMODELLED: &[&str] = &["j_ceremonial"];
 pub const GROWS_FROM_SALES: &[&str] = &["j_campfire"];
 
 /// The jokers whose money the engine pays on any round: while scoring (`score`: Business Card,

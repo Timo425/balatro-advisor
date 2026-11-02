@@ -6376,7 +6376,7 @@ mod tests {
         assert_eq!((end.jokers[1].x_mult, s.hand_size, s.juggle), (1.25, 14, 0));
         assert_eq!(end.at_blind_set(&fresh).1.deck.len(), 54, "the next round deals the first Stone card too");
 
-        // not modelled: Ceremonial Dagger's and Madness's (gap 8, gap 26), Cartomancer's Tarot
+        // not modelled: Ceremonial Dagger's and Madness's (gap 8), Cartomancer's Tarot
         let left = sample_board(&["j_ceremonial", "j_madness", "j_joker", "j_cartomancer"]);
         let (end, _) = left.at_blind_set_drawn(&fresh, 1);
         assert_eq!((keys(&end), end.jokers[0].mult, end.jokers[1].x_mult, end.planet_slots), (keys(&left), 0.0, 1.0, left.planet_slots));

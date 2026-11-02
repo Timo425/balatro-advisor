@@ -42,9 +42,12 @@ pub fn apply(run: &RunState, a: &Analysis, data: &GameData, picks: &[String]) ->
                 };
                 let card = r.shop.as_mut().map(|sh| sh.jokers.remove(idx)).expect("shop checked above");
                 r.dollars -= o.cost as f64;
-                // "replace NAME[, put it rightmost]", the swap the advice picked
+                // "replace NAME[, put it rightmost]", the swap the advice picked: the joker at its
+                // place (`sell_index`, the copy it chose) while it's still there, else the first of
+                // that name
                 let sold = c.action.strip_prefix("replace ").map(|rest| (rest.trim_end_matches(", put it rightmost"), rest.ends_with("rightmost")));
-                match sold.and_then(|(name, right)| r.jokers.iter().position(|j| data.name(&j.key) == name).map(|i| (i, right))) {
+                let at = |name: &str| c.sell_index.filter(|&i| r.jokers.get(i).is_some_and(|j| data.name(&j.key) == name)).or_else(|| r.jokers.iter().position(|j| data.name(&j.key) == name));
+                match sold.and_then(|(name, right)| at(name).map(|i| (i, right))) {
                     Some((i, right)) => {
                         let gone = r.jokers.remove(i);
                         r.dollars += gone.sell_value as f64;
