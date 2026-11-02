@@ -60,6 +60,12 @@ verdict on the advice. As of 2026-10-24 the bot:
 - the game's restart between runs (Linux, through Steam) waits for Steam to be logged on, and,
   when Steam holds the launch on a dialog (a failed Cloud sync, as after a suspend while it was
   still offline, 2026-11-02), says so and waits up to an hour for the click (`restart_game`).
+- the bot's game, in its BalatroBot copy (BotMods/Balatrobot/src/lua/settings.lua, the original
+  kept as settings.lua.orig; 2026-11-01/02): starts minimized but still drawn, so it can be
+  restored to watch (`BALATROBOT_MINIMIZED=0` to show it); and reads the mouse as off-screen
+  (`BALATROBOT_MOUSE=1` to use it), as a pointer resting where the deck is drawn opens the deck
+  preview and the game then makes no Play/Discard buttons (game.lua `Game:update_selecting_hand`):
+  every play and discard failed (BAVANG25, three times at its first discard, 2026-11-02).
 Since 2026-10-29 every state the advisor analysed in a shop or an open pack (since 2026-10-31 a
 blind select too), and every state an
 analysis failed on (`error`), is kept (`bot/shops/<seed>/a<ante>-r<round>-<n>-<screen>.jkr`;
