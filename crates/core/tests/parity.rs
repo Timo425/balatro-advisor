@@ -21,9 +21,14 @@
 //! after (CLAUDE.md step 4), and after a game update:
 //! `BAV_PARITY_DIR=/tmp/before nice -n 19 cargo test --release --test parity -- --ignored parity
 //! --nocapture`, then `diff -r` the two `summary.txt`. `BAV_PARITY_SAMPLE` states (default 8000,
-//! about 15 minutes on 6 runners; 0: all, today's too), `BAV_WORKERS` runners (default half the
-//! cores), `BAV_ONLY` as the history check's. Skips with a message where LuaJIT, `unzip`, the install, the profile or the history
-//! is missing. Never copies the game's code: the runner reads it from `Balatro.exe` in place.
+//! about 5 minutes on 6 runners on LuaJIT 2.0.5, 10-15 on 2.1; 0: all, today's too), `BAV_WORKERS` runners (default half the
+//! cores), `BAV_ONLY` as the history check's, `BAV_LUAJIT` the LuaJIT to run (default `luajit` on
+//! the PATH). The game's own is LuaJIT 2.0.5 (its `lua51.dll`); 2.1 seeds its string hashing
+//! anew at each launch, so a list the game builds with `pairs()` over string keys and picks from
+//! (To Do List's hand, card.lua; an Orbital Tag's, UI_definitions.lua `orbital_choices`) comes out
+//! in another order than the game's. The summary names the LuaJIT and the run warns on any other
+//! (the README builds 2.0.5). Skips with a message where LuaJIT, `unzip`, the install, the profile or the history is missing. Never
+//! copies the game's code: the runner reads it from `Balatro.exe` in place.
 
 #[path = "history_picks.rs"]
 mod history_picks;
@@ -265,6 +270,10 @@ fn jobs(sample: &[PathBuf], data: &GameData) -> Vec<Job> {
 // The runners
 
 struct Setup {
+    /// `BAV_LUAJIT`, or `luajit` on the PATH
+    luajit: String,
+    /// Its `-v` line
+    luajit_version: String,
     tools: PathBuf,
     exe: PathBuf,
     /// Plain-text copies of the owner's settings and profile
@@ -273,7 +282,13 @@ struct Setup {
 }
 
 fn runs(cmd: &str) -> bool {
-    Command::new(cmd).arg("-v").stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
+    version(cmd).is_some()
+}
+
+/// What `cmd -v` prints, if it runs
+fn version(cmd: &str) -> Option<String> {
+    let out = Command::new(cmd).arg("-v").stderr(Stdio::null()).output().ok().filter(|o| o.status.success())?;
+    Some(String::from_utf8_lossy(&out.stdout).lines().next().unwrap_or("").to_string())
 }
 
 /// Plain text of a `.jkr` (or the file as it is, if it isn't deflated)
@@ -283,8 +298,15 @@ fn inflated(p: &Path) -> std::io::Result<String> {
 }
 
 fn setup() -> Result<Setup, String> {
-    if !runs("luajit") {
-        return Err("LuaJIT isn't installed (`sudo apt install luajit`, D17)".into());
+    let named = std::env::var("BAV_LUAJIT").ok();
+    let luajit = named.clone().unwrap_or_else(|| "luajit".into());
+    let Some(luajit_version) = version(&luajit) else {
+        // named but not running is a mistake (a `~` nothing expands), not a missing tool
+        assert!(named.is_none(), "BAV_LUAJIT (`{luajit}`) doesn't run: an absolute path to a LuaJIT, README");
+        return Err("LuaJIT isn't installed (`BAV_LUAJIT`, README, D17)".into());
+    };
+    if !luajit_version.starts_with("LuaJIT 2.0.5 ") {
+        eprintln!("parity: warning: {luajit_version} isn't the game's LuaJIT 2.0.5: a pick from a list built with `pairs()` won't be the game's (`BAV_LUAJIT`)");
     }
     if !runs("unzip") {
         return Err("`unzip` isn't installed".into());
@@ -305,7 +327,7 @@ fn setup() -> Result<Setup, String> {
         }
     }
     let tools = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/parity");
-    Ok(Setup { tools, exe, profile, work })
+    Ok(Setup { luajit, luajit_version, tools, exe, profile, work })
 }
 
 /// What the runner made of a job
@@ -333,7 +355,7 @@ impl Runner<'_> {
     }
 
     fn start(&mut self) -> std::io::Result<()> {
-        let mut c = Command::new("luajit")
+        let mut c = Command::new(&self.setup.luajit)
             .arg("runner.lua")
             .current_dir(&self.setup.tools)
             .env("PARITY_EXE", &self.setup.exe)
@@ -958,7 +980,7 @@ impl Report {
 }
 
 /// The tier (D17). Slow: 11 minutes on the 6,270 states saved by 2026-10-23 (9,293 jobs, 6
-/// runners), about 15 at the default sample. Run under `nice -n 19` (the runners inherit it).
+/// runners) on LuaJIT 2.1, about 15 at the default sample; 4.5 minutes on 2.0.5 (2026-11-02). Run under `nice -n 19` (the runners inherit it).
 #[test]
 #[ignore]
 fn parity() {
@@ -983,9 +1005,10 @@ fn parity() {
         *kinds.entry(j.kind()).or_default() += 1;
     }
     let head = format!(
-        "parity: {} states sampled, {} jobs\n{}",
+        "parity: {} states sampled, {} jobs, {}\n{}",
         sample.len(),
         jobs.len(),
+        setup.luajit_version,
         kinds.iter().map(|(k, n)| format!("    {n:5}  {k}")).collect::<Vec<_>>().join("\n")
     );
     eprintln!("parity: {} states sampled, {} jobs made in {:.0?}", sample.len(), jobs.len(), t0.elapsed());

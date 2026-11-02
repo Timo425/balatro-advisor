@@ -86,11 +86,15 @@ worth capturing as replay fixtures, each with a ready command. `--count` only re
 Slow: `--only blind|shop`, `--limit N`.
 
 **Parity tier:** the engine's steps checked against the game's own Lua, run headless from your
-install with [LuaJIT](https://luajit.org/) (`sudo apt install luajit`; on Windows `winget install
-DEVCOM.LuaJIT` and an `unzip.exe` on PATH, e.g. Git for Windows' `usr\bin`) and a stand-in for LÖVE
-(`tools/parity/`), on your saved history: `BAV_PARITY_DIR=/tmp/before nice -n 19 cargo test
---release --test parity -- --ignored parity --nocapture` (about 15 minutes; the game's code is
-read from `Balatro.exe` in place, never copied).
+install with [LuaJIT](https://luajit.org/) and a stand-in for LÖVE (`tools/parity/`), on your saved
+history: `BAV_PARITY_DIR=/tmp/before nice -n 19 cargo test --release --test parity -- --ignored
+parity --nocapture` (about 5 minutes; the game's code is read from `Balatro.exe` in place, never
+copied). Use the game's own LuaJIT, 2.0.5: `git clone --branch v2.0 --single-branch
+https://github.com/LuaJIT/LuaJIT.git lj && cd lj && git checkout 0bf80b0 && make`, then
+`BAV_LUAJIT=/absolute/path/to/lj/src/luajit`. The packaged 2.1 (`sudo apt install luajit`;
+`winget install DEVCOM.LuaJIT`) runs too, with a warning: it orders a `pairs()` list anew at each
+launch, so a pick the game makes from one (To Do List's hand) isn't the game's. Windows also needs
+an `unzip.exe` on PATH (e.g. Git for Windows' `usr\bin`).
 
 `data/game.json` (joker/blind/tag numbers) is generated from a local install:
 `unzip -p .../Balatro.exe game.lua > /tmp/game.lua && cargo run -- extract-data /tmp/game.lua`.

@@ -84,7 +84,10 @@ read from the install in place (`unzip -p`, nothing extracted), the owner's sett
 as plain-text copies (unlocks shape the shop's pools). Each job loads a saved state through the
 game's `Game:start_run`, takes one step through its button functions, runs its event queue until
 it rests and writes the game's own save of what it leaves; the game rolls its own RNG from the
-save, so a roll is the game's. `tests/parity.rs` (`--ignored`) makes the jobs from a sample of
+save, so a roll is the game's. It's meant to run on the game's own LuaJIT, 2.0.5 (`BAV_LUAJIT`;
+the default is the PATH's `luajit`, and the system package's 2.1 orders a `pairs()` list of string keys anew at each launch, so a pick from one,
+To Do List's hand or an Orbital Tag's, isn't the game's; the summary names the LuaJIT, and a run
+warns on any other). `tests/parity.rs` (`--ignored`) makes the jobs from a sample of
 the history chosen by name as the history check's is (8,000 states by default): the history's
 own steps (hands, round-winning hands with their cards inferred, discards, blind setups,
 cash-outs run on from the winning hand, shop rerolls, pack openings), checked against the

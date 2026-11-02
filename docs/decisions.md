@@ -426,7 +426,7 @@ sentence was quoted.
 
 Accepted by the owner 2026-10-16; amended with the owner's approval 2026-10-17 and 2026-10-31.
 
-## D17. The game's own code as a test-only parity tier (accepted, amended 2026-10-23)
+## D17. The game's own code as a test-only parity tier (accepted, amended 2026-10-23, 2026-11-02)
 
 **What.** A test tier that runs the game's own Lua headless and checks the engine's steps against
 it, lockstep, on states built from the owner's saves. A small LuaJIT program of our own
@@ -449,8 +449,10 @@ where a change touches the engine or the steps the simulated round plays on (`en
 `Board` steps), before and after, as D12's slow checks run where they apply: every new difference
 explained or fixed; and after a game update, which it follows by itself since it reads the install.
 
-**Needs installed.** LuaJIT 2.1 (the game ships `lua51.dll`, LuaJIT with Lua 5.1 semantics): the
-system package (`apt install luajit`), run as a process; the feasibility run used the copy in the
+**Needs installed.** LuaJIT 2.0.5, the game's own (its `lua51.dll`, amended 2026-11-02: this
+said 2.1), built from LuaJIT's git (`BAV_LUAJIT`); the system package's 2.1 runs too, with a
+warning, since it orders a `pairs()` list of string keys anew at each launch and a pick from one
+isn't the game's. Run as a process; the feasibility run used the copy in the
 Lutris runtime already on this PC, through a 20-line C host, which isn't a setup to keep. Nothing
 else but `unzip`, which the stand-in reads the game's files from the zip with, as CLAUDE.md reads
 them (amended 2026-10-23, as built): the Rust test inflates the saves (`jkr`) and reads the
