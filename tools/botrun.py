@@ -99,8 +99,8 @@ out in another order, and so does a pick from it with the seed's own random numb
 Orbital Tag levels (UI_definitions.lua, `orbital_choices`) and To Do List's hand (card.lua);
 BAVANG01 gave three different `orbital_choices` in three launches. With 2.0.5 (2026-11-02) all 25
 BAVANG seeds start as on the main PC (`orbital_choices`, rolled at every blind, the same on the
-23 with a reference), and BAVANG07 and BAVANG13 (each offered To Do List, its hand the same; neither owned it, so
-its end-of-round re-pick is untested) played every logged step and kept state as the main PC's
+23 with a reference), and BAVANG07 and BAVANG13 (each offered To Do List, its hand the same: the
+end-of-round re-pick is the same pick, card.lua) played every logged step and kept state as the main PC's
 runs of the same advisor; only the suits' colour (a display setting) and the passing `STOP_USE`
 flag differ. So a native series refuses any other LuaJIT (`check_native_luajit`).
 
