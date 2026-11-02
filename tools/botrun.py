@@ -668,8 +668,11 @@ def launch_game():
                          creationflags=subprocess.CREATE_NEW_CONSOLE | subprocess.CREATE_NEW_PROCESS_GROUP)
     elif NATIVE:
         exe = native_game_exe()
+        # SDL's offscreen driver: no window at all (headless alone opens one at boot, then shrinks
+        # it), and so no pointer over the game either; it still renders on the GPU
         env = dict(os.environ, LD_LIBRARY_PATH=str(NATIVE_DIR / "love/lib"),
-                   LD_PRELOAD=str(NATIVE_DIR / "liblovely.so"), BALATROBOT_HEADLESS="1")
+                   LD_PRELOAD=str(NATIVE_DIR / "liblovely.so"), BALATROBOT_HEADLESS="1",
+                   SDL_VIDEODRIVER="offscreen")
         if pathlib.Path("/dev/dxg").exists():
             env["GALLIUM_DRIVER"] = "d3d12"  # WSL: the GPU through Direct3D 12, not llvmpipe on the CPU
         wait_port_free()
