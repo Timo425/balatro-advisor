@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Plays Balatro runs through BalatroBot with the advisor making every choice, and logs
-how far each run got. For strategy experiments on Profile 3 (on Linux, start the game with
-balatro-agent's tools/bot.sh first; on Windows botrun starts the installed game itself on Profile
-3 with %APPDATA%\\Balatro\\BotMods, Lovely's version.dll beside it, and closes it and gives back
-the profile when done). Runs go to ~/.local/share/balatro-advisor/bot/ on the main PC; another
+how far each run got. For strategy experiments on Profile 3 (on Linux with Steam, start the game
+with balatro-agent's tools/bot.sh first; on Windows botrun starts the installed game itself on
+Profile 3 with %APPDATA%\\Balatro\\BotMods, Lovely's version.dll beside it, and closes it and
+gives back the profile when done; on Linux without Steam it does the same natively, headless, with
+LÖVE's official build, Lovely's liblovely.so and the mods in ~/.local/share/balatro-advisor/native/,
+BALATRO_EXE and LÖVE's own save folder: `NATIVE`). Runs go to ~/.local/share/balatro-advisor/bot/ on the main PC; another
 machine sets BAV_BOT_DIR to its own bot-<machine>/, a send-only Syncthing folder to the main PC
 (its data folder's bot/ is the main PC's, copied in, and would overwrite its runs.jsonl).
 
@@ -105,12 +107,18 @@ ANALYSIS_S = 0.0  # the advisor's share of a run's time
 NOT_FOLLOWED = []  # the advisor's top choices the bot couldn't take, this run
 HOME = pathlib.Path.home()
 WINDOWS = sys.platform == "win32"
+# Linux without Steam (the WSL laptop; vault Arvutimängud/Balatro/advisor-second-machine.md): LÖVE's
+# official 11.5 build runs BALATRO_EXE natively with Lovely's liblovely.so preloaded, both in
+# NATIVE_DIR. Not Ubuntu's `love`: it doesn't export PhysFS, which Steamodded's nativefs calls.
+NATIVE_DIR = HOME / ".local/share/balatro-advisor/native"
+NATIVE = (sys.platform.startswith("linux") and not shutil.which("steam")
+          and (NATIVE_DIR / "love/bin/love").exists())
 # BAV_BOT_DIR: a machine other than the main PC writes to its own bot-<machine>/ (the docstring)
 OUT = pathlib.Path(os.environ.get("BAV_BOT_DIR") or HOME / ".local/share/balatro-advisor/bot")
 STATE = OUT / "state.jkr"
 KEEP_DIR = None  # this run's kept states (bot/shops/<seed>/): every shop and pack the advisor analysed
-# The path the game saves to: on Linux it runs under Proton, where Z: is the Linux root
-WIN_STATE = str(STATE) if WINDOWS else "Z:" + str(STATE)
+# The path the game saves to: on Linux with Steam it runs under Proton, where Z: is the Linux root
+WIN_STATE = str(STATE) if WINDOWS or NATIVE else "Z:" + str(STATE)
 
 
 class RpcError(Exception):
@@ -545,7 +553,8 @@ def game_pids():
     pids = []
     for d in pathlib.Path("/proc").iterdir():
         try:
-            if d.name.isdigit() and (d / "cmdline").read_bytes().split(b"\0")[0].endswith(b"Balatro.exe"):
+            argv0 = (d / "cmdline").read_bytes().split(b"\0")[0] if d.name.isdigit() else b""
+            if argv0.endswith(b"Balatro.exe") or (NATIVE and argv0 == str(NATIVE_DIR / "love/bin/love").encode()):
                 pids.append(int(d.name))
         except OSError:
             pass
@@ -568,10 +577,19 @@ def game_rss_mb():
 
 # The game launched with the bot's mods, as balatro-agent's tools/bot.sh `start` does (adapted
 # from it: the launch only; bot.sh sets Profile 3 and backs up the owner's settings, which a
-# restart in the bot's session leaves as they are). On Windows botrun also starts and stops the
-# game itself (`start_game_windows`): there is no bot.sh there.
-APPDATA = pathlib.Path(os.environ.get("APPDATA", HOME / "AppData/Roaming")) / "Balatro"
-BOT_MODS = str(APPDATA / "BotMods") if WINDOWS else r"C:\users\steamuser\AppData\Roaming\Balatro\BotMods"
+# restart in the bot's session leaves as they are). On Windows and natively botrun also starts and
+# stops the game itself (`start_game`): there is no bot.sh there. Natively the game's save folder
+# is LÖVE's (~/.local/share/love/Balatro), this machine's own, and the mods are NATIVE_DIR/BotMods.
+if NATIVE:
+    APPDATA = HOME / ".local/share/love/Balatro"
+else:
+    APPDATA = pathlib.Path(os.environ.get("APPDATA", HOME / "AppData/Roaming")) / "Balatro"
+if WINDOWS:
+    BOT_MODS = str(APPDATA / "BotMods")
+elif NATIVE:
+    BOT_MODS = str(NATIVE_DIR / "BotMods")
+else:
+    BOT_MODS = r"C:\users\steamuser\AppData\Roaming\Balatro\BotMods"
 BOT_PROFILE = 3
 FRESH_MB = 1000  # a game just started holds ~0.6 GB
 
@@ -648,8 +666,38 @@ def launch_game():
         exe = windows_game_exe()
         subprocess.Popen([str(exe), "--mod-dir", BOT_MODS], cwd=str(exe.parent),
                          creationflags=subprocess.CREATE_NEW_CONSOLE | subprocess.CREATE_NEW_PROCESS_GROUP)
+    elif NATIVE:
+        exe = native_game_exe()
+        env = dict(os.environ, LD_LIBRARY_PATH=str(NATIVE_DIR / "love/lib"),
+                   LD_PRELOAD=str(NATIVE_DIR / "liblovely.so"), BALATROBOT_HEADLESS="1")
+        if pathlib.Path("/dev/dxg").exists():
+            env["GALLIUM_DRIVER"] = "d3d12"  # WSL: the GPU through Direct3D 12, not llvmpipe on the CPU
+        wait_port_free()
+        with open(NATIVE_DIR / "game.log", "w") as log:
+            subprocess.Popen([str(NATIVE_DIR / "love/bin/love"), str(exe), "--mod-dir", BOT_MODS], cwd=str(exe.parent),
+                             env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
     else:
         subprocess.Popen(["steam", "-applaunch", "2379780", "--mod-dir", BOT_MODS], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+
+
+def native_game_exe():
+    exe = pathlib.Path(os.environ.get("BALATRO_EXE", ""))
+    if exe.name != "Balatro.exe" or not exe.exists():
+        sys.exit("set BALATRO_EXE to the game file (vault advisor-second-machine.md)")
+    return exe
+
+
+def wait_port_free(s=90):
+    """Linux: waits until no socket holds BalatroBot's port. A game started while the last one's
+    connections linger finds it taken and runs without its API ("Failed to bind", seen 2026-11-02)."""
+    port = ":%04X " % int(API.rsplit(":", 1)[1])
+    t = time.monotonic()
+    while time.monotonic() - t < s:
+        held = any(port in line.split()[1] + " " for f in ("/proc/net/tcp", "/proc/net/tcp6")
+                   if os.path.exists(f) for line in open(f).read().splitlines()[1:])
+        if not held:
+            return
+        time.sleep(1)
 
 
 def wait_for_bot(s=180):
@@ -663,12 +711,19 @@ def wait_for_bot(s=180):
     return None
 
 
-def start_game_windows():
-    """What bot.sh `start` does on Linux: the game on the bot's profile with its mods, waited for
-    until BalatroBot answers. Returns the profile settings.jkr had, for `stop_game_windows`."""
-    for need in (pathlib.Path(BOT_MODS) / "Balatrobot", windows_game_exe().parent / "version.dll"):
+def start_game():
+    """What bot.sh `start` does on Linux with Steam, on Windows and natively: the game on the bot's
+    profile with its mods, waited for until BalatroBot answers. Returns the profile settings.jkr
+    had, for `stop_game`."""
+    if NATIVE:
+        needs = (pathlib.Path(BOT_MODS) / "Balatrobot", NATIVE_DIR / "liblovely.so", APPDATA / str(BOT_PROFILE))
+        note = "advisor-second-machine.md"
+    else:
+        needs = (pathlib.Path(BOT_MODS) / "Balatrobot", windows_game_exe().parent / "version.dll")
+        note = "advisor-windows-laptop.md"
+    for need in needs:
         if not need.exists():
-            sys.exit(f"missing {need}: the vault's advisor-windows-laptop.md says how the bot is set up")
+            sys.exit(f"missing {need}: the vault's {note} says how the bot is set up")
     if game_pids():
         sys.exit("Balatro is running without BalatroBot answering: close it first (the bot starts its own)")
     was = settings_profile(BOT_PROFILE)
@@ -682,7 +737,7 @@ def start_game_windows():
     return was
 
 
-def stop_game_windows(was):
+def stop_game(was):
     """What bot.sh `stop` does: closes the game and gives the game back the profile it had."""
     close_game()
     settings_profile(was)
@@ -720,14 +775,15 @@ def steam_offline():
 
 
 def restart_game():
-    """Closes the bot's game and starts it again (Linux with Steam, Windows), so a run starts from
-    a fresh game: the modded game grows as it plays. False where it can't. On Linux it waits for
-    Steam to be logged on before launching, and when the launch waits on a Steam dialog (a Cloud
-    sync that failed) it says which and keeps waiting, up to STEAM_WAIT_S, for the owner's click."""
-    if not WINDOWS and (not sys.platform.startswith("linux") or not shutil.which("steam")):
+    """Closes the bot's game and starts it again (Linux with Steam, Windows, natively), so a run
+    starts from a fresh game: the modded game grows as it plays. False where it can't. On Linux
+    with Steam it waits for Steam to be logged on before launching, and when the launch waits on a
+    Steam dialog (a Cloud sync that failed) it says which and keeps waiting, up to STEAM_WAIT_S, for
+    the owner's click."""
+    if not (WINDOWS or NATIVE or (sys.platform.startswith("linux") and shutil.which("steam"))):
         return False
     close_game()
-    if WINDOWS:
+    if WINDOWS or NATIVE:
         settings_profile(BOT_PROFILE)  # the game saves its settings as it quits
     else:
         t = time.monotonic()
@@ -748,7 +804,7 @@ def restart_game():
             return True
         except Exception:
             time.sleep(2)
-        waits = [] if WINDOWS else [l for l in steam_log_since(launched) if "2379780" in l and "waiting for user response" in l]
+        waits = [] if WINDOWS or NATIVE else [l for l in steam_log_since(launched) if "2379780" in l and "waiting for user response" in l]
         if waits and not told:
             told = True
             print(f"  (Steam is waiting for a click before it starts the game: {waits[-1].split('response to', 1)[-1].strip()};"
@@ -856,7 +912,7 @@ def main():
     p.add_argument("--strategy", default="advisor")
     p.add_argument("-v", "--verbose", action="store_true", help="print every hand")
     p.add_argument("--restart-game", choices=["each", "never"], default="each",
-                   help="each: restart the game before a run once it holds more than a fresh one (it grows as it plays; Linux with Steam, Windows)")
+                   help="each: restart the game before a run once it holds more than a fresh one (it grows as it plays; Linux with Steam, Windows, native)")
     p.add_argument("--max-game-mb", type=int, default=8000,
                    help="where the game isn't restarted: stop between runs once its memory passes this, printing the seeds to resume with")
     p.add_argument("--restart-below", type=float, default=0.0,
@@ -866,13 +922,13 @@ def main():
     VERBOSE = args.verbose
     ADVISOR_SEED = args.advisor_seed
     OUT.mkdir(parents=True, exist_ok=True)
-    started_from = None  # Windows: the profile settings.jkr had before botrun started the game
+    started_from = None  # Windows, native: the profile settings.jkr had before botrun started the game
     try:
         rpc("health")
     except Exception:
-        if not WINDOWS:
+        if not (WINDOWS or NATIVE):
             sys.exit("BalatroBot isn't answering on 127.0.0.1:12346: start the game with balatro-agent's tools/bot.sh start")
-        started_from = start_game_windows()
+        started_from = start_game()
     try:
         seeds = [s.strip() for s in args.seeds.split(",") if s.strip()]
         todo = [s for s in seeds for _ in range(args.repeat)] or [None] * args.runs
@@ -884,7 +940,7 @@ def main():
             one_run(args, n, seed)
     finally:
         if started_from is not None:
-            stop_game_windows(started_from)
+            stop_game(started_from)
 
 
 if __name__ == "__main__":
