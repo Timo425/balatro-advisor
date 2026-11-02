@@ -79,9 +79,16 @@ skipped, the jokers never arranged, "won" read from a flag the game also sets on
 before 2026-10-23 35 jokers locked and an early advisor. Don't read them as evidence.
 
 The game is restarted before a run once it holds more than a fresh one (`--restart-game`, Linux
-with Steam and Windows: it grows as it plays, a run from a fresh game ending at 0.6-3.1 GB, measured 2026-10-30); elsewhere a series stops between runs
+with Steam, Windows and natively: it grows as it plays, a run from a fresh game ending at 0.6-3.1 GB, measured 2026-10-30); elsewhere a series stops between runs
 past `--max-game-mb` and prints the seeds to resume with. The runs are seeded, so a restart
-between them changes nothing.
+between them changes nothing, except natively (`NATIVE`): there LÖVE's own LuaJIT (2.1, Nov
+2023) seeds its string hashing anew each launch, so a list the game builds with `pairs()` over
+string keys comes out in another order, and so does a pick from it with the seed's own random
+number: the hands an Orbital Tag levels (UI_definitions.lua, `orbital_choices`) and To Do List's
+hand (card.lua). BAVANG01 gave three different `orbital_choices` in three launches, against the
+same in all 9 of the main PC's runs (2026-11-02). A run with neither plays as the main PC's (a
+whole BAVANG01, every logged step the same); one with either isn't the same run anywhere, nor
+paired, until a LuaJIT with fixed hashing replaces native/love/lib's.
 
 Restarting (`--restart-below`, off by default: the bot plays every run out, a baseline; every run
 logs `ante2_reach` either way). The threshold 0.30, a heuristic, was judged 2026-10-28 at 1786431
