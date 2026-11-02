@@ -54,7 +54,7 @@ tests/fixtures/private` (a folder that already has fixtures: vault
 `Arvutimängud/Balatro/advisor-second-machine.md`). `tools/pull-fixtures.sh` pulls it at each chat's
 start (SessionStart hook in `.claude/settings.json`; needs `bash`, Git Bash on Windows) and, in the
 background, the main PC's run data (history, bot runs, calibration) from its live data folder that
-Syncthing brings (WSL, outside Syncthing, pulls its Proton backup). Bot runs go back through a
+Syncthing brings (WSL mounts its Windows side's copy read-only). Bot runs go back through a
 send-only Syncthing folder `bot-<machine>/` (`BAV_BOT_DIR`). A captured or changed fixture is pushed
 to its repo in the same sitting as its advisor commit, its message naming that commit. A fixture named
 by a claim in `advisor-active/` is that claim's until it's done. A cloud session has none of this (step 4).

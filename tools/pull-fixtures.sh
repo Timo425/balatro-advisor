@@ -21,16 +21,17 @@ fi
 # Devices get its live data folder by Syncthing (since 2026-11-01): the Windows laptop receives it
 # (Receive Only) and balatro-pull.ps1 copies it into its own data folder, which every tool reads
 # and which also holds the laptop's own files, in seconds, so at every chat's start. The WSL
-# laptop, outside Syncthing, still downloads the main PC's 3-hourly Proton backup
-# (~/.local/bin/balatro-pull), at most every 6 hours. See the vault's advisor-windows-laptop.md /
-# advisor-second-machine.md. Every chat is told how fresh the data is. The main PC has neither:
-# skip. A machine's own bot runs go the other way, through a send-only Syncthing folder
+# laptop's Windows side receives the same folder (Receive Only), WSL mounts it read-only and
+# ~/.local/bin/balatro-pull copies it with rsync, also at every chat's start (since 2026-11-02;
+# before, it downloaded the main PC's 3-hourly Proton backup with rclone). See the vault's
+# advisor-windows-laptop.md / advisor-second-machine.md. Every chat is told how fresh the data
+# is. The main PC has neither: skip. A machine's own bot runs go the other way, through a send-only Syncthing folder
 # (`bot-<machine>/`, botrun's BAV_BOT_DIR).
 data="$HOME/.local/share/balatro-advisor"
 stamp="$data/last-pull" result="$data/last-pull.result" log="$data/last-pull.log"
 pull="" every=0
 if [ -x "$HOME/.local/bin/balatro-pull" ]; then
-  pull="nice -n 19 $HOME/.local/bin/balatro-pull" every=6
+  pull="nice -n 19 $HOME/.local/bin/balatro-pull"
 elif [ -f "$HOME/.local/bin/balatro-pull.ps1" ] && command -v powershell.exe >/dev/null; then
   pull="powershell.exe -NoProfile -ExecutionPolicy Bypass -File $(cygpath -w "$HOME/.local/bin/balatro-pull.ps1" 2>/dev/null || echo "$HOME/.local/bin/balatro-pull.ps1")"
 fi
