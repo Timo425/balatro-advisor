@@ -70,7 +70,8 @@ verdict on the advice. As of 2026-10-24 the bot:
   (`BALATROBOT_MOUSE=1` to use it), as a pointer resting where the deck is drawn opens the deck
   preview and the game then makes no Play/Discard buttons (game.lua `Game:update_selecting_hand`):
   every play and discard failed (BAVANG25, three times at its first discard, 2026-11-02).
-- the bot's own save folder (since 2026-11-02): with the bot's Profile 3 copied to BalatroBot/3
+- the bot's own save folder (since 2026-11-02; on Windows botrun makes it the first time,
+  `own_save_folder`): with the bot's Profile 3 copied to BalatroBot/3
   beside the game's Balatro folder (its profile.jkr and meta.jkr, and a settings.jkr on profile
   3), BotMods/bav-bench switches the game there (conf.lua's identity), so its saves stay off Steam
   Cloud and never touch the owner's settings.jkr or profiles; botrun and bot.sh then leave the
@@ -603,6 +604,29 @@ else:
 # mods (BotMods/bav-bench) then switch the game to it, which Steam Cloud doesn't sync and the
 # owner's game never reads. The mods stay in Balatro/BotMods (Windows) or NATIVE_DIR.
 MODS_HOME = APPDATA
+
+
+def own_save_folder():
+    """On Windows, where the game is Steam's and Steam Cloud syncs its Balatro folder, botrun makes
+    the bot's own folder the first time: the bot's Profile 3 (profile.jkr, meta.jkr) and a
+    settings.jkr on profile 3 copied into BalatroBot. Natively there's no Steam Cloud to keep off,
+    and on Linux with Steam bot.sh's machine has its copy already, so nothing is made there."""
+    own = APPDATA.parent / "BalatroBot"
+    if not WINDOWS or (own / "3" / "profile.jkr").exists() or not (APPDATA / "3" / "profile.jkr").exists():
+        return
+    (own / "3").mkdir(parents=True, exist_ok=True)
+    for f in ("profile.jkr", "meta.jkr"):
+        if (APPDATA / "3" / f).exists():
+            shutil.copy2(APPDATA / "3" / f, own / "3" / f)
+    if (APPDATA / "settings.jkr").exists():
+        text = zlib.decompress((APPDATA / "settings.jkr").read_bytes(), -15).decode()
+        text = re.sub(r'\["profile"\]=\d+', '["profile"]=3', text)
+        c = zlib.compressobj(9, zlib.DEFLATED, -15)
+        (own / "settings.jkr").write_bytes(c.compress(text.encode()) + c.flush())
+    print(f"  (made the bot's own save folder {own}: its Profile 3 copied, off Steam Cloud)")
+
+
+own_save_folder()
 if (APPDATA.parent / "BalatroBot" / "3" / "profile.jkr").exists():
     APPDATA = APPDATA.parent / "BalatroBot"
 if WINDOWS:
