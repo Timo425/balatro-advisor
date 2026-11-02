@@ -60,8 +60,10 @@ verdict on the advice. As of 2026-10-24 the bot:
   patched 2026-10-31), or a shop entered with a Rare Tag is saved before the tag makes its
   joker free (tag.lua `Tag:yep`) and the advisor reads the joker at full price.
 - the game's restart between runs (Linux, through Steam) waits for Steam to be logged on, and,
-  when Steam holds the launch on a dialog (a failed Cloud sync, as after a suspend while it was
-  still offline, 2026-11-02), says so and waits up to an hour for the click (`restart_game`).
+  when Steam holds the launch on a prompt (a failed Cloud sync, as after a suspend while it was
+  still offline, 2026-11-02; a conflict; a shader update), says which and waits up to an hour,
+  launching again every 2 minutes so a cancelled dialog works as well as an answered one
+  (`restart_game`, `steam_held`).
 - the bot's game, in its BalatroBot copy (BotMods/Balatrobot/src/lua/settings.lua, the original
   kept as settings.lua.orig; 2026-11-01/02): starts minimized but still drawn, so it can be
   restored to watch (`BALATROBOT_MINIMIZED=0` to show it); and reads the mouse as off-screen
@@ -749,20 +751,26 @@ def stop_game(was):
 
 STEAM_LOG = pathlib.Path.home() / ".steam/steam/logs/console_log.txt"
 STEAM_WAIT_S = 3600  # how long a restart waits on Steam (offline, or a dialog) before the series stops
+STEAM_PASSING = ("ShowInterstitials", "CreatingProcess")  # prompts every launch logs and passes at once
+STEAM_HELD_S = 20  # a prompt still open after this long holds the launch (a dialog, a shader update)
 
 
-def steam_log_since(t0):
-    """Steam's console log lines (Linux) written at or after the wall-clock time `t0`; [] where
-    there's none. Each line starts "[YYYY-MM-DD HH:MM:SS]", local time."""
+def steam_log_tail(size=2_000_000):
+    """The last `size` bytes of Steam's console log (Linux) as lines; [] where there's none."""
     try:
         with open(STEAM_LOG, "rb") as f:
             f.seek(0, 2)
-            f.seek(max(0, f.tell() - 200_000))
-            lines = f.read().decode("utf-8", "replace").splitlines()
+            f.seek(max(0, f.tell() - size))
+            return f.read().decode("utf-8", "replace").splitlines()
     except OSError:
         return []
+
+
+def steam_log_since(t0, lines=None):
+    """Steam's console log lines written at or after the wall-clock time `t0`. Each line starts
+    "[YYYY-MM-DD HH:MM:SS]", local time, so they compare as strings."""
     since = time.strftime("[%Y-%m-%d %H:%M:%S]", time.localtime(t0))
-    return [l for l in lines if l[:21] >= since]
+    return [l for l in (steam_log_tail() if lines is None else lines) if l[:21] >= since]
 
 
 def steam_offline():
@@ -777,12 +785,32 @@ def steam_offline():
     return False
 
 
+def steam_held(launched, lines=None):
+    """What Steam holds the game's launch on, if anything: the launch's last "waiting for user
+    response to <stage> <detail>" since `launched` with no "continues with user response" after it,
+    open for STEAM_HELD_S, and not one of the prompts every launch passes (STEAM_PASSING). None
+    where nothing holds it."""
+    last, at = None, None
+    for l in steam_log_since(launched, lines):
+        if "2379780" not in l:
+            continue
+        if "waiting for user response to" in l:
+            last, at = l.split("waiting for user response to", 1)[1].strip(), l[1:20]
+        elif "continues with user response" in l:
+            last = None
+    if not last or last.split()[0] in STEAM_PASSING:
+        return None
+    opened = time.mktime(time.strptime(at, "%Y-%m-%d %H:%M:%S"))
+    return last if time.time() - opened >= STEAM_HELD_S else None
+
+
 def restart_game():
     """Closes the bot's game and starts it again (Linux with Steam, Windows, natively), so a run
     starts from a fresh game: the modded game grows as it plays. False where it can't. On Linux
-    with Steam it waits for Steam to be logged on before launching, and when the launch waits on a
-    Steam dialog (a Cloud sync that failed) it says which and keeps waiting, up to STEAM_WAIT_S, for
-    the owner's click."""
+    with Steam it waits for Steam to be logged on before launching; when Steam holds the launch on
+    a prompt (a Cloud sync that failed or conflicts, a shader update) it says which and waits, up to
+    STEAM_WAIT_S, launching again every 2 minutes: a dialog cancelled lets the next launch through,
+    one still open ignores it."""
     if not (WINDOWS or NATIVE or (sys.platform.startswith("linux") and shutil.which("steam"))):
         return False
     close_game()
@@ -799,7 +827,8 @@ def restart_game():
             print(f"  (Steam logged on after {time.monotonic() - t:.0f} s)")
     launched = time.time()
     launch_game()
-    t, told = time.monotonic(), False
+    t = relaunched = time.monotonic()
+    told = None
     while True:
         try:
             rpc("health")
@@ -807,14 +836,18 @@ def restart_game():
             return True
         except Exception:
             time.sleep(2)
-        waits = [] if WINDOWS or NATIVE else [l for l in steam_log_since(launched) if "2379780" in l and "waiting for user response" in l]
-        if waits and not told:
-            told = True
-            print(f"  (Steam is waiting for a click before it starts the game: {waits[-1].split('response to', 1)[-1].strip()};"
-                  " in Steam's dialog, click Retry once Steam is online, and the series goes on)", flush=True)
-        if time.monotonic() - t > (STEAM_WAIT_S if waits else 180):
+        held = None if WINDOWS or NATIVE else steam_held(launched)
+        if held and held != told:
+            told = held
+            print(f"  (Steam holds the game's launch on: {held}. In Steam, answer it: a Cloud sync that failed"
+                  " (Retry, or cancel it), a conflict (Keep local), a shader update (wait, or Skip);"
+                  " the series goes on once the game answers)", flush=True)
+        if told and time.monotonic() - relaunched > 120:
+            relaunched = time.monotonic()
+            launch_game()  # ignored while the dialog is open; goes through once it's cancelled
+        if time.monotonic() - t > (STEAM_WAIT_S if told else 180):
             break
-    sys.exit("the game didn't come back after a restart" + (" (Steam's dialog was never answered)" if told else " within 3 minutes"))
+    sys.exit("the game didn't come back after a restart" + (f" (Steam held it on {told} for an hour)" if told else " within 3 minutes"))
 
 
 def commit():
