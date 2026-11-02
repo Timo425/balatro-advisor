@@ -218,21 +218,26 @@ at most 8 times a shop: caps of its own, in no register. Paired runs on BAVANG01
 both machines and the same move for move), capped against rerolling and acting as the advisor
 ranks (2b66933; a guard at 50 actions a shop, never reached): the caps had stopped the advisor's
 top choice in 24 of 259 shops (`not_followed` rerolls 24 → 0). Rerolls a shop 0.31 → 0.40
-(Antes 4/5 0.55/0.83 → 0.63/1.43); 15 shops took 3 or more, at most 8 (BAVANG09, Ante 5, $87 on a
-board three of whose five slots were eternal, gap 27). Median money at a shop's entry at Antes
+(Antes 4/5 0.55/0.83 → 0.63/1.43); 15 shops took 3 or more, at most 8 (BAVANG09, Ante 5, $79 on a
+board three of whose five slots were eternal, gaps 27 and 36 (a)). Median money at a shop's entry at Antes
 2/3/4/5 $9.5/$12/$27/$29 → $9.5/$12/$20/$21, shops below $0 17 → 18. Mean ante 4.48 → 4.60: 10
 seeds played the same, 3 went further (BAVANG10 5 → 7, 14 5 → 6, 20 4 → 5), 1 shorter (09 6 → 5),
-11 differed but reached the same ante; no wins. So the money the caps kept from Ante 4 on went to
-rerolls with no gain in antes this series can tell from noise: what a reroll is worth against
-money held is the advisor's to value (the queue card "One round's money for the shops ahead"),
-not the bot's to cap. A series' length follows how far each seed gets (5-68 minutes a run here,
-593 and 602 minutes the two arms): the same seeds' minutes in the series before predict it, an average of a
+11 differed but reached the same ante; no wins. The money the caps had kept went to rerolls with no gain in antes this series
+can tell from noise (the medians are over the shops each arm reached), and mostly in shops in
+trouble: rerolls there 38 → 57 ($206 → $379 spent), elsewhere 41 → 46 ($217 → $251). In trouble
+the ranking goes by the score reached and doesn't weigh money held (register "Shop ranking"),
+and `worth` follows it: 45 of the 103 uncapped rerolls ranked no higher than leaving, most at an
+exact 0.000 tie on boards whose blinds ahead were all but lost (BAVANG09's eight at Ante 5,
+$79 → $8, the series' one shorter seed). What spending in trouble is worth is the advisor's to
+value (queue card "Money spent in trouble: the shop ranking weighs what it gives up"), not the
+bot's to cap. A series' length follows how far each seed gets (5-68 minutes a run on the
+main PC, up to 75 on the laptop; 593 and 602 minutes the two arms): the same seeds' minutes in the series before predict it, an average of a
 few runs doesn't. Faults of the bench found on the way and fixed in the bot's BalatroBot copy or
 botrun: a pointer resting where the deck is drawn opened the game's deck preview, which leaves
-out the Play and Discard buttons (game.lua `Game:update_selecting_hand`), so every play failed
-(BAVANG25, three times); a restart after a suspend found Steam still offline and stopped at its
+out the Play and Discard buttons (game.lua `Game:update_selecting_hand`), so every discard
+failed (BAVANG25's uncapped arm, three runs in a row, at its first discard); a restart after a suspend found Steam still offline and stopped at its
 Cloud sync dialog (tools/botrun.py's docstring). A `select` sent while a pack a skip's tag opened
-is still open fails once and is retried (13 → 20, the longer runs; both arms alike).
+is still open fails once and is retried (13 → 20 such errors, more in the longer runs; both arms alike).
 
 ## Patterns
 
