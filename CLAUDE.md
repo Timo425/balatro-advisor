@@ -66,6 +66,10 @@ then learning from better players. Every task serves that; judge its effort by i
 
 - **The work queue** is `Arvutimängud/Balatro/advisor-queue.md` in the owner's vault (its header
   has the claim rules and the `After:` lines that order cards), not `docs/design.md`'s "Next" line.
+  A follow-up from work in this repo goes into the queue as a card, by its header's rules, not as
+  a task card (the owner's choice for this project, over the global task-card rule). A card holds
+  only what is its own (what's wrong, what it changes, which test level, done); the rules in this
+  file apply to every card without being copied into it.
 - **Shared checkout, no branches.** Other chats commit to main here: commit only your files by name,
   and check `git log` before committing and when a diff looks unexplained.
 - **Heavy jobs** (cargo test, the snapshot, the history check, the bench, the shop judge) run one at

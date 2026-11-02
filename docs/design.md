@@ -154,12 +154,8 @@ profile had 35 jokers locked (gap 38). The runs of 2026-10-01 (an early advisor 
 evidence of over-buying. Since 2026-11-02 (4a06dd3, gap 26) the advice values the jokers as
 you'd arrange them outside a blind, and the bot arranges them as advised on leaving the shop and
 at each blind select (a pack a skip tag opens leaves its pick at the right end): series from then
-are on a new baseline, not paired with earlier ones. How a card uses the bot (D20, CLAUDE.md
-"Test a card by what it changes"): a change to the bot is checked on the moments a bot run kept,
-old code against new (`tools/botcheck.py`, since 2026-11-02), and by one run of about 20 minutes
-where it comes up; many runs only when a card's effect can't show earlier (past the next ante's
-boss), on the seeds where it shows, sized to it, and only where the bot acts on the advice the
-card changes (else the bot's card goes first, as an `After:`). On 2026-10-30 paired whole runs (BAVANG01-25, a series at the base and one
+are on a new baseline, not paired with earlier ones. How a card uses the bot is CLAUDE.md's
+"Test a card by what it changes" (D20), not repeated here. On 2026-10-30 paired whole runs (BAVANG01-25, a series at the base and one
 with the change) judged the rent fix (9285bbd) by money by ante, and the habit was then copied
 into ten cards, bot changes among them, 10-20 hours a pair; dropped 2026-11-02. They judged only
 where the bot follows: its `not_followed` was their blind spot, the same in both arms. Until 2026-10-31 a pack
