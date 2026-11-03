@@ -4296,7 +4296,7 @@ fn tarot_values(
             let ties = if others.is_empty() { String::new() } else { format!("; can't be told apart from: {}", others.join(", ")) };
             format!("{what} on {} (the cards worth most to your run{ties}){}", label(&sets[best]), outcomes.iter().find_map(|&(_, e)| rebuff_note(e)).unwrap_or_default())
         } else {
-            format!("{what}, on the cards worth most in hands you'd hold")
+            format!("{what}, on the cards worth most in hands you'd hold{}", outcomes.iter().find_map(|&(_, e)| rebuff_note(e)).unwrap_or_default())
         };
         // the effect and its targets, for Best play's move with it (one outcome only)
         let target = (outcomes.len() == 1).then(|| (outcomes[0].1, sets[best].clone()));
