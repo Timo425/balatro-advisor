@@ -24,6 +24,9 @@ pub enum CardEffect {
     Copies(usize),
     /// An edition on the card (one of Aura's outcomes)
     Edition(Edition),
+    /// The card's rank set, its suit kept (one of Ouija's outcomes: every card in hand becomes
+    /// one random rank, card.lua `Card:use_consumeable`, `set_base`)
+    Rank(Rank),
 }
 
 /// The edition `poll_edition(key, nil, no_negative, guaranteed)` gives (common_events.lua: the
@@ -44,6 +47,19 @@ pub fn card_outcomes(key: &str, config: &serde_json::Value) -> Option<(Outcomes,
     }
     let (e, min, max) = card_effect(key, config)?;
     Some((vec![(1.0, e)], min, max))
+}
+
+/// A spectral's effect on every card in your hand (card.lua `Card:use_consumeable`) as its
+/// outcomes, each with its chance, and the hand size it changes for the rest of the run: Sigil
+/// turns them all into one random suit (ranks kept), Ouija into one random rank (suits kept) and
+/// takes 1 hand size (`G.hand:change_size(-1)`). Either is usable with more than one card in
+/// hand (`Card:can_use_consumeable`).
+pub fn hand_outcomes(key: &str) -> Option<(Outcomes, i64)> {
+    match key {
+        "c_sigil" => Some((Suit::ALL.iter().map(|&s| (0.25, CardEffect::Suit(s))).collect(), 0)),
+        "c_ouija" => Some(((2..=14).map(|r| (1.0 / 13.0, CardEffect::Rank(Rank(r)))).collect(), -1)),
+        _ => None,
+    }
 }
 
 /// A joker's effect on a card you pick each round, as a consumable's (`card_effect`), and how
@@ -103,6 +119,7 @@ impl CardEffect {
             CardEffect::Destroy => "destroys".into(),
             CardEffect::Copies(k) => format!("{k} copies"),
             CardEffect::Edition(e) => format!("{e:?}"),
+            CardEffect::Rank(r) => format!("→ {}", r.short()),
         }
     }
 }
@@ -122,6 +139,7 @@ pub fn apply(effect: CardEffect, deck: &[Card], targets: &[usize]) -> Vec<Card> 
         CardEffect::Seal(s) => targets.iter().for_each(|&i| d[i].seal = Some(s)),
         CardEffect::Suit(s) => targets.iter().for_each(|&i| d[i].suit = s),
         CardEffect::Edition(e) => targets.iter().for_each(|&i| d[i].edition = Some(e)),
+        CardEffect::Rank(r) => targets.iter().for_each(|&i| d[i].rank = r),
         CardEffect::UpRank => targets.iter().for_each(|&i| d[i].rank = Rank(if d[i].rank.0 >= 14 { 2 } else { d[i].rank.0 + 1 })),
         CardEffect::CopyLeftToRight => {
             if let [l, r] = targets {
@@ -179,7 +197,17 @@ mod tests {
         assert_eq!(effect("c_world").0, CardEffect::Suit(Suit::Spades));
         assert_eq!(effect("c_chariot").0, CardEffect::Enhance(Enhancement::Steel));
         // random effects on cards nobody picks aren't here
-        assert!(data_effect("c_familiar").is_none() && data_effect("c_sigil").is_none());
+        assert!(data_effect("c_familiar").is_none() && data_effect("c_sigil").is_none() && data_effect("c_ouija").is_none());
+        // Ouija's outcome: the rank set, the suit kept
+        let q = apply(CardEffect::Rank(Rank::QUEEN), &deck, &[0, 1]);
+        assert_eq!((q[0].label(), q[1].label(), q[2].label()), ("Q♠".to_string(), "Q♥".to_string(), "K♦".to_string()));
+        assert_eq!(CardEffect::Rank(Rank(10)).label(), "→ 10");
+        // Sigil's 4 suits, Ouija's 13 ranks and its −1 hand size, each outcome as likely
+        let (sigil, size) = hand_outcomes("c_sigil").unwrap();
+        assert_eq!((sigil.len(), size), (4, 0));
+        let (ouija, size) = hand_outcomes("c_ouija").unwrap();
+        assert_eq!((ouija.len(), size, ouija[0].1, ouija[12].1), (13, -1, CardEffect::Rank(Rank(2)), CardEffect::Rank(Rank(14))));
+        assert!((ouija.iter().map(|o| o.0).sum::<f64>() - 1.0).abs() < 1e-9);
     }
 
     #[test]

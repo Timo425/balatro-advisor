@@ -844,6 +844,13 @@ impl Board {
         if pool.is_empty() { vec!["j_joker"] } else { pool }
     }
 
+    /// Whether the boss's debuff on a card depends on what the card is (its suit, whether it's a
+    /// face card: The Club, The Goad, The Window, The Head, The Plant in `debuff_cards`), so a card
+    /// a consumable changes could gain or lose it
+    pub fn debuffs_by_suit_or_face(&self) -> bool {
+        !self.blind.disabled && matches!(self.blind.key.as_str(), "bl_club" | "bl_goad" | "bl_window" | "bl_head" | "bl_plant")
+    }
+
     /// The blind's debuffs set on every playing card (blind.lua `Blind:debuff_card`, as
     /// `Blind:set_blind` and `Blind:disable` call it on each; it clears any other): while the
     /// blind is active, a card of its suit (The Club, The Goad, The Window, The Head), a face card

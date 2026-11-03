@@ -1056,21 +1056,25 @@ pub struct RoundStart {
 }
 
 /// `hand` with a consumable's card effect done on the cards at `places` (`consumable::apply`),
-/// each card keeping whether it's debuffed; the cards at `places` and those it adds face up, the
-/// rest as they were (the game flips every card it changes face up and back, card.lua
-/// `Card:use_consumeable`, showing you what it became, and `Card:flip` clears the mark of one
-/// drawn flipped: seen, as the save reads it): what it does to the cards each simulated round
-/// dealt there (gap 25). Not one that
-/// destroys cards (none of those is a move: `advise::tarot_values`): the hand as it is.
+/// each card keeping whether it's debuffed; the cards at `places` seen where the game flips them
+/// face up and back (card.lua `Card:use_consumeable`: a tarot that sets their enhancement, rank
+/// or suit, and Sigil and Ouija on the whole hand, showing you what they became, and `Card:flip`
+/// clears the mark of one drawn flipped: seen, as the save reads it; not a seal, an edition or
+/// Cryptid's original), the cards it adds face up (`CardArea:emplace`), the rest as they were:
+/// what it does to the cards each simulated round dealt there (gap 25). Not one that
+/// destroys cards (none of those is a move: `advise::tarot_values`), nor one a card there can't
+/// take (Aura on a card with an edition: the game doesn't let it be used, card.lua
+/// `Card:can_use_consumeable`): the hand as it is.
 pub fn effect_on(hand: &[Card], effect: CardEffect, places: &[usize]) -> Vec<Card> {
     // never one that takes cards away: each card keeps its own place's flags
-    if matches!(effect, CardEffect::Destroy) {
+    if matches!(effect, CardEffect::Destroy) || places.iter().any(|&p| hand.get(p).is_some_and(|c| !crate::engine::consumable::can_target(effect, c))) {
         return hand.to_vec();
     }
     let mut new = crate::engine::consumable::apply(effect, hand, places);
+    let flips = !matches!(effect, CardEffect::Seal(_) | CardEffect::Edition(_) | CardEffect::Copies(_));
     for (i, c) in new.iter_mut().enumerate() {
         match hand.get(i) {
-            Some(was) => (c.face_down, c.debuff) = (was.face_down && !places.contains(&i), was.debuff),
+            Some(was) => (c.face_down, c.debuff) = (was.face_down && !(flips && places.contains(&i)), was.debuff),
             None => c.face_down = false,
         }
     }
@@ -1334,7 +1338,11 @@ pub fn deal_hidden(start: &RoundStart, rng: &Rng) -> Option<RoundStart> {
     debug_assert_eq!(h.stand.len(), h.pos.len());
     let live: Vec<bool> = h.pos.iter().zip(&h.stand).map(|(&p, s)| start.hand.get(p).is_some_and(|c| c.order_eq(s))).collect();
     if !live.contains(&true) {
-        return None;
+        // nothing to draw: a consumable used first still done, on the hand as it is
+        return (!start.changes.is_empty()).then(|| {
+            let hand = start.changes.iter().fold(start.hand.clone(), |h, (effect, places)| effect_on(&h, *effect, places));
+            RoundStart { hand, hidden: None, changes: vec![], ..start.clone() }
+        });
     }
     let seed = rng.clone().next_u64() ^ 0x6869_6464_656e;
     let key = (seed, live.clone());
@@ -3209,7 +3217,8 @@ impl Use {
         if let Some(g) = b.goals.as_mut() {
             g.seen.retain(|(k, _, _)| k != &self.key);
         }
-        b.playing_cards += self.add.len() as i64;
+        // the cards it adds to your deck: `add`, and Cryptid's copies of a card at a place
+        b.playing_cards += (h.len() - hand.len()) as i64;
         for (l, d) in b.levels.iter_mut().zip(self.levels) {
             if d != 0 {
                 *l = l.with_level(l.level + d);
