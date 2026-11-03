@@ -116,6 +116,8 @@ pub fn run(run: &RunState, data: &GameData, plan: &Plan, sims: usize, seed: u64)
         }
         Ok(j)
     };
+    // the jokers the plan's sales copy into the row (a charged Invisible Joker's), each taking a slot
+    let mut copies = 0i64;
     let jokers: Vec<Joker> = if let Some(list) = &plan.jokers {
         let mut used = vec![false; owned.len()];
         list.iter().map(|s| joker_key(s, data).and_then(|(k, e)| from_owned_or_new(&k, e, &mut used))).collect::<Result<_, _>>()?
@@ -126,6 +128,13 @@ pub fn run(run: &RunState, data: &GameData, plan: &Plan, sims: usize, seed: u64)
             let i = js.iter().position(|j| j.key == k).ok_or_else(|| format!("you don't have {}", data.name(&k)))?;
             if run.jokers.iter().any(|sj| sj.key == k && sj.eternal) {
                 notes.push(format!("{} is eternal: the game won't let you sell it", data.name(&k)));
+            }
+            // (card.lua `Card:calculate_joker`, `selling_self`, on the row the plan's sales before
+            // it leave: `Board::sale_copies`)
+            let row = Board { jokers: js.clone(), ..base.clone() };
+            if row.sale_copies(i) {
+                copies += 1;
+                notes.push(format!("not modelled: {} is charged, so selling it copies one of your other jokers into the row", data.name(&k)));
             }
             js.remove(i);
         }
@@ -152,9 +161,21 @@ pub fn run(run: &RunState, data: &GameData, plan: &Plan, sims: usize, seed: u64)
         }
         (left, removed)
     };
-    let negatives = jokers.iter().filter(|j| j.edition == Some(Edition::Negative)).count() as i64;
-    if jokers.len() as i64 > run.joker_slots + negatives {
-        notes.push(format!("{} jokers but only {} slots", jokers.len(), run.joker_slots + negatives));
+    // (a `--jokers` list that leaves out a charged Invisible Joker sells it, on your row as it is)
+    if plan.jokers.is_some() {
+        for (o, j) in owned.iter().enumerate() {
+            if removed.iter().any(|r| std::ptr::eq(*r, j)) && base.sale_copies(o) {
+                copies += 1;
+                notes.push(format!("not modelled: {} is charged, so selling it copies one of your other jokers into the row", data.name(&j.key)));
+            }
+        }
+    }
+    // (the save's slots already count the Negatives you own, card.lua `Card:add_to_deck`: only the
+    // plan's change in them moves the limit)
+    let negatives = |js: &[Joker]| js.iter().filter(|j| j.edition == Some(Edition::Negative)).count() as i64;
+    let slots = run.joker_slots + negatives(&jokers) - negatives(&owned);
+    if jokers.len() as i64 + copies > slots {
+        notes.push(format!("{} jokers but only {slots} slots", jokers.len() as i64 + copies));
     }
 
     // Cards after the plan: changes land on the hand first, then the draw pile

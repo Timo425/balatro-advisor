@@ -1230,15 +1230,15 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
     // its rounds simulated without it (as a pool joker's are with it: what a joker does outside
     // a hand, Burglar's hands, Drunkard's discard, Mr. Bones' save, shows there) and a typical
     // find in its place by Ante 8, its sale counted; in trouble (no removal leaves 20% this
-    // round, `TROUBLE`), the score reached. A joker that can't make room (eternal; Negative: its
-    // slot goes with it) ranks last. The pool's screen tries only the joker whose removal leaves
+    // round, `TROUBLE`), the score reached. A joker that can't make room (eternal; one whose sale
+    // frees no slot: `Board::sale_frees_slot`) ranks last. The pool's screen tries only the joker whose removal leaves
     // most; the outlook gives up the same.
     let key_round = ctx.specs.iter().rposition(|s| !s.horizon).unwrap_or(0);
     if !quick_blind {
         let find = lr.stand_in(1.25, 0.0, 0.0);
         let trouble = !contrib.iter().any(|(_, o)| o.get(key_round).is_some_and(|x| x.1.p_saved >= TROUBLE));
         let ranks = par_map(&idx, |&i| {
-            if run.jokers[i].eternal || ctx.base.jokers[i].edition == Some(Edition::Negative) {
+            if run.jokers[i].eternal || !ctx.base.sale_frees_slot(i) {
                 return f64::MIN;
             }
             swap_measure(&ctx, &contrib[i].1, &base_odds, lr.long_of(&find, Some(i), 0, false) / l0, trouble, without(&ctx.base, i).round_saves())
@@ -1817,8 +1817,8 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
     // first, so its draw is one of the money's, never on top of them (`Stay`). Measured
     // 2026-10-27 against the shops played on (gap 17)
     // the free slots an option changes: a joker bought or a Buffoon pack's pick takes one (none
-    // when there's none free: it replaces a joker), a sale frees one (a Negative's slot goes with
-    // it: card.lua `Card:remove_from_deck`)
+    // when there's none free: it replaces a joker), a sale frees what the game's does
+    // (`Board::slots_freed_by_sale`: none for a Negative's, a charged Invisible Joker's copy fills one)
     let free = run.joker_slots - run.jokers.len() as i64;
     // (a Negative joker on offer brings its own slot: card.lua `Card:add_to_deck`)
     let negative = |o: &ShopOption| o.key.as_deref().and_then(|k| offer_stickers(run, k)).is_some_and(|s| s.edition == Some(Edition::Negative));
@@ -1826,7 +1826,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
         if (o.kind == "joker" && !negative(o)) || o.key.as_deref().is_some_and(|k| k.starts_with("p_buffoon")) {
             -((free > 0) as i64)
         } else if let Some(i) = o.sell_index {
-            (ctx.base.jokers.get(i).is_some_and(|j| j.edition != Some(Edition::Negative))) as i64
+            if i < ctx.base.jokers.len() { ctx.base.slots_freed_by_sale(i) } else { 0 }
         } else {
             0
         }
@@ -1834,11 +1834,11 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
     // an option whose own value is money (The Hermit, Temperance: `money_value`): the money goes
     // in through what it leaves you, not again as its own chance
     let money_only = |o: &ShopOption| o.kind == "tarot" && o.money_gain > 0.0;
-    // your jokers a find may take the place of (not an Eternal one, which can't be sold, nor a
-    // Negative one, whose slot goes with it: card.lua `Card:can_sell_card`, `remove_from_deck`),
+    // your jokers a find may take the place of (not an Eternal one, which can't be sold, nor one
+    // whose sale frees no slot: card.lua `Card:can_sell_card`, `Board::sale_frees_slot`),
     // each with its scores against your board without it in a round (the contribution pass,
     // read as a sale's are), its sale's money and its rent a round (it stops with the sale)
-    let swappable: Vec<usize> = (0..run.jokers.len()).filter(|&i| !run.jokers[i].eternal && ctx.base.jokers[i].edition != Some(Edition::Negative)).collect();
+    let swappable: Vec<usize> = (0..run.jokers.len()).filter(|&i| !run.jokers[i].eternal && ctx.base.sale_frees_slot(i)).collect();
     let rent_of = |rental: bool| if rental { value::RENT_PER_ROUND } else { 0.0 };
     let owned_in = |round: usize, x: &dyn Fn(f64, f64) -> f64| -> Vec<(usize, f64, f64, f64)> {
         let mean = base_odds.get(round).map_or(0.0, |o| o.1.mean).max(1e-9);
@@ -2239,7 +2239,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
     let (levels_per_ante, planet_levels) = lr.levels_for(run.dollars + flow_now, flow_now);
     let planet_levels = planet_levels.round() as i64;
     let long_note = format!(
-        "Your board projected {antes_left:.1} antes ahead: growing jokers grown (those that grow from shop events, Red Card and Flash Card, by one pack skip and one reroll an ante, plus 1 per pack's or reroll's price above the interest line, at most 5 an ante, all on the one that grows most per dollar; those a round changes as the simulated player's rounds at this ante's blind sizes leave them), fading ones faded, perishables that run out and jokers those rounds use up dropped, {} +{planet_levels} levels (about {levels_per_ante:.1} per ante with your money), empty slots filled with stand-in jokers (×1.5, +60 Chips or +15 Mult, in proportion to how often your shop pool offers each type). Each option is compared with a typical find (×1.25) in its slot, on whole simulated rounds, with the money it leaves you: its price, what selling a joker gives back or a money card gives (spent once: ~$4 a pack skip or a reroll at its cost when a joker grows from them (Red Card, Flash Card), else ~$12 a level of your main hand, and ~$4 a planet for Constellation; money counts for less the more you have (the next dollar is worth about half at $20); interest lost or gained over the next ante included), and $9 less money held every ante per rental; the jokers add the money a round won pays on the board held against your board, and yours against it without the jokers that pay money, each on the same rounds of this ante's plain blinds won by both (scoring, discards, the round's end, hands left; counted past $0.5 an ante and 2 standard errors), to the money held every ante, with what they pay besides a round's play (Rocket's raises at the bosses ahead, Egg's sell value, To the Moon's interest). Your sellable jokers are let go by then where that leaves no less: replaced by a typical find in their place, or sold outright (no find: the sale counted once, its slot left empty to Ante 8, a Negative's gone with it), whichever leaves more, their money (income, rent) gone with them; selling one now is an option of its own (its rounds without it, its sale, the run with it let go, and the round's rent and money it would be held for when the projection lets it go anyway; its ×1.00 is keeping it), and a sellable option counts at least as a typical find less its price net of what selling it gives back; eternal ones stay, however weak. ×1.00 = as good as a typical find.",
+        "Your board projected {antes_left:.1} antes ahead: growing jokers grown (those that grow from shop events, Red Card and Flash Card, by one pack skip and one reroll an ante, plus 1 per pack's or reroll's price above the interest line, at most 5 an ante, all on the one that grows most per dollar; those a round changes as the simulated player's rounds at this ante's blind sizes leave them), fading ones faded, perishables that run out and jokers those rounds use up dropped, {} +{planet_levels} levels (about {levels_per_ante:.1} per ante with your money), empty slots filled with stand-in jokers (×1.5, +60 Chips or +15 Mult, in proportion to how often your shop pool offers each type). Each option is compared with a typical find (×1.25) in its slot, on whole simulated rounds, with the money it leaves you: its price, what selling a joker gives back or a money card gives (spent once: ~$4 a pack skip or a reroll at its cost when a joker grows from them (Red Card, Flash Card), else ~$12 a level of your main hand, and ~$4 a planet for Constellation; money counts for less the more you have (the next dollar is worth about half at $20); interest lost or gained over the next ante included), and $9 less money held every ante per rental; the jokers add the money a round won pays on the board held against your board, and yours against it without the jokers that pay money, each on the same rounds of this ante's plain blinds won by both (scoring, discards, the round's end, hands left; counted past $0.5 an ante and 2 standard errors), to the money held every ante, with what they pay besides a round's play (Rocket's raises at the bosses ahead, Egg's sell value, To the Moon's interest). Your sellable jokers are let go by then where that leaves no less: replaced by a typical find in their place, or sold outright (no find: the sale counted once, its slot left empty to Ante 8, a Negative's gone with it; not modelled: the copy a charged Invisible Joker makes as it's sold, its slot counted as any other's), whichever leaves more, their money (income, rent) gone with them; selling one now is an option of its own (its rounds without it, its sale, the run with it let go, and the round's rent and money it would be held for when the projection lets it go anyway; its ×1.00 is keeping it), and a sellable option counts at least as a typical find less its price net of what selling it gives back; eternal ones stay, however weak. ×1.00 = as good as a typical find.",
         top_hand.map_or("your main hand", |h| h.name())
     );
     // which of your jokers it lets go here, and what selling one does that isn't modelled
@@ -2321,7 +2321,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
             "Scaling jokers keep their current value in the blinds ahead. By Ante 8, the ones a round changes grow or fade as the simulated player's rounds at this ante's plain blind sizes leave them (yours by a player that plays to the round's goals, their worths from a projection that keeps them; a shop joker's by a player that plays only to win); the rest by a table.",
             "Blue Seal planets by Ante 8 assume a consumable held at round end in a measured share of rounds (one run).",
             "The shop ranking counts what each option's money left buys in the shops ahead: the money spent shop by shop on 2000 simulated walks (rerolls and the jokers they show, bought in the shop they show in while the money lasts, into a free slot or in place of the joker whose loss costs least, yours sold for it; the most rerolls a shop chosen on half the walks, at most 8: a budget), starting from the board the option leaves; several jokers' score gains added (most jokers' Chips and Mult add), read off your board's score spread in that round as a lognormal (heuristic); an option with no simulated chance at the next ante's boss read the same way from its score there. Rent comes off at each round's end: your rentals', one the option buys, a Buffoon pack's picks as often as the stake makes them rentals. Planets, packs and tarots the money could buy aren't counted, nor the stickers of the jokers the walk finds (not modelled).",
-            "With your joker slots full, the joker a shop or pool joker replaces is chosen by the shop ranking's measure: the chance through this ante's hardest round × the next ante's boss × the geometric mean of the long run with that sale (its income and growth by Ante 8) and the strength at the next ante, with Mr. Bones' save counted at the two bosses it plays (the shop ranking counts it through every round ahead: on chained runs, the share of lost rounds a save rescues applied to each option's survival, a heuristic); the swaps (outside a blind each on the board it leaves as you'd arrange it; in a blind, the freed slot and the right end) raced on the same simulated rounds (to the full count), those it can't tell apart reported as ties; when no swap gets through 20% this round, the score reached decides and no ties are shown, as in the shop ranking (heuristic budget: at most 6 swaps after 32 rounds, 4 after 64, 3 after 128; a sale's places that play the first 32 rounds the same count as one). A Negative joker is never the one sold to make room (its slot goes with it). What a sale does that isn't modelled is said on the option (a joker that acts when sold: Diet Cola, Invisible Joker; Campfire's growth from it). A joker's money is the money a round won pays on the board with it against without it, on the same rounds of this ante's plain blinds (scoring, discards, the round's end, hands left); a joker whose money that doesn't reach (Gift Card, Credit Card, Matador's boss payout) is said \"not modelled\" on an option that sells it. The pool's quick screen tries only the joker whose removal leaves most by the same measure. A perished joker is the one sold.",
+            "With your joker slots full, the joker a shop or pool joker replaces is chosen by the shop ranking's measure: the chance through this ante's hardest round × the next ante's boss × the geometric mean of the long run with that sale (its income and growth by Ante 8) and the strength at the next ante, with Mr. Bones' save counted at the two bosses it plays (the shop ranking counts it through every round ahead: on chained runs, the share of lost rounds a save rescues applied to each option's survival, a heuristic); the swaps (outside a blind each on the board it leaves as you'd arrange it; in a blind, the freed slot and the right end) raced on the same simulated rounds (to the full count), those it can't tell apart reported as ties; when no swap gets through 20% this round, the score reached decides and no ties are shown, as in the shop ranking (heuristic budget: at most 6 swaps after 32 rounds, 4 after 64, 3 after 128; a sale's places that play the first 32 rounds the same count as one). A Negative joker is never the one sold to make room (its slot goes with it), nor a charged Invisible Joker (it copies another joker into the row as it's sold). What a sale does that isn't modelled is said on the option (a joker that acts when sold: Diet Cola, a charged Invisible Joker; Campfire's growth from it). A joker's money is the money a round won pays on the board with it against without it, on the same rounds of this ante's plain blinds (scoring, discards, the round's end, hands left); a joker whose money that doesn't reach (Gift Card, Credit Card, Matador's boss payout) is said \"not modelled\" on an option that sells it. The pool's quick screen tries only the joker whose removal leaves most by the same measure. A perished joker is the one sold.",
         ]
         .into_iter()
         .chain(grows.then_some(
@@ -2559,9 +2559,9 @@ fn evaluate_candidate(lr: &value::LongRun, j: Joker, cost: i64, rental: bool, ba
     } else {
         // A perished joker (debuffed, 0 rounds left) is dead weight, whatever it is: it's the one
         // to sell.
-        // A joker sold makes room unless it's eternal or Negative (its slot goes with it: card.lua
-        // `Card:remove_from_deck`, the joker limit −1)
-        let can_go = |i: usize| ctx.run.jokers.get(i).is_some_and(|sj| !sj.eternal) && base.jokers.get(i).is_some_and(|x| x.edition != Some(Edition::Negative));
+        // A joker sold makes room unless it's eternal or its sale frees no slot (a Negative's
+        // goes with it, a charged Invisible Joker's copy fills it: `Board::sale_frees_slot`)
+        let can_go = |i: usize| ctx.run.jokers.get(i).is_some_and(|sj| !sj.eternal) && i < base.jokers.len() && base.sale_frees_slot(i);
         let perished = ctx.run.jokers.iter().enumerate().position(|(i, sj)| sj.perishable == Some(0) && can_go(i));
         // Screening only tries the joker whose removal leaves most (`Ctx::removal_rank`; on
         // equal ranks the leftmost); the full pass tries every swap.
@@ -2651,7 +2651,7 @@ fn evaluate_candidate(lr: &value::LongRun, j: Joker, cost: i64, rental: bool, ba
     };
     if picks.len() <= 1 {
         return picks.first().map(|p| simulate(p, sims)).unwrap_or_else(|| Candidate {
-            action: "no slot (every joker eternal or Negative)".into(),
+            action: "no slot (no joker whose sale frees one: eternal, Negative, a charged Invisible Joker)".into(),
             p_win: vec![],
             p_win_delta: vec![],
             reach: vec![],
@@ -2739,7 +2739,7 @@ fn evaluate_candidate(lr: &value::LongRun, j: Joker, cost: i64, rental: bool, ba
 /// What selling your joker `i` does that isn't modelled, said on every option that sells it,
 /// never silently: a joker whose game role is money but whose money the engine doesn't pay
 /// (`engine::PAYS_MONEY`: Gift Card's sell values, Credit Card's debt; given up as if it earned
-/// nothing), one that acts when it's sold (`engine::ACTS_WHEN_SOLD`), and the jokers left that
+/// nothing), one that acts when it's sold (`Board::sale_acts`), and the jokers left that
 /// grow from a sale (`engine::GROWS_FROM_SALES`); a debuffed one does neither
 fn sale_unmodelled(ctx: &Ctx, i: usize) -> Vec<String> {
     let (jokers, data) = (&ctx.base.jokers, ctx.data);
@@ -2748,7 +2748,7 @@ fn sale_unmodelled(ctx: &Ctx, i: usize) -> Vec<String> {
     if !jokers[i].debuff && roles(&jokers[i]).contains(&"economy") && !crate::engine::PAYS_MONEY.contains(&jokers[i].key.as_str()) {
         out.push(format!("not modelled: {}'s money effect (counted as nothing it would give up)", name(i)));
     }
-    if !jokers[i].debuff && crate::engine::ACTS_WHEN_SOLD.contains(&jokers[i].key.as_str()) {
+    if ctx.base.sale_acts(i) {
         out.push(format!("not modelled: what {} does when sold", name(i)));
     }
     for k in (0..jokers.len()).filter(|&k| k != i && !jokers[k].debuff && crate::engine::GROWS_FROM_SALES.contains(&jokers[k].key.as_str())) {
@@ -4081,10 +4081,16 @@ fn tarot_values(
                     let v: i64 = run.jokers.iter().map(|j| j.sell_value).sum();
                     format!("+${} (your jokers' sell value, max $50)", v.min(50))
                 }
-                "c_judgement" if run.jokers.len() as i64 >= run.joker_slots => match run.jokers.iter().find(|j| j.perishable == Some(0)) {
-                    Some(dead) => format!("creates a random joker; needs a free joker slot: sell {} first (perished)", data.name(&dead.key)),
-                    None => "creates a random joker; needs a free joker slot, so sell one first".into(),
-                },
+                // (a sale that frees one: not an eternal's, a Negative's or a charged Invisible
+                // Joker's, `Board::sale_frees_slot`)
+                "c_judgement" if run.jokers.len() as i64 >= run.joker_slots => {
+                    let can_go = |i: usize| !run.jokers[i].eternal && i < ctx.base.jokers.len() && ctx.base.sale_frees_slot(i);
+                    match (0..run.jokers.len()).find(|&i| run.jokers[i].perishable == Some(0) && can_go(i)) {
+                        Some(dead) => format!("creates a random joker; needs a free joker slot: sell {} first (perished)", data.name(&run.jokers[dead].key)),
+                        None if (0..run.jokers.len()).any(can_go) => "creates a random joker; needs a free joker slot, so sell one first".into(),
+                        None => "creates a random joker; needs a free joker slot, and no sale frees one".into(),
+                    }
+                }
                 "c_judgement" => "creates a random joker".into(),
                 "c_high_priestess" => "creates 2 random planets".into(),
                 "c_emperor" => "creates 2 random tarots".into(),
@@ -5368,18 +5374,19 @@ fn archetype_outlook(
             Some(ctx.placed(with_joker(&without(b, weakest), j, weakest)))
         };
         // Greedy: best single, then the best partner for the top few singles.
-        let mut singles: Vec<(f64, &Candidate)> = avail
+        // (each with the joker its add replaces on a full row, `add_to`)
+        let mut singles: Vec<(f64, &Candidate, Vec<String>)> = avail
             .iter()
             .filter_map(|c| {
                 let mut r = Vec::new();
-                add_to(&ctx.base, &c.key, &mut r).map(|b| (reach(&b), *c))
+                add_to(&ctx.base, &c.key, &mut r).map(|b| (reach(&b), *c, r))
             })
             .collect();
         singles.sort_by(|a, b| b.0.total_cmp(&a.0));
         let reach_one = singles.first().map_or(now_reach, |s| s.0);
         let mut best: Option<(f64, Vec<&Candidate>, Vec<String>)> =
-            singles.first().map(|(r, c)| (*r, vec![*c], Vec::new()));
-        for (_, first) in singles.iter().take(3) {
+            singles.first().map(|(r, c, rep)| (*r, vec![*c], rep.clone()));
+        for (_, first, _) in singles.iter().take(3) {
             for second in &avail {
                 if second.key == first.key {
                     continue;
@@ -6630,6 +6637,28 @@ mod tests {
         assert!(a.options[dead].reach == a.options[leave].reach.or(a.rounds.get(a.options_round).map(|r| r.reach)));
         assert!(dead < live && leave < live, "{:?}", a.options.iter().map(|o| (&o.label, o.rank)).collect::<Vec<_>>());
         assert_eq!(a.options[dead].sell_key.as_deref(), Some("j_greedy_joker"));
+    }
+
+    #[test]
+    fn a_charged_invisible_joker_is_never_sold_to_make_room() {
+        // On a full row a charged Invisible Joker copies another joker as it's sold (card.lua
+        // `Card:calculate_joker`, `selling_self`), so the buy it was sold for is refused: the
+        // joker on offer replaces another (uncharged, Invisible scores nothing and was the pick:
+        // checked 2026-11-03 to fail without the room check), and the sale says what it does;
+        // uncharged it does nothing when sold
+        let mut r = shop_run(&[("j_invisible", None, None), ("j_joker", None, None), ("j_greedy_joker", None, None)], &["j_zany"]);
+        let sold = |r: &RunState| {
+            let a = analyze(r, GameData::bundled(), None, &quick());
+            let c = a.shop.iter().find(|c| c.key == "j_zany").expect("Zany Joker on offer").clone();
+            let note = a.options.iter().find(|o| o.label == "sell Invisible Joker").map(|o| o.note.clone()).unwrap_or_default();
+            (c.sell_index, note)
+        };
+        let (_, plain_note) = sold(&r);
+        assert!(!plain_note.contains("does when sold"), "{plain_note}");
+        r.jokers[0].ability["invis_rounds"] = serde_json::json!(2);
+        let (charged, charged_note) = sold(&r);
+        assert!(charged.is_some_and(|i| i != 0), "{charged:?}");
+        assert!(charged_note.contains("what Invisible Joker does when sold"), "{charged_note}");
     }
 
     #[test]

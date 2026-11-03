@@ -618,7 +618,7 @@ impl<'a> LongRun<'a> {
         lr.full = lasting >= ctx.base.joker_slots - gone_slots;
         lr.sell_base = if lr.full {
             par_map(&(0..run.jokers.len()).collect::<Vec<_>>(), |&i| {
-                (!run.jokers[i].eternal && ctx.base.jokers[i].edition != Some(crate::model::Edition::Negative) && lr.lasts(i)).then(|| lr.long_score(&lr.fill_long(lr.project(&|k| k != i, run.dollars), None, 0.0)))
+                (!run.jokers[i].eternal && ctx.base.sale_frees_slot(i) && lr.lasts(i)).then(|| lr.long_score(&lr.fill_long(lr.project(&|k| k != i, run.dollars), None, 0.0)))
             })
         } else {
             vec![]

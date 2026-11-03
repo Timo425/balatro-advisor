@@ -5,7 +5,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::hand::{self, HandInfo, HandType, RuleFlags, card_id, is_face, is_suit};
-use super::joker::{Joker, Kind};
+use super::joker::{Joker, Kind, ACTS_WHEN_SOLD};
 use super::rng::{Pick, Rolls, Unlucky};
 use crate::model::{Card, Edition, Enhancement, Seal, Suit};
 use crate::sim::RoundStart;
@@ -882,6 +882,35 @@ impl Board {
         }
         self.dollars += sold.sell_value;
         sold.sell_value
+    }
+
+    /// Whether selling your joker `i` puts a joker in the row (card.lua `Card:calculate_joker`,
+    /// `selling_self`): a charged Invisible Joker copies another before it leaves, the row
+    /// counted with it still in (so a full row copies too, an over-full one doesn't); a Negative
+    /// copy loses its edition (`copy_card`'s `strip_edition`), so the copy takes a slot. A
+    /// debuffed joker does nothing when sold (`calculate_joker` returns at once).
+    pub fn sale_copies(&self, i: usize) -> bool {
+        let j = &self.jokers[i];
+        !j.debuff && j.charged() && self.jokers.len() > 1 && self.jokers.len() as i64 <= self.joker_slots
+    }
+
+    /// Whether selling your joker `i` does something of its own (`ACTS_WHEN_SOLD`: Diet Cola's
+    /// tag; Invisible Joker's copy only where it's made, `sale_copies`)
+    pub fn sale_acts(&self, i: usize) -> bool {
+        let j = &self.jokers[i];
+        !j.debuff && ACTS_WHEN_SOLD.contains(&j.key.as_str()) && (j.key != "j_invisible" || self.sale_copies(i))
+    }
+
+    /// The free slots selling your joker `i` makes: one, less the one a Negative's slot takes
+    /// with it (card.lua `Card:remove_from_deck`, the joker limit −1), less the one a copy its
+    /// sale makes fills (`sale_copies`); so 0 or −1 for a sale that can't make room
+    pub fn slots_freed_by_sale(&self, i: usize) -> i64 {
+        1 - (self.jokers[i].edition == Some(Edition::Negative)) as i64 - self.sale_copies(i) as i64
+    }
+
+    /// Whether selling your joker `i` frees a slot for another (`slots_freed_by_sale`)
+    pub fn sale_frees_slot(&self, i: usize) -> bool {
+        self.slots_freed_by_sale(i) > 0
     }
 
     /// Whether selling a joker now lifts the blind (card.lua `Card:sell_card`: Verdant Leaf is

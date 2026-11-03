@@ -120,7 +120,7 @@ decides or values things follows these steps, in order:
    --json>, "expect": {...}}` (keys: `best_action`, `best_hand`, `best_use_first`, `best_size`,
    `best_not_cards`: [..], `best_not_played`: [..], `best_played`: [..] (label, or `"#n"`: nth from
    left), `top_option`, `above`: ["A", "B"], `rank_above`: ["A", "B"] (by value, not tie-band order),
-   `top_hand`, `share_below`: {"Joker": x}, `sells`: {"j_key": "Joker"}), committed in the fixtures
+   `top_hand`, `share_below`: {"Joker": x}, `sells`: {"j_key": "Joker"}, `sells_not`: {"j_key": "Joker"}), committed in the fixtures
    repo (D18). When a known gap stops a fix meeting an expectation, narrow `expect` to what holds and
    move the rest to `"pending_expect"` with `"pending_gap": "gap N"` (the gap names the fixture; the
    note says why). The replay test fails once it holds, so the fix closing the gap restores it (D14).

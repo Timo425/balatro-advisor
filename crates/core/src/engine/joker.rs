@@ -248,6 +248,10 @@ pub struct Joker {
     /// Yorick: discards left until its next ×Mult step (`ability.yorick_discards`)
     #[serde(default)]
     pub yorick_discards: f64,
+    /// Invisible Joker: rounds ended since it was bought (`ability.invis_rounds`), charged at
+    /// `extra` (card.lua `Card:calculate_joker`, `end_of_round`)
+    #[serde(default)]
+    pub invis_rounds: f64,
     /// Its place on your board as read from the save (1 = leftmost; 0: a joker that isn't
     /// yours, a stand-in or a shop card), kept through a round's steps: tells it apart from its
     /// copies when one is used up (`sim::RoundGoals::grown`)
@@ -312,6 +316,7 @@ impl Joker {
             hands_played_at_create: f(ability, "hands_played_at_create"),
             to_do_hand: ability.get("to_do_poker_hand").and_then(|t| t.as_str()).and_then(HandType::from_name),
             yorick_discards,
+            invis_rounds: f(ability, "invis_rounds"),
             id: 0,
             eternal: ability.get("eternal").and_then(serde_json::Value::as_bool).unwrap_or(false),
         }
@@ -500,11 +505,20 @@ impl Joker {
 }
 
 /// The jokers that act when they're sold in the shop (card.lua `Card:calculate_joker`,
-/// `selling_self`: Diet Cola makes a Double Tag, Invisible Joker copies a joker; Luchador's
-/// disables a boss blind in play, so in the shop it does nothing), and those that grow when any
-/// card is sold (`selling_card`, button_callbacks.lua `G.FUNCS.sell_card`: Campfire). A debuffed
-/// one does neither. Not modelled: an option that sells a joker says so where they're involved.
+/// `selling_self`: Diet Cola makes a Double Tag, Invisible Joker copies a joker once charged:
+/// `Board::sale_acts`; Luchador's disables a boss blind in play, so in the shop it does
+/// nothing), and those that grow when any card is sold (`selling_card`, button_callbacks.lua
+/// `G.FUNCS.sell_card`: Campfire). A debuffed one does neither. Not modelled: an option that
+/// sells a joker says so where they're involved.
 pub const ACTS_WHEN_SOLD: &[&str] = &["j_diet_cola", "j_invisible"];
+
+impl Joker {
+    /// Invisible Joker held its rounds: sold now, it copies another joker (card.lua
+    /// `Card:calculate_joker`, `selling_self`: `invis_rounds >= extra`; `Board::sale_copies`)
+    pub fn charged(&self) -> bool {
+        self.key == "j_invisible" && self.invis_rounds >= self.extra.n
+    }
+}
 
 /// The jokers whose place does what the engine doesn't model: Ceremonial Dagger destroys the
 /// joker to its right as a blind is set (card.lua `Card:calculate_joker`, `setting_blind`, its

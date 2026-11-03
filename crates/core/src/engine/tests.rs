@@ -561,3 +561,34 @@ fn the_hooks_pick_asks_no_roll_when_any_cards_would_do() {
     assert_eq!(left[1].0, "j_ramen");
     assert!((left[1].1 - 1.48).abs() < 1e-9, "{left:?}");
 }
+
+#[test]
+fn a_charged_invisible_jokers_sale_frees_no_slot() {
+    // card.lua `Card:calculate_joker`, `selling_self`: charged (`invis_rounds >= extra`, 2), it
+    // copies another joker before it leaves, the row counted with it in: full or not, the copy
+    // takes the slot its sale would free
+    let mut b = board(&["j_invisible", "j_joker"]);
+    b.joker_slots = 2;
+    assert!(b.sale_frees_slot(0) && b.sale_frees_slot(1));
+    b.jokers[0].invis_rounds = 2.0;
+    assert!(!b.sale_frees_slot(0) && b.sale_frees_slot(1));
+    b.joker_slots = 5;
+    assert!(!b.sale_frees_slot(0));
+    // debuffed it does nothing when sold; alone it has nothing to copy
+    b.jokers[0].debuff = true;
+    assert!(b.sale_frees_slot(0));
+    let mut alone = board(&["j_invisible"]);
+    alone.jokers[0].invis_rounds = 2.0;
+    assert!(alone.sale_frees_slot(0));
+    // a Negative's slot goes with it (card.lua `Card:remove_from_deck`)
+    b.jokers[1].edition = Some(Edition::Negative);
+    assert!(!b.sale_frees_slot(1));
+    // a Negative charged Invisible: its slot goes and the copy takes another
+    b.jokers[0].debuff = false;
+    b.jokers[0].edition = Some(Edition::Negative);
+    assert_eq!(b.slots_freed_by_sale(0), -1);
+    assert!(b.sale_acts(0));
+    // over the limit it makes no copy, and its sale does nothing of its own
+    b.joker_slots = 1;
+    assert!(!b.sale_copies(0) && !b.sale_acts(0));
+}

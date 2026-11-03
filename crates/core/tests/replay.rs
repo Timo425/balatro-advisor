@@ -81,9 +81,18 @@ fn replayed_states_give_the_expected_advice() {
                             c.and_then(|c| c["sell_index"].as_u64()).is_some_and(|i| owned.get(i as usize).is_some_and(|j| j["name"] == *sold))
                         }))
                     }
+                    // {"j_key": "Joker name"}: the joker on offer is never shown replacing that
+                    // joker (one whose sale frees no slot)
+                    "sells_not" => {
+                        let owned = a["jokers"].as_array().unwrap();
+                        Value::Bool(want.as_object().unwrap().iter().all(|(key, sold)| {
+                            let c = a["shop"].as_array().unwrap().iter().chain(a["pool"].as_array().unwrap()).find(|c| c["key"] == key.as_str());
+                            c.is_some() && c.and_then(|c| c["sell_index"].as_u64()).is_none_or(|i| owned.get(i as usize).is_none_or(|j| j["name"] != *sold))
+                        }))
+                    }
                     other => panic!("{name}: unknown expectation {other}"),
                 };
-                let want = if matches!(k.as_str(), "above" | "rank_above" | "best_not_cards" | "best_not_played" | "best_played" | "share_below" | "sells") { &Value::Bool(true) } else { want };
+                let want = if matches!(k.as_str(), "above" | "rank_above" | "best_not_cards" | "best_not_played" | "best_played" | "share_below" | "sells" | "sells_not") { &Value::Bool(true) } else { want };
                 if &got != want {
                     out.push(format!("{k} = {got}, expected {want}"));
                 }
