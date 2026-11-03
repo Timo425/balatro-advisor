@@ -34,8 +34,8 @@ Check, with file:line references:
    in the output, and the docs still match the code.
 7. **Proof.** A replay fixture for the motivating state exists; tests and replay pass; a pure
    restructuring left the snapshots identical; the history check (`tests/history_picks.rs`,
-   `tests/history.rs`) ran and every pick it flagged WORSE, unclear, ? or LOST is explained or
-   fixed (CLAUDE.md step 4, D12).
+   `tests/history.rs`) ran, or the change can't reach Best play's quick pass and says why, and
+   every pick it flagged WORSE, unclear, ? or LOST is explained or fixed (CLAUDE.md step 4, D12).
 8. **Rule changes.** Does the change need a `docs/decisions.md` entry by `CLAUDE.md`'s
    definition ("What needs a decision")? Flag a missing entry only by quoting the sentence of
    `docs/design.md`'s stages, patterns or numbered rules, the workflow or a project-wide choice

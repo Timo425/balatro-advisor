@@ -140,10 +140,13 @@ decides or values things follows these steps, in order:
      snapshot` before, `/tmp/after` after, `diff -r`. A pure restructuring leaves it unchanged; a
      behaviour change explains every difference.
    - History check: `tests/history_picks.rs` before (in a `git worktree` of the base commit, started
-     while you work) and after (~15 min each, the same 350 saved states, same UTC day), then
+     while you work) and after (~15 min each, 350 saved states), then
      `history_judge` in `tests/history.rs` (each moved pick against the old one, the oracle playing
      on). Explain or fix every WORSE, unclear, ? and LOST pick (the
      judge shares the valuation and engine: a change to those half judges itself, so say so).
+     Skipped, saying why, when the change can't reach Best play's quick pass in a blind (it counts
+     no shops: tell by what the quick pass runs, not by the file), unless the snapshot moves a Best
+     play pick (D12).
 
    Where it applies:
    - Simulated player or simulated game (the engine, what a round simulates): `cargo test --release
@@ -161,7 +164,10 @@ decides or values things follows these steps, in order:
    - Without the fixtures and the history (a cloud session), prove values with tests that build the
      state in code and say in the PR which checks weren't run; they run here before merging.
 5. **Review.** Spawn the `advisor-reviewer` agent on the change (it hasn't seen your reasoning).
-   Check its claims in the code, apply what holds up, then run it once more on the fixes. Skip only
+   Check its claims in the code, apply what holds up, then run it once more on the fixes. Step 4's
+   checks run once before the first review; after its fixes, cargo test, clippy and only the checks
+   whose inputs the fixes changed (the diff or their snapshot says which); `cargo install` once, at
+   the end. Skip only
    for changes that don't touch how advice is decided or valued. A change touching many places also
    gets 4–8 Haiku checkers with the first review (same agent, `model: haiku`, effort high), each with
    ONE bounded check and the files it may read (game fidelity, callers reached, determinism, edge

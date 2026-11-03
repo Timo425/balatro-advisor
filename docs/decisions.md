@@ -277,7 +277,7 @@ model changes the trade.
 
 Approved by the owner 2026-10-09.
 
-## D12. Proof in two tiers; picks a change moves on the owner's history, judged by the oracle (accepted, amended 2026-10-23)
+## D12. Proof in two tiers; picks a change moves on the owner's history, judged by the oracle (accepted, amended 2026-10-23, 2026-11-03)
 
 **Decision.** Every change to how advice is decided or valued runs a fixed set of checks:
 tests, clippy, the snapshot diff, and the history check (`tests/history_picks.rs`, which
@@ -332,7 +332,27 @@ disagree with the owner's on cases the owner can explain, the sample misses regr
 owner then finds in the states left out, or a stronger independent judge (a deeper search,
 real outcomes) becomes cheap enough.
 
-Approved by the owner 2026-10-09; the limits amended with D17, approved 2026-10-23.
+**Amended 2026-11-03: the history check where it can see the change, the checks once a review.**
+The history check is skipped, the commit saying why, when the change can't reach Best play's quick
+pass in a blind, which counts no shops (a change only to the shop ranking's options, the money's
+walk or the long run's shops), unless the snapshot moves a Best play pick; whether it reaches is
+told by what the quick pass runs, not by the file (9e53def touched only `advise.rs` and
+`advise/value.rs` and moved 3 picks, 1 BETTER, through the blinds ahead Best play counts). The
+snapshot isn't a stand-in where the change does reach it (2024566: no fixture's Best play moved,
+the history 1 BETTER +5.5%). The checks run once before the first review, so the reviewer judges
+their results; after a review's fixes only cargo test, clippy and the checks whose inputs the fixes
+changed run again, and `cargo install` once at the end. The "same UTC day" for the two sides is
+dropped: the sample leaves out today's saves, so a day between the sides can change only a few
+states, and `history_judge` compares the states in both and lists the rest.
+Why: the commits since 2026-10-09 (about 45 advice changes, the laptop's included). The history
+check caught one bug no other check did (3965807, a pick 80% worse: the noise stage's equality on
+rounds worth nothing), and once a known search miss (9648dde); none WORSE or LOST since 2026-10-14.
+It moved no pick on 15 commits; on the changes confined to the shops it moved only ties and
+unclear picks. What made cards long was rerunning the chain after each fix, a habit no rule asked
+for. Revisit if a skipped change turns out to have moved a pick the owner then finds.
+
+Approved by the owner 2026-10-09; the limits amended with D17, approved 2026-10-23; the 2026-11-03
+amendment approved 2026-11-03.
 
 ## D13. The test suite runs in the test profile, with overflow checks (accepted)
 
