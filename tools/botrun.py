@@ -729,12 +729,9 @@ def blind_select(args, log, skips, a=None):
         return
     rpc("skip")
     skips.append([gs.get("ante_num"), b.get("slot"), tag.get("key")])
-    # a tag that opens a pack (Buffoon, Meteor, ...) does so a moment after the skip
-    # (button_callbacks.lua G.FUNCS.skip_blind, tag.lua `new_blind_choice`): wait for it, so the
-    # next blind isn't analysed under an opening pack
-    t = time.monotonic()
-    while time.monotonic() - t < 5 and rpc("gamestate")["state"] == "BLIND_SELECT":
-        time.sleep(0.5)
+    # a tag that opens a pack (Buffoon, Meteor, ...) does so a moment after the skip: the loop's
+    # `settled` waits for it (the skip's tag events are queued before BalatroBot's `skip`
+    # answers: button_callbacks.lua `skip_blind`'s immediate event runs ahead of skip.lua's check)
 
 
 def settled():
