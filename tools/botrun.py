@@ -75,7 +75,9 @@ verdict on the advice. As of 2026-10-24 the bot:
   waits for the shop until the RPC times out; and its `save` writing once no blocking event is
   queued (at most 5 s, answered `settled`), as the live mod's file waits (save.lua, save.lua.bak; game.lua `Game:update_shop`;
   patched 2026-10-31), or a shop entered with a Rare Tag is saved before the tag makes its
-  joker free (tag.lua `Tag:yep`) and the advisor reads the joker at full price.
+  joker free (tag.lua `Tag:yep`) and the advisor reads the joker at full price; botrun also
+  waits on it at each blind select (`settled`, since 2026-11-03), where a skip tag's next pack
+  may still be on its way.
 - the game's restart between runs (Linux, through Steam) waits for Steam to be logged on, and,
   when Steam holds the launch on a prompt (a failed Cloud sync, as after a suspend while it was
   still offline, 2026-11-02; a conflict; a shader update), says which and waits up to an hour,
@@ -735,6 +737,18 @@ def blind_select(args, log, skips, a=None):
         time.sleep(0.5)
 
 
+def settled():
+    """The game's state once no blocking event is queued (the patched `save` waits for that, at
+    most 5 s). At a blind select a skip tag's pack may still be on its way: each time the screen
+    comes to the blind select (from the shop, a pack closing, a skip, a boss reroll) the game
+    applies the next tag that opens one (game.lua `Game:update_blind_select`, button_callbacks.lua
+    `end_consumeable`, `skip_blind`, `reroll_boss`), queued behind its 0.4 s flourish (tag.lua `Tag:yep`), so with two Double Tags
+    held a Meteor Tag opens three packs in a row (BAVANG24). The bot read the blind select between
+    them, and the next pack opened under its analysis ("select requires BLIND_SELECT")."""
+    rpc("save", path=WIN_STATE)
+    return rpc("gamestate")
+
+
 def won(gs):
     """The game sets `G.GAME.won` at the end of the win ante's boss round whether it was beaten
     or not (state_events.lua `end_round`): a loss there is a game over with it set."""
@@ -1150,6 +1164,9 @@ def one_run(args, n, seed=None):
         if st == "GAME_OVER" or won(gs):
             break
         try:
+            if st == "BLIND_SELECT":
+                gs = settled()  # a tag's pack still to open opens first
+                st = gs["state"]
             if st == "BLIND_SELECT" and gs.get("ante_num") == 2 and not checked:
                 # Gold Stake habit: a weak start isn't worth playing out. After Ante 1, if the
                 # board reaches less than this share of a plain Ante 3 boss, start over.
