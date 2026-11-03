@@ -65,7 +65,10 @@ verdict on the advice. As of 2026-10-24 the bot:
   sees a pack's cards; BalatroBot's `sell` allowed in an open pack in the bot's copy
   (BotMods/Balatrobot/src/lua/endpoints/sell.lua, `requires_state` and its `valid_state` check
   given SMODS_BOOSTER_OPENED; patched 2026-10-31, the original kept as sell.lua.bak), or every
-  pick needing a sale is "pack pick needing a sale"; and its `pack` letting a Negative joker into
+  pick needing a sale is "pack pick needing a sale"; the same `sell` ending once the sold card is
+  gone and its money paid, without its check that the row holds one joker fewer (patched
+  2026-11-03): selling a charged Invisible Joker copies another joker into the row (card.lua
+  `Card:calculate_joker`, `selling_self`), and the call never answered; and its `pack` letting a Negative joker into
   full slots as the game does (pack.lua, pack.lua.bak; button_callbacks.lua `can_select_card`)
   and ending a pick or a skip back on the blind select, where a pack a skip tag opened closes
   (button_callbacks.lua `end_consumeable`, `PACK_INTERRUPT`; patched 2026-10-31), or its call
@@ -136,6 +139,7 @@ import shutil
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 import zlib
 
@@ -172,8 +176,21 @@ def rpc(method, **params):
     _id += 1
     body = json.dumps({"jsonrpc": "2.0", "method": method, "params": params, "id": _id}).encode()
     req = urllib.request.Request(API, body, {"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=120) as r:
-        data = json.load(r)
+    # A call BalatroBot never answers (its endpoint waits for a state that doesn't come) is an
+    # RpcError: an action's (a sale, a buy, a play) is logged by `one_run` and the run goes on,
+    # where before the exception stopped the series. A game that stops answering altogether
+    # still stops it (`one_run`'s `menu` and its loop's `gamestate` aren't caught). Its
+    # waiting event stays queued in the game and, should it pass later, answers whatever call is
+    # open then (server.lua `send_response` takes the current request's id).
+    try:
+        with urllib.request.urlopen(req, timeout=120) as r:
+            data = json.load(r)
+    except TimeoutError:
+        raise RpcError(f"{method}: no answer in 120 s") from None
+    except urllib.error.URLError as e:
+        if not isinstance(e.reason, TimeoutError):
+            raise
+        raise RpcError(f"{method}: no answer in 120 s") from None
     if "error" in data:
         raise RpcError(f"{method}: {data['error'].get('message', data['error'])}")
     return data.get("result")
@@ -422,6 +439,14 @@ def shop(sims, log):
             except RpcError as e:
                 log.append(f"shop {o['label']} failed: {e}")
                 failed.add((kind, key, o.get("sell_index")))
+                # a step that went through before the refusal (the sale before a buy, which a
+                # charged Invisible Joker's copy then refuses: card.lua `Card:calculate_joker`)
+                # moved the jokers or the money: the options' places are stale, so analyse again
+                live = rpc("gamestate")
+                if live["money"] != gs["money"] or [j.get("key") for j in cards(live, "jokers")] != [j.get("key") for j in cards(gs, "jokers")]:
+                    acted = "changed"
+                    break
+                gs = live
                 continue
             if acted:
                 took = o
