@@ -135,7 +135,9 @@ pub fn modelled(effect: CardEffect) -> bool {
 pub fn apply(effect: CardEffect, deck: &[Card], targets: &[usize]) -> Vec<Card> {
     let mut d = deck.to_vec();
     match effect {
-        CardEffect::Enhance(e) => targets.iter().for_each(|&i| d[i].enhancement = Some(e)),
+        // card.lua `Card:set_ability` rebuilds the card's `ability`, keeping only its
+        // `perma_bonus`: a card played this ante is one no longer (The Pillar's debuff leaves it)
+        CardEffect::Enhance(e) => targets.iter().for_each(|&i| (d[i].enhancement, d[i].played_this_ante) = (Some(e), false)),
         CardEffect::Seal(s) => targets.iter().for_each(|&i| d[i].seal = Some(s)),
         CardEffect::Suit(s) => targets.iter().for_each(|&i| d[i].suit = s),
         CardEffect::Edition(e) => targets.iter().for_each(|&i| d[i].edition = Some(e)),

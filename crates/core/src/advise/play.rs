@@ -128,7 +128,7 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
             })
             .collect();
         let to_opt = |m: &sim::Move, st: &RoundStart, board: &Board, (p, mean, spare, cash, planets, grown): (f64, f64, f64, f64, f64, f64), use_first: Option<String>| {
-            let full = move_hand(st);
+            let full = move_hand(st, board);
             let hand = &full[..];
             // A play is shown in the order to play it; a discard by rank (order doesn't matter),
             // face-down cards after the rest by their place (their stand-ins' ranks aren't theirs)
@@ -153,7 +153,7 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
             let blind = action == "play" && idx.iter().any(|&i| hand[i].face_down);
             let mut range = None;
             let (name, score, sure, dig, arrange) = if blind {
-                let d = OverDraws::of(board, &sim::hidden_hands(st, seed, SHOWN_DRAWS), &idx);
+                let d = OverDraws::of(board, &sim::hidden_hands(board, st, seed, SHOWN_DRAWS), &idx);
                 range = Some((d.lo, d.hi));
                 (d.name, d.lo, d.sure, d.dig, (vec![], vec![]))
             } else if action == "play" {
@@ -231,7 +231,7 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
         let utility = |o: &sim::Outcome| goals.value(o);
         let progress = |o: &sim::Outcome| (1.0 - o.won) * (o.total / start.target.max(1.0)).min(1.0);
         let mean_u = |v: &[sim::Outcome]| v.iter().map(utility).sum::<f64>() / v.len().max(1) as f64;
-        let keys: Vec<_> = cands.iter().map(|c| (c.4.clone(), canon(&c.0, &move_hand(&c.2)))).collect();
+        let keys: Vec<_> = cands.iter().map(|c| (c.4.clone(), canon(&c.0, &move_hand(&c.2, &c.1)))).collect();
         let ck = |c: usize| &keys[c];
         // the budget, halving many moves (`compare::halving`)
         let budget = compare::halving(SEARCH_BUDGET, SEARCH_FIRST, cands.len());
@@ -427,11 +427,6 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
             if !missing.is_empty() {
                 tips.push(format!("Not used in this look-ahead (no modelled effect on this hand): {}", missing.join(", ")));
             }
-            // a consumable used first that changes cards, under a boss whose debuff depends on what
-            // the card is: the game sets the debuff on it again (card.lua `Card:set_base`)
-            if b.debuffs_by_suit_or_face() && opts.iter().chain(std::iter::once(&best)).any(|o| o.use_first.is_some()) {
-                tips.push("Not modelled: a card a consumable used first changes keeps its debuff, though the game sets the boss's debuff on it again".into());
-            }
             if run.hand.iter().any(|c| c.face_down) {
                 tips.push(FACE_DOWN_NOTE.into());
                 // what the draws had to drop, if anything
@@ -460,7 +455,7 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
             // card by its stand-in's key, which may still follow the real card's place: gap 25)
             let mut plain: Option<(String, f64)> = None;
             let pick: Option<(Vec<usize>, Option<OverDraws>)> = if blind_hand {
-                let hands = sim::hidden_hands(&start, ctx.opts.seed, SHOWN_DRAWS);
+                let hands = sim::hidden_hands(&b, &start, ctx.opts.seed, SHOWN_DRAWS);
                 moves_of(&start, &b, ctx.opts.seed)
                     .into_iter()
                     .filter_map(|m| match m {
@@ -627,10 +622,10 @@ fn arranged(board: &Board, hand: &[Card], idx: &[usize], hand_order: &[usize], n
 /// (`sim::hidden_hands`, a consumable used first done to each draw), on seeds of their own (the
 /// race's rounds use `seed`'s)
 pub(super) fn moves_of(st: &RoundStart, b: &Board, seed: u64) -> Vec<sim::Move> {
-    let hand = move_hand(st);
+    let hand = move_hand(st, b);
     if hand.len() > sim::ALL_MOVES_MAX {
-        let draws = if hand.iter().any(|c| c.face_down) { sim::hidden_hands(st, seed ^ 0x6269_675f_6861_6e64, sim::BIG_HAND_DRAWS) } else { vec![hand.into_owned()] };
-        debug_assert!(draws.iter().all(|h| h.len() == move_hand(st).len()));
+        let draws = if hand.iter().any(|c| c.face_down) { sim::hidden_hands(b, st, seed ^ 0x6269_675f_6861_6e64, sim::BIG_HAND_DRAWS) } else { vec![hand.into_owned()] };
+        debug_assert!(draws.iter().all(|h| h.len() == move_hand(st, b).len()));
         return sim::big_hand_moves(b, &draws, &st.deck, st.discards);
     }
     let mut v = sim::all_plays(&hand);
@@ -641,14 +636,14 @@ pub(super) fn moves_of(st: &RoundStart, b: &Board, seed: u64) -> Vec<sim::Move> 
 /// The hand a move is named and ordered on: the round's, with the cards a consumable used first
 /// on a face-down card adds at its end (`RoundStart::changes`: Cryptid's copies), unseen as the
 /// card they copy is (each simulated round draws it anew)
-pub(super) fn move_hand(st: &RoundStart) -> std::borrow::Cow<'_, [Card]> {
+pub(super) fn move_hand<'a>(st: &'a RoundStart, b: &Board) -> std::borrow::Cow<'a, [Card]> {
     if st.changes.is_empty() {
         return std::borrow::Cow::Borrowed(&st.hand);
     }
     let mut h = st.hand.clone();
     for (e, places) in &st.changes {
         let unseen = places.iter().any(|&p| h.get(p).is_some_and(|c| c.face_down));
-        let added: Vec<Card> = sim::effect_on(&h, *e, places).into_iter().skip(h.len()).map(|c| Card { face_down: unseen, ..c }).collect();
+        let added: Vec<Card> = sim::effect_on(b, &h, *e, places).into_iter().skip(h.len()).map(|c| Card { face_down: unseen, ..c }).collect();
         h.extend(added);
     }
     std::borrow::Cow::Owned(h)

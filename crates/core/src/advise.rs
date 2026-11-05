@@ -3892,7 +3892,7 @@ fn tarot_values(
     // face-down card (its deck index) taken as the deck card drawn there (one not in your hand
     // face up, each once), never the card it really is. Empty without one.
     let down_draws: Vec<Vec<(usize, usize)>> = match &spec.start.hidden {
-        Some(_) if spec.in_progress() && spec.start.hand.len() == round_order.len() && run.hand.iter().any(|c| c.face_down) => sim::hidden_hands(&spec.start, ctx.opts.seed, TARGET_MAX)
+        Some(_) if spec.in_progress() && spec.start.hand.len() == round_order.len() && run.hand.iter().any(|c| c.face_down) => sim::hidden_hands(&ctx.base, &spec.start, ctx.opts.seed, TARGET_MAX)
             .iter()
             .filter_map(|h| {
                 let mut used: Vec<bool> = (0..deck.len()).map(|i| run.hand.iter().zip(&hand_idx).any(|(c, &x)| x == Some(i) && !c.face_down)).collect();
@@ -3910,14 +3910,6 @@ fn tarot_values(
             .collect(),
         _ => vec![],
     };
-    // a card effect that sets a card's base or ability (all but a seal, an edition, copies and
-    // destroying it), under a boss whose debuff depends on what the card is: the game sets the
-    // boss's debuff on it again (card.lua `Card:set_base`, `Card:set_ability`), the simulated
-    // round keeps the one it had (`sim::effect_on`)
-    let rebuff_note = |e: CardEffect| -> Option<String> {
-        let changes = !matches!(e, CardEffect::Seal(_) | CardEffect::Edition(_) | CardEffect::Copies(_) | CardEffect::Destroy);
-        (changes && spec.in_progress() && ctx.base.debuffs_by_suit_or_face()).then(|| " (not modelled: the boss's debuff set again on a card it changes)".to_string())
-    };
     // `how`: the card effect and its targets (deck indices) that made `d`, when one effect did;
     // `size`: the hand size it changes for the rest of the run (Ouija's −1)
     let simulate_sized = |d: Vec<Card>, how: Option<(CardEffect, &[usize])>, sims: usize, size: i64| -> (f64, f64) {
@@ -3934,17 +3926,17 @@ fn tarot_values(
                     sp = live;
                 }
                 Some((e, places)) => {
-                    live.start.hand = sim::effect_on(&spec.start.hand, e, &places);
+                    live.start.hand = sim::effect_on(&ctx.base, &spec.start.hand, e, &places);
                     sp = live;
                 }
                 // the cards it changed aren't all in your hand (a target set of a hand you'd hold):
-                // your hand with those of its cards that changed (each keeping its debuff), a
-                // face-down card the stand-in each round draws anew
+                // your hand with those of its cards that changed (each with its debuff after,
+                // `sim::debuff_after`), a face-down card the stand-in each round draws anew
                 None if d.len() == deck.len() => {
                     for (s, &r) in round_order.iter().enumerate() {
                         let j = hand_idx[r].expect("every card in hand");
                         if !run.hand[r].face_down && d[j] != deck[j] {
-                            live.start.hand[s] = Card { debuff: live.start.hand[s].debuff, face_down: false, ..d[j] };
+                            live.start.hand[s] = Card { face_down: false, ..sim::debuff_after(&ctx.base, &live.start.hand[s], d[j], s) };
                         }
                     }
                     sp = live;
@@ -4080,8 +4072,7 @@ fn tarot_values(
                     r += w * rr;
                     decks.push((w, d));
                 }
-                let rebuff = outcomes.iter().find_map(|&(_, e)| rebuff_note(e)).unwrap_or_default();
-                TarotValue { decks, round: (size, 0, 0), ..tv(p, r, format!("{what} (averaged over the {}){cost}{rebuff}", outcomes.len()), true, None, 0.0) }
+                TarotValue { decks, round: (size, 0, 0), ..tv(p, r, format!("{what} (averaged over the {}){cost}", outcomes.len()), true, None, 0.0) }
             }
             "c_wraith" | "c_soul" => {
                 if !free_slot {
@@ -4298,9 +4289,9 @@ fn tarot_values(
         let note = if real {
             let others: Vec<String> = as_good.iter().take(3).map(|&i| if sets[i].is_empty() { "not using it".to_string() } else { label(&sets[i]) }).collect();
             let ties = if others.is_empty() { String::new() } else { format!("; can't be told apart from: {}", others.join(", ")) };
-            format!("{what} on {} (the cards worth most to your run{ties}){}", label(&sets[best]), outcomes.iter().find_map(|&(_, e)| rebuff_note(e)).unwrap_or_default())
+            format!("{what} on {} (the cards worth most to your run{ties})", label(&sets[best]))
         } else {
-            format!("{what}, on the cards worth most in hands you'd hold{}", outcomes.iter().find_map(|&(_, e)| rebuff_note(e)).unwrap_or_default())
+            format!("{what}, on the cards worth most in hands you'd hold")
         };
         // the effect and its targets, for Best play's move with it (one outcome only)
         let target = (outcomes.len() == 1).then(|| (outcomes[0].1, sets[best].clone()));
@@ -7392,7 +7383,7 @@ mod tests {
             h.stand = vec![hand[2]];
             let start = RoundStart { hand: hand.clone(), deck, hand_size: 14, hands: 4, discards: 3, target: 5000.0, hidden: Some(std::sync::Arc::new(h)), ..Default::default() };
             let used = RoundStart { changes: vec![(CardEffect::Copies(2), vec![2])], ..start.clone() };
-            (play::moves_of(&start, &b, 42), play::moves_of(&used, &b, 42), play::move_hand(&used).len())
+            (play::moves_of(&start, &b, 42), play::moves_of(&used, &b, 42), play::move_hand(&used, &b).len())
         };
         let (plain, used, n) = moves("9S");
         assert_eq!(n, 16);
@@ -7837,6 +7828,34 @@ mod tests {
         let t = a.tarots.iter().find(|t| t.key == "c_star").unwrap();
         let targets = t.note.split(" on ").nth(1).unwrap_or("").split(" (").next().unwrap_or("");
         assert!(!targets.is_empty() && !targets.contains('♠'), "{}", t.note);
+    }
+
+    #[test]
+    fn a_card_the_star_turns_from_a_club_is_freed_under_the_club() {
+        // The Club debuffs A♣ K♣ Q♣; Greedy Joker (+3 Mult a scored Diamond) makes Diamonds worth
+        // having, and The Star (up to 3 cards) turns cards into them, which the game frees from
+        // the debuff (card.lua `Card:set_base` → blind.lua `Blind:debuff_card`). On the last hand,
+        // 1300 needs a Flush with at least two of the clubs freed: A♦ K♦ 9♦ 7♦ 5♦ scores 77 × 19
+        // = 1463, A♦ K♦ Q♦ 9♦ 7♦ 82 × 19 = 1558; with them still debuffed (no chips, no Mult)
+        // at most 728, and a Flush of the low cards 63 × 19 = 1197. Fails if a changed card
+        // keeps its debuff.
+        let mut r = shop_run(&[("j_greedy_joker", None, None)], &[]);
+        r.screen = crate::save::Screen::SelectingHand;
+        r.shop = None;
+        r.hand = Card::parse_list("AC:debuff KC:debuff QC:debuff 9D 7D 5H 4S 3S").unwrap();
+        r.draw_pile = crate::bench::standard_deck().into_iter().filter(|c| !r.hand.iter().any(|h| h.rank == c.rank && h.suit == c.suit)).map(|c| Card { debuff: c.suit == crate::model::Suit::Clubs, ..c }).collect();
+        r.consumables = vec![crate::save::ItemCard { key: "c_star".into(), name: "The Star".into(), set: "Tarot".into(), cost: 3, edition: None, card: None, rental: false, eternal: false, perishable: None }];
+        (r.hands_left, r.discards_left) = (1, 0);
+        r.blinds[2].state = "Current".into();
+        r.current_blind = Some(crate::save::CurrentBlind {
+            key: "bl_club".into(), name: "The Club".into(), target: 1300.0, scored: 0.0, disabled: false, hands_seen: vec![], only_hand: None,
+        });
+        let a = analyze(&r, GameData::bundled(), None, &quick());
+        let t = a.tarots.iter().find(|t| t.key == "c_star").unwrap();
+        // the tarot's own odds this blind, on its places in your hand (`sim::effect_on`)
+        assert!(t.p_win > 0.99, "{} {}", t.p_win, t.note);
+        let bp = a.best_play.unwrap();
+        assert!(bp.use_first.as_deref().is_some_and(|u| u.contains("The Star")) && bp.hand == "Flush" && bp.p_win.is_some_and(|p| p > 0.99), "{} {bp:?}", t.note);
     }
 
     #[test]

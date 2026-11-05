@@ -746,10 +746,10 @@ pub fn outcomes_after(b: &Board, start: &RoundStart, first: &Move, range: std::o
         .map(|i| {
             let mut rng = Rng::new(seed.wrapping_add(i as u64 * 7919));
             // the face-down cards drawn anew for this round (the same for every move on it)
-            let dealt = deal_hidden(start, &rng);
+            let dealt = deal_hidden(b, start, &rng);
             let start = dealt.as_ref().unwrap_or(start);
             // the consumables held, on the cards this round dealt
-            let uses = &uses_on(uses, &start.hand);
+            let uses = &uses_on(b, uses, &start.hand);
             // a fresh round's blind set per round (its random part drawn from the round's own)
             let set;
             let (b, start) = if start.fresh {
@@ -1074,8 +1074,8 @@ pub struct RoundStart {
     pub changes: Vec<(CardEffect, Vec<usize>)>,
 }
 
-/// `hand` with a consumable's card effect done on the cards at `places` (`consumable::apply`),
-/// each card keeping whether it's debuffed; the cards at `places` seen where the game flips them
+/// `hand` with a consumable's card effect done on the cards at `places` (`consumable::apply`) on
+/// board `b`, each card's debuff what it is after (`debuff_after`); the cards at `places` seen where the game flips them
 /// face up and back (card.lua `Card:use_consumeable`: a tarot that sets their enhancement, rank
 /// or suit, and Sigil and Ouija on the whole hand, showing you what they became, and `Card:flip`
 /// clears the mark of one drawn flipped: seen, as the save reads it; not a seal, an edition or
@@ -1084,7 +1084,7 @@ pub struct RoundStart {
 /// destroys cards (none of those is a move: `advise::tarot_values`), nor one a card there can't
 /// take (Aura on a card with an edition: the game doesn't let it be used, card.lua
 /// `Card:can_use_consumeable`): the hand as it is.
-pub fn effect_on(hand: &[Card], effect: CardEffect, places: &[usize]) -> Vec<Card> {
+pub fn effect_on(b: &Board, hand: &[Card], effect: CardEffect, places: &[usize]) -> Vec<Card> {
     // never one that takes cards away: each card keeps its own place's flags
     if matches!(effect, CardEffect::Destroy) || places.iter().any(|&p| hand.get(p).is_some_and(|c| !crate::engine::consumable::can_target(effect, c))) {
         return hand.to_vec();
@@ -1093,22 +1093,40 @@ pub fn effect_on(hand: &[Card], effect: CardEffect, places: &[usize]) -> Vec<Car
     let flips = !matches!(effect, CardEffect::Seal(_) | CardEffect::Edition(_) | CardEffect::Copies(_));
     for (i, c) in new.iter_mut().enumerate() {
         match hand.get(i) {
-            Some(was) => (c.face_down, c.debuff) = (was.face_down && !(flips && places.contains(&i)), was.debuff),
+            Some(was) => *c = Card { face_down: was.face_down && !(flips && places.contains(&i)), ..debuff_after(b, was, *c, i) },
             None => c.face_down = false,
         }
     }
     new
 }
 
+/// Card `to`, which a consumable made of `was` (at place `i` in hand, on board `b`), with the
+/// debuff it has after: where what the boss's rule reads changed (its suit, rank or enhancement,
+/// or whether it was played this ante: an enhancement set clears that, `consumable::apply`), the
+/// boss's set again on what it became (card.lua `Card:set_base`, `Card:set_ability` call
+/// blind.lua `Blind:debuff_card`: The Star's diamonds free under The Club, The Lovers' Wild card
+/// debuffed under The Goad, The Tower's Stone card freed under The Plant, any enhancement on a
+/// card The Pillar debuffs frees it); a copy (Death, common_events.lua `copy_card`) gets the
+/// copied card's, which is that rule on the same card; a seal or an edition alone (`set_seal`,
+/// `set_edition`) leaves the one it had
+pub fn debuff_after(b: &Board, was: &Card, mut to: Card, i: usize) -> Card {
+    if (was.suit, was.rank, was.enhancement, was.played_this_ante) != (to.suit, to.rank, to.enhancement, to.played_this_ante) {
+        b.debuff_card(&mut to, i);
+    } else {
+        to.debuff = was.debuff;
+    }
+    to
+}
+
 /// `uses` with each effect on places (`Use::at`, in the round's starting `hand`) turned into
 /// changes of the cards that round dealt there (and the cards it adds), so it still finds them
 /// once the hand has moved on
-fn uses_on(uses: &[Use], hand: &[Card]) -> Vec<Use> {
+fn uses_on(b: &Board, uses: &[Use], hand: &[Card]) -> Vec<Use> {
     uses.iter()
         .map(|u| {
             let mut u = u.clone();
             for (effect, places) in std::mem::take(&mut u.at) {
-                let new = effect_on(hand, effect, &places);
+                let new = effect_on(b, hand, effect, &places);
                 u.swap.extend(places.iter().filter(|&&p| p < hand.len() && new[p] != hand[p]).map(|&p| (hand[p], new[p])));
                 u.add.extend(new.iter().skip(hand.len()).copied());
             }
@@ -1344,22 +1362,23 @@ impl Hidden {
 
 /// The hands the first `n` simulated rounds from `start` meet (`outcomes_after`'s rounds with
 /// `seed`): its face-down cards as each draws them (`deal_hidden`)
-pub fn hidden_hands(start: &RoundStart, seed: u64, n: usize) -> Vec<Vec<Card>> {
-    (0..n).map(|i| deal_hidden(start, &Rng::new(seed.wrapping_add(i as u64 * 7919))).map_or_else(|| start.hand.clone(), |s| s.hand)).collect()
+pub fn hidden_hands(b: &Board, start: &RoundStart, seed: u64, n: usize) -> Vec<Vec<Card>> {
+    (0..n).map(|i| deal_hidden(b, start, &Rng::new(seed.wrapping_add(i as u64 * 7919))).map_or_else(|| start.hand.clone(), |s| s.hand)).collect()
 }
 
 /// `start` with its face-down cards drawn anew (`Hidden`) for one simulated round, from a seed of
 /// the round's own (`rng` isn't drawn from, so the round's deals stay as they were and every move
 /// tried on round i meets the same cards: drawn once, `Hidden::drawn`); none when it has none
-/// to draw. A consumable used first (`RoundStart::changes`) is done to what the round drew.
-pub fn deal_hidden(start: &RoundStart, rng: &Rng) -> Option<RoundStart> {
+/// to draw. A consumable used first (`RoundStart::changes`) is done to what the round drew, on
+/// board `b` (the round's: the boss's debuff set again on what it changes, `debuff_after`).
+pub fn deal_hidden(b: &Board, start: &RoundStart, rng: &Rng) -> Option<RoundStart> {
     let h = start.hidden.as_deref()?;
     debug_assert_eq!(h.stand.len(), h.pos.len());
     let live: Vec<bool> = h.pos.iter().zip(&h.stand).map(|(&p, s)| start.hand.get(p).is_some_and(|c| c.order_eq(s))).collect();
     if !live.contains(&true) {
         // nothing to draw: a consumable used first still done, on the hand as it is
         return (!start.changes.is_empty()).then(|| {
-            let hand = start.changes.iter().fold(start.hand.clone(), |h, (effect, places)| effect_on(&h, *effect, places));
+            let hand = start.changes.iter().fold(start.hand.clone(), |h, (effect, places)| effect_on(b, &h, *effect, places));
             RoundStart { hand, hidden: None, changes: vec![], ..start.clone() }
         });
     }
@@ -1386,7 +1405,7 @@ pub fn deal_hidden(start: &RoundStart, rng: &Rng) -> Option<RoundStart> {
     }
     // a consumable used first, done to what the round drew
     for (effect, places) in &start.changes {
-        hand = effect_on(&hand, *effect, places);
+        hand = effect_on(b, &hand, *effect, places);
     }
     Some(RoundStart { hand, deck, hidden: None, changes: vec![], ..start.clone() })
 }
@@ -3204,17 +3223,21 @@ impl Use {
         let mut h = hand.to_vec();
         let mut done = vec![false; h.len()];
         for (from, to) in &self.swap {
-            let i = (0..h.len()).find(|&i| !done[i] && h[i].same_kind(from))?;
+            // the card itself where one is left (its debuff and face aside: two alike but one
+            // played this ante, The Pillar's), else one of its kind
+            let alike = |c: &Card| Card { debuff: false, face_down: false, ..*c } == Card { debuff: false, face_down: false, ..*from };
+            let i = (0..h.len()).find(|&i| !done[i] && alike(&h[i])).or_else(|| (0..h.len()).find(|&i| !done[i] && h[i].same_kind(from)))?;
             // a card a consumable changed is seen (the game flips it face up and back, card.lua
-            // `Card:use_consumeable`, which clears the mark of one drawn flipped: gap 25)
-            h[i] = Card { debuff: h[i].debuff, face_down: false, ..*to };
+            // `Card:use_consumeable`, which clears the mark of one drawn flipped: gap 25), its
+            // debuff what it is after (`debuff_after`)
+            h[i] = Card { face_down: false, ..debuff_after(b, &h[i], *to, i) };
             done[i] = true;
         }
         for (effect, places) in &self.at {
             if places.iter().any(|&p| p >= h.len()) {
                 return None;
             }
-            h = effect_on(&h, *effect, places);
+            h = effect_on(b, &h, *effect, places);
         }
         h.extend(self.add.iter().copied());
         let mut b = b.clone();
@@ -4240,11 +4263,11 @@ fn play_round(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[Use]) ->
     let mut used = vec![false; uses.len()];
     let (mut b, mut start) = board.at_blind_set_drawn(start, set_seed(rng));
     // the face-down cards drawn anew for this round
-    if let Some(s) = deal_hidden(&start, rng) {
+    if let Some(s) = deal_hidden(&b, &start, rng) {
         start = s;
     }
     // the consumables held, on the cards this round dealt
-    let uses = &uses_on(uses, &start.hand);
+    let uses = &uses_on(&b, uses, &start.hand);
     // the cards played this ante, set on the board as the round ends: not cloned with every board
     // its choices try
     let mut played_ante = std::mem::take(&mut b.played_ante);
@@ -4712,9 +4735,9 @@ mod tests {
         let down = |x: &str| Card { face_down: true, ..c(x) };
         // Strength: one rank up from what it is (an Ace to a 2, as the game does), and seen (the
         // game flips it up to change it); a card it didn't go on stays face down
-        assert_eq!(effect_on(&[down("AC"), down("9H")], CardEffect::UpRank, &[0]), vec![c("2C"), down("9H")]);
+        assert_eq!(effect_on(&Board::empty(), &[down("AC"), down("9H")], CardEffect::UpRank, &[0]), vec![c("2C"), down("9H")]);
         // Death, the face-down card copied: both are seen
-        assert_eq!(effect_on(&[c("4D"), down("KC")], CardEffect::CopyLeftToRight, &[0, 1]), vec![c("KC"), c("KC")]);
+        assert_eq!(effect_on(&Board::empty(), &[c("4D"), down("KC")], CardEffect::CopyLeftToRight, &[0, 1]), vec![c("KC"), c("KC")]);
         // used first in a round: each round's draw changed there (The World on the face-down card)
         let hand = vec![c("KS"), down("QH")];
         let mut h = Hidden::new(&hand, &[1], vec![1], false);
@@ -4722,8 +4745,89 @@ mod tests {
         let deck: Vec<Card> = standard_deck().into_iter().filter(|x| !hand.iter().any(|y| y.same_kind(x))).collect();
         let start = RoundStart { hand, deck, hidden: Some(std::sync::Arc::new(h)), changes: vec![(CardEffect::Suit(Suit::Spades), vec![1])], ..Default::default() };
         for i in 0..20u64 {
-            let x = deal_hidden(&start, &Rng::new(i)).unwrap().hand[1];
+            let x = deal_hidden(&Board::empty(), &start, &Rng::new(i)).unwrap().hand[1];
             assert!(!x.face_down && x.suit == Suit::Spades, "{x:?}");
+        }
+    }
+
+    #[test]
+    fn a_card_a_consumable_changes_takes_the_bosss_debuff_on_what_it_became() {
+        // card.lua `Card:set_base`, `Card:set_ability` → blind.lua `Blind:debuff_card`; fails if a
+        // changed card keeps the debuff it had
+        use crate::model::Seal;
+        let c = |x: &str| Card::parse_list(x).unwrap()[0];
+        let under = |key: &str, cards: &str| {
+            let mut b = Board::empty();
+            b.blind.key = key.into();
+            let mut h = Card::parse_list(cards).unwrap();
+            b.debuff_cards(&mut h, &mut []);
+            (b, h)
+        };
+        let debuffs = |h: &[Card]| h.iter().map(|c| c.debuff).collect::<Vec<_>>();
+        // The Club: The Star turns two clubs into diamonds, which frees them; the club it
+        // didn't go on stays debuffed
+        let (club, h) = under("bl_club", "KC 9C 4C");
+        assert_eq!(debuffs(&h), [true, true, true]);
+        let star = effect_on(&club, &h, CardEffect::Suit(Suit::Diamonds), &[0, 1]);
+        assert_eq!(debuffs(&star), [false, false, true]);
+        // and The Moon turns a diamond into a club: debuffed now
+        let (_, h2) = under("bl_club", "KD");
+        assert!(effect_on(&club, &h2, CardEffect::Suit(Suit::Clubs), &[0])[0].debuff);
+        // The Goad: The Lovers' Wild card is every suit, spades too
+        let (goad, h) = under("bl_goad", "QH");
+        assert!(!h[0].debuff && effect_on(&goad, &h, CardEffect::Enhance(Enhancement::Wild), &[0])[0].debuff);
+        // The Plant: The Tower's Stone card is no face card; Strength makes a 10 a Jack
+        let (plant, h) = under("bl_plant", "KS TH");
+        assert_eq!(debuffs(&effect_on(&plant, &h, CardEffect::Enhance(Enhancement::Stone), &[0])), [false, false]);
+        assert_eq!(debuffs(&effect_on(&plant, &h, CardEffect::UpRank, &[1])), [true, true]);
+        // Death: the copy takes the copied card's (common_events.lua `copy_card`)
+        let (_, h) = under("bl_club", "5H KC");
+        assert_eq!(debuffs(&effect_on(&club, &h, CardEffect::CopyLeftToRight, &[0, 1])), [true, true]);
+        // The Pillar: an enhancement set (The Empress, on a card already Mult too) makes a card
+        // played this ante one no longer (card.lua `Card:set_ability` rebuilds `ability`); Death's
+        // copy of a card played this ante is one too (common_events.lua `copy_card`)
+        let mut pillar = Board::empty();
+        pillar.blind.key = "bl_pillar".into();
+        let mut h = Card::parse_list("KS:mult 5H").unwrap();
+        h[0].played_this_ante = true;
+        pillar.debuff_cards(&mut h, &mut []);
+        assert_eq!(debuffs(&h), [true, false]);
+        let freed = effect_on(&pillar, &h, CardEffect::Enhance(Enhancement::Mult), &[0]);
+        assert!(!freed[0].debuff && !freed[0].played_this_ante);
+        let mut h2 = vec![Card { played_this_ante: false, debuff: false, seal: Some(Seal::Red), ..h[0] }, h[0]];
+        h2[1].played_this_ante = true;
+        assert_eq!(debuffs(&effect_on(&pillar, &h2, CardEffect::CopyLeftToRight, &[0, 1])), [true, true]);
+        // a held consumable on one of two K♠, the other played this ante: the one it names
+        let mut two = Card::parse_list("KS KS").unwrap();
+        two[0].played_this_ante = true;
+        pillar.debuff_cards(&mut two, &mut []);
+        let deja = Use { key: "c_deja_vu".into(), swap: vec![(two[1], Card { seal: Some(Seal::Red), ..two[1] })], ..Default::default() };
+        let (_, after) = deja.apply(&pillar, &two).unwrap();
+        assert_eq!((after[0].debuff, after[0].seal, after[1].debuff, after[1].seal), (true, None, false, Some(Seal::Red)));
+        // a seal alone leaves the debuff as it was; a boss disabled debuffs nothing it changes
+        let (_, h) = under("bl_club", "KC");
+        assert!(effect_on(&club, &h, CardEffect::Seal(Seal::Red), &[0])[0].debuff);
+        let mut off = club.clone();
+        off.blind.disabled = true;
+        assert!(!effect_on(&off, &h, CardEffect::Enhance(Enhancement::Wild), &[0])[0].debuff);
+        // a held consumable the simulated player uses (`Use::apply`'s swap): The Star frees it
+        let (_, h) = under("bl_club", "KC 2S");
+        let star = Use { key: "c_star".into(), swap: vec![(c("KC"), c("KD"))], ..Default::default() };
+        let (_, after) = star.apply(&club, &h).unwrap();
+        assert_eq!((after[0].label(), after[0].debuff), ("K♦".to_string(), false));
+        // used first on a face-down card: each round's draw changed there and debuffed by what
+        // it became (The Moon under The Club)
+        let mut hand = Card::parse_list("KS QH").unwrap();
+        hand[1].face_down = true;
+        let mut hd = Hidden::new(&hand, &[1], vec![1], false);
+        hd.stand = vec![hand[1]];
+        // the draw pile debuffed as the blind set it (blind.lua `Blind:set_blind`, as a save has it)
+        let mut deck: Vec<Card> = standard_deck().into_iter().filter(|x| !hand.iter().any(|y| y.same_kind(x))).collect();
+        club.debuff_cards(&mut [], &mut deck);
+        let start = RoundStart { hand, deck, hidden: Some(std::sync::Arc::new(hd)), changes: vec![(CardEffect::Suit(Suit::Clubs), vec![1])], ..Default::default() };
+        for i in 0..20u64 {
+            let x = deal_hidden(&club, &start, &Rng::new(i)).unwrap().hand[1];
+            assert!(x.suit == Suit::Clubs && x.debuff, "{x:?}");
         }
     }
 
@@ -4742,7 +4846,7 @@ mod tests {
         let mut seen = std::collections::HashSet::new();
         for i in 0..200u64 {
             let rng = Rng::new(i);
-            let s = deal_hidden(&start, &rng).unwrap();
+            let s = deal_hidden(&Board::empty(), &start, &rng).unwrap();
             let (a, c) = (s.hand[1], s.hand[2]);
             assert!(a.face_down && c.face_down);
             for x in [a, c] {
@@ -4753,7 +4857,7 @@ mod tests {
             // every card once: the hand and the deck still the 52
             assert_eq!(s.hand.len() + s.deck.len(), 52);
             // the same draw for the same round
-            assert_eq!(deal_hidden(&start, &rng).unwrap().hand, s.hand);
+            assert_eq!(deal_hidden(&Board::empty(), &start, &rng).unwrap().hand, s.hand);
             seen.insert((a.rank.0, c.rank.0));
         }
         // a fresh draw for each round: the pairs of the six spades from 7 to Q come up
@@ -4769,7 +4873,7 @@ mod tests {
         let place = h.place.clone();
         let start = RoundStart { hand: hand.clone(), deck, hidden: Some(std::sync::Arc::new(h)), ..Default::default() };
         for i in 0..200u64 {
-            let d = deal_hidden(&start, &Rng::new(i)).unwrap().hand;
+            let d = deal_hidden(&Board::empty(), &start, &Rng::new(i)).unwrap().hand;
             for (a, b) in (0..8).flat_map(|a| (0..8).map(move |b| (a, b))) {
                 for (s, by_suit) in [false, true].into_iter().enumerate() {
                     if place[a][s] < place[b][s] {
@@ -4787,7 +4891,7 @@ mod tests {
         let deck: Vec<Card> = standard_deck().into_iter().filter(|c| !hand.iter().any(|x| x.same_kind(c))).collect();
         let start = RoundStart { hand, deck, hidden: Some(std::sync::Arc::new(h)), ..Default::default() };
         for i in 0..50u64 {
-            let c = deal_hidden(&start, &Rng::new(i)).unwrap().hand[3];
+            let c = deal_hidden(&Board::empty(), &start, &Rng::new(i)).unwrap().hand[3];
             assert!((11..=13).contains(&c.rank.0) && c.suit != Suit::Spades, "{c:?}");
         }
     }
@@ -5002,7 +5106,7 @@ mod tests {
         };
         let moves = |hand: &[Card], slots: &[usize]| {
             let s = start(hand, slots);
-            big_hand_moves(&b, &hidden_hands(&s, 42, BIG_HAND_DRAWS), &s.deck, s.discards)
+            big_hand_moves(&b, &hidden_hands(&b, &s, 42, BIG_HAND_DRAWS), &s.deck, s.discards)
         };
         let (x, y) = (moves(&nine, &[2]), moves(&eight, &[2]));
         assert_eq!(x, y);

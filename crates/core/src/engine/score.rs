@@ -844,18 +844,25 @@ impl Board {
         if pool.is_empty() { vec!["j_joker"] } else { pool }
     }
 
-    /// Whether the boss's debuff on a card depends on what the card is (its suit, whether it's a
-    /// face card: The Club, The Goad, The Window, The Head, The Plant in `debuff_cards`), so a card
-    /// a consumable changes could gain or lose it
-    pub fn debuffs_by_suit_or_face(&self) -> bool {
-        !self.blind.disabled && matches!(self.blind.key.as_str(), "bl_club" | "bl_goad" | "bl_window" | "bl_head" | "bl_plant")
-    }
-
     /// The blind's debuffs set on every playing card (blind.lua `Blind:debuff_card`, as
     /// `Blind:set_blind` and `Blind:disable` call it on each; it clears any other): while the
     /// blind is active, a card of its suit (The Club, The Goad, The Window, The Head), a face card
     /// (The Plant), a card played this ante (The Pillar) and every card (Verdant Leaf)
     pub fn debuff_cards(&self, hand: &mut [Card], deck: &mut [Card]) {
+        let flags = self.rule_flags();
+        for (i, c) in hand.iter_mut().enumerate().chain(deck.iter_mut().enumerate()) {
+            self.debuff_with(c, i, &flags);
+        }
+    }
+
+    /// The blind's debuff set on card `c` at place `i` (blind.lua `Blind:debuff_card`, as
+    /// `debuff_cards` sets it on every card): also what the game does to a card a consumable
+    /// changes (card.lua `Card:set_base`, `Card:set_ability`, which call it on the card)
+    pub fn debuff_card(&self, c: &mut Card, i: usize) {
+        self.debuff_with(c, i, &self.rule_flags());
+    }
+
+    fn debuff_with(&self, c: &mut Card, i: usize, flags: &RuleFlags) {
         let key = if self.blind.disabled { "" } else { self.blind.key.as_str() };
         let suit = match key {
             "bl_club" => Some(Suit::Clubs),
@@ -864,13 +871,10 @@ impl Board {
             "bl_head" => Some(Suit::Hearts),
             _ => None,
         };
-        let flags = self.rule_flags();
-        for (i, c) in hand.iter_mut().enumerate().chain(deck.iter_mut().enumerate()) {
-            c.debuff = suit.is_some_and(|suit| hand::is_suit(c, suit, true, false, flags.smeared))
-                || (key == "bl_plant" && hand::is_face(c, i, flags.pareidolia, true))
-                || (key == "bl_pillar" && c.played_this_ante)
-                || key == "bl_final_leaf";
-        }
+        c.debuff = suit.is_some_and(|suit| hand::is_suit(c, suit, true, false, flags.smeared))
+            || (key == "bl_plant" && hand::is_face(c, i, flags.pareidolia, true))
+            || (key == "bl_pillar" && c.played_this_ante)
+            || key == "bl_final_leaf";
     }
 
     /// Joker `j` sold (card.lua `Card:sell_card`): its sell value to your money, the jokers left

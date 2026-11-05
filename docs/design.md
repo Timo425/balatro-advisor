@@ -1503,9 +1503,9 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    boss's own row ahead (and the shop ranking's, and the shops' find `value::Ahead` sizes on the
    boss alone) counts only the cards the save shows played, not those the blinds before it will
    still play (said on the blind: "not simulated"); only `Ahead`'s chain carries the Big Blind's.
-   Also not yet: a card whose enhancement changes (a tarot, Midas Mask, Vampire) loses
-   `played_this_ante` in the game (card.lua `Card:set_ability` rebuilds `ability`), not in the
-   engine; a card a held consumable changed in a simulated round is carried as it was changed;
+   A card a tarot or spectral enhances loses `played_this_ante`, as in the game (card.lua
+   `Card:set_ability` rebuilds `ability`; `consumable::apply`), and with it The Pillar's debuff
+   (`sim::debuff_after`). Also not yet: the same for a card Midas Mask or Vampire changes;
    Campfire's reset at a boss's end (gap 8), which a Leaf sale's growth now reaches. Raised in
    play 2026-10-11 (run I6XKKH65, Ante 5 shop, a Stone deck at 56% for The Pillar) and 2026-10-05
    (Ante 8, Verdant Leaf, Arrowhead kept for its Gold sticker, gap 14). Seen in Best play
@@ -2195,10 +2195,16 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    on your hand but The Hanged Man's (its this-blind odds still a fresh round with the deck it
    leaves) is now valued this blind on its places in the round's hand (`sim::effect_on`), as
    Best play's move with it is, so the cards keep their order and debuffs (before, the tarot's
-   odds took your hand from the deck: no card debuffed). A changed card keeps its debuff where
-   the game sets the blind's debuff on it again (card.lua `Card:set_base`, `Card:set_ability`: a
-   suit change under The Club, a Stone card or a rank change under The Plant), in Best play's
-   moves too: not modelled yet, said so in the consumable's note and Best play's tip. The cards
+   odds took your hand from the deck: no card debuffed). A card whose suit, rank or
+   enhancement a consumable changes takes the boss's debuff on what it became, as the game sets
+   it again (card.lua `Card:set_base`, `Card:set_ability` → blind.lua `Blind:debuff_card`: The
+   Star's diamonds free under The Club, The Lovers' Wild card debuffed under The Goad, The
+   Tower's Stone card freed under The Plant, an enhanced card freed under The Pillar, as
+   `set_ability` clears its `played_this_ante`), and Death's copy the copied card's (common_events.lua
+   `copy_card`), in one place every card changed in a blind's hand goes through
+   (`sim::debuff_after`: Best play's moves, the consumables the simulated player uses, a tarot's
+   odds this blind); a deck a consumable changes before a fresh round has its debuffs set as the
+   blind is (`Board::debuff_cards`, from `at_blind_set`). The cards
    worth drawing are the draw pile's and the face-down cards' together, as the game's deck view
    counts what's still to come (UI_definitions.lua `G.UIDEF.view_deck`). The game flips a card it changes face up and
    back (card.lua `Card:use_consumeable`), and a card turned up loses the mark of one drawn
