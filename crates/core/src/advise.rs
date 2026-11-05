@@ -7369,6 +7369,39 @@ mod tests {
     }
 
     #[test]
+    fn a_big_hands_moves_are_listed_on_the_hand_a_consumable_used_first_leaves() {
+        // 14 cards, one face down (a 9♠ the sorts place between K♠ and 7♠, 8♠ in the pile), and
+        // Cryptid used first on it: its two copies at the hand's end. The big hand's moves are
+        // drawn on the hand they're named on (copies included), never read from the stand-in:
+        // with the 8♠ as the stand-in the moves are the same. Fails if the draws miss the
+        // copies or the moves read the face-down card itself (gap 25 (c)).
+        use crate::engine::consumable::CardEffect;
+        let r = blind_run(&[("j_joker", None, None)], "AS KS 9S 7S 2S AH KH QH 7H 7D 6D 5C 4C 3C", "", ("c_pluto", "Pluto", "Planet"), 5000.0);
+        let b = Board::from_run(&r, GameData::bundled());
+        let all: Vec<String> = "AKQJT98765432".chars().flat_map(|r| "SHDC".chars().map(move |s| format!("{r}{s}"))).collect();
+        let fifty_two = Card::parse_list(&all.join(" ")).unwrap();
+        let moves = |stand: &str| {
+            let mut hand = Card::parse_list(&format!("AS KS {stand} 7S 2S AH KH QH 7H 7D 6D 5C 4C 3C")).unwrap();
+            hand[2].face_down = true;
+            let deck: Vec<Card> = fifty_two.iter().filter(|c| !hand.iter().any(|x| x.same_kind(c))).copied().collect();
+            let mut h = sim::Hidden::new(&hand, &[2], vec![2], false);
+            h.stand = vec![hand[2]];
+            let start = RoundStart { hand: hand.clone(), deck, hand_size: 14, hands: 4, discards: 3, target: 5000.0, hidden: Some(std::sync::Arc::new(h)), ..Default::default() };
+            let used = RoundStart { changes: vec![(CardEffect::Copies(2), vec![2])], ..start.clone() };
+            (play::moves_of(&start, &b, 42), play::moves_of(&used, &b, 42), play::move_hand(&used).len())
+        };
+        let (plain, used, n) = moves("9S");
+        assert_eq!(n, 16);
+        // a move holding a copy (at 14 or 15), and none past the hand
+        let idx = |m: &sim::Move| match m { sim::Move::Play(v) | sim::Move::Discard(v) => v.clone() };
+        assert!(used.iter().any(|m| idx(m).iter().any(|&i| i >= 14)));
+        assert!(used.iter().all(|m| idx(m).iter().all(|&i| i < 16)));
+        assert!(plain.iter().any(|m| matches!(m, sim::Move::Play(v) if v.contains(&2))));
+        let (plain8, used8, _) = moves("8S");
+        assert_eq!((plain, used), (plain8, used8));
+    }
+
+    #[test]
     fn the_judge_plays_a_move_the_search_no_longer_considers() {
         // In a hand bigger than `sim::ALL_MOVES_MAX` the moves come from its structure: a
         // discard of scattered cards isn't among them, and the judge plays it as it is (an old

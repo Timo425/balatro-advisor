@@ -105,14 +105,14 @@ const BIG_HAND_PLAYS: usize = 256;
 /// by card: a set that can't be part of such a play is dropped with every set containing it, so
 /// a 32-card hand gives thousands, not every 5-card subset. A superset (`hand::detect`
 /// decides), except with Splash, where every card scores: then only the plays a poker hand
-/// makes, and the extra cards are `with_kickers`' (the highest few: a heuristic). Face-down
-/// cards are left out (a structure read from a card you can't see would be its stand-in's:
-/// `big_hand_moves`); the first 64 cards, the first 10 Stone cards.
+/// makes, and the extra cards are `with_kickers`' (the highest few: a heuristic). Every card is
+/// read as it is: give it a draw of the face-down cards, never their stand-ins
+/// (`big_hand_moves`); the first 64 cards, the first 10 Stone cards.
 pub fn scoring_plays(hand: &[Card], f: hand::RuleFlags) -> Vec<u64> {
     let n = hand.len().min(64);
     let stone = |i: usize| hand[i].enhancement == Some(Enhancement::Stone);
-    let stones: Vec<usize> = (0..n).filter(|&i| stone(i) && !hand[i].face_down).take(10).collect();
-    let rest: Vec<usize> = (0..n).filter(|&i| !stone(i) && !hand[i].face_down).collect();
+    let stones: Vec<usize> = (0..n).filter(|&i| stone(i)).take(10).collect();
+    let rest: Vec<usize> = (0..n).filter(|&i| !stone(i)).collect();
     let runs = straight_runs(5, f.shortcut);
     let slack = usize::from(f.four_fingers);
     let could = |q: &[usize]| {
@@ -174,7 +174,7 @@ fn mask_cards(m: u64) -> Vec<usize> {
 /// The Psychic) and the cards a play cycles out (a dig): the lowest are what a player plays
 /// away. A heuristic, for hands too big for every subset.
 fn with_kickers(hand: &[Card], m: u64, splash: bool) -> Vec<u64> {
-    let mut low: Vec<usize> = (0..hand.len().min(64)).filter(|&i| m & (1 << i) == 0 && !hand[i].face_down).collect();
+    let mut low: Vec<usize> = (0..hand.len().min(64)).filter(|&i| m & (1 << i) == 0).collect();
     junk_order(hand, &mut low);
     if splash {
         low.reverse();
@@ -195,46 +195,59 @@ fn junk_order(hand: &[Card], idx: &mut [usize]) {
 /// now go into a big hand's race first (`big_hand_moves`), so the budget isn't all one hand
 const BIG_HAND_PER_KIND: usize = 8;
 
+/// The draws of a big hand's face-down cards its structure is read from (`big_hand_moves`), on
+/// seeds of their own the race never plays (`play.rs` `moves_of`). A budget, not a finding (the
+/// register).
+pub const BIG_HAND_DRAWS: usize = 4;
+
 /// Best play's moves for a hand of more than `ALL_MOVES_MAX` cards, where every play and
 /// discard would be far more than a race can take (32 cards: 242,824 plays): the plays the
 /// hand's structure gives over every card (`scoring_plays`), each also topped up with the
 /// lowest cards outside it (`with_kickers`: as kickers, or junk played to dig), the best
 /// `BIG_HAND_PLAYS` by their score now (with every roll failing); and the discards the
-/// hand's structure gives (`structure_discards`). Each play in the order to play it. A
-/// face-down card has no structure to read (`scoring_plays` leaves it out); a hand of only
-/// them gives every play and discard of its `ALL_MOVES_MAX` highest by the rank sort
-/// (`by_rank_sort`), a cut by the cards' order (gap 25 (c)).
-pub fn big_hand_moves(b: &Board, hand: &[Card], deck: &[Card], discards: i64) -> Vec<Move> {
-    if all_face_down(hand) {
-        let mut top = by_rank_sort(hand);
-        top.truncate(ALL_MOVES_MAX);
-        top.sort_unstable();
-        let sub: Vec<Card> = top.iter().map(|&i| hand[i]).collect();
-        let back = |v: Vec<usize>| v.into_iter().map(|i| top[i]).collect();
-        return all_plays(&sub)
-            .into_iter()
-            .chain(all_discards(&sub, discards))
-            .map(|m| match m {
-                Move::Play(v) => Move::Play(back(v)),
-                Move::Discard(v) => Move::Discard(back(v)),
-            })
-            .collect();
-    }
+/// hand's structure gives (`structure_discards`). Each play in the order to play it.
+/// `draws`: the hand with its face-down cards drawn `BIG_HAND_DRAWS` times (`hidden_hands`,
+/// on seeds the race doesn't play, so the
+/// screen doesn't pick the plays its first rounds favour), or just the hand when it holds none;
+/// the moves are the union of each draw's structure, a play's score now its mean over them and
+/// its kind the hand most of them make, so no move reads a face-down card's stand-in, and a
+/// hand of only them is one more case (gap 25 (c)). The cards' order is the first draw's
+/// (`arrange`; the engine orders them anyway, by what each round dealt: gap 25).
+pub fn big_hand_moves(b: &Board, draws: &[Vec<Card>], deck: &[Card], discards: i64) -> Vec<Move> {
+    // a play scored on every draw: its mean score, mask, cards in order, the hand most draws make
+    // (the first draw's on a tie), its score on each draw
+    type Scored = (f64, u64, Vec<usize>, HandType, Vec<f64>);
+    let Some(hand) = draws.first() else { return vec![] };
+    debug_assert!(draws.iter().all(|h| h.len() == hand.len()));
     let flags = b.rule_flags();
-    let mut masks = scoring_plays(hand, flags);
-    let more: Vec<u64> = masks.iter().flat_map(|&m| with_kickers(hand, m, flags.splash)).collect();
-    masks.extend(more);
+    // each draw's structure, its face-down cards as drawn, and its lowest cards as kickers
+    let mut masks: Vec<u64> = vec![];
+    for h in draws {
+        let plays = scoring_plays(h, flags);
+        masks.extend(plays.iter().flat_map(|&m| with_kickers(h, m, flags.splash)));
+        masks.extend(plays);
+    }
     masks.sort_unstable();
     masks.dedup();
-    let mut scored: Vec<(f64, u64, Vec<usize>, HandType)> = masks
+    let mut scored: Vec<Scored> = masks
         .into_iter()
         .map(|m| {
             let mut idx = mask_cards(m);
             arrange(hand, &mut idx);
-            let played: Vec<Card> = idx.iter().map(|&i| hand[i]).collect();
-            let held: Vec<Card> = (0..hand.len()).filter(|i| !idx.contains(i)).map(|i| hand[i]).collect();
-            let o = score::score(b, &played, &held, &mut Unlucky, false);
-            (o.score, m, idx, o.hand)
+            let mut each = Vec::with_capacity(draws.len());
+            let mut kinds: Vec<(HandType, usize)> = vec![];
+            for h in draws {
+                let played: Vec<Card> = idx.iter().map(|&i| h[i]).collect();
+                let held: Vec<Card> = (0..h.len()).filter(|i| !idx.contains(i)).map(|i| h[i]).collect();
+                let o = score::score(b, &played, &held, &mut Unlucky, false);
+                each.push(o.score);
+                match kinds.iter_mut().find(|k| k.0 == o.hand) {
+                    Some(k) => k.1 += 1,
+                    None => kinds.push((o.hand, 1)),
+                }
+            }
+            let kind = kinds.iter().fold(kinds[0], |a, &k| if k.1 > a.1 { k } else { a }).0;
+            (each.iter().sum::<f64>() / each.len() as f64, m, idx, kind, each)
         })
         .collect();
     // the best first; on a tie, fewer cards (a play topped up scores the same), then the mask
@@ -252,11 +265,27 @@ pub fn big_hand_moves(b: &Board, hand: &[Card], deck: &[Card], discards: i64) ->
     let room = BIG_HAND_PLAYS - first.len();
     first.extend(rest.into_iter().take(room));
     first.sort_unstable();
-    // the best play over every card: what the structure's discards keep first
-    let best = first.first().map(|&k| scored[k].2.clone());
     let mut out: Vec<Move> = first.iter().map(|&k| Move::Play(scored[k].2.clone())).collect();
-    if let Some(best) = best {
-        out.extend(structure_discards(b, hand, deck, discards, best));
+    // each draw's best play over every card (the first of the best on it): what the structure's
+    // discards of that draw keep first (draw 0's all, as a hand without face-down cards always
+    // had them); a later draw adds only discards not given yet
+    let plays = out.len();
+    let same = |x: &Move, y: &Move| match (x, y) {
+        (Move::Discard(x), Move::Discard(y)) => x.len() == y.len() && x.iter().all(|i| y.contains(i)),
+        _ => false,
+    };
+    for (d, h) in draws.iter().enumerate() {
+        let Some(best) = scored.iter().fold(None::<&Scored>, |a, x| match a {
+            Some(a) if a.4[d] >= x.4[d] => Some(a),
+            _ => Some(x),
+        }) else {
+            break;
+        };
+        for m in structure_discards(b, h, deck, discards, best.2.clone()) {
+            if d == 0 || !out[plays..].iter().any(|x| same(x, &m)) {
+                out.push(m);
+            }
+        }
     }
     out
 }
@@ -620,16 +649,6 @@ pub fn all_plays(hand: &[Card]) -> Vec<Move> {
 /// a discard) of them, blind.
 pub fn all_face_down(hand: &[Card]) -> bool {
     !hand.is_empty() && hand.iter().all(|c| c.face_down)
-}
-
-/// The places of `hand`'s cards from the highest by the game's rank sort to the lowest
-/// (`Card::sort_nominal`, cards alike by place): of face-down cards, what pressing the rank sort
-/// shows of them (each simulated round's draw keeps their order among themselves: `Hidden`),
-/// wherever they sit
-fn by_rank_sort(hand: &[Card]) -> Vec<usize> {
-    let mut by: Vec<usize> = (0..hand.len()).collect();
-    by.sort_by(|&a, &b| hand[b].sort_nominal(false).total_cmp(&hand[a].sort_nominal(false)).then(a.cmp(&b)));
-    by
 }
 
 /// Every discard of 1 to 5 cards from the hand (none without a discard left), for screening
@@ -4637,7 +4656,6 @@ mod tests {
         assert_eq!(all_discards(&hand, 1).len(), 218);
         assert!(all_discards(&hand, 0).is_empty());
         let b = sample_board(&["j_joker"]);
-        assert_eq!(big_hand_moves(&b, &hand, &[], 0).len(), 218);
         let start = RoundStart { hand: hand.clone(), deck: standard_deck(), hand_size: 8, hands: 4, discards: 0, scored: 0.0, target: 300.0, fresh: false, ..Default::default() };
         let won = outcomes_after(&b, &start, &Move::Play(vec![0]), 0..16, 3, &[]).iter().filter(|o| o.won > 0.0).count();
         assert!(won > 8, "{won}");
@@ -4951,7 +4969,7 @@ mod tests {
         let hand = Card::parse_list(&text.join(" ")).unwrap();
         assert_eq!(hand.len(), 40);
         let b = sample_board(&["j_joker"]);
-        let moves = big_hand_moves(&b, &hand, &standard_deck(), 3);
+        let moves = big_hand_moves(&b, std::slice::from_ref(&hand), &standard_deck(), 3);
         let plays: Vec<&Vec<usize>> = moves.iter().filter_map(|m| if let Move::Play(v) = m { Some(v) } else { None }).collect();
         assert!(plays.len() <= BIG_HAND_PLAYS);
         let mut eights: Vec<usize> = (0..hand.len()).filter(|&i| hand[i].rank.0 == 8).collect();
@@ -4964,6 +4982,45 @@ mod tests {
         eights.sort();
         let lowest = |v: &Vec<usize>| v.len() == 5 && v.iter().all(|i| !eights.contains(i)) && v.iter().filter(|&&i| hand[i].rank.0 < 8).count() == 2;
         assert!(moves.iter().any(|m| matches!(m, Move::Discard(v) if lowest(v))), "{moves:?}");
+    }
+
+    #[test]
+    fn a_big_hands_moves_read_its_face_down_cards_as_drawn_not_as_their_stand_ins() {
+        // 14 cards (Juggle Tags), a face-down 9♠ or 8♠ the sorts can't tell apart (between K♠ and
+        // 7♠ by suit, between the Q and the 7s by rank), the other in the pile: the moves come
+        // from the draws, so they're the same either way, and some hold that card (gap 25 (c))
+        let mut nine = Card::parse_list("AS KS 9S 7S 2S AH KH QH 7H 7D 6D 5C 4C 3C").unwrap();
+        nine[2].face_down = true;
+        let mut eight = nine.clone();
+        eight[2] = Card { face_down: true, ..Card::parse_list("8S").unwrap()[0] };
+        let b = sample_board(&["j_joker"]);
+        let start = |hand: &[Card], slots: &[usize]| {
+            let mut h = Hidden::new(hand, slots, slots.to_vec(), false);
+            h.stand = slots.iter().map(|&i| hand[i]).collect();
+            let deck: Vec<Card> = standard_deck().into_iter().filter(|c| !hand.iter().any(|x| x.same_kind(c))).collect();
+            RoundStart { hand: hand.to_vec(), deck, hand_size: hand.len() as i64, hands: 4, discards: 3, target: 5000.0, hidden: Some(std::sync::Arc::new(h)), ..Default::default() }
+        };
+        let moves = |hand: &[Card], slots: &[usize]| {
+            let s = start(hand, slots);
+            big_hand_moves(&b, &hidden_hands(&s, 42, BIG_HAND_DRAWS), &s.deck, s.discards)
+        };
+        let (x, y) = (moves(&nine, &[2]), moves(&eight, &[2]));
+        assert_eq!(x, y);
+        assert!(x.iter().any(|m| matches!(m, Move::Play(v) if v.contains(&2))));
+        assert!(x.iter().any(|m| matches!(m, Move::Discard(v) if v.contains(&2))));
+        // reading the cards as they are (the old way, a stand-in read as real) told them apart
+        assert_ne!(big_hand_moves(&b, std::slice::from_ref(&nine), &[], 3), big_hand_moves(&b, std::slice::from_ref(&eight), &[], 3));
+        // The House with 14 cards, all face down: moves from the draws over every card, the two
+        // lowest by the rank sort too (no cut to the 12 highest), plays and discards
+        let mut all = nine.clone();
+        all.iter_mut().for_each(|c| c.face_down = true);
+        let slots: Vec<usize> = (0..all.len()).collect();
+        let m = moves(&all, &slots);
+        assert!(m.iter().filter(|m| matches!(m, Move::Play(_))).count() > 20, "{m:?}");
+        for i in 0..all.len() {
+            assert!(m.iter().any(|m| matches!(m, Move::Play(v) if v.contains(&i))), "card {i} in no play");
+            assert!(m.iter().any(|m| matches!(m, Move::Discard(v) if v.contains(&i))), "card {i} in no discard");
+        }
     }
 
     #[test]

@@ -11,7 +11,7 @@ use super::value::{self, Gain, LongRun, Spending};
 const SHOWN_DRAWS: usize = 64;
 
 /// Best play's note on a hand holding a face-down card (in its tip and the analysis' heuristics)
-pub(super) const FACE_DOWN_NOTE: &str = "Face-down cards: every play and discard with them (in a hand of up to 12 cards; in a bigger one its plays leave them out, and a hand of only them takes its 12 highest by the rank sort) and a tarot on them is tried, valued over what they could be (which of them it goes on too), drawn anew in each simulated round from the unseen cards (the draw pile and themselves) as both sorts and the boss allow (their order among themselves included; drawn card by card, then each redrawn 16 times given the others: close to every set that fits being as likely, a budget); a play holding one shows the hands it makes (up to 3, likeliest first) and its lowest to highest score over 64 of those draws. A card a tarot flips face up while changing it counts as seen (the game shows it). After the first move the simulated player can't see them either: it decides on 4 draws of what they could be by what the sorts show then and makes the decision most of them make (the first draw's on a tie; a budget, heuristic); a consumable held for a face-down card is used in those draws only where one puts the card it really is, and the cards it draws later in the round are dealt face up, under The Mark, The Wheel or The Fish too (both not modelled, gap 25)";
+pub(super) const FACE_DOWN_NOTE: &str = "Face-down cards: every play and discard with them (in a hand of up to 12 cards; in a bigger one the plays and discards its structure gives on 4 draws of them, each play screened by its mean score over those: a budget) and a tarot on them is tried, valued over what they could be (which of them it goes on too), drawn anew in each simulated round from the unseen cards (the draw pile and themselves) as both sorts and the boss allow (their order among themselves included; drawn card by card, then each redrawn 16 times given the others: close to every set that fits being as likely, a budget); a play holding one shows the hands it makes (up to 3, likeliest first) and its lowest to highest score over 64 of those draws. A card a tarot flips face up while changing it counts as seen (the game shows it). After the first move the simulated player can't see them either: it decides on 4 draws of what they could be by what the sorts show then and makes the decision most of them make (the first draw's on a tie; a budget, heuristic); a consumable held for a face-down card is used in those draws only where one puts the card it really is, and the cards it draws later in the round are dealt face up, under The Mark, The Wheel or The Fish too (both not modelled, gap 25)";
 
 /// Best play's fallback (no round simulated) with a face-down card in hand (gap 25 (f))
 const FACE_DOWN_FALLBACK_NOTE: &str = "Face-down cards: no round was simulated here, so this play is picked on one guess at what they are, and a play holding one shows no hand or score (heuristic, gap 25)";
@@ -211,16 +211,10 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
         // Every move: every play and every discard, for your hand as it is and after each
         // held consumable (used first). No move needs a rule to be considered. A hand of
         // more than `sim::ALL_MOVES_MAX` cards gives far more than a race can take: its moves
-        // come from its structure, over every card (`sim::big_hand_moves`).
+        // come from its structure, over every card (`moves_of`, `sim::big_hand_moves`), with its
+        // face-down cards drawn on seeds the race never plays.
         type Cand = (sim::Move, Board, RoundStart, Vec<sim::Use>, Option<String>);
-        let moves_of = |st: &RoundStart, b: &Board| {
-            if st.hand.len() > sim::ALL_MOVES_MAX {
-                return sim::big_hand_moves(b, &st.hand, &st.deck, st.discards);
-            }
-            let mut v = sim::all_plays(&st.hand);
-            v.extend(sim::all_discards(&st.hand, st.discards));
-            v
-        };
+        let moves_of = |st: &RoundStart, b: &Board| moves_of(st, b, seed);
         let mut cands: Vec<Cand> = moves_of(&start, &bb).into_iter().map(|m| (m, bb.clone(), start.clone(), uses.clone(), None)).collect();
         for (k, u) in uses.iter().enumerate() {
             if uses[..k].iter().any(|x| x.name == u.name) {
@@ -238,8 +232,7 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
                 changes = u.at.clone();
             }
             let s2 = RoundStart { hand: h2, changes, ..start.clone() };
-            let after = RoundStart { hand: move_hand(&s2).into_owned(), changes: vec![], ..s2.clone() };
-            for m in moves_of(&after, &b2) {
+            for m in moves_of(&s2, &b2) {
                 cands.push((m, b2.clone(), s2.clone(), rest.clone(), Some(u.name.clone())));
             }
         }
@@ -540,10 +533,27 @@ fn arranged(board: &Board, hand: &[Card], idx: &[usize], hand_order: &[usize], n
     (play, arrange, o)
 }
 
+/// Best play's moves from `st` on `b`, listed on the hand they're named on (`move_hand`): every
+/// play and discard of a hand of up to `sim::ALL_MOVES_MAX` cards, a bigger one's from its
+/// structure (`sim::big_hand_moves`) with its face-down cards as simulated rounds draw them
+/// (`sim::hidden_hands`, a consumable used first done to each draw), on seeds of their own (the
+/// race's rounds use `seed`'s)
+pub(super) fn moves_of(st: &RoundStart, b: &Board, seed: u64) -> Vec<sim::Move> {
+    let hand = move_hand(st);
+    if hand.len() > sim::ALL_MOVES_MAX {
+        let draws = if hand.iter().any(|c| c.face_down) { sim::hidden_hands(st, seed ^ 0x6269_675f_6861_6e64, sim::BIG_HAND_DRAWS) } else { vec![hand.into_owned()] };
+        debug_assert!(draws.iter().all(|h| h.len() == move_hand(st).len()));
+        return sim::big_hand_moves(b, &draws, &st.deck, st.discards);
+    }
+    let mut v = sim::all_plays(&hand);
+    v.extend(sim::all_discards(&hand, st.discards));
+    v
+}
+
 /// The hand a move is named and ordered on: the round's, with the cards a consumable used first
 /// on a face-down card adds at its end (`RoundStart::changes`: Cryptid's copies), unseen as the
 /// card they copy is (each simulated round draws it anew)
-fn move_hand(st: &RoundStart) -> std::borrow::Cow<'_, [Card]> {
+pub(super) fn move_hand(st: &RoundStart) -> std::borrow::Cow<'_, [Card]> {
     if st.changes.is_empty() {
         return std::borrow::Cow::Borrowed(&st.hand);
     }
