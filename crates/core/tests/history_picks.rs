@@ -7,7 +7,8 @@
 //! history's size: `BAV_SAMPLE` states (default 350, over a third of them in a blind; 0: all,
 //! today's too), the quick pass as the live page shows first on those in a blind, 1-60 s a
 //! state by the Ante, about 15 minutes a run (136 in a blind in 13 min on 2026-10-17);
-//! `BAV_ONLY=text` for the sampled states whose path contains it.
+//! `BAV_ONLY=text` for the sampled states whose path contains it; `BAV_SEED` for another seed
+//! than the analysis' default (what noise alone moves: a placebo for a check's moved picks).
 
 #![allow(dead_code)]
 
@@ -92,7 +93,7 @@ fn history_picks() {
             continue;
         }
         let t = std::time::Instant::now();
-        let a = advise::analyze(&run, GameData::bundled(), None, &advise::Options { quick: true, ..Default::default() });
+        let a = advise::analyze(&run, GameData::bundled(), None, &advise::Options { quick: true, seed: std::env::var("BAV_SEED").ok().and_then(|s| s.parse().ok()).unwrap_or(advise::Options::default().seed), ..Default::default() });
         eprintln!("{} {:.1?}", name(&p), t.elapsed());
         n += 1;
         lines += &match a.best_play {

@@ -245,7 +245,9 @@ pub struct PlayAdvice {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub planets: Option<f64>,
     /// A play holding a face-down card: `hand` is the hands it makes over what the card could be
-    /// (likeliest first), `score` its lowest and `score_range` lowest to highest
+    /// (likeliest first), `score` its lowest and `score_range` lowest to highest; with no round
+    /// simulated (Best play's fallback), a play keeping one held: `score` its lowest over them
+    /// and `score_range` where that moves
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub blind: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2351,7 +2353,9 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
         .chain(counts_ahead.then_some(
             "Best play also counts what the round leaves (the jokers' numbers, Blue Seal planets, money, cards worth drawing) by what it does to the chance of getting through this ante's blinds still ahead (the Big Blind taken as played, then the boss), each from the board the one before leaves: each change but the money's counted only where the paired simulated runs show it, measured on your board carrying what the shops before each blind find, as the shop ranking counts them for the boss (none in the quick pass), put on as a multiplier on every score sized so the boss gets through that often (heuristic), and raised where your board gets through these blinds less than 10% of the time (heuristic); each sized by a search of at most 6 sets of runs, ×1000 at most, ended by two steps that change nothing (a budget), and where that falls short, measured at the chance it reaches, as the change of the odds there, and the changes combined in the odds, so together they stay between none and a sure pass; a joker's numbers stepped up, a step down and down to none (linear in the odds between the steps), apart from its Ante 8 worth (the two multiplied); a joker's counter the round moves (Loyalty Card's place in its cycle, Yorick's discards to its next step, Seltzer's hands left) at each value the round can leave it at, so the hands a round takes land Loyalty Card's ×Mult in the blinds ahead or off them (at most 8 values measured, the rest read between them: a budget; counted only there); a card worth drawing once its Ante 8 worth passed; money by how much more often your board gets through with what the shop estimate says $10 more adds before each blind, from where the shops' find put the boss: with the boss alone ahead that much more, with two blinds on the same runs carrying the find raised for it, read off the find's own search (heuristic: linear between the points it tried, past them its slope; where it tried none, a search to within a standard error); counted wherever the estimate shows it, not by the paired runs (none in the quick pass). Not counted: the next ante, the game's round-end steps between the blinds (Popcorn, Turtle Bean, Gros Michel, perishables, the round's money).",
         ))
-        .chain((run.screen.in_blind() && run.hand.iter().any(|c| c.face_down)).then_some(play::FACE_DOWN_NOTE))
+        // the note of the path Best play took: the look-ahead's simulated rounds, or with no
+        // round to simulate (`play::best_play`'s fallback) the draws' score alone
+        .chain((run.screen.in_blind() && run.hand.iter().any(|c| c.face_down)).then_some(if ctx.specs.iter().any(|x| x.in_progress()) { play::FACE_DOWN_NOTE } else { play::FACE_DOWN_FALLBACK_NOTE }))
         .chain((run.hand.len() > sim::ALL_MOVES_MAX).then_some(
             "A big hand: Best play's moves come from the hand's structure (its plays whose cards can all score, the best few of each kind and then by score now; its structure's discards), not every move; the simulated player's best play looks only at its 16 highest cards.",
         ))
@@ -7964,6 +7968,71 @@ mod tests {
         e.consumable_slots = 4;
         let q = analyze(&e, GameData::bundled(), None, &Options { quick: true, ..quick() });
         assert!(q.tarots.iter().find(|t| t.key == "c_emperor").and_then(|t| t.long_mult).is_some_and(|l| l >= 1.0), "{:?}", q.tarots.iter().map(|t| (&t.key, t.long_mult)).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn best_plays_fallback_picks_over_what_a_face_down_card_could_be() {
+        // No blind in the save (nothing to simulate: Best play's fallback), a face-down card
+        // between the Q♠ and the 6♠ in the suit sort and the Q♠ and the 8♥ in the rank sort: a
+        // spade from 8 to Q, whether a 9♠ or a 10♠
+        // (gap 25 (f)). The play is picked over draws of what it could be, the same for both, and
+        // shows the hands it makes and its score's range over them, never one draw's.
+        let make = |down: &str| {
+            let mut r = shop_run(&[("j_joker", None, None)], &[]);
+            r.screen = crate::save::Screen::SelectingHand;
+            r.shop = None;
+            r.hand = Card::parse_list(&format!("AS QS {down} 6S 4S 3D 2C 8H")).unwrap();
+            r.hand[2].face_down = true;
+            r.draw_pile = crate::bench::standard_deck().into_iter().filter(|c| !r.hand.iter().any(|h| h.rank == c.rank && h.suit == c.suit)).collect();
+            r.current_blind = None;
+            r
+        };
+        let plays: Vec<PlayAdvice> = ["9S", "TS"].iter().map(|d| analyze(&make(d), GameData::bundled(), None, &quick()).best_play.unwrap()).collect();
+        let shown = |p: &PlayAdvice| (p.cards.clone(), p.hand.clone(), p.score, p.score_range, p.blind);
+        assert_eq!(shown(&plays[0]), shown(&plays[1]));
+        let p = &plays[0];
+        assert!(p.blind && p.hand.starts_with("Flush"), "{:?}", shown(p));
+        let (lo, hi) = p.score_range.unwrap();
+        assert!(lo < hi && p.score == lo, "{:?}", shown(p));
+        assert!(p.tip.as_deref().is_some_and(|t| t.contains("64 draws")), "{:?}", p.tip);
+    }
+
+    #[test]
+    fn best_plays_fallback_scores_a_face_up_play_over_the_face_down_card_it_holds() {
+        // Best play's fallback again, with Baron (×1.5 Mult for each King held) and a face-down
+        // card between the A♦ and the 9♣ in the rank sort and the A♠ and the A♥ in the suit sort
+        // (the hand sits in neither): a spade from 9 to K, so it may be a King. Four Aces leave
+        // it held, so the score it shows is over what it could be, a range, never one draw's.
+        let mut r = shop_run(&[("j_baron", None, None)], &[]);
+        r.screen = crate::save::Screen::SelectingHand;
+        r.shop = None;
+        r.hand = Card::parse_list("AS AH AD AC KS 9D 9C 3H").unwrap();
+        r.hand[4].face_down = true;
+        r.draw_pile = crate::bench::standard_deck().into_iter().filter(|c| !r.hand.iter().any(|h| h.rank == c.rank && h.suit == c.suit)).collect();
+        r.current_blind = None;
+        let a = analyze(&r, GameData::bundled(), None, &quick());
+        let p = a.best_play.unwrap();
+        assert!(!p.blind && p.hand == "Four of a Kind", "{:?}", (&p.cards, &p.hand, p.blind));
+        let (lo, hi) = p.score_range.expect("a range over the draws");
+        assert!(lo < hi && p.score == lo, "{:?}", p.score_range);
+        // the analysis' heuristics say which path ran: no round was simulated
+        assert!(a.heuristics.iter().any(|h| h.contains("no round was simulated")) && !a.heuristics.iter().any(|h| h.contains("drawn anew in each simulated round")));
+    }
+
+    #[test]
+    fn best_plays_fallback_never_throws_high_cards_as_kickers_on_a_tie() {
+        // Best play's fallback with a plain Joker: a Pair of 5s scores the same with A K Q
+        // played along (they don't score), and the face-down card (below the 5♦ in the rank
+        // sort: a 2, 3 or 4) pairs nothing. On that exact tie the fewest cards are played.
+        let mut r = shop_run(&[("j_joker", None, None)], &[]);
+        r.screen = crate::save::Screen::SelectingHand;
+        r.shop = None;
+        r.hand = Card::parse_list("AC KH QD 9C 7H 5S 5D 2D").unwrap();
+        r.hand[7].face_down = true;
+        r.draw_pile = crate::bench::standard_deck().into_iter().filter(|c| !r.hand.iter().any(|h| h.rank == c.rank && h.suit == c.suit)).collect();
+        r.current_blind = None;
+        let p = analyze(&r, GameData::bundled(), None, &quick()).best_play.unwrap();
+        assert!(p.hand == "Pair" && p.cards.len() == 2 && !p.blind, "{:?}", (&p.cards, &p.hand));
     }
 
     #[test]

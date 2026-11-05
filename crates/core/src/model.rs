@@ -289,29 +289,28 @@ pub(crate) fn ordinal(n: usize) -> String {
 /// For each card of `hand` (as it sits, left to right), the keys (`Card::sort_nominal`) of the
 /// face-up cards just below and above it in the rank sort (`[0]`) and the suit sort (`[1]`), those
 /// both sides included (it may be a card alike): what the two sorts bound a face-down card by
-/// (`hand_labels`, and the advice's draws of what it could be, `sim::Hidden`). In the sort the
-/// hand sits in, its neighbours on screen; in the other, by key, and a face-up card with its own
-/// key bounds nothing there: which of the two the game puts first is `unique_val`'s, which the
-/// save doesn't give. Whether the hand sits in a sort is told by every card's real key.
+/// (`hand_labels`, and the advice's draws of what it could be, `sim::Hidden`). Each sort is the
+/// one the game shows (cardarea.lua `CardArea:sort`): highest key first, cards alike (the same
+/// key) in the order they sit. The game breaks their tie by the card's original suit, then
+/// `unique_val` (card.lua `Card:get_nominal`; the second isn't in the save), the same way in both
+/// sorts, so a hand that sits in either sort shows that order and is bounded by its neighbours as
+/// the screen shows them. In a hand you rearranged (in neither sort) the order they sit is taken
+/// for it (gap 35: the screen after a sort may put a card alike on the other side), so the bounds
+/// never depend on which card alike a face-down card is.
 pub fn sort_bounds(hand: &[Card]) -> Vec<[(f64, f64); 2]> {
-    // whether the hand sits in this sort's order (highest first), as the game leaves it after a
-    // sort: then where each card sits is what you see, ties between cards alike included
-    let in_order = |by_suit: bool| hand.windows(2).all(|w| w[0].sort_nominal(by_suit) >= w[1].sort_nominal(by_suit));
-    let sorted = [in_order(false), in_order(true)];
-    let bounds = |i: usize, by_suit: bool| -> (f64, f64) {
-        let key = |c: &Card| c.sort_nominal(by_suit);
-        if sorted[by_suit as usize] {
-            let above = hand[..i].iter().rev().find(|c| !c.face_down).map_or(f64::INFINITY, key);
-            let below = hand[i + 1..].iter().find(|c| !c.face_down).map_or(f64::NEG_INFINITY, key);
-            return (below, above);
+    let mut out = vec![[(f64::NEG_INFINITY, f64::INFINITY); 2]; hand.len()];
+    for by_suit in [false, true] {
+        let key = |i: usize| hand[i].sort_nominal(by_suit);
+        let mut order: Vec<usize> = (0..hand.len()).collect();
+        // highest first; a stable sort, so cards alike keep the order they sit in
+        order.sort_by(|&a, &b| key(b).total_cmp(&key(a)));
+        for (k, &i) in order.iter().enumerate() {
+            let above = order[..k].iter().rev().find(|&&j| !hand[j].face_down).map_or(f64::INFINITY, |&j| key(j));
+            let below = order[k + 1..].iter().find(|&&j| !hand[j].face_down).map_or(f64::NEG_INFINITY, |&j| key(j));
+            out[i][by_suit as usize] = (below, above);
         }
-        let k = key(&hand[i]);
-        let keys = hand.iter().filter(|c| !c.face_down).map(key);
-        let below = keys.clone().filter(|&x| x < k).fold(f64::NEG_INFINITY, f64::max);
-        let above = keys.filter(|&x| x > k).fold(f64::INFINITY, f64::min);
-        (below, above)
-    };
-    (0..hand.len()).map(|i| [bounds(i, false), bounds(i, true)]).collect()
+    }
+    out
 }
 
 /// Each card of `hand` (as it sits, left to right) by what you can see of it: a face-up card by
@@ -322,13 +321,12 @@ pub fn sort_bounds(hand: &[Card]) -> Vec<[(f64, f64); 2]> {
 /// between the rank and suit sort shows where each lands among the face-up cards (the sort only
 /// reorders, so a raised card stays raised and can be followed). Those two places bound it: the
 /// cards it can be are every rank and suit (or a Stone card) whose key fits between its face-up
-/// neighbours in both sorts. In the sort your hand sits in, the neighbours are the ones on
-/// screen; in the other they're found by key, where a face-up card alike (the same key) could
-/// sit on either side (`unique_val`, not in the save), so it bounds nothing: there the name
-/// can be wider than the screen shows, never narrower, and it differs with which card alike it is.
-/// Whether the hand sits in a sort is told by every card's real key (a hand you rearranged by
-/// hand is never bounded by an order it isn't in), the other way the hidden card reaches the
-/// name: exact or wider, never wrong. When the face-up cards bound it nowhere (every card face down) or
+/// neighbours in both sorts (`sort_bounds`): in the sort your hand sits in, the ones on screen;
+/// in the other, the ones the sort would show, cards alike (the same key) in the order they sit,
+/// the order the game's tie-break gives a hand that sits in either sort. In a hand you
+/// rearranged that order is taken for it (gap 35: where the game puts a card alike on the other
+/// side, the screen after a sort bounds it by the neighbour on that side, and the name is the
+/// side the order they sit gives, still holding the card but not what that screen shows). When the face-up cards bound it nowhere (every card face down) or
 /// bound another face-down card the same way, it's also named by its order among the face-down
 /// cards in the rank sort ("the 2nd highest by the rank sort"), which the sort shows too. Never
 /// the card itself: only what you can see. The boss's own rule (The Mark turns down only face
@@ -543,6 +541,24 @@ mod tests {
     }
 
     #[test]
+    fn a_rearranged_hand_names_a_face_down_card_by_what_the_sorts_show_not_which_card_alike_it_is() {
+        // 2♦ ? 5♣, in no sort: the face-down card right of the 2♦ sorts below it in both sorts
+        // whether it's a second 2♦ (cards alike taken in the order they sit, `sort_bounds`) or a
+        // Stone card, so both get one name and one set of bounds the draws read (`sim::Hidden`).
+        // Before, the 2♦ bounded nothing for its twin alone, which widened its name: the width
+        // told which it was.
+        let names: Vec<String> = ["?2D", "?3H:stone"].iter().map(|d| hand_labels(&hand(&format!("2D {d} 5C")))[1].clone()).collect();
+        assert_eq!(names, ["face-down card, 2nd from left: 2♦ or a Stone card"; 2]);
+        let bounds: Vec<_> = ["?2D", "?3H:stone"].iter().map(|d| sort_bounds(&hand(&format!("2D {d} 5C")))[1]).collect();
+        assert_eq!(bounds[0], bounds[1]);
+        // and two face-down cards alike are ordered as they sit, as a pair the sorts show in the
+        // same order is: 4♥ ? ? 9♠ (in no sort) with the two a pair of 7♣ or a 7♣ above a 6♣ (a
+        // guard: so before too)
+        let lists: Vec<Vec<String>> = ["?7C ?7C", "?7C ?6C"].iter().map(|d| hand_labels(&hand(&format!("4H {d} 9S")))).collect();
+        assert_eq!(lists[0], lists[1]);
+    }
+
+    #[test]
     fn face_down_cards_the_sorts_cant_tell_apart_are_named_by_their_order() {
         // every card face down (The House's first hand): nothing bounds them but their order
         // among themselves, which the rank sort shows
@@ -572,10 +588,10 @@ mod tests {
         // sorts, so one face down at the bottom of both might be one
         let h = hand("?3H:stone 2D 5C");
         assert_eq!(hand_labels(&h)[0], "face-down card, 1st from left: 2♦ or a Stone card");
-        // next to a face-up card alike, it may sort on either side of it (`unique_val`), so that
-        // card bounds nothing
+        // left of a face-up card alike in a hand that sits in no sort, taken as above that card
+        // in the sorts (cards alike in the order they sit), so the name leaves a Stone card out
         let h = hand("?2D 2D 5C");
-        assert_eq!(hand_labels(&h)[0], "face-down card, 1st from left: ♣ 2 to 5 or ♦ 2 to 5 or a Stone card");
+        assert_eq!(hand_labels(&h)[0], "face-down card, 1st from left: ♣ 2 to 5 or ♦ 2 to 5");
         // above every card but a face-up Stone card: the sorts say nothing, so its order does
         let h = hand("?8H 3H:stone");
         assert_eq!(hand_labels(&h)[0], "face-down card, 1st from left: the highest face-down card by the rank sort");

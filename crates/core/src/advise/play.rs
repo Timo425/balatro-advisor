@@ -13,8 +13,8 @@ const SHOWN_DRAWS: usize = 64;
 /// Best play's note on a hand holding a face-down card (in its tip and the analysis' heuristics)
 pub(super) const FACE_DOWN_NOTE: &str = "Face-down cards: every play and discard with them (in a hand of up to 12 cards; in a bigger one the plays and discards its structure gives on 4 draws of them, each play screened by its mean score over those: a budget) and a tarot on them is tried, valued over what they could be (which of them it goes on too), drawn anew in each simulated round from the unseen cards (the draw pile and themselves) as both sorts and the boss allow (their order among themselves included; drawn card by card, then each redrawn 16 times given the others: close to every set that fits being as likely, a budget); a play holding one shows the hands it makes (up to 3, likeliest first) and its lowest to highest score over 64 of those draws. A card a tarot flips face up while changing it counts as seen (the game shows it). After the first move the simulated player can't see them either: it decides on 4 draws of what they could be by what the sorts show then and makes the decision most of them make (the first draw's on a tie; a budget, heuristic); a consumable held for a face-down card is used in those draws only where one puts the card it really is, and the cards it draws later in the round are dealt face up, under The Mark, The Wheel or The Fish too (both not modelled, gap 25)";
 
-/// Best play's fallback (no round simulated) with a face-down card in hand (gap 25 (f))
-const FACE_DOWN_FALLBACK_NOTE: &str = "Face-down cards: no round was simulated here, so this play is picked on one guess at what they are, and a play holding one shows no hand or score (heuristic, gap 25)";
+/// Best play's fallback (no round simulated) with a face-down card in hand
+pub(super) const FACE_DOWN_FALLBACK_NOTE: &str = "Face-down cards: no round was simulated here, so this play is the one that scores the most on average over 64 draws of what they could be, by score alone (heuristic); a play holding one shows the hands it makes and its lowest to highest score over them, a play keeping one held its lowest score over them (a range where it moves)";
 
 pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[TarotValue], hand_order: &[usize], ahead: Option<&value::Ahead>) -> Option<PlayAdvice> {
     let (run, data) = (ctx.run, ctx.data);
@@ -153,29 +153,9 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
             let blind = action == "play" && idx.iter().any(|&i| hand[i].face_down);
             let mut range = None;
             let (name, score, sure, dig, arrange) = if blind {
-                let outs: Vec<crate::engine::Outcome> = sim::hidden_hands(st, seed, SHOWN_DRAWS)
-                    .iter()
-                    .map(|h| {
-                        let rest: Vec<Card> = (0..h.len()).filter(|i| !idx.contains(i)).map(|i| h[i]).collect();
-                        crate::engine::score(board, &idx.iter().map(|&i| h[i]).collect::<Vec<_>>(), &rest, &mut crate::engine::Unlucky, false)
-                    })
-                    .collect();
-                let lo = outs.iter().map(|o| o.score).fold(f64::INFINITY, f64::min);
-                let hi = outs.iter().map(|o| o.score).fold(f64::NEG_INFINITY, f64::max);
-                let sure = outs.iter().map(|o| o.sure).fold(f64::INFINITY, f64::min);
-                let mut kinds: Vec<(crate::engine::HandType, usize)> = vec![];
-                for o in &outs {
-                    match kinds.iter_mut().find(|k| k.0 == o.hand) {
-                        Some(k) => k.1 += 1,
-                        None => kinds.push((o.hand, 1)),
-                    }
-                }
-                kinds.sort_by(|a, b| b.1.cmp(&a.1).then((b.0 as u8).cmp(&(a.0 as u8))));
-                let name = kinds.iter().take(3).map(|k| k.0.name()).collect::<Vec<_>>().join(" or ");
-                let digs: Vec<usize> = outs.iter().map(|o| idx.len().saturating_sub(o.scoring.len())).collect();
-                let dig = if digs.windows(2).all(|w| w[0] == w[1]) { digs.first().copied().unwrap_or(0) } else { 0 };
-                range = Some((lo, hi));
-                (name, lo, sure, dig, (vec![], vec![]))
+                let d = OverDraws::of(board, &sim::hidden_hands(st, seed, SHOWN_DRAWS), &idx);
+                range = Some((d.lo, d.hi));
+                (d.name, d.lo, d.sure, d.dig, (vec![], vec![]))
             } else if action == "play" {
                 let (order, arrange, o) = arranged(board, hand, &idx, hand_order, names);
                 let dig = idx.len().saturating_sub(o.scoring.len());
@@ -461,13 +441,64 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
             Some(PlayAdvice { reference, reference_gap, judged, worth_drawing: worth_drawing.clone(), grows: grows.clone(), counts_ahead, grown: best.grown, then: best.then.clone(), ties: opts.iter().filter(|o| o.tie).count(), planets: Some(best.planets), use_first: best.use_first, spare_hands: Some(best.spare_hands), round_money: Some(best.round_money), action: best.action, cards: best.cards, arrange: best.arrange, arrange_indices: best.arrange_indices, dig: best.dig, indices: best.indices, hand: best.hand, score: best.score, score_range: best.score_range, blind: best.blind, p_win: Some(best.p_win), alternatives: opts, tip })
         }
         None => {
-            // your hand as the round has it: a face-down card its stand-in, never the real card
-            let hand: Vec<Card> = match ctx.specs.iter().find(|x| x.in_progress()) {
-                Some(s) => s.start.hand.clone(),
-                None => face_down_drawn(run, &ctx.base, &run.hand, hand_order, &run.draw_pile, ctx.opts.seed).0,
+            // your hand as the round has it (a face-down card its stand-in), and what's known of
+            // its face-down cards
+            let start: RoundStart = match ctx.specs.iter().find(|x| x.in_progress()) {
+                Some(s) => s.start.clone(),
+                None => {
+                    let (hand, deck, hidden) = face_down_drawn(run, &ctx.base, &run.hand, hand_order, &run.draw_pile, ctx.opts.seed);
+                    RoundStart { hand, deck, hidden, ..Default::default() }
+                }
             };
-            sim::best_play(&b, &hand).map(|p| {
-            let (order, (arrange, arrange_indices), _) = arranged(&b, &hand, &p.cards, hand_order, names);
+            let hand = &start.hand;
+            let blind_hand = hand.iter().any(|c| c.face_down);
+            // with a face-down card in hand, the play is picked over what they could be (the draws
+            // the first simulated rounds meet, `sim::hidden_hands`), never on one draw: of every
+            // play (Best play's moves, `moves_of`), the
+            // one that scores the most on average over them; an exact tie goes to the fewest
+            // cards played, then the cards, as the look-ahead's `canon` breaks it (a face-down
+            // card by its stand-in's key, which may still follow the real card's place: gap 25)
+            let mut plain: Option<(String, f64)> = None;
+            let pick: Option<(Vec<usize>, Option<OverDraws>)> = if blind_hand {
+                let hands = sim::hidden_hands(&start, ctx.opts.seed, SHOWN_DRAWS);
+                moves_of(&start, &b, ctx.opts.seed)
+                    .into_iter()
+                    .filter_map(|m| match m {
+                        sim::Move::Play(c) => Some(c),
+                        sim::Move::Discard(_) => None,
+                    })
+                    .map(|c| {
+                        let d = OverDraws::of(&b, &hands, &c);
+                        (c, d)
+                    })
+                    .fold(None, |best: Option<(Vec<usize>, OverDraws)>, x| {
+                        // fewer cards first (a card that doesn't score isn't thrown with it),
+                        // then the cards themselves
+                        let key = |c: &[usize]| {
+                            let mut k: Vec<_> = c.iter().map(|&i| hand[i].order_key()).collect();
+                            k.sort();
+                            (c.len(), k)
+                        };
+                        match best {
+                            Some(y) if y.1.mean > x.1.mean || (y.1.mean == x.1.mean && key(&y.0) <= key(&x.0)) => Some(y),
+                            _ => Some(x),
+                        }
+                    })
+                    .map(|(c, d)| (c, Some(d)))
+            } else {
+                // with none face down, the play's hand and floor as `sim::best_play` gives them
+                sim::best_play(&b, hand).map(|p| {
+                    plain = Some((p.hand.name().to_string(), p.floor));
+                    (p.cards, None)
+                })
+            };
+            pick.map(|(cards, over)| {
+            // a play holding a face-down card: in the order its draws hold it, its hands and
+            // score over them; else arranged as it's best played, its score over the draws all
+            // the same where one is held (Raised Fist, Baron, Steel cards: a range when it moves)
+            let blind = cards.iter().any(|&i| hand[i].face_down);
+            let (order, (arrange, arrange_indices), o) = arranged(&b, hand, &cards, hand_order, names);
+            let (order, arrange, arrange_indices) = if blind { (cards.clone(), vec![], vec![]) } else { (order, arrange, arrange_indices) };
             PlayAdvice {
             use_first: None,
             reference: vec![],
@@ -483,22 +514,79 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
             spare_hands: None,
             round_money: None,
             action: "play".into(),
-            cards: order.iter().map(|&i| shown(&hand, i, hand_order, names)).collect(),
+            cards: order.iter().map(|&i| shown(hand, i, hand_order, names)).collect(),
             arrange,
             arrange_indices,
-            dig: 0,
+            dig: match (&over, &plain) {
+                (Some(d), _) if blind => d.dig,
+                (Some(_), _) => cards.len().saturating_sub(o.scoring.len()),
+                _ => 0,
+            },
             indices: order.iter().map(|&i| hand_order[i]).collect(),
-            // a play holding a face-down card: no hand or score (they'd be one stand-in's)
-            hand: if p.cards.iter().any(|&i| hand[i].face_down) { "face-down cards".into() } else { p.hand.name().to_string() },
-            score: if p.cards.iter().any(|&i| hand[i].face_down) { 0.0 } else { p.floor },
-            score_range: None,
-            blind: p.cards.iter().any(|&i| hand[i].face_down),
+            hand: match (&over, &plain) {
+                (Some(d), _) if blind => d.name.clone(),
+                (_, Some((h, _))) => h.clone(),
+                _ => o.hand.name().to_string(),
+            },
+            score: match (&over, &plain) {
+                (Some(d), _) => d.lo,
+                (_, Some((_, f))) => *f,
+                _ => o.score,
+            },
+            score_range: over.as_ref().filter(|d| blind || d.lo < d.hi).map(|d| (d.lo, d.hi)),
+            blind,
             p_win: None,
             alternatives: vec![],
-            tip: run.hand.iter().any(|c| c.face_down).then(|| FACE_DOWN_FALLBACK_NOTE.to_string()),
+            // with what the draws had to drop, if anything
+            tip: blind_hand.then(|| std::iter::once(FACE_DOWN_FALLBACK_NOTE.to_string()).chain(start.hidden.as_deref().and_then(sim::Hidden::fell_back_note)).collect::<Vec<_>>().join(". ")),
             }
             })
         }
+    }
+}
+
+/// A play of a hand holding face-down cards, over draws of what they could be (one hand per
+/// draw, the play `idx` in each): the hands it makes, its score's range and what it surely
+/// scores, as Best play shows it
+struct OverDraws {
+    /// The hands it makes, likeliest first (up to 3), "Flush or Pair"
+    name: String,
+    /// Its lowest and highest score (each with nothing random rolling its way, `engine::Unlucky`)
+    lo: f64,
+    hi: f64,
+    /// Its mean score
+    mean: f64,
+    /// What it surely scores: the lowest of each draw's
+    sure: f64,
+    /// The cards played that don't score, when every draw agrees (else 0)
+    dig: usize,
+}
+
+impl OverDraws {
+    fn of(board: &Board, hands: &[Vec<Card>], idx: &[usize]) -> OverDraws {
+        let outs: Vec<crate::engine::Outcome> = hands
+            .iter()
+            .map(|h| {
+                let rest: Vec<Card> = (0..h.len()).filter(|i| !idx.contains(i)).map(|i| h[i]).collect();
+                crate::engine::score(board, &idx.iter().map(|&i| h[i]).collect::<Vec<_>>(), &rest, &mut crate::engine::Unlucky, false)
+            })
+            .collect();
+        let lo = outs.iter().map(|o| o.score).fold(f64::INFINITY, f64::min);
+        let hi = outs.iter().map(|o| o.score).fold(f64::NEG_INFINITY, f64::max);
+        let mean = outs.iter().map(|o| o.score).sum::<f64>() / outs.len().max(1) as f64;
+        let sure = outs.iter().map(|o| o.sure).fold(f64::INFINITY, f64::min);
+        let mut kinds: Vec<(crate::engine::HandType, usize)> = vec![];
+        for o in &outs {
+            match kinds.iter_mut().find(|k| k.0 == o.hand) {
+                Some(k) => k.1 += 1,
+                None => kinds.push((o.hand, 1)),
+            }
+        }
+        kinds.sort_by(|a, b| b.1.cmp(&a.1).then((b.0 as u8).cmp(&(a.0 as u8))));
+        let name = kinds.iter().take(3).map(|k| k.0.name()).collect::<Vec<_>>().join(" or ");
+        let digs: Vec<usize> = outs.iter().map(|o| idx.len().saturating_sub(o.scoring.len())).collect();
+        let dig = if digs.windows(2).all(|w| w[0] == w[1]) { digs.first().copied().unwrap_or(0) } else { 0 };
+        OverDraws { name, lo, hi, mean, sure, dig }
     }
 }
 

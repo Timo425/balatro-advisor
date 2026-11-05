@@ -330,7 +330,7 @@ vs actual blind results and every shop seen).
 | Comparison: at most 1,600 rounds an option, "clearly worse" at 95% (paired; where a round can be lost outright, as in Best play, with one round in its favour worth the largest round value counted as if it had happened: what a parting round not yet seen could make up, about 3 × the largest round value / n with no spread, the rule of three as for a tie; a graded measure, a deck's score ratio, as it is), "equal" within 1% of the leader's value | `compare.rs` `MAX`, `EQUAL` | when a difference is real enough to act on | — |
 | Best play's search budget: first batch 16 rounds (batches double); at most 48 undecided moves after 16 and 32 rounds, 24 after 64, 12 after 128, 8 after that, and with many moves at least half of them for each doubling instead (`compare::halving`: an 8-card hand's 436 moves, 218 after 16 rounds, 109 after 32, 55 after 64; since 2026-10-11, before a first batch of 32 rounds cut to 48: below), kept by how little the rounds show them worse than the leader (Noise stage; until 2026-10-05 by value, which on few rounds kept a steady money edge over a move a rare lost round would separate), on exact ties by value, then how close lost rounds came to the target (a first cut at 16 rounds, to a few moves by value, ranked moves on money before a rare lost round could show: the safest discards fell out; the cut at 16 rounds now keeps half, by the bound that counts the unseen round) | `advise.rs` `SEARCH_FIRST`, `SEARCH_BUDGET`; the halving factor 2 (`compare::halving`) | cost vs. coverage (2026-10-11: the rounds raced on 101 of the owner's states +13%, Antes 4–6 +20–31%, mostly near-hopeless rounds that before stopped on a false "equal"; a round no move can win races to the cap, 2.2–3.1× the rounds on three fixtures made unwinnable, 1,710 moves with a Cryptid 54.7k → 117.8k) | `search_against_reference` (2026-10-03, seeds 42-44, the 6 fixtures in a blind; a pick passes when gap − 2·se ≤ 1%; 2026-10-11, 11 fixtures: every pick passes) and the history check: see known gap "search misses" |
 | Best play on a hand of more than 12 cards (`ALL_MOVES_MAX`; every play and discard of 12 is ~3,200 moves): its structure's plays, each also topped up with up to the 5 least-worth cards outside it (plain first, then chips), the best 8 of each kind (hand, cards played) and then the best by score now with every roll failing, 256 in all (an 8-card hand has 218 plays), plus the structure's discards (D10); the first 64 cards, the first 10 Stone cards; with face-down cards, the structure (plays, kickers, discards) and score now of 4 draws of them on seeds the race doesn't play (`BIG_HAND_DRAWS`; on built all-face-down House hands it sometimes passes a best play below the old cut's, down to 12% on 16 cards, gap 25 (c)) | `sim.rs` `ALL_MOVES_MAX`, `BIG_HAND_PLAYS`, `BIG_HAND_PER_KIND`, `BIG_HAND_DRAWS`, `big_hand_moves` | cost vs. coverage (32 cards: tens of thousands of plays from the structure) | a big-hand state against a reference with every play the structure gives |
-| Face-down cards drawn: card by card in the rank sort's order, each kind of card tried once, at most 4,096 choices before a constraint is dropped (`HIDDEN_TRIES`: the boss's rule first, then their order among themselves, then their bounds), each card still to draw kept a card it could be, then each redrawn 16 times given the others (`HIDDEN_SWEEPS`; 4 left the highest of four chained cards a Q or better in 0.56 of draws, 16 and 32 in 0.66, 100 in 0.64: where it levels off, the even share itself not counted); a play holding one shown over 64 draws (`SHOWN_DRAWS`, display only) | `sim.rs` `Hidden::draw`, `play.rs` | every set of cards that fits what the sorts and the boss show, close to equally likely (gap 25) | the draws' shares against an exact count of the sets that fit, on small hands |
+| Face-down cards drawn: card by card in the rank sort's order, each kind of card tried once, at most 4,096 choices before a constraint is dropped (`HIDDEN_TRIES`: the boss's rule first, then their order among themselves, then their bounds), each card still to draw kept a card it could be, then each redrawn 16 times given the others (`HIDDEN_SWEEPS`; 4 left the highest of four chained cards a Q or better in 0.56 of draws, 16 and 32 in 0.66, 100 in 0.64: where it levels off, the even share itself not counted); a play holding one shown over 64 draws, and with no round to simulate Best play's pick the play best on average over them, a play keeping one held shown over them too (`SHOWN_DRAWS`; every play of the hand × 64 scores) | `sim.rs` `Hidden::draw`, `play.rs` | every set of cards that fits what the sorts and the boss show, close to equally likely (gap 25) | the draws' shares against an exact count of the sets that fit, on small hands |
 | The simulated player with a face-down card in hand: decides on 4 draws of what it could be, the decision most of them make played, the first draw's on a tie (`UNSEEN_DRAWS`) | `sim.rs` `decide_unseen` | deciding over everything the card could be (gap 25 (a)) | not measured: the bench's live face-down boards are near sure or near hopeless and its oracle shares the vote; live boards at a mid target and an oracle that can't see (queued) |
 | A tie (two options within 1%) takes n shared rounds with 3 × the largest round value / n ≤ 1% of the leader's value (about 300 when a round is worth about the leader's value): a round where they part ways may be rare, and when none has turned up in n rounds it may still happen 3 in n (95%, the rule of three); and a round worth something seen (on rounds all worth nothing, a round you rarely win with none won yet, the round that would part them could be worth anything: since 2026-10-11) | `compare.rs` `paired` | the rule of three | — |
 | Which hands carry your points (the main hand planets go to, joker growth, the style outlook): the hardest round of the ante, played from the start (a round in progress begins again, with the blind's own rules) | `advise.rs` `hand_mix`, `fresh_round`, `blind_from_start` | your hands in a typical round of that blind | — |
@@ -749,6 +749,18 @@ the same retriggered ×Mult.
   uncharged Invisible's sale no longer labelled "not modelled" (`shop_mail_in_sold_rich`); no
   Best play pick moved. Also: the outlook names the joker a single add replaces on a full row
   (it showed none), and `whatif` counts owned Negatives once in its slot warning.
+- **Done 2026-11-04:** the last reads of a face-down card's real self in its names and Best
+  play's fallback (gap 25 (d), (f)): each sort is the one the game would show, cards alike in
+  the order they sit (in a hand you rearranged, taken for the game's: gap 35), so a face-down
+  card's bounds never tell which card alike it is; the fallback with no round to simulate picks
+  the play best on average over 64 draws instead of on one, and shows the hands and score range
+  (a face-up play that keeps a face-down card held, its score over the draws: a range where it
+  moves; an exact tie to the fewest cards).
+  Bounds moved on 1 of 91 saved face-down states; the snapshot moved no Best play pick; 6 of
+  the 70 saved face-down picks moved, which a seed change alone moves as much (placebo), so it
+  can't be told from the quick pass's noise. Left: gap 25 (a)'s rest, (e), (g) (the look-ahead's
+  face-up play beside a face-down card held), the stand-ins' places and the ties (queued), gap
+  35's tie in hands in no sort.
 - **Next:** a free hand banked before the
   hand that wins (gap 34); Ceremonial Dagger's value (gap 8); the blind odds shown and the
   outlook chained as Best play's blinds ahead are (gap 28).
@@ -2149,7 +2161,8 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    are gone, and an all-face-down hand is one more case), so a play that rests on what the sorts
    pin (the suit for a Flush) comes out sure and one that hopes for a rank is averaged; such a
    play shows the hands it makes, likeliest first, and its lowest to highest score over 64 of the
-   draws (`play.rs` `SHOWN_DRAWS`; `score` and `sure` its lowest). Measured on the states from
+   draws (`play.rs` `SHOWN_DRAWS`; `score` and `sure` its lowest); a face-up play that keeps one
+   held still shows the stand-in's score and `sure` (gap 25 (g)). Measured on the states from
    play (the snapshot at this change against 0b4af1a, 2026-11-01): `house_facedown_spades_flush` (run 1RVL49LQ, The House, K♠ ? ? 6♠ 5♠ 4♠ 3♥ 5♦ 2♦ by
    suit) plays the Flush, 43,018 to 46,488, where it played a Pair of 5s to dig (12,127; its
    chance 0.3% → 5.5%); `mark_facedown_spade_kept` (run Q84UC3NR, The Mark, ? 9♠ 8♠ 4♠ ? 9♥ 2♥ ?:
@@ -2261,9 +2274,23 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    round dealt, which you can't see), Cryptid's copies of a face-down card counted face down
    (the game deals them face up: card.lua `Card:use_consumeable`, common_events.lua `copy_card`,
    so you see what it was), and exact ties between moves broken by the stand-ins' order
-   (`play.rs` `canon`; queued); (d) the order of two cards
-   alike in a rearranged hand, and whether the hand counts as sorted, still come from the real
-   cards, as in their names (gap 35); (e) the boss's rule is the only cause of a face-down card
+   (`play.rs` `canon`; queued); (d) done 2026-11-04:
+   each sort is the one the game would show, cards alike (the same key) in the order they sit
+   (`model::sort_bounds`; in a hand you rearranged, taken for the game's tie-break: gap 35), so a
+   face-down card's bounds and name never say which card alike it is, and whether the hand sits
+   in a sort is no longer asked of the real cards; the
+   simulated player's draws (`decide_unseen`, its hand mid-round in no sort) read the same bounds.
+   Measured (this change against 4428670, 2026-11-04): of 10,391 saved states (the owner's and
+   the bot's) 91 hold a face-down card, and the bounds moved on one (IBGHV1IW a2-r5: a face-down
+   5♦ beside a face-up 5♦, "4♥ to 10♦" → "4♥ to 5♦"); the snapshot moved only through the
+   simulated player's draws (both face-down fixtures with cards alike in their decks; no Best
+   play pick). The history check on all 70 saved states in a blind with a face-down card (the
+   usual sample holds 4): 6 picks moved, 2 ties, 2 unclear (−9.4% ± 7.6%, −4.4% ± 2.7%), 2
+   WORSE (one House hand saved twice, every card face down: throwing the 4♣ for the 3♥, −1.34%
+   ± 0.63%), by a judge that shares the simulated player. A placebo says the quick pass's own
+   noise: the base code at seeds 43–45 moves 4 or 5 of those 6 picks, its seed-43 pick on
+   GA74B7U3 comes out −3.5% ± 2.1% the same way, and on that House hand its seed-44 and 45 picks
+   sit 1.14% ± 0.62% and 0.69% ± 0.53% below its seed-42 one (gap 1); (e) the boss's rule is the only cause of a face-down card
    the draw reads: the X-ray Vision challenge's quarter of cards drawn face down
    (cardarea.lua `draw_card_from`, `flipped_cards`) isn't modelled, and where nothing fits all of
    it (a card turned down for another reason under The Mark, a Pareidolia sold or debuffed since)
@@ -2271,8 +2298,22 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    order, then the bounds (`Hidden::draw`), said as not modelled in the output (`fell_back`), and
    the simulated player's Verdant Leaf sale (`leaf_sale`, outside `decide_unseen`: no boss turns
    cards down under Verdant Leaf) reads a hand X-ray Vision turned down; (f)
-   with no round in progress to simulate, Best play's fallback picks its play on the analysis' one
-   draw (`sim::best_play` on the stand-ins; it shows neither hand nor score for it). The hands a
+   done 2026-11-04: with no round to simulate (a blind screen whose save names no blind: never
+   seen in a saved game, as a hand always has a play to race), Best play's fallback takes, of
+   every play (Best play's moves, `moves_of`), the one that scores most on average over 64 draws
+   (`sim::hidden_hands`), and shows its hands and score range as the look-ahead does (`play.rs`
+   `OverDraws`; a face-up play that keeps one held, its score over them); by score alone,
+   labelled, with what the draws had to drop, and the analysis' heuristics carry this note, not
+   the simulated rounds' one; an exact tie goes to the fewest cards (a card that doesn't score
+   isn't thrown), then as the look-ahead's (`canon`, the stand-ins'
+   keys, which may still follow the real card's place: queued); (g) in the look-ahead a face-up play that keeps a face-down card
+   held shows the stand-in's score and `sure` alone, though the card held moves it (Baron, Raised
+   Fist, Steel cards), and `sure` orders the moves tied with the leader (`wins_now`), so one
+   draw's can reorder them; under a consumable used first on a face-down card its name and
+   order are of the hand before the change (`move_hand`): the fix takes name, dig, score and
+   `sure` from the draws whenever the hand holds a face-down card (`OverDraws`, the draws made
+   once per start, not per move), a play counted blind when its cards differ across the draws.
+   The hands a
    play holding one makes are shown up to 3, likeliest first.
    Fixtures: `house_facedown_spades_flush` (its `best_hand: Flush`
    restored from `pending_expect`), `mark_facedown_spade_kept` (`best_not_cards: ["#1"]`, new;
@@ -2518,15 +2559,24 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    face-up cards by rank and by suit (the game's own key, card.lua `Card:get_nominal`: a Stone
    card sorts last in both), as the cards that fit both ("face-down card, 1st from left: ♠ 9 to
    A"; "… ♣ 10 to A or ♦ 10 to A"; "… 2♦ or a Stone card"). In the sort your hand sits in, its
-   neighbours are the ones on screen; in the other they're found by key, where a face-up card
-   with the same key bounds nothing (which of the two the game puts first is `unique_val`'s, not
-   in the save): there the name can be wider than the screen shows, never narrower, and differ
-   with which card alike it is. That, and whether the hand counts as sitting in a sort (told by
-   every card's real key, so a hand you rearranged by hand is never bounded by a screen order it
-   isn't in), are the two ways the hidden card reaches the name: wider or exact, never wrong,
-   though a wider name than its twin's would be is itself a tell that it's the card alike, and
-   two face-down cards alike in a hand you rearranged are ordered by place where the game's sort
-   would use `unique_val` (identical cards, so nothing is lost). The names depend on the order
+   neighbours are the ones on screen; in the other, the ones that sort would show
+   (`model::sort_bounds`), cards alike (the same key) in the order they sit: the game breaks
+   that tie by the card's original suit (a suit changed since keeps it), then `unique_val`,
+   which isn't in the save (card.lua `Card:get_nominal`), the same way in both sorts, so a hand
+   that sits in either shows it. Since 2026-11-04 (gap 25 (d)); before, a face-up card alike
+   bounded nothing in the other sort and whether the hand sat in a sort was told by the real
+   cards, so the card alike got a wider name than its twin would: a tell. Left: in a hand you
+   rearranged (in neither sort), the order they sit is taken for the game's tie-break; where the
+   game puts a face-down card on the other side of a face-up card alike, the screen after a sort
+   bounds it by the neighbour there (it may then look like a Stone card, say, which the name
+   leaves out): the name is the side the order they sit gives, still holding the card but not
+   what that screen shows, and the draws don't weigh both sides. Of 10,391 saved states none
+   hold such a hand (2026-11-04; the one state whose bounds moved sits in a sort), but the
+   simulated player meets it in every round on a deck with cards alike: its mid-round hand
+   takes drawn cards at the end (`sim::draw`) where the game sorts the hand after each draw
+   (common_events.lua `draw_card`), and `decide_unseen` reads that order (how the snapshot moved
+   at gap 25 (d)). The fix: the simulated round sorts its hand after each draw as the game does,
+   and the draws weigh which side a card alike lands (`Hidden::draw` over both orders). The names depend on the order
    your cards sit in on purpose (with face-down cards the order is information: ui.rs
    `fingerprint` already re-analyses on a re-sort), so the order-invariance test in `advise.rs`
    compares them with the place taken out, on hands that sit in no sort.
