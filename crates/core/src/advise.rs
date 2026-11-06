@@ -2332,6 +2332,9 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
         // the note of the path Best play took: the look-ahead's simulated rounds, or with no
         // round to simulate (`play::best_play`'s fallback) the draws' score alone
         .chain((run.screen.in_blind() && run.hand.iter().any(|c| c.face_down)).then_some(if ctx.specs.iter().any(|x| x.in_progress()) { play::FACE_DOWN_NOTE } else { play::FACE_DOWN_FALLBACK_NOTE }))
+        // the rounds simulated under a boss that turns cards down (`Board::stays_flipped`), not
+        // disabled as its blind is set (Chicot, the save's: as `round_unmodelled` reads it)
+        .chain(ctx.specs.iter().any(|x| crate::engine::score::turns_cards_down(&x.blind_key) && !x.start.disabled && !ctx.base.at_blind_set(&x.start).0.blind.disabled).then_some(TURNED_DOWN_NOTE))
         .chain((run.hand.len() > sim::ALL_MOVES_MAX).then_some(
             "A big hand: Best play's moves come from the hand's structure (its plays whose cards can all score, and with face-down cards every play holding one, the best few of each kind and then by score now; its structure's discards), not every move; the simulated player's best play looks only at its 16 highest cards.",
         ))
@@ -2369,6 +2372,9 @@ fn cost(data: &GameData, key: &str) -> i64 {
     data.center(key).map_or(0, |c| c.cost)
 }
 
+/// The analysis' note when a round it simulates is under a boss that turns cards down
+const TURNED_DOWN_NOTE: &str = "Under The House, The Mark, The Wheel or The Fish the simulated rounds deal face down the cards the boss turns down (The House the round's first hand, The Mark face cards, The Wheel 1 in 7 cards, The Fish the cards drawn after each hand played), and the simulated player decides on 4 draws of what they could be: the consumable most of them use first, else the action most of them make (a budget, heuristic; on the player bench's boards for these bosses it wins 1 to 13 points of rounds fewer than a player that tries each choice on simulated futures and can't see them either, about 6.5 on average, 2026-11-06).";
+
 /// What a blind row's round doesn't model, for its round: a boss disabled as its blind is set
 /// (the save's, or Chicot's: `Board::at_blind_set`, as the round is simulated) nothing; in play,
 /// The Pillar its replays from the start and Verdant Leaf the sale its odds assume
@@ -2396,7 +2402,6 @@ fn unmodelled_boss(key: &str) -> Option<String> {
         "bl_serpent" => "The Serpent's 3-card draws",
         // the save's cards played this ante are debuffed; the blinds before it aren't played first
         "bl_pillar" => "The Pillar's debuffs on the cards this ante's blinds before it will still play",
-        "bl_house" | "bl_wheel" | "bl_fish" | "bl_mark" => "face-down cards",
         // the simulated rounds sell a joker first (`sim` `leaf_sale`); Best play's moves don't
         "bl_final_leaf" => "selling a joker to lift Verdant Leaf, as a move of Best play's (the simulated rounds sell one first)",
         "bl_final_heart" => "Crimson Heart's disabled joker",
@@ -3638,6 +3643,9 @@ fn boss_reroll_option(ctx: &Ctx, run: &RunState, data: &GameData, spec: &Spec, n
     let avg = odds.iter().sum::<f64>() / odds.len() as f64;
     let rough = eligible.iter().filter(|b| unmodelled_boss(&b.key).is_some()).count();
     let rough_note = if rough > 0 { format!("; {rough} of them have effects that aren't simulated, so the reroll may look better than it is") } else { String::new() };
+    // the bosses among them whose rounds deal cards face down: the analysis' note on them
+    let turned = eligible.iter().filter(|b| crate::engine::score::turns_cards_down(&b.key)).count();
+    let rough_note = if turned > 0 { format!("{rough_note}; {turned} of them deal cards face down, decided over by a vote of 4 draws (heuristic)") } else { rough_note };
     if avg > now {
         o.p_win = avg;
         o.money_gain = -10.0;

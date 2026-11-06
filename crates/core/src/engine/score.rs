@@ -63,6 +63,18 @@ pub struct BlindRules {
     pub eye_seen: u16,
     /// The Mouth: the hand locked in this round.
     pub mouth_only: Option<HandType>,
+    /// A hand was played and the draw after it is still to come (blind.lua `Blind:press_play`
+    /// sets `prepped` for The Fish, `Blind:drawn_to_hand` clears it once that draw is done, and
+    /// `Blind:set_blind` clears The Fish's as the round starts): The Fish turns those cards down
+    /// (`Board::stays_flipped`). Set by `Board::after_hand`, cleared by the simulated round's
+    /// every draw (`sim` `draw`) and as a won round ends.
+    pub prepped: bool,
+}
+
+/// Whether boss `key` turns cards down as they're drawn (blind.lua `Blind:stay_flipped`): the
+/// bosses `Board::stays_flipped` deals face down for
+pub fn turns_cards_down(key: &str) -> bool {
+    matches!(key, "bl_house" | "bl_mark" | "bl_wheel" | "bl_fish")
 }
 
 impl BlindRules {
@@ -222,6 +234,30 @@ impl Board {
     /// and The Fish turn down any card.
     pub fn turns_down_only_faces(&self, blind: &str) -> bool {
         blind == "bl_mark" && !self.has(Kind::Pareidolia)
+    }
+
+    /// Whether the boss turns card `c` (at place `i`) down as it's drawn into hand (blind.lua
+    /// `Blind:stay_flipped`, asked for every card drawn to hand: cardarea.lua
+    /// `CardArea:draw_card_from`, `CardArea:emplace`); never while it's disabled. The Wheel 1 in 7
+    /// (`G.GAME.probabilities.normal/7`, so Oops! All 6s doubles it), rolled on `rolls` for each
+    /// card drawn; The House the round's first deal (no hand played and no discard used this
+    /// round: `current_round.hands_played`, here the hands' `played_this_round`, and
+    /// `discards_used`); The Mark a face card (`Card:is_face(true)`: a debuffed one too, every
+    /// card with a Pareidolia that isn't debuffed); The Fish the cards drawn right after a hand
+    /// is played (`BlindRules::prepped`, so a discard's draw is face up). Not modelled: the
+    /// X-ray Vision challenge's flipped cards (`modifiers.flipped_cards`).
+    pub fn stays_flipped(&self, c: &Card, i: usize, rolls: &mut dyn Rolls) -> bool {
+        // one list of the bosses that do (`turns_cards_down`, which the output's labels read)
+        if self.blind.disabled || !turns_cards_down(&self.blind.key) {
+            return false;
+        }
+        match self.blind.key.as_str() {
+            "bl_wheel" => rolls.chance(self.probability / 7.0),
+            "bl_house" => self.discards_used == 0 && self.levels.iter().all(|l| l.played_this_round == 0),
+            "bl_mark" => is_face(c, i, self.has(Kind::Pareidolia), true),
+            "bl_fish" => self.blind.prepped,
+            _ => false,
+        }
     }
 }
 
@@ -684,8 +720,8 @@ impl Board {
     /// The Water; then the jokers in the `setting_blind` context (`setting_blind`); then the suit
     /// and face debuffs (`Blind:debuff_card` on every card, which clears any other:
     /// `debuff_cards`, with The Pillar's cards played this ante, those the board's rounds played
-    /// marked first, and Verdant Leaf's every card; every card dealt face up, as a boss turning
-    /// some down as they're drawn isn't simulated); then the Juggle Tags held (`start.juggle`:
+    /// marked first, and Verdant Leaf's every card; every card face up: the cards a boss turns down are
+    /// turned as they're drawn, `stays_flipped`); then the Juggle Tags held (`start.juggle`:
     /// tag.lua `round_start_bonus`, each its `h_size` for the round, as the first cards are
     /// drawn). `start` holds `round_resets`, where what a joker gives when it's added already is
     /// (`add_to_deck`: Troubadour's hand a round, Merry Andy's and Drunkard's discards), unlike
@@ -1014,6 +1050,10 @@ impl Board {
         }
         if self.blind.key == "bl_mouth" && self.blind.mouth_only.is_none() {
             self.blind.mouth_only = Some(o.hand);
+        }
+        // blind.lua `Blind:press_play`: the draw after this hand is The Fish's to turn down
+        if self.blind.key == "bl_fish" {
+            self.blind.prepped = true;
         }
         self.jokers.retain_mut(|jk| {
             if jk.debuff {

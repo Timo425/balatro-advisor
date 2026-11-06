@@ -40,6 +40,11 @@ const BOARDS: &[(&str, &[&str], bool, &str)] = &[
     ("growers_hook", &["j_green_joker", "j_ride_the_bus", "j_runner"], false, "bl_hook"),
     ("hit_road", &["j_hit_the_road", "j_greedy_joker", "j_joker"], false, ""),
     ("castle", &["j_castle", "j_droll", "j_joker"], false, ""),
+    // the bosses that deal cards face down (blind.lua `Blind:stay_flipped`)
+    ("flush_house", &["j_droll", "j_tribe", "j_crafty"], false, "bl_house"),
+    ("faces_mark", &["j_scary_face", "j_smiley", "j_photograph"], false, "bl_mark"),
+    ("pairs_wheel", &["j_jolly", "j_duo", "j_sly"], false, "bl_wheel"),
+    ("straight_fish", &["j_crazy", "j_order", "j_devious"], false, "bl_fish"),
 ];
 
 /// A deck as a run has it by Ante 3 or 4: the standard 52 with these cards changed (Bonus 3s,
@@ -149,6 +154,20 @@ const TARGETS: &[(&str, f64)] = &[
     ("castle_4h3d", 3696.0),
     ("castle_4h1d", 2564.0),
     ("castle_1h3d", 1530.0),
+    // set where the simulated round deals face down the cards these bosses turn down (gap 25);
+    // gap 25's measurement of that change ran on the targets set on 16810dd, every card face up
+    ("flush_house_4h3d", 8768.0),
+    ("flush_house_4h1d", 4628.0),
+    ("flush_house_1h3d", 4312.0),
+    ("faces_mark_4h3d", 7428.0),
+    ("faces_mark_4h1d", 5371.0),
+    ("faces_mark_1h3d", 3335.0),
+    ("pairs_wheel_4h3d", 8480.0),
+    ("pairs_wheel_4h1d", 7440.0),
+    ("pairs_wheel_1h3d", 2928.0),
+    ("straight_fish_4h3d", 8856.0),
+    ("straight_fish_4h1d", 8027.0),
+    ("straight_fish_1h3d", 8592.0),
 ];
 
 /// Each board's rounds; a board without a target yet gets 0 (`player_targets` finds it). The

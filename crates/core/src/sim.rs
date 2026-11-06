@@ -819,8 +819,8 @@ pub fn outcomes_after(b: &Board, start: &RoundStart, first: &Move, range: std::o
             let mut deck = start.deck.clone();
             shuffle(&mut deck, &mut rng);
             let mut hand = start.hand.clone();
-            draw(&mut hand, &mut deck, size);
             let mut bb = b.clone();
+            draw(&mut bb, &mut hand, &mut deck, size, &mut flip_stream(&rng));
             bb.hands_left = hands;
             bb.discards_left = discards;
             bb.deck_remaining = deck.len() as i64;
@@ -1520,13 +1520,30 @@ impl RoundResult {
     }
 }
 
-fn draw(hand: &mut Vec<Card>, deck: &mut Vec<Card>, size: usize) {
+/// Cards drawn from the top of `deck` until `hand` holds `size`, each face down where the boss
+/// on `b` turns it down (`Board::stays_flipped`: The House's first deal and The Fish's after a
+/// play read from the board's round state; The Wheel's rolls on `flips`), else as the deck has it
+/// (face up). Then `BlindRules::prepped` cleared, as blind.lua `Blind:drawn_to_hand` does after
+/// every draw to hand.
+fn draw(b: &mut Board, hand: &mut Vec<Card>, deck: &mut Vec<Card>, size: usize, flips: &mut Rng) {
     while hand.len() < size {
         match deck.pop() {
-            Some(c) => hand.push(c),
+            Some(mut c) => {
+                if b.stays_flipped(&c, hand.len(), flips) {
+                    c.face_down = true;
+                }
+                hand.push(c);
+            }
             None => break,
         }
     }
+    b.blind.prepped = false;
+}
+
+/// The stream The Wheel's rolls on a round's draws come from (`draw`): the round's own, not drawn
+/// from (as `deal_hidden`'s), so its deals, rolls and The Hook's picks stay as they were
+fn flip_stream(rng: &Rng) -> Rng {
+    Rng::new(rng.clone().next_u64() ^ 0x7768_6565_6c66)
 }
 
 /// Chance of holding `need` cards of a suit after `draws` digs, each replacing up to 5
@@ -2259,6 +2276,9 @@ thread_local! {
     /// Decisions the oracle made in this thread (tests)
     #[cfg(test)]
     static ORACLE_DECISIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Decisions made with a face-down card in hand in this thread (`decide_unseen`; tests)
+    #[cfg(test)]
+    static UNSEEN_DECISIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// A yardstick for the simulated player and for picks a change moved (`advise::Options::judge`),
@@ -4380,6 +4400,8 @@ const UNSEEN_DRAWS: usize = 4;
 /// there), the next most used; none: the first draw's decision without the consumables.
 #[allow(clippy::too_many_arguments)]
 fn decide_unseen(b: &mut Board, hand: &mut Vec<Card>, deck: &[Card], used: &mut [bool], seen_by: &mut Vec<(String, f64)>, uses: &[Use], hands: i64, discards: i64, total: f64, target: f64, size: usize, rng: &Rng) -> Action {
+    #[cfg(test)]
+    UNSEEN_DECISIONS.with(|x| x.set(x.get() + 1));
     let slots: Vec<usize> = (0..hand.len()).filter(|&i| hand[i].face_down).collect();
     let known = Hidden::new(hand, &slots, slots.clone(), b.turns_down_only_faces(&b.blind.key));
     let live = vec![true; slots.len()];
@@ -4594,7 +4616,9 @@ fn play_round(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[Use]) ->
     shuffle(&mut deck, rng);
     let size = start.hand_size.max(1) as usize;
     let mut hand = std::mem::take(&mut start.hand);
-    draw(&mut hand, &mut deck, size);
+    // the cards the boss turns down dealt face down (`Board::stays_flipped`)
+    let mut flips = flip_stream(rng);
+    draw(&mut b, &mut hand, &mut deck, size, &mut flips);
     let (mut hands, mut discards) = (start.hands, start.discards);
     let mut total = start.scored;
     let mut best_hand: f64 = 0.0;
@@ -4645,10 +4669,12 @@ fn play_round(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[Use]) ->
                     let seen = seen_by.iter().map(|e| e.1).fold(0.0, f64::max);
                     let planets = seal_planets(&b, &hand);
                     b.played_ante = played_ante;
+                    // the round ends here: no draw owed (`BlindRules::prepped`)
+                    b.blind.prepped = false;
                     b.won_round();
                     return (RoundResult { total, won: true, saved: false, best_hand, plays, money, hands_left: hands, discards_left: discards, planets, seen, grown }, b);
                 }
-                draw(&mut hand, &mut deck, size);
+                draw(&mut b, &mut hand, &mut deck, size, &mut flips);
                 note_seen(&b, &hand, &mut seen_by);
             }
             Action::Discard(idx) => {
@@ -4656,7 +4682,7 @@ fn play_round(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[Use]) ->
                 money += b.discard(&picked(&hand, &idx));
                 grown += grown_since(&b, &was);
                 hand = (0..hand.len()).filter(|i| !idx.contains(i)).map(|i| hand[i]).collect();
-                draw(&mut hand, &mut deck, size);
+                draw(&mut b, &mut hand, &mut deck, size, &mut flips);
                 discards -= 1;
                 note_seen(&b, &hand, &mut seen_by);
             }
@@ -7046,6 +7072,118 @@ mod tests {
         let (_, st) = round_odds(&b, &start, 64, 11u64.wrapping_add(16 * 7919));
         let one = round_results(&b, &start, 16..80, 11);
         assert!((one.iter().map(|r| r.total).sum::<f64>() / 64.0 - st.mean).abs() < 1e-6);
+    }
+
+    #[test]
+    fn each_card_drawn_is_dealt_face_down_where_the_boss_turns_it_down() {
+        // blind.lua `Blind:stay_flipped`, asked for every card drawn to hand
+        let drawn = |b: &Board, seed: u64| {
+            let (mut hand, mut deck) = (vec![], standard_deck());
+            let mut b = b.clone();
+            draw(&mut b, &mut hand, &mut deck, 52, &mut Rng::new(seed));
+            // `Blind:drawn_to_hand`: the draw done, the next isn't The Fish's to turn down
+            assert!(!b.blind.prepped);
+            hand
+        };
+        let under = |keys: &[&str], blind: &str, disabled: bool| {
+            let mut b = sample_board(keys);
+            b.blind = score::BlindRules { key: blind.into(), disabled, ..Default::default() };
+            b
+        };
+        let down = |h: &[Card]| h.iter().filter(|c| c.face_down).count();
+        // The House: the round's first deal only, before a hand is played or a discard used
+        let house = under(&[], "bl_house", false);
+        assert_eq!(down(&drawn(&house, 1)), 52);
+        let mut played = house.clone();
+        played.levels[HandType::Pair as usize].played_this_round = 1;
+        assert_eq!(down(&drawn(&played, 1)), 0);
+        assert_eq!(down(&drawn(&Board { discards_used: 1, ..house.clone() }, 1)), 0);
+        // The Mark: the face cards, every card with a Pareidolia that isn't debuffed
+        let m = drawn(&under(&[], "bl_mark", false), 1);
+        assert!(m.iter().all(|c| c.face_down == (11..=13).contains(&c.rank.0)));
+        assert_eq!(down(&m), 12);
+        let mut pareidolia = under(&["j_pareidolia"], "bl_mark", false);
+        assert_eq!(down(&drawn(&pareidolia, 1)), 52);
+        pareidolia.jokers[0].debuff = true;
+        assert_eq!(down(&drawn(&pareidolia, 1)), 12);
+        // The Fish: the draw after a hand played (`Board::after_hand` sets `prepped`), not a
+        // discard's or the round's first
+        let fish = under(&[], "bl_fish", false);
+        assert_eq!(down(&drawn(&fish, 1)), 0);
+        let mut pressed = fish.clone();
+        let _ = pressed.after_hand(&score::score(&fish, &Card::parse_list("AS").unwrap(), &[], &mut Unlucky, false));
+        assert_eq!(down(&drawn(&pressed, 1)), 52);
+        let mut thrown = fish.clone();
+        let _ = thrown.discard(&Card::parse_list("AS").unwrap());
+        assert_eq!(down(&drawn(&thrown, 1)), 0);
+        // The Wheel: 1 in 7 of the cards (a share's standard error on 10,400 cards about
+        // 0.0034), 2 in 7 with Oops! All 6s (`probabilities.normal` 2)
+        let mut wheel = under(&[], "bl_wheel", false);
+        let share = |b: &Board| (0..200).map(|s| down(&drawn(b, s))).sum::<usize>() as f64 / (200.0 * 52.0);
+        assert!((share(&wheel) - 1.0 / 7.0).abs() < 0.015, "{}", share(&wheel));
+        wheel.probability = 2.0;
+        assert!((share(&wheel) - 2.0 / 7.0).abs() < 0.015, "{}", share(&wheel));
+        // disabled, or another blind: none
+        for boss in ["bl_house", "bl_mark", "bl_fish", "bl_wheel"] {
+            let mut b = under(&["j_pareidolia"], boss, true);
+            b.blind.prepped = true;
+            assert_eq!(down(&drawn(&b, 1)), 0, "{boss}");
+        }
+        let mut hook = under(&[], "bl_hook", false);
+        hook.blind.prepped = true;
+        assert_eq!(down(&drawn(&hook, 1)), 0);
+    }
+
+    #[test]
+    fn a_simulated_round_decides_unseen_on_the_cards_its_boss_deals_face_down() {
+        // one decision each (1 hand, no discard): the player decides without seeing a card the
+        // boss dealt face down (`decide_unseen`)
+        let unseen = |b: &Board, start: &RoundStart| {
+            UNSEEN_DECISIONS.with(|x| x.set(0));
+            sim_round(b, start, &mut Rng::new(3));
+            UNSEEN_DECISIONS.with(|x| x.get())
+        };
+        let fresh = RoundStart { hand: vec![], deck: standard_deck(), hand_size: 8, hands: 1, discards: 0, scored: 0.0, target: 1e12, fresh: true, ..Default::default() };
+        let on = |blind: &str| RoundStart { blind: blind.into(), ..fresh.clone() };
+        // a fresh round: The House's first hand; none without a boss that turns cards down
+        assert_eq!(unseen(&Board::empty(), &on("bl_house")), 1);
+        assert_eq!(unseen(&Board::empty(), &on("")), 0);
+        assert_eq!(unseen(&Board::empty(), &on("bl_fish")), 0);
+        // a round in progress (its blind on the board): its first cards still to deal under The
+        // House while nothing is played or thrown, not once a hand was played or a discard used
+        let mut house = Board::empty();
+        house.blind = score::BlindRules { key: "bl_house".into(), ..Default::default() };
+        let dealing = RoundStart { fresh: false, ..fresh.clone() };
+        assert_eq!(unseen(&house, &dealing), 1);
+        let mut played = house.clone();
+        played.levels[HandType::Pair as usize].played_this_round = 1;
+        assert_eq!(unseen(&played, &dealing), 0);
+        assert_eq!(unseen(&Board { discards_used: 1, ..house.clone() }, &dealing), 0);
+        // The Mark: its face cards, a fresh round's first hand too
+        assert_eq!(unseen(&Board::empty(), &on("bl_mark")), 1);
+        // The Fish: the cards drawn right after a play (`outcomes_after`'s first move sets it)
+        let mut fish = Board::empty();
+        fish.blind = score::BlindRules { key: "bl_fish".into(), ..Default::default() };
+        let held = Card::parse_list("AS AH 2C").unwrap();
+        let rest: Vec<Card> = standard_deck().into_iter().filter(|c| !held.iter().any(|h| h.same_kind(c))).collect();
+        let short = RoundStart { hand: held.clone(), deck: rest.clone(), fresh: false, scored: 40.0, ..fresh.clone() };
+        let mut pressed = fish.clone();
+        pressed.blind.prepped = true;
+        assert_eq!(unseen(&pressed, &short), 1);
+        assert_eq!(unseen(&fish, &short), 0);
+        // inside one round under The Fish: every draw after a play turned down (each refills at
+        // least the card played), the round's first hand seen: 3 hands, no discard, the 2nd and
+        // 3rd decisions unseen
+        assert_eq!(unseen(&Board::empty(), &RoundStart { hands: 3, ..on("bl_fish") }), 2);
+        // a first move, then the round's one decision left
+        let start = RoundStart { hand: held.clone(), deck: rest, hand_size: 3, ..short.clone() };
+        let after = |m: Move, hands: i64, discards: i64| {
+            UNSEEN_DECISIONS.with(|x| x.set(0));
+            outcomes_after(&fish, &RoundStart { hands, discards, ..start.clone() }, &m, 0..1, 3, &[]);
+            UNSEEN_DECISIONS.with(|x| x.get())
+        };
+        assert_eq!(after(Move::Play(vec![2]), 2, 0), 1);
+        assert_eq!(after(Move::Discard(vec![2]), 1, 1), 0);
     }
 
     #[test]

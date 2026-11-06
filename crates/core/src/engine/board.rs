@@ -32,6 +32,8 @@ impl Board {
             disabled: b.disabled,
             eye_seen: b.hands_seen.iter().filter_map(|h| HandType::from_name(h)).fold(0, |m, h| m | h.bit()),
             mouth_only: b.only_hand.as_deref().and_then(HandType::from_name),
+            // a save is written once the draw after a play is done (`Blind:drawn_to_hand`)
+            prepped: false,
         });
         let mut b = Board {
             // each told apart from its copies by its place (`Joker::id`)
