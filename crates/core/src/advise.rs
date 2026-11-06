@@ -44,7 +44,7 @@ pub struct Options {
     /// Best play also judges these moves ("action p,q,r [use first]", by positions in your hand
     /// as the game orders it) against its pick, on `judge_rounds` rounds where the oracle
     /// (`sim::set_oracle`, `JUDGE_ROLLOUTS`) makes the policy's decisions that aren't a win on
-    /// the table: `PlayAdvice::judged`. Independent of the search and of those decisions, not of
+    /// the table (with a face-down card in hand, a win in every draw of it): `PlayAdvice::judged`. Independent of the search and of those decisions, not of
     /// the valuation, the engine, the finish or consumable use (D12). Very slow; for tests.
     pub judge: Vec<String>,
     pub judge_rounds: usize,

@@ -272,16 +272,22 @@ fn player_win_rates() {
 }
 
 /// The player against the oracle (`sim::set_oracle`, `BAV_R` futures per alternative, default
-/// 24): on each board's round, and on each private fixture's board (the round in progress, and
-/// a fresh round at the score the player wins half the time). A gap well above its standard
+/// 24): on each board's round, and on each private fixture's board (the round in progress, one
+/// holding a face-down card also at the score the player wins it half the time, and a fresh
+/// round at that score). A gap well above its standard
 /// error is a decision the player gets wrong; the oracle's choices are where to look.
-/// `BAV_ONLY=a,b`: the cases whose name contains any of these (the long run in parts).
+/// `BAV_ONLY=a,b`: the cases whose name contains any of these (the long run in parts; `x live`
+/// also takes `x live-mid`); `BAV_MID`:
+/// a face-down board's mid target given (above).
 #[test]
 #[ignore]
 fn player_against_oracle() {
     let n: usize = std::env::var("BAV_N").ok().and_then(|s| s.parse().ok()).unwrap_or(200);
     let r: usize = std::env::var("BAV_R").ok().and_then(|s| s.parse().ok()).unwrap_or(24);
     let mut cases = rounds();
+    // `BAV_ONLY`: before a case's target is worked out (`half_point` plays 30 × 200 rounds)
+    let only = std::env::var("BAV_ONLY").ok();
+    let wanted = |key: &str| only.as_ref().is_none_or(|o| o.split(',').filter(|o| !o.is_empty()).any(|o| key.contains(o)));
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/private");
     let mut files: Vec<_> = std::fs::read_dir(&dir).map(|e| e.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")).collect()).unwrap_or_default();
     files.sort();
@@ -294,7 +300,22 @@ fn player_against_oracle() {
             // face-down cards drawn as the advice draws them (`advise::face_down_drawn`)
             let order: Vec<usize> = (0..run.hand.len()).collect();
             let (hand, deck, hidden) = balatro_advisor::advise::face_down_drawn(&run, &b, &run.hand, &order, &run.draw_pile, 42);
-            cases.push((format!("{name} live"), b.clone(), sim::RoundStart { hand, deck, hand_size: run.round_hand_size(), hands: run.hands_left, discards: run.discards_left, scored: cb.scored, target: cb.target, fresh: false, blind: cb.key.clone(), disabled: cb.disabled, juggle: 0, hidden, changes: vec![] }));
+            let live = sim::RoundStart { hand, deck, hand_size: run.round_hand_size(), hands: run.hands_left, discards: run.discards_left, scored: cb.scored, target: cb.target, fresh: false, blind: cb.key.clone(), disabled: cb.disabled, juggle: 0, hidden, changes: vec![] };
+            // with a face-down card in hand, also at the score the player wins it half the time
+            // from there: the real target can leave it near sure or near hopeless, where no
+            // decision moves the odds
+            if run.hand.iter().any(|c| c.face_down) && wanted(&format!("{name} live-mid")) {
+                let mut mid = live.clone();
+                // `BAV_MID=name=target,…`: that board's at a target given, so two player
+                // versions meet the same one
+                let given = std::env::var("BAV_MID").ok().and_then(|m| m.split(',').find_map(|x| x.split_once('=').filter(|(k, _)| *k == name).and_then(|(_, t)| t.parse::<f64>().ok())));
+                mid.target = given.unwrap_or_else(|| half_point(&b, &live, 200, 7).max(cb.scored + 1.0));
+                cases.push((format!("{name} live-mid"), b.clone(), mid));
+            }
+            cases.push((format!("{name} live"), b.clone(), live));
+        }
+        if !wanted(&format!("{name} fresh")) {
+            continue;
         }
         let fresh = b.clone();
         let mut deck = run.full_deck();
@@ -307,9 +328,8 @@ fn player_against_oracle() {
         start.target = half_point(&fresh, &start, 200, 7);
         cases.push((format!("{name} fresh"), fresh, start));
     }
-    let only = std::env::var("BAV_ONLY").ok();
     for (key, b, start) in cases {
-        if only.as_ref().is_some_and(|o| !o.split(',').filter(|o| !o.is_empty()).any(|o| key.contains(o))) {
+        if !wanted(&key) {
             continue;
         }
         let t0 = std::time::Instant::now();
@@ -322,7 +342,7 @@ fn player_against_oracle() {
         let m = d.iter().sum::<f64>() / n as f64;
         let se = (d.iter().map(|x| (x - m).powi(2)).sum::<f64>() / (n - 1) as f64).sqrt() / (n as f64).sqrt();
         let win = |v: &[sim::RoundResult]| 100.0 * v.iter().filter(|x| x.won).count() as f64 / n as f64;
-        println!("{key}: player {:.1}% oracle {:.1}%, gap {:+.1} ± {:.1} ({ta:.2?} vs {to:.2?})", win(&a), win(&o), 100.0 * m, 100.0 * se);
+        println!("{key} (target {:.0}): player {:.1}% oracle {:.1}%, gap {:+.1} ± {:.1} ({ta:.2?} vs {to:.2?})", start.target, win(&a), win(&o), 100.0 * m, 100.0 * se);
     }
 }
 

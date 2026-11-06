@@ -1526,7 +1526,7 @@ fn flush_odds_uncached(hold: usize, deck_suit: usize, deck_size: usize, hand_siz
 }
 
 /// What the round simulation decided to do with the current hand.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum Action {
     /// cards, and whether this is a junk hand played only to dig
     Play(Vec<usize>, bool),
@@ -2204,7 +2204,9 @@ thread_local! {
 /// the same futures (paired, 2 standard errors). Hundreds of times slower than the policy:
 /// for measuring how much it leaves on the table (`tests/player.rs`). Per thread: rounds run
 /// on other threads (`round_odds` from 16 rounds, the advice's `par_map` workers) play without
-/// it unless they set it themselves, as `Options::judge` does in each worker.
+/// it unless they set it themselves, as `Options::judge` does in each worker. With a face-down
+/// card in hand it can't see it either: it weighs the player's decision on the draws once,
+/// outside them (`oracle_unseen`).
 pub fn set_oracle(rollouts: usize) {
     ORACLE.with(|o| o.set(rollouts));
 }
@@ -2215,6 +2217,11 @@ pub fn set_oracle(rollouts: usize) {
 /// was, so a look-ahead inside one of the oracle's futures doesn't switch the oracle back on
 /// for the rest of that future.
 fn policy_outcomes(b: &Board, start: &RoundStart, first: &Move, range: std::ops::Range<usize>, seed: u64, uses: &[Use]) -> Vec<Outcome> {
+    without_oracle(|| outcomes_after(b, start, first, range, seed, uses))
+}
+
+/// `f` run with the oracle out of it (`IN_ROLLOUT`), the flag back to what it was after
+fn without_oracle<T>(f: impl FnOnce() -> T) -> T {
     // restored on drop: also when a stopped analysis unwinds through here (`progress::checkpoint`)
     struct Restore(bool);
     impl Drop for Restore {
@@ -2223,31 +2230,51 @@ fn policy_outcomes(b: &Board, start: &RoundStart, first: &Move, range: std::ops:
         }
     }
     let _restore = Restore(IN_ROLLOUT.with(|x| x.replace(true)));
-    outcomes_after(b, start, first, range, seed, uses)
+    f()
+}
+
+/// Whether the oracle decides here (`set_oracle`: on, and not inside a future it plays)
+fn oracle_on() -> bool {
+    ORACLE.with(|o| o.get()) >= 2 && !IN_ROLLOUT.with(|x| x.get())
 }
 
 #[allow(clippy::too_many_arguments)]
 fn oracle_decide(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i64, scored: f64, target: f64, size: usize, uses: &[Use], rng: &mut Rng) -> Option<Action> {
-    let r = ORACLE.with(|o| o.get());
-    if r < 2 || IN_ROLLOUT.with(|x| x.get()) || hand.is_empty() {
+    if !oracle_on() || hand.is_empty() {
         return None;
     }
     let base = decide(b, hand, deck, hands, discards, target - scored, size);
-    let mut cands: Vec<Move> = vec![match &base {
-        Action::Play(v, _) => Move::Play(v.clone()),
-        Action::Discard(v) => Move::Discard(v.clone()),
-    }];
+    let alts = oracle_alts(b, hand, deck, hands, discards, &base);
+    let start = RoundStart { hand: hand.to_vec(), deck: deck.to_vec(), hand_size: size as i64, hands, discards, scored, target, fresh: false, ..Default::default() };
+    oracle_pick(b, &start, base, alts, uses, rng)
+}
+
+/// The oracle's alternatives to the policy's decision `base` on `hand`: the hand's structure
+/// (`oracle_moves`) and, with goals that count jokers, the play the policy's look-ahead would
+/// weigh for growth beside `base`'s play (`sparing_play`), as the policy's own rounds do
+fn oracle_alts(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i64, base: &Action) -> Vec<Move> {
+    let spare = match (base, b.goals.as_ref()) {
+        (Action::Play(v, _), Some(g)) => g.jokers_now(b).and_then(|was| sparing_play(b, g, &was, hand, &plays_tried(b, hand), v, hands)).map(|s| Move::Play(s.1)),
+        _ => None,
+    };
+    oracle_moves(b, hand, deck, discards).into_iter().chain(spare).collect()
+}
+
+/// The oracle's choice between the policy's decision `base` and the alternatives `alts` from
+/// `start` (a round in progress): each played first on the oracle's futures (`ORACLE` of them,
+/// the policy playing on), one taken over `base` only when it's clearly better on the same
+/// futures (`paired_pick`). None when there's nothing else to weigh.
+fn oracle_pick(b: &Board, start: &RoundStart, base: Action, alts: Vec<Move>, uses: &[Use], rng: &mut Rng) -> Option<Action> {
+    let r = ORACLE.with(|o| o.get());
     let norm = |m: &Move| match m {
         Move::Play(v) => (0, { let mut v = v.clone(); v.sort(); v }),
         Move::Discard(v) => (1, { let mut v = v.clone(); v.sort(); v }),
     };
-    // with goals that count jokers, the play the policy's look-ahead would weigh for growth
-    // (`sparing_play`), as the policy's own rounds do
-    let spare = match (&base, b.goals.as_ref()) {
-        (Action::Play(v, _), Some(g)) => g.jokers_now(b).and_then(|was| sparing_play(b, g, &was, hand, &plays_tried(b, hand), v, hands)).map(|s| Move::Play(s.1)),
-        _ => None,
-    };
-    for m in oracle_moves(b, hand, deck, discards).into_iter().chain(spare) {
+    let mut cands: Vec<Move> = vec![match &base {
+        Action::Play(v, _) => Move::Play(v.clone()),
+        Action::Discard(v) => Move::Discard(v.clone()),
+    }];
+    for m in alts {
         if !cands.iter().any(|x| norm(x) == norm(&m)) {
             cands.push(m);
         }
@@ -2257,12 +2284,11 @@ fn oracle_decide(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: 
     }
     #[cfg(test)]
     ORACLE_DECISIONS.with(|x| x.set(x.get() + 1));
-    let start = RoundStart { hand: hand.to_vec(), deck: deck.to_vec(), hand_size: size as i64, hands, discards, scored, target, fresh: false, ..Default::default() };
     let seed = rng.next_u64();
     let g = b.goals.clone();
     let vals: Vec<Vec<f64>> = cands
         .iter()
-        .map(|m| policy_outcomes(b, &start, m, 0..r, seed, uses).iter().map(|o| g.as_ref().map_or(o.won, |g| g.value(o))).collect())
+        .map(|m| policy_outcomes(b, start, m, 0..r, seed, uses).iter().map(|o| g.as_ref().map_or(o.won, |g| g.value(o))).collect())
         .collect();
     let pick = paired_pick(&vals).unwrap_or(0);
     if pick == 0 {
@@ -4114,6 +4140,14 @@ pub fn sim_round_uses(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[
 /// `seen_by` kept up), then what it plays or throws, by its places in the hand they leave.
 #[allow(clippy::too_many_arguments)]
 fn decide_step(b: &mut Board, hand: &mut Vec<Card>, deck: &[Card], used: &mut [bool], seen_by: &mut Vec<(String, f64)>, uses: &[Use], hands: i64, discards: i64, total: f64, target: f64, size: usize, rng: &mut Rng) -> (Vec<usize>, Action) {
+    let (order, act, _) = decide_step_open(b, hand, deck, used, seen_by, uses, hands, discards, total, target, size, rng);
+    (order, act)
+}
+
+/// `decide_step`, and whether it decided with no win on the table (where the oracle,
+/// `set_oracle`, weighs the decision: `decide_unseen` asks it there only)
+#[allow(clippy::too_many_arguments)]
+fn decide_step_open(b: &mut Board, hand: &mut Vec<Card>, deck: &[Card], used: &mut [bool], seen_by: &mut Vec<(String, f64)>, uses: &[Use], hands: i64, discards: i64, total: f64, target: f64, size: usize, rng: &mut Rng) -> (Vec<usize>, Action, bool) {
     let mut order = use_if_better(b, hand, uses, used, target - total, hands);
     drop_used_seen(b, seen_by);
     // a win on the table: the finish (`finish_play` by the round's goals; without them, while
@@ -4125,6 +4159,7 @@ fn decide_step(b: &mut Board, hand: &mut Vec<Card>, deck: &[Card], used: &mut [b
         Some(g) => parts.best(&all).filter(|p| p.surest >= target - total).and_then(|_| finish_among(b, g, hand, target - total, hands, &parts.plays())),
         None => win_keeping_seals(b, hand, target - total),
     };
+    let open = win.is_none();
     let act = match win {
         Some(v) => {
             // the finish, with any held consumable that makes it worth more used first
@@ -4178,7 +4213,7 @@ fn decide_step(b: &mut Board, hand: &mut Vec<Card>, deck: &[Card], used: &mut [b
             })
         }
     };
-    (order, act)
+    (order, act, open)
 }
 
 /// How many draws of the face-down cards in hand the simulated player decides on, the decision
@@ -4214,12 +4249,21 @@ fn decide_unseen(b: &mut Board, hand: &mut Vec<Card>, deck: &[Card], used: &mut 
         (h, d, draws.next_u64())
     };
     let first = imagine();
+    // the yardstick (`set_oracle`) weighs the decision made below on futures that draw the
+    // face-down cards anew (`oracle_unseen`), never inside a draw, where it would see them
+    let oracle = oracle_on();
     // each decision made (the consumables used, in order, and the action) and how many draws made it
     let mut made: Vec<((Vec<usize>, Action), usize)> = vec![];
+    // whether a win is on the table in every draw (`decide_step_open`): only then is it on the
+    // table for a player who can't see the face-down cards, and the oracle stays out, as it
+    // does on a hand you see with a win on it
+    let mut open = false;
     for k in 0..UNSEEN_DRAWS {
         let (mut h, d, seed) = if k == 0 { first.clone() } else { imagine() };
         let (mut b2, mut u2, mut s2) = (b.clone(), used.to_vec(), seen_by.clone());
-        let step = decide_step(&mut b2, &mut h, &d, &mut u2, &mut s2, uses, hands, discards, total, target, size, &mut Rng::new(seed));
+        let (order, act, o) = without_oracle(|| decide_step_open(&mut b2, &mut h, &d, &mut u2, &mut s2, uses, hands, discards, total, target, size, &mut Rng::new(seed)));
+        open |= o;
+        let step = (order, act);
         match made.iter_mut().find(|(m, _)| same_step(m, &step)) {
             Some(m) => m.1 += 1,
             None => made.push((step, 1)),
@@ -4227,6 +4271,8 @@ fn decide_unseen(b: &mut Board, hand: &mut Vec<Card>, deck: &[Card], used: &mut 
     }
     // the most made first, the earliest on a tie (a stable sort)
     made.sort_by_key(|m| std::cmp::Reverse(m.1));
+    // the other draws' decisions, as the yardstick's alternatives
+    let all: Vec<(Vec<usize>, Action)> = if oracle { made.iter().map(|m| m.0.clone()).collect() } else { vec![] };
     for ((order, act), _) in made {
         let mut now = (b.clone(), hand.clone());
         let applied = order.iter().all(|&k| uses[k].apply(&now.0, &now.1).map(|x| now = x).is_some());
@@ -4237,11 +4283,64 @@ fn decide_unseen(b: &mut Board, hand: &mut Vec<Card>, deck: &[Card], used: &mut 
             (*b, *hand) = now;
             order.iter().for_each(|&k| used[k] = true);
             drop_used_seen(b, seen_by);
+            if oracle && open {
+                // the other draws' decisions after the same consumables
+                let others: Vec<Action> = all.iter().filter(|m| m.0 == order).map(|m| m.1.clone()).collect();
+                let unused: Vec<Use> = uses.iter().zip(used.iter()).filter(|(_, u)| !**u).map(|(x, _)| x.clone()).collect();
+                let mut orng = Rng::new(draws.next_u64());
+                return oracle_unseen(b, hand, deck, hands, discards, total, target, size, act.clone(), &others, &unused, &mut orng).unwrap_or(act);
+            }
             return act;
         }
     }
     let (mut h, d, seed) = first;
-    decide_step(&mut b.clone(), &mut h, &d, &mut used.to_vec(), &mut seen_by.clone(), &[], hands, discards, total, target, size, &mut Rng::new(seed)).1
+    let act = without_oracle(|| decide_step(&mut b.clone(), &mut h, &d, &mut used.to_vec(), &mut seen_by.clone(), &[], hands, discards, total, target, size, &mut Rng::new(seed)).1);
+    if oracle && open {
+        let mut orng = Rng::new(draws.next_u64());
+        return oracle_unseen(b, hand, deck, hands, discards, total, target, size, act.clone(), &[], &[], &mut orng).unwrap_or(act);
+    }
+    act
+}
+
+/// How many fresh draws of the face-down cards the oracle takes its own alternatives from
+/// (`oracle_unseen`): a budget of the yardstick's, apart from the player's (`UNSEEN_DRAWS`), so
+/// a change to the player's doesn't move the oracle that judges it
+const ORACLE_DRAWS: usize = 4;
+
+/// The oracle (`set_oracle`) on a hand holding face-down cards: it can't see them either. It
+/// weighs `base` (the player's decision on the draws) against the other draws' decisions
+/// (`others`) and its own alternatives on fresh draws of the hand (`oracle_alts`, `ORACLE_DRAWS`
+/// of them), each played first on futures that draw the face-down cards anew
+/// (`RoundStart::hidden`, as Best play's first move does), the player playing on. With no card
+/// in `hand` face down any more (a consumable used first showed them), the same on the hand as
+/// it is. None: nothing else to weigh.
+#[allow(clippy::too_many_arguments)]
+fn oracle_unseen(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i64, scored: f64, target: f64, size: usize, base: Action, others: &[Action], uses: &[Use], rng: &mut Rng) -> Option<Action> {
+    let slots: Vec<usize> = (0..hand.len()).filter(|&i| hand[i].face_down).collect();
+    let mut alts: Vec<Move> = others
+        .iter()
+        .map(|a| match a {
+            Action::Play(v, _) => Move::Play(v.clone()),
+            Action::Discard(v) => Move::Discard(v.clone()),
+        })
+        .collect();
+    if slots.is_empty() {
+        alts.extend(oracle_alts(b, hand, deck, hands, discards, &base));
+        let start = RoundStart { hand: hand.to_vec(), deck: deck.to_vec(), hand_size: size as i64, hands, discards, scored, target, fresh: false, ..Default::default() };
+        return oracle_pick(b, &start, base, alts, uses, rng);
+    }
+    let mut known = Hidden::new(hand, &slots, slots.clone(), b.turns_down_only_faces(&b.blind.key));
+    known.stand = slots.iter().map(|&s| hand[s]).collect();
+    let live = vec![true; slots.len()];
+    for _ in 0..ORACLE_DRAWS {
+        let (mut h, d) = known.deal(hand, deck, &live, rng);
+        for &s in &slots {
+            h[s].face_down = false;
+        }
+        alts.extend(oracle_alts(b, &h, &d, hands, discards, &base));
+    }
+    let start = RoundStart { hand: hand.to_vec(), deck: deck.to_vec(), hand_size: size as i64, hands, discards, scored, target, fresh: false, hidden: Some(std::sync::Arc::new(known)), ..Default::default() };
+    oracle_pick(b, &start, base, alts, uses, rng)
 }
 
 /// Whether two decisions (`decide_step`) are the same: the same consumables used in the same
@@ -4726,6 +4825,48 @@ mod tests {
         }
         // reading the card would have told them apart
         assert!(differs > 0);
+    }
+
+    #[test]
+    fn the_oracle_cant_see_a_face_down_card_either() {
+        // The oracle (`set_oracle`) weighs the player's decision once, outside the draws, on
+        // futures that draw the face-down card anew: never inside a draw, where it would see
+        // that draw's card (gap 25 (a)). So a face-down 9♠ or 8♠ gets the same decision with
+        // it on too, and at most one decision of the oracle's per decision with one in hand.
+        let mut nine = Card::parse_list("AS 2S 9S 7H 7D 3C 4C 6D").unwrap();
+        nine[2].face_down = true;
+        let mut eight = nine.clone();
+        eight[2] = Card { face_down: true, ..Card::parse_list("8S").unwrap()[0] };
+        let pile = |hand: &[Card]| -> Vec<Card> { standard_deck().into_iter().filter(|c| !hand.iter().any(|h| h.same_kind(c))).collect() };
+        let decisions = || ORACLE_DECISIONS.with(|x| x.get());
+        set_oracle(8);
+        let mut weighed = 0;
+        for jokers in [&["j_joker"][..], &["j_droll", "j_tribe"]] {
+            let b = sample_board(jokers);
+            for (hands, discards, need) in [(4, 3, 600.0), (2, 1, 300.0)] {
+                let mut decide = |hand: &[Card]| {
+                    let (mut b, mut hand, deck) = (b.clone(), hand.to_vec(), pile(hand));
+                    let before = decisions();
+                    let act = decide_unseen(&mut b, &mut hand, &deck, &mut [], &mut vec![], &[], hands, discards, 0.0, need, 8, &Rng::new(5));
+                    let n = decisions() - before;
+                    assert!(n <= 1, "{jokers:?} {hands} {discards}: the oracle decided {n} times");
+                    weighed += n;
+                    (vec![], act)
+                };
+                let (x, y) = (decide(&nine), decide(&eight));
+                assert!(same_step(&x, &y), "{jokers:?} {hands} {discards}: {:?} against {:?}", x.1, y.1);
+            }
+            // a win on the table whatever the card is (with the round's goals: without them the
+            // policy decides even a win, `win_keeping_seals`): the oracle stays out, as on a
+            // hand you see
+            let (mut b, mut hand, deck) = (b.clone(), nine.clone(), pile(&nine));
+            b.goals = Some(RoundGoals { no_lookahead: true, ..Default::default() });
+            let before = decisions();
+            decide_unseen(&mut b, &mut hand, &deck, &mut [], &mut vec![], &[], 4, 3, 0.0, 1.0, 8, &Rng::new(5));
+            assert_eq!(decisions(), before, "{jokers:?}: the oracle weighed a sure win");
+        }
+        set_oracle(0);
+        assert!(weighed > 0, "the oracle weighed none of the decisions");
     }
 
     #[test]
