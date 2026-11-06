@@ -100,6 +100,34 @@ pub(crate) fn joined<R>(r: std::thread::Result<R>) -> R {
     r.unwrap_or_else(|e| std::panic::resume_unwind(e))
 }
 
+/// Runs `f` over `items` on all cores, keeping order: the analysis' fan-out (`advise`) and a big
+/// hand's screen (`sim::big_hand_moves`). The workers work for this thread's analysis: a stop
+/// reaches them (`checkpoint`), and a worker's panic passes on as it was (`joined`).
+pub(crate) fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).min(items.len().max(1));
+    let chunk = items.len().div_ceil(threads.max(1)).max(1);
+    // the workers work for this thread's analysis (`progress`): a stop reaches them
+    let p = current();
+    std::thread::scope(|s| {
+        let handles: Vec<_> = items
+            .chunks(chunk)
+            .map(|c| {
+                let (p, f) = (p.clone(), &f);
+                s.spawn(move || {
+                    let _p = enter(p);
+                    c.iter()
+                        .map(|x| {
+                            checkpoint();
+                            f(x)
+                        })
+                        .collect::<Vec<R>>()
+                })
+            })
+            .collect();
+        handles.into_iter().flat_map(|h| joined(h.join())).collect()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

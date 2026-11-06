@@ -927,31 +927,7 @@ fn without(b: &Board, i: usize) -> Board {
     b
 }
 
-/// Runs `f` over `items` on all cores, keeping order.
-fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
-    let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).min(items.len().max(1));
-    let chunk = items.len().div_ceil(threads.max(1)).max(1);
-    // the workers work for this thread's analysis (`progress`): a stop reaches them
-    let p = crate::progress::current();
-    std::thread::scope(|s| {
-        let handles: Vec<_> = items
-            .chunks(chunk)
-            .map(|c| {
-                let (p, f) = (p.clone(), &f);
-                s.spawn(move || {
-                    let _p = crate::progress::enter(p);
-                    c.iter()
-                        .map(|x| {
-                            crate::progress::checkpoint();
-                            f(x)
-                        })
-                        .collect::<Vec<R>>()
-                })
-            })
-            .collect();
-        handles.into_iter().flat_map(|h| crate::progress::joined(h.join())).collect()
-    })
-}
+use crate::progress::par_map;
 
 /// `hand` (your hand as it sits, or a plan's copy of it with the same places) in `order`, and
 /// `pile` (`board`: your jokers as they are now, under which the boss turned the cards down), with its face-down cards drawn from the unseen cards (`pile` and themselves) as
@@ -2357,7 +2333,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
         // round to simulate (`play::best_play`'s fallback) the draws' score alone
         .chain((run.screen.in_blind() && run.hand.iter().any(|c| c.face_down)).then_some(if ctx.specs.iter().any(|x| x.in_progress()) { play::FACE_DOWN_NOTE } else { play::FACE_DOWN_FALLBACK_NOTE }))
         .chain((run.hand.len() > sim::ALL_MOVES_MAX).then_some(
-            "A big hand: Best play's moves come from the hand's structure (its plays whose cards can all score, the best few of each kind and then by score now; its structure's discards), not every move; the simulated player's best play looks only at its 16 highest cards.",
+            "A big hand: Best play's moves come from the hand's structure (its plays whose cards can all score, and with face-down cards every play holding one, the best few of each kind and then by score now; its structure's discards), not every move; the simulated player's best play looks only at its 16 highest cards.",
         ))
         .collect(),
         save_age_secs: run.snapshot.age_secs,

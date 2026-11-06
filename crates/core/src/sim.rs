@@ -195,10 +195,32 @@ fn junk_order(hand: &[Card], idx: &mut [usize]) {
 /// now go into a big hand's race first (`big_hand_moves`), so the budget isn't all one hand
 const BIG_HAND_PER_KIND: usize = 8;
 
-/// The draws of a big hand's face-down cards its structure is read from (`big_hand_moves`), on
-/// seeds of their own the race never plays (`play.rs` `moves_of`). A budget, not a finding (the
-/// register).
+/// The draws of a big hand's face-down cards its structure is read from (`big_hand_moves`): the
+/// first of `BIG_HAND_RANK_DRAWS`. A budget, not a finding (the register).
 pub const BIG_HAND_DRAWS: usize = 4;
+
+/// The most draws of a big hand's face-down cards its plays are ranked on (`big_hand_moves`), on
+/// seeds of their own the race never plays (`play.rs` `moves_of`): a play worth its occasional
+/// Flush or Straight ranks by its mean only over many (gap 25 (c)). A budget, not a finding (the
+/// register).
+pub const BIG_HAND_RANK_DRAWS: usize = 128;
+
+/// The scores a big hand's ranking may take (`big_hand_moves`: its plays times the draws they're
+/// ranked on, at least `BIG_HAND_DRAWS` of them), on every core: 128 draws up to 28 cards all
+/// face down, about 1.6–1.8 s on 16 threads at the full budget. A budget, not a finding (the
+/// register).
+const BIG_HAND_RANK_SCORES: usize = 16_000_000;
+
+/// The fewest draws every play holding a face-down card is listed for (`big_hand_moves`): such a
+/// play is worth what it may make, which fewer draws rank only by luck (the suited 16-card hand's
+/// best passed on 0–1 of 8 seeds at 4 draws, 5 at 16, every one at 128: gap 25 (c)); past it
+/// (over 42 cards all face down) the structure alone. A budget, not a finding (the register).
+const BIG_HAND_LIST_DRAWS: usize = 16;
+
+/// How many plays of 1 to 5 of `n` cards there are
+fn plays_of(n: usize) -> usize {
+    (1..=5.min(n)).map(|k| (0..k).fold(1usize, |a, i| a * (n - i) / (i + 1))).sum()
+}
 
 /// Best play's moves for a hand of more than `ALL_MOVES_MAX` cards, where every play and
 /// discard would be far more than a race can take (32 cards: 242,824 plays): the plays the
@@ -206,50 +228,84 @@ pub const BIG_HAND_DRAWS: usize = 4;
 /// lowest cards outside it (`with_kickers`: as kickers, or junk played to dig), the best
 /// `BIG_HAND_PLAYS` by their score now (with every roll failing); and the discards the
 /// hand's structure gives (`structure_discards`). Each play in the order to play it.
-/// `draws`: the hand with its face-down cards drawn `BIG_HAND_DRAWS` times (`hidden_hands`,
+/// `draws`: the hand with its face-down cards drawn `BIG_HAND_RANK_DRAWS` times (`hidden_hands`,
 /// on seeds the race doesn't play, so the
-/// screen doesn't pick the plays its first rounds favour), or just the hand when it holds none;
-/// the moves are the union of each draw's structure, a play's score now its mean over them and
-/// its kind the hand most of them make, so no move reads a face-down card's stand-in, and a
-/// hand of only them is one more case (gap 25 (c)). The cards' order is the first draw's
-/// (`arrange`; the engine orders them anyway, by what each round dealt: gap 25).
+/// screen doesn't pick the plays its first rounds favour), or just the hand when it holds none.
+/// The moves are the union of the first `BIG_HAND_DRAWS` draws' structure and every play holding
+/// a face-down card (while they can be ranked on `BIG_HAND_LIST_DRAWS`), a play's score now its
+/// mean over as many draws as `BIG_HAND_RANK_SCORES` allows (128 up to 28 cards all face down, 65
+/// at 32) and its kind the hand most of them make, so no move reads a face-down card's stand-in,
+/// a play isn't listed for what a few draws happened to make it, and a hand of only them is one
+/// more case (gap 25 (c)). The cards' order is the first draw's (`arrange`; the engine orders
+/// them anyway, by what each round dealt: gap 25).
 pub fn big_hand_moves(b: &Board, draws: &[Vec<Card>], deck: &[Card], discards: i64) -> Vec<Move> {
-    // a play scored on every draw: its mean score, mask, cards in order, the hand most draws make
-    // (the first draw's on a tie), its score on each draw
-    type Scored = (f64, u64, Vec<usize>, HandType, Vec<f64>);
+    // a play scored on the draws it's ranked on: its mean score, mask, the hand most of them make
+    // (the first draw's on a tie), its score on each of the structure's draws
+    type Scored = (f64, u64, HandType, [f64; BIG_HAND_DRAWS]);
     let Some(hand) = draws.first() else { return vec![] };
     debug_assert!(draws.iter().all(|h| h.len() == hand.len()));
     let flags = b.rule_flags();
+    let structure = &draws[..draws.len().min(BIG_HAND_DRAWS)];
     // each draw's structure, its face-down cards as drawn, and its lowest cards as kickers
     let mut masks: Vec<u64> = vec![];
-    for h in draws {
+    for h in structure {
         let plays = scoring_plays(h, flags);
         masks.extend(plays.iter().flat_map(|&m| with_kickers(h, m, flags.splash)));
         masks.extend(plays);
     }
+    // and every play holding a face-down card: what it's worth lies in what it may make, which a
+    // few draws' structure finds only when one of them happens to make it
+    let n = hand.len().min(64);
+    let down: u64 = (0..n).filter(|&i| hand[i].face_down).fold(0, |m, i| m | 1 << i);
+    // (while everything ranked can be on `BIG_HAND_LIST_DRAWS`: the structure's plays as well)
     masks.sort_unstable();
     masks.dedup();
-    let mut scored: Vec<Scored> = masks
-        .into_iter()
-        .map(|m| {
-            let mut idx = mask_cards(m);
-            arrange(hand, &mut idx);
-            let mut each = Vec::with_capacity(draws.len());
-            let mut kinds: Vec<(HandType, usize)> = vec![];
-            for h in draws {
-                let played: Vec<Card> = idx.iter().map(|&i| h[i]).collect();
-                let held: Vec<Card> = (0..h.len()).filter(|i| !idx.contains(i)).map(|i| h[i]).collect();
-                let o = score::score(b, &played, &held, &mut Unlucky, false);
-                each.push(o.score);
-                match kinds.iter_mut().find(|k| k.0 == o.hand) {
-                    Some(k) => k.1 += 1,
-                    None => kinds.push((o.hand, 1)),
+    let listed = plays_of(n) - plays_of(n - down.count_ones() as usize);
+    let unlisted = masks.iter().filter(|&&m| m & down == 0).count();
+    if down != 0 && (listed + unlisted) * BIG_HAND_LIST_DRAWS <= BIG_HAND_RANK_SCORES {
+        fn grow(n: usize, from: usize, m: u64, down: u64, out: &mut Vec<u64>) {
+            if m & down != 0 {
+                out.push(m);
+            }
+            if m.count_ones() < 5 {
+                for i in from..n {
+                    grow(n, i + 1, m | 1 << i, down, out);
                 }
             }
-            let kind = kinds.iter().fold(kinds[0], |a, &k| if k.1 > a.1 { k } else { a }).0;
-            (each.iter().sum::<f64>() / each.len() as f64, m, idx, kind, each)
-        })
-        .collect();
+        }
+        grow(n, 0, 0, down, &mut masks);
+    }
+    masks.sort_unstable();
+    masks.dedup();
+    // each play in the order to play it
+    let ordered = |m: u64| {
+        let mut idx = mask_cards(m);
+        arrange(hand, &mut idx);
+        idx
+    };
+    // ranked on as many draws as the budget allows, on every core
+    let rank = &draws[..(BIG_HAND_RANK_SCORES / masks.len().max(1)).clamp(structure.len(), draws.len())];
+    let mut scored: Vec<Scored> = crate::progress::par_map(&masks, |&m| {
+        let idx = ordered(m);
+        let mut sum = 0.0;
+        let mut first = [0.0; BIG_HAND_DRAWS];
+        let mut kinds: Vec<(HandType, usize)> = vec![];
+        for (d, h) in rank.iter().enumerate() {
+            let played: Vec<Card> = idx.iter().map(|&i| h[i]).collect();
+            let held: Vec<Card> = (0..h.len()).filter(|i| !idx.contains(i)).map(|i| h[i]).collect();
+            let o = score::score(b, &played, &held, &mut Unlucky, false);
+            sum += o.score;
+            if d < BIG_HAND_DRAWS {
+                first[d] = o.score;
+            }
+            match kinds.iter_mut().find(|k| k.0 == o.hand) {
+                Some(k) => k.1 += 1,
+                None => kinds.push((o.hand, 1)),
+            }
+        }
+        let kind = kinds.iter().fold(kinds[0], |a, &k| if k.1 > a.1 { k } else { a }).0;
+        (sum / rank.len() as f64, m, kind, first)
+    });
     // the best first; on a tie, fewer cards (a play topped up scores the same), then the mask
     scored.sort_by(|x, y| y.0.total_cmp(&x.0).then(x.1.count_ones().cmp(&y.1.count_ones())).then(x.1.cmp(&y.1)));
     // the best few of each kind (hand, cards played: a dig with junk is a kind of its own),
@@ -257,7 +313,7 @@ pub fn big_hand_moves(b: &Board, draws: &[Vec<Card>], deck: &[Card], discards: i
     let mut per_kind: std::collections::HashMap<(HandType, u32), usize> = std::collections::HashMap::new();
     let (mut first, mut rest): (Vec<usize>, Vec<usize>) = (vec![], vec![]);
     for (k, x) in scored.iter().enumerate() {
-        let n = per_kind.entry((x.3, x.1.count_ones())).or_insert(0);
+        let n = per_kind.entry((x.2, x.1.count_ones())).or_insert(0);
         *n += 1;
         if *n <= BIG_HAND_PER_KIND { first.push(k) } else { rest.push(k) }
     }
@@ -265,7 +321,7 @@ pub fn big_hand_moves(b: &Board, draws: &[Vec<Card>], deck: &[Card], discards: i
     let room = BIG_HAND_PLAYS - first.len();
     first.extend(rest.into_iter().take(room));
     first.sort_unstable();
-    let mut out: Vec<Move> = first.iter().map(|&k| Move::Play(scored[k].2.clone())).collect();
+    let mut out: Vec<Move> = first.iter().map(|&k| Move::Play(ordered(scored[k].1))).collect();
     // each draw's best play over every card (the first of the best on it): what the structure's
     // discards of that draw keep first (draw 0's all, as a hand without face-down cards always
     // had them); a later draw adds only discards not given yet
@@ -274,14 +330,14 @@ pub fn big_hand_moves(b: &Board, draws: &[Vec<Card>], deck: &[Card], discards: i
         (Move::Discard(x), Move::Discard(y)) => x.len() == y.len() && x.iter().all(|i| y.contains(i)),
         _ => false,
     };
-    for (d, h) in draws.iter().enumerate() {
+    for (d, h) in structure.iter().enumerate() {
         let Some(best) = scored.iter().fold(None::<&Scored>, |a, x| match a {
-            Some(a) if a.4[d] >= x.4[d] => Some(a),
+            Some(a) if a.3[d] >= x.3[d] => Some(a),
             _ => Some(x),
         }) else {
             break;
         };
-        for m in structure_discards(b, h, deck, discards, best.2.clone()) {
+        for m in structure_discards(b, h, deck, discards, ordered(best.1)) {
             if d == 0 || !out[plays..].iter().any(|x| same(x, &m)) {
                 out.push(m);
             }
@@ -1362,7 +1418,17 @@ impl Hidden {
 /// The hands the first `n` simulated rounds from `start` meet (`outcomes_after`'s rounds with
 /// `seed`): its face-down cards as each draws them (`deal_hidden`)
 pub fn hidden_hands(b: &Board, start: &RoundStart, seed: u64, n: usize) -> Vec<Vec<Card>> {
-    (0..n).map(|i| deal_hidden(b, start, &Rng::new(seed.wrapping_add(i as u64 * 7919))).map_or_else(|| start.hand.clone(), |s| s.hand)).collect()
+    (0..n).map(|i| hidden_hand(b, start, seed, i)).collect()
+}
+
+/// `hidden_hands` drawn on every core: the same hands (a big hand's screen, `BIG_HAND_RANK_DRAWS`)
+pub fn hidden_hands_par(b: &Board, start: &RoundStart, seed: u64, n: usize) -> Vec<Vec<Card>> {
+    crate::progress::par_map(&(0..n).collect::<Vec<_>>(), |&i| hidden_hand(b, start, seed, i))
+}
+
+/// The hand simulated round `i` from `start` meets (`hidden_hands`)
+fn hidden_hand(b: &Board, start: &RoundStart, seed: u64, i: usize) -> Vec<Card> {
+    deal_hidden(b, start, &Rng::new(seed.wrapping_add(i as u64 * 7919))).map_or_else(|| start.hand.clone(), |s| s.hand)
 }
 
 /// `start` with its face-down cards drawn anew (`Hidden`) for one simulated round, from a seed of
@@ -4348,34 +4414,28 @@ fn decide_unseen(b: &mut Board, hand: &mut Vec<Card>, deck: &[Card], used: &mut 
         let (order, act, o) = without_oracle(|| decide_step_open(&mut b2, &mut h, &d, &mut u2, &mut s2, &imagined, hands, discards, total, target, size, &mut Rng::new(seed)));
         open |= o;
         steps.push((order, act));
+        // once the draws left can't change the vote's winner, the rest decide nothing: the same
+        // decision with fewer draws (a cost, not a change). Only on no consumable and an action:
+        // where a consumable leads, whether it can be used decides between it and the next, and
+        // where it shows every face-down card the decision after it is seeded from the draws'
+        // stream past the last draw (`draws`), which stopping early would move.
+        // Not for the yardstick, which weighs every draw's decision.
+        if !oracle && unseen_settled(&steps, UNSEEN_DRAWS - k - 1) {
+            break;
+        }
     }
     // the consumable most draws use first, or none (the earliest on a tie: a stable sort); the
     // next one is decided on the hand it leaves
-    let mut orders: Vec<(Vec<usize>, usize)> = vec![];
-    for (order, _) in &steps {
-        let first: Vec<usize> = order.iter().take(1).copied().collect();
-        match orders.iter_mut().find(|x| x.0 == first) {
-            Some(x) => x.1 += 1,
-            None => orders.push((first, 1)),
-        }
-    }
-    orders.sort_by_key(|x| std::cmp::Reverse(x.1));
-    for (order, _) in orders {
+    let (orders, made) = vote_tallies(&steps);
+    for order in vote_ranking(&tally_counts(&orders)).into_iter().map(|i| &orders[i].0) {
         if order.is_empty() {
             // none: the action most of those draws make, the earliest on a tie
-            let mut made: Vec<(&Action, usize)> = vec![];
-            for (_, act) in steps.iter().filter(|s| s.0.is_empty()) {
-                match made.iter_mut().find(|m| same_step(&(vec![], m.0.clone()), &(vec![], act.clone()))) {
-                    Some(m) => m.1 += 1,
-                    None => made.push((act, 1)),
-                }
-            }
-            made.sort_by_key(|m| std::cmp::Reverse(m.1));
-            let act = made[0].0.clone();
+            let rank = vote_ranking(&tally_counts(&made));
+            let act = made[rank[0]].0.clone();
             if oracle && open {
                 // the other draws' actions, as the yardstick's alternatives, and the consumables
                 // still held on the futures' own deals of the face-down cards
-                let others: Vec<Action> = made[1..].iter().map(|m| m.0.clone()).collect();
+                let others: Vec<Action> = rank[1..].iter().map(|&i| made[i].0.clone()).collect();
                 let unused: Vec<Use> = unplaced.iter().zip(used.iter()).filter(|(_, u)| !**u).map(|(x, _)| x.clone()).collect();
                 let mut orng = Rng::new(draws.next_u64());
                 return oracle_unseen(b, hand, deck, hands, discards, total, target, size, act.clone(), &others, &unused, &mut orng).unwrap_or(act);
@@ -4447,6 +4507,60 @@ fn oracle_unseen(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: 
     }
     let start = RoundStart { hand: hand.to_vec(), deck: deck.to_vec(), hand_size: size as i64, hands, discards, scored, target, fresh: false, hidden: Some(std::sync::Arc::new(known)), ..Default::default() };
     oracle_pick(b, &start, base, alts, uses, rng)
+}
+
+/// The vote's tallies (`decide_unseen`) over each draw's decision (`steps`): each consumable a
+/// draw uses first (none: empty) and how many draws use it, then the action of each draw using
+/// none and how many make it (`same_step`), each in the order first made
+#[allow(clippy::type_complexity)]
+fn vote_tallies(steps: &[(Vec<usize>, Action)]) -> (Vec<(Vec<usize>, usize)>, Vec<(Action, usize)>) {
+    let (mut orders, mut made): (Vec<(Vec<usize>, usize)>, Vec<(Action, usize)>) = (vec![], vec![]);
+    for (order, act) in steps {
+        let first: Vec<usize> = order.iter().take(1).copied().collect();
+        match orders.iter_mut().find(|x| x.0 == first) {
+            Some(x) => x.1 += 1,
+            None => orders.push((first, 1)),
+        }
+        if order.is_empty() {
+            match made.iter_mut().find(|m| same_step(&(vec![], m.0.clone()), &(vec![], act.clone()))) {
+                Some(m) => m.1 += 1,
+                None => made.push((act.clone(), 1)),
+            }
+        }
+    }
+    (orders, made)
+}
+
+/// Whether the vote (`decide_unseen`) over `steps` is settled on using no consumable and on
+/// one action, with `left` draws still to go: no draw left could make a consumable win
+/// (`vote_settled` on the orders) or another action (on the actions of those using none)
+fn unseen_settled(steps: &[(Vec<usize>, Action)], left: usize) -> bool {
+    let (orders, made) = vote_tallies(steps);
+    vote_settled(&tally_counts(&orders), left).is_some_and(|l| orders[l].0.is_empty()) && vote_settled(&tally_counts(&made), left).is_some()
+}
+
+/// How many draws made each decision of a tally (`vote_tallies`)
+fn tally_counts<T>(tally: &[(T, usize)]) -> Vec<usize> {
+    tally.iter().map(|x| x.1).collect()
+}
+
+/// The vote's ranking (`decide_unseen`), its one tie rule: of `counts` (how many draws made each
+/// decision, in the order first made), the decisions most made first, the earliest first on a
+/// tie (they're drawn at random, not ordered by the cards)
+fn vote_ranking(counts: &[usize]) -> Vec<usize> {
+    let mut rank: Vec<usize> = (0..counts.len()).collect();
+    rank.sort_by_key(|&i| std::cmp::Reverse(counts[i]));
+    rank
+}
+
+/// The decision a vote has settled on (`decide_unseen`): of `counts` (how many draws made each
+/// decision, in the order first made), the first by `vote_ranking`, once no decision (one made,
+/// or a new one, which would come later) could pass it with `left` draws still to go
+fn vote_settled(counts: &[usize], left: usize) -> Option<usize> {
+    let lead = *vote_ranking(counts).first()?;
+    let c = counts[lead];
+    let safe = |i: usize| i == lead || if i < lead { counts[i] + left < c } else { counts[i] + left <= c };
+    (left <= c && (0..counts.len()).all(safe)).then_some(lead)
 }
 
 /// Whether two decisions (`decide_step`) are the same: the same consumables used in the same
@@ -4869,6 +4983,105 @@ mod tests {
             })
             .collect();
         Card::parse_list(&text.join(" ")).unwrap()
+    }
+
+    #[test]
+    fn a_big_face_down_hands_screen_passes_the_blind_plays_worth_what_they_may_make() {
+        // 16 cards, all face down, suited: a run of places in the sorts is worth its occasional
+        // Flush or Straight, which a few draws rank only by luck. The plays passed hold one within
+        // 3% of the best 5-card play (each valued on 512 draws nothing else uses); ranked on only
+        // the structure's 4 draws (this seed) they didn't (gap 25 (c))
+        let mut hand = Card::parse_list("AS KS QS JS TS 9H 8H 7H 6H 5D 4D 3D 2D AC KC QC").unwrap();
+        hand.iter_mut().for_each(|c| c.face_down = true);
+        let b = sample_board(&[]);
+        let slots: Vec<usize> = (0..hand.len()).collect();
+        let mut h = Hidden::new(&hand, &slots, slots.clone(), false);
+        h.stand = hand.clone();
+        let deck: Vec<Card> = standard_deck().into_iter().filter(|c| !hand.iter().any(|x| x.same_kind(c))).collect();
+        let s = RoundStart { hand: hand.clone(), deck, hand_size: 16, hands: 7, discards: 0, target: 18000.0, hidden: Some(std::sync::Arc::new(h)), ..Default::default() };
+        let judge = hidden_hands(&b, &s, 55_000_009, 512);
+        let value = |idx: &[usize]| {
+            judge.iter().map(|h| {
+                let played: Vec<Card> = idx.iter().map(|&i| h[i]).collect();
+                let held: Vec<Card> = (0..h.len()).filter(|i| !idx.contains(i)).map(|i| h[i]).collect();
+                score::score(&b, &played, &held, &mut Unlucky, false).score
+            }).sum::<f64>() / judge.len() as f64
+        };
+        let best = (0u32..1 << 16).filter(|m| m.count_ones() == 5).map(|m| value(&(0..16).filter(|i| m & (1 << i) != 0).collect::<Vec<_>>())).fold(0.0, f64::max);
+        let passed = |draws: &[Vec<Card>]| big_hand_moves(&b, draws, &s.deck, 0).iter().filter_map(|m| if let Move::Play(v) = m { Some(value(v)) } else { None }).fold(0.0, f64::max);
+        let draws = hidden_hands_par(&b, &s, 77 + 1_000_000, BIG_HAND_RANK_DRAWS);
+        assert_eq!(draws, hidden_hands(&b, &s, 77 + 1_000_000, BIG_HAND_RANK_DRAWS), "drawn on every core, the same hands");
+        let (deep, shallow) = (passed(&draws), passed(&draws[..BIG_HAND_DRAWS]));
+        assert!(deep >= 0.97 * best, "{deep} of {best}");
+        assert!(shallow < 0.9 * best, "{shallow} of {best}: the measure no longer tells the ranking's depth");
+    }
+
+    #[test]
+    fn a_vote_stops_only_once_no_draw_left_can_change_its_winner() {
+        // every sequence of `UNSEEN_DRAWS` draws' decisions (as indices in the order first made): wherever
+        // `vote_settled` stops, the whole vote's winner (the most made, the earliest on a tie) is
+        // the one it named
+        fn winner(seq: &[usize]) -> usize {
+            let n = seq.iter().max().unwrap() + 1;
+            let counts: Vec<usize> = (0..n).map(|i| seq.iter().filter(|&&x| x == i).count()).collect();
+            vote_ranking(&counts)[0]
+        }
+        let u = UNSEEN_DRAWS;
+        let mut stopped = 0;
+        for code in 0..u.pow(u as u32) {
+            // a decision index can be at most one past those made before it
+            let seq: Vec<usize> = (0..u).map(|k| code / u.pow(k as u32) % u).collect();
+            if (0..u).any(|k| seq[k] > seq[..k].iter().max().map_or(0, |m| m + 1)) {
+                continue;
+            }
+            for k in 0..u {
+                let n = seq[..=k].iter().max().unwrap() + 1;
+                let counts: Vec<usize> = (0..n).map(|i| seq[..=k].iter().filter(|&&x| x == i).count()).collect();
+                if let Some(l) = vote_settled(&counts, u - 1 - k) {
+                    assert_eq!(l, winner(&seq), "{seq:?} stopped after {}", k + 1);
+                    stopped += usize::from(k + 1 < u);
+                    break;
+                }
+            }
+        }
+        // it does stop early: two draws alike settle a vote of four
+        assert_eq!(vote_settled(&[2], 2), Some(0));
+        assert_eq!(vote_settled(&[1, 1], 2), None);
+        assert!(stopped > 0);
+    }
+
+    #[test]
+    fn the_two_step_vote_stops_only_once_no_draw_left_can_change_what_it_decides() {
+        // every sequence of `UNSEEN_DRAWS` draws' decisions from: no consumable and one play, no
+        // consumable and another, a consumable first, another consumable first (each then a play):
+        // wherever `unseen_settled` stops, the whole vote (`decide_unseen`) uses no consumable
+        // and makes the action the draws so far make; it stops only on those
+        let play = |i: usize| Action::Play(vec![i], false);
+        let kinds: [(Vec<usize>, Action); 4] = [(vec![], play(0)), (vec![], play(1)), (vec![0], play(0)), (vec![1, 0], play(2))];
+        // the vote's outcome: the consumable used first, else the action of those using none
+        let outcome = |steps: &[(Vec<usize>, Action)]| -> (Vec<usize>, Option<Action>) {
+            let (orders, made) = vote_tallies(steps);
+            let first = orders[vote_ranking(&tally_counts(&orders))[0]].0.clone();
+            let act = first.is_empty().then(|| made[vote_ranking(&tally_counts(&made))[0]].0.clone());
+            (first, act)
+        };
+        let u = UNSEEN_DRAWS;
+        let (mut stopped, mut ran) = (0, 0);
+        for code in 0..kinds.len().pow(u as u32) {
+            let seq: Vec<(Vec<usize>, Action)> = (0..u).map(|k| kinds[code / kinds.len().pow(k as u32) % kinds.len()].clone()).collect();
+            let whole = outcome(&seq);
+            for k in 0..u {
+                if unseen_settled(&seq[..=k], u - 1 - k) {
+                    let (first, act) = outcome(&seq[..=k]);
+                    assert!(first.is_empty());
+                    assert_eq!(format!("{whole:?}"), format!("{:?}", (first, act)), "{seq:?} stopped after {}", k + 1);
+                    stopped += usize::from(k + 1 < u);
+                    break;
+                }
+                ran += usize::from(k + 1 == u);
+            }
+        }
+        assert!(stopped > 0 && ran > 0, "stopped early {stopped}, ran every draw {ran}");
     }
 
     #[test]
@@ -5448,7 +5661,7 @@ mod tests {
         };
         let moves = |hand: &[Card], slots: &[usize]| {
             let s = start(hand, slots);
-            big_hand_moves(&b, &hidden_hands(&b, &s, 42, BIG_HAND_DRAWS), &s.deck, s.discards)
+            big_hand_moves(&b, &hidden_hands(&b, &s, 42, BIG_HAND_RANK_DRAWS), &s.deck, s.discards)
         };
         let (x, y) = (moves(&nine, &[2]), moves(&eight, &[2]));
         assert_eq!(x, y);
