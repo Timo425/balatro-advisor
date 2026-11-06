@@ -1120,15 +1120,14 @@ pub fn debuff_after(b: &Board, was: &Card, mut to: Card, i: usize) -> Card {
 
 /// `uses` with each effect on places (`Use::at`, in the round's starting `hand`) turned into
 /// changes of the cards that round dealt there (and the cards it adds), so it still finds them
-/// once the hand has moved on
+/// once the hand has moved on; the effect kept beside them (`Placed`), so a draw of the face-down
+/// cards puts it on the cards that draw has there (`Use::unplaced`)
 fn uses_on(b: &Board, uses: &[Use], hand: &[Card]) -> Vec<Use> {
     uses.iter()
         .map(|u| {
             let mut u = u.clone();
             for (effect, places) in std::mem::take(&mut u.at) {
-                let new = effect_on(b, hand, effect, &places);
-                u.swap.extend(places.iter().filter(|&&p| p < hand.len() && new[p] != hand[p]).map(|&p| (hand[p], new[p])));
-                u.add.extend(new.iter().skip(hand.len()).copied());
+                u.placed.push(Placed::new(b, hand, effect, &places));
             }
             u
         })
@@ -3235,24 +3234,85 @@ pub struct Use {
     pub key: String,
     pub swap: Vec<(Card, Card)>,
     /// A card effect on places in the round's starting hand (one that goes on a face-down card),
-    /// done to whatever cards are there (`effect_on`; `uses_on` turns it into `swap` and `add`
-    /// on the cards a round dealt)
+    /// done to whatever cards are there (`effect_on`; `uses_on` puts it on the cards a round
+    /// dealt, `placed`)
     pub at: Vec<(CardEffect, Vec<usize>)>,
     pub add: Vec<Card>,
     pub levels: [i64; 12],
     /// A Planet card: Constellation grows ×0.1 when it's used
     pub planet: bool,
+    /// The effects on places (`at`) as `uses_on` put them on the cards a round dealt there: done
+    /// after `swap`, their cards added after `add`
+    pub placed: Vec<Placed>,
+}
+
+/// An effect on places (`Use::at`) on the cards a round dealt there (`uses_on`): the cards at its
+/// places, the change it makes to them (`swap`, each card it changes) and the cards it adds
+/// (Cryptid's copies), with the effect itself kept, so while one of its cards is face down each
+/// draw of what that card could be (`decide_unseen`) puts it on the cards the draw has at those
+/// places (`Use::unplaced`), not on the card it really is (gap 25 (a))
+#[derive(Debug, Clone)]
+pub struct Placed {
+    pub effect: CardEffect,
+    /// The cards at its places, in the places' order (`effect_on` reads which is which: Death's
+    /// left and right); none when a place is past the hand's end
+    pub cards: Vec<Card>,
+    pub swap: Vec<(Card, Card)>,
+    pub add: Vec<Card>,
+}
+
+impl Placed {
+    /// `effect` on the cards at `places` in `hand` (`effect_on`)
+    pub fn new(b: &Board, hand: &[Card], effect: CardEffect, places: &[usize]) -> Placed {
+        let new = effect_on(b, hand, effect, places);
+        Placed {
+            effect,
+            cards: if places.iter().all(|&p| p < hand.len()) { places.iter().map(|&p| hand[p]).collect() } else { vec![] },
+            swap: places.iter().filter(|&&p| p < hand.len() && new[p] != hand[p]).map(|&p| (hand[p], new[p])).collect(),
+            add: new.iter().skip(hand.len()).copied().collect(),
+        }
+    }
+}
+
+/// Where card `c` is in `hand`, among the places not `taken`: the card itself (its debuff aside;
+/// face down or up as it was first), else a face-up one alike but for its face, else a face-up one
+/// of its kind (two alike but one played this ante, The Pillar's): a face-down card is never
+/// taken for another by what it really is
+fn find_card(hand: &[Card], c: &Card, taken: &[bool]) -> Option<usize> {
+    let key = |x: &Card, face: bool| Card { debuff: false, face_down: face && x.face_down, ..*x };
+    (0..hand.len())
+        .find(|&i| !taken[i] && key(&hand[i], true) == key(c, true))
+        .or_else(|| (0..hand.len()).find(|&i| !taken[i] && !hand[i].face_down && key(&hand[i], false) == key(c, false)))
+        .or_else(|| (0..hand.len()).find(|&i| !taken[i] && !hand[i].face_down && hand[i].same_kind(c)))
+}
+
+/// Where each of `cards` is in `hand` (`find_card`, each place once); none: one isn't there
+fn find_cards(hand: &[Card], cards: &[Card]) -> Option<Vec<usize>> {
+    let mut taken = vec![false; hand.len()];
+    cards
+        .iter()
+        .map(|c| {
+            let i = find_card(hand, c, &taken)?;
+            taken[i] = true;
+            Some(i)
+        })
+        .collect()
 }
 
 impl Use {
     pub fn apply(&self, b: &Board, hand: &[Card]) -> Option<(Board, Vec<Card>)> {
+        // every card a place effect reads still in hand, the one it leaves as it is too (Death's
+        // right card, Cryptid's original): the game uses it only on cards selected in hand
+        // (card.lua `Card:can_use_consumeable`); an effect on each card alone (The World's suit)
+        // needs only the cards it changes, which `swap` finds
+        let reads = |p: &Placed| matches!(p.effect, CardEffect::CopyLeftToRight | CardEffect::Copies(_));
+        if self.placed.iter().any(|p| reads(p) && find_cards(hand, &p.cards).is_none()) {
+            return None;
+        }
         let mut h = hand.to_vec();
         let mut done = vec![false; h.len()];
-        for (from, to) in &self.swap {
-            // the card itself where one is left (its debuff and face aside: two alike but one
-            // played this ante, The Pillar's), else one of its kind
-            let alike = |c: &Card| Card { debuff: false, face_down: false, ..*c } == Card { debuff: false, face_down: false, ..*from };
-            let i = (0..h.len()).find(|&i| !done[i] && alike(&h[i])).or_else(|| (0..h.len()).find(|&i| !done[i] && h[i].same_kind(from)))?;
+        for (from, to) in self.swap.iter().chain(self.placed.iter().flat_map(|p| &p.swap)) {
+            let i = find_card(&h, from, &done)?;
             // a card a consumable changed is seen (the game flips it face up and back, card.lua
             // `Card:use_consumeable`, which clears the mark of one drawn flipped: gap 25), its
             // debuff what it is after (`debuff_after`)
@@ -3265,7 +3325,7 @@ impl Use {
             }
             h = effect_on(b, &h, *effect, places);
         }
-        h.extend(self.add.iter().copied());
+        h.extend(self.add.iter().chain(self.placed.iter().flat_map(|p| &p.add)).copied());
         let mut b = b.clone();
         if let Some(g) = b.goals.as_mut() {
             g.seen.retain(|(k, _, _)| k != &self.key);
@@ -3285,6 +3345,24 @@ impl Use {
         // its slot is free for a Blue Seal's planet
         b.planet_slots += 1;
         Some((b, h))
+    }
+
+    /// This consumable with each place effect whose cards include one face down in `hand` turned
+    /// back into an effect on the places its cards have now (`at`), so a draw of the face-down
+    /// cards (`decide_unseen`) or a round that deals them anew (the oracle's futures) puts it on
+    /// the cards it has there (`uses_on`), not on the card it really is; the rest as it is
+    fn unplaced(&self, hand: &[Card]) -> Use {
+        let mut u = self.clone();
+        let mut kept = vec![];
+        for p in std::mem::take(&mut u.placed) {
+            // where each of its cards is now, as `apply` finds them
+            match find_cards(hand, &p.cards).filter(|at| !p.cards.is_empty() && at.iter().any(|&i| hand[i].face_down)) {
+                Some(at) => u.at.push((p.effect, at)),
+                None => kept.push(p),
+            }
+        }
+        u.placed = kept;
+        u
     }
 }
 
@@ -4221,16 +4299,19 @@ fn decide_step_open(b: &mut Board, hand: &mut Vec<Card>, deck: &[Card], used: &m
 const UNSEEN_DRAWS: usize = 4;
 
 /// `decide_step` with a face-down card in `hand` (gap 25 (a)): the player can't see it, so it
-/// decides on `UNSEEN_DRAWS` draws of what the face-down cards could be, each played as if seen,
-/// and makes the decision most draws make (the earliest draw's on a tie: they're drawn at random,
-/// not ordered by the cards), its consumables used on the cards as they are. A draw keeps what you
+/// decides on `UNSEEN_DRAWS` draws of what the face-down cards could be, each played as if seen
+/// (a consumable held for a face-down card's place on what that draw put there: `Use::unplaced`),
+/// and uses the consumable most draws use first (the earliest draw's on a tie: they're drawn at
+/// random, not ordered by the cards), on the cards as they are, then decides again on the hand
+/// it leaves (the cards it changed seen, as the game shows them); with none used first, the
+/// action most of those draws make. A draw keeps what you
 /// can tell of them now (`Hidden`): their bounds among the cards you see in the game's two sorts,
 /// their order among themselves, the boss's rule (`Board::turns_down_only_faces`), from the
 /// unseen cards (the pile and themselves, as the game's deck view counts them); the pile it
 /// decides with is the one that draw leaves, so it can't tell them by what's missing from it.
 /// What a card seen before showed of them (one played since) isn't kept: you could remember it.
-/// Of decisions whose consumables can't be used on the cards as they are (a card one goes on
-/// isn't there), the next most made; none: the first draw's without the consumables.
+/// Where the consumable can't be used on the cards as they are (a card it goes on isn't
+/// there), the next most used; none: the first draw's decision without the consumables.
 #[allow(clippy::too_many_arguments)]
 fn decide_unseen(b: &mut Board, hand: &mut Vec<Card>, deck: &[Card], used: &mut [bool], seen_by: &mut Vec<(String, f64)>, uses: &[Use], hands: i64, discards: i64, total: f64, target: f64, size: usize, rng: &Rng) -> Action {
     let slots: Vec<usize> = (0..hand.len()).filter(|&i| hand[i].face_down).collect();
@@ -4249,11 +4330,12 @@ fn decide_unseen(b: &mut Board, hand: &mut Vec<Card>, deck: &[Card], used: &mut 
         (h, d, draws.next_u64())
     };
     let first = imagine();
+    let unplaced: Vec<Use> = uses.iter().map(|u| u.unplaced(hand)).collect();
     // the yardstick (`set_oracle`) weighs the decision made below on futures that draw the
     // face-down cards anew (`oracle_unseen`), never inside a draw, where it would see them
     let oracle = oracle_on();
-    // each decision made (the consumables used, in order, and the action) and how many draws made it
-    let mut made: Vec<((Vec<usize>, Action), usize)> = vec![];
+    // each draw's decision: the consumables used, in order, and the action
+    let mut steps: Vec<(Vec<usize>, Action)> = vec![];
     // whether a win is on the table in every draw (`decide_step_open`): only then is it on the
     // table for a player who can't see the face-down cards, and the oracle stays out, as it
     // does on a hand you see with a win on it
@@ -4261,43 +4343,67 @@ fn decide_unseen(b: &mut Board, hand: &mut Vec<Card>, deck: &[Card], used: &mut 
     for k in 0..UNSEEN_DRAWS {
         let (mut h, d, seed) = if k == 0 { first.clone() } else { imagine() };
         let (mut b2, mut u2, mut s2) = (b.clone(), used.to_vec(), seen_by.clone());
-        let (order, act, o) = without_oracle(|| decide_step_open(&mut b2, &mut h, &d, &mut u2, &mut s2, uses, hands, discards, total, target, size, &mut Rng::new(seed)));
+        // the consumables held for a face-down card's place, on what this draw put there
+        let imagined = uses_on(b, &unplaced, &h);
+        let (order, act, o) = without_oracle(|| decide_step_open(&mut b2, &mut h, &d, &mut u2, &mut s2, &imagined, hands, discards, total, target, size, &mut Rng::new(seed)));
         open |= o;
-        let step = (order, act);
-        match made.iter_mut().find(|(m, _)| same_step(m, &step)) {
-            Some(m) => m.1 += 1,
-            None => made.push((step, 1)),
+        steps.push((order, act));
+    }
+    // the consumable most draws use first, or none (the earliest on a tie: a stable sort); the
+    // next one is decided on the hand it leaves
+    let mut orders: Vec<(Vec<usize>, usize)> = vec![];
+    for (order, _) in &steps {
+        let first: Vec<usize> = order.iter().take(1).copied().collect();
+        match orders.iter_mut().find(|x| x.0 == first) {
+            Some(x) => x.1 += 1,
+            None => orders.push((first, 1)),
         }
     }
-    // the most made first, the earliest on a tie (a stable sort)
-    made.sort_by_key(|m| std::cmp::Reverse(m.1));
-    // the other draws' decisions, as the yardstick's alternatives
-    let all: Vec<(Vec<usize>, Action)> = if oracle { made.iter().map(|m| m.0.clone()).collect() } else { vec![] };
-    for ((order, act), _) in made {
-        let mut now = (b.clone(), hand.clone());
-        let applied = order.iter().all(|&k| uses[k].apply(&now.0, &now.1).map(|x| now = x).is_some());
-        let fits = |v: &[usize]| v.iter().all(|&i| i < now.1.len());
-        if applied && fits(match &act {
-            Action::Play(v, _) | Action::Discard(v) => v,
-        }) {
-            (*b, *hand) = now;
-            order.iter().for_each(|&k| used[k] = true);
-            drop_used_seen(b, seen_by);
+    orders.sort_by_key(|x| std::cmp::Reverse(x.1));
+    for (order, _) in orders {
+        if order.is_empty() {
+            // none: the action most of those draws make, the earliest on a tie
+            let mut made: Vec<(&Action, usize)> = vec![];
+            for (_, act) in steps.iter().filter(|s| s.0.is_empty()) {
+                match made.iter_mut().find(|m| same_step(&(vec![], m.0.clone()), &(vec![], act.clone()))) {
+                    Some(m) => m.1 += 1,
+                    None => made.push((act, 1)),
+                }
+            }
+            made.sort_by_key(|m| std::cmp::Reverse(m.1));
+            let act = made[0].0.clone();
             if oracle && open {
-                // the other draws' decisions after the same consumables
-                let others: Vec<Action> = all.iter().filter(|m| m.0 == order).map(|m| m.1.clone()).collect();
-                let unused: Vec<Use> = uses.iter().zip(used.iter()).filter(|(_, u)| !**u).map(|(x, _)| x.clone()).collect();
+                // the other draws' actions, as the yardstick's alternatives, and the consumables
+                // still held on the futures' own deals of the face-down cards
+                let others: Vec<Action> = made[1..].iter().map(|m| m.0.clone()).collect();
+                let unused: Vec<Use> = unplaced.iter().zip(used.iter()).filter(|(_, u)| !**u).map(|(x, _)| x.clone()).collect();
                 let mut orng = Rng::new(draws.next_u64());
                 return oracle_unseen(b, hand, deck, hands, discards, total, target, size, act.clone(), &others, &unused, &mut orng).unwrap_or(act);
             }
             return act;
         }
+        let mut now = (b.clone(), hand.clone());
+        if order.iter().all(|&k| uses[k].apply(&now.0, &now.1).map(|x| now = x).is_some()) {
+            // using one is a move of its own, after which the cards it changed are seen (card.lua
+            // `Card:use_consumeable` flips them face up): what's next (another consumable, the
+            // play) is decided again on the hand it leaves, not what a draw chose for what it
+            // imagined there
+            (*b, *hand) = now;
+            order.iter().for_each(|&k| used[k] = true);
+            drop_used_seen(b, seen_by);
+            return if hand.iter().any(|c| c.face_down) {
+                decide_unseen(b, hand, deck, used, seen_by, uses, hands, discards, total, target, size, rng)
+            } else {
+                decide_step(b, hand, deck, used, seen_by, uses, hands, discards, total, target, size, &mut Rng::new(draws.next_u64())).1
+            };
+        }
     }
     let (mut h, d, seed) = first;
     let act = without_oracle(|| decide_step(&mut b.clone(), &mut h, &d, &mut used.to_vec(), &mut seen_by.clone(), &[], hands, discards, total, target, size, &mut Rng::new(seed)).1);
     if oracle && open {
+        let unused: Vec<Use> = unplaced.iter().zip(used.iter()).filter(|(_, u)| !**u).map(|(x, _)| x.clone()).collect();
         let mut orng = Rng::new(draws.next_u64());
-        return oracle_unseen(b, hand, deck, hands, discards, total, target, size, act.clone(), &[], &[], &mut orng).unwrap_or(act);
+        return oracle_unseen(b, hand, deck, hands, discards, total, target, size, act.clone(), &[], &unused, &mut orng).unwrap_or(act);
     }
     act
 }
@@ -4825,6 +4931,101 @@ mod tests {
         }
         // reading the card would have told them apart
         assert!(differs > 0);
+    }
+
+    #[test]
+    fn a_consumable_held_for_a_face_down_place_goes_on_what_each_draw_put_there() {
+        // A Strength held for the face-down card's place (`Use::at`), a 9♠ or an 8♠ that the
+        // sorts and the unseen cards can't tell apart: each draw the player decides on puts it on
+        // the card that draw has there, so whether it's used is the same whatever the card is,
+        // and so is the action when it isn't; not only in the draws that put the card it really
+        // is there (gap 25 (a)). Once used, the card is seen and the play decided on it.
+        let mut nine = Card::parse_list("AS 2S 9S 7H 7D 3C 4C 6D").unwrap();
+        nine[2].face_down = true;
+        let mut eight = nine.clone();
+        eight[2] = Card { face_down: true, ..Card::parse_list("8S").unwrap()[0] };
+        let pile = |hand: &[Card]| -> Vec<Card> { standard_deck().into_iter().filter(|c| !hand.iter().any(|h| h.same_kind(c))).collect() };
+        let strength = Use { key: "c_strength".into(), at: vec![(CardEffect::UpRank, vec![2])], ..Default::default() };
+        let (mut uses_it, mut seen_after) = (0, 0);
+        for jokers in [&["j_joker"][..], &["j_droll", "j_tribe"], &["j_fibonacci", "j_even_steven"], &["j_scholar", "j_walkie_talkie"]] {
+            let b = sample_board(jokers);
+            for (hands, discards, need) in [(4, 3, 600.0), (2, 1, 300.0), (1, 0, 150.0), (1, 0, 400.0), (3, 0, 5000.0)] {
+                let decide = |hand: &[Card]| {
+                    let (mut b, mut hand, deck) = (b.clone(), hand.to_vec(), pile(hand));
+                    let uses = uses_on(&b, std::slice::from_ref(&strength), &hand);
+                    let mut used = vec![false];
+                    let act = decide_unseen(&mut b, &mut hand, &deck, &mut used, &mut vec![], &uses, hands, discards, 0.0, need, 8, &Rng::new(5));
+                    (used[0], act, hand)
+                };
+                let (x, y) = (decide(&nine), decide(&eight));
+                assert_eq!(x.0, y.0, "{jokers:?} {hands} {discards} {need}: used {} against {}", x.0, y.0);
+                if x.0 {
+                    uses_it += 1;
+                    // the card it changed is seen, a 10♠ or a 9♠
+                    assert!(!x.2[2].face_down && x.2[2].rank != y.2[2].rank);
+                    seen_after += !same_step(&(vec![], x.1), &(vec![], y.1)) as usize;
+                } else {
+                    assert!(same_step(&(vec![], x.1.clone()), &(vec![], y.1.clone())), "{jokers:?} {hands} {discards} {need}: {:?} against {:?}", x.1, y.1);
+                }
+            }
+        }
+        // the decisions use it, and what it showed moves the play after it (decided again on the
+        // card seen, not the draw's play)
+        assert!(uses_it > 0 && seen_after > 0, "used {uses_it}, the play after it moved by the card {seen_after}");
+    }
+
+    #[test]
+    fn a_place_effect_goes_back_to_its_places_while_its_card_is_face_down() {
+        // Death held for a face-down left card (place 2) and a face-up right one (place 0): put on
+        // the round's cards (`uses_on`), then back to places while the left one is face down, in
+        // the order Death reads them (`Use::unplaced`)
+        let mut hand = Card::parse_list("AS 2S 9S 7H 7D").unwrap();
+        hand[2].face_down = true;
+        let b = sample_board(&["j_joker"]);
+        let death = Use { key: "c_death".into(), at: vec![(CardEffect::CopyLeftToRight, vec![2, 0])], ..Default::default() };
+        let placed = uses_on(&b, std::slice::from_ref(&death), &hand).remove(0);
+        assert!(placed.at.is_empty() && placed.placed.len() == 1);
+        // the hand moved on: the 2♠ played, the cards one place to the left
+        let moved: Vec<Card> = hand.iter().enumerate().filter(|&(i, _)| i != 1).map(|(_, c)| *c).collect();
+        let back = placed.unplaced(&moved);
+        assert_eq!(back.at, vec![(CardEffect::CopyLeftToRight, vec![1, 0])]);
+        assert!(back.placed.is_empty());
+        // seen: it stays on the cards (nothing to draw)
+        let seen: Vec<Card> = moved.iter().map(|c| Card { face_down: false, ..*c }).collect();
+        assert!(placed.unplaced(&seen).at.is_empty());
+        // the right card played: Death can't be used (the game needs both selected), in a draw or not
+        let gone: Vec<Card> = moved.iter().skip(1).copied().collect();
+        let kept = placed.unplaced(&gone);
+        assert!(kept.at.is_empty() && kept.placed.len() == 1);
+        assert!(kept.apply(&b, &gone).is_none());
+        assert!(placed.apply(&b, &moved).is_some());
+    }
+
+    #[test]
+    fn the_oracles_futures_put_a_held_consumable_on_what_each_deals_there() {
+        // The oracle's futures (`outcomes_after` with `RoundStart::hidden`) deal the face-down
+        // card anew: a Strength held for its place goes on what each deals there once turned back
+        // to places (`Use::unplaced`), so a 9♠ or an 8♠ meets the same rounds; left on the card it
+        // really is, the rounds would tell them apart (gap 25 (a))
+        let mut nine = Card::parse_list("AS 2S 9S 7H 7D 3C 4C 6D").unwrap();
+        nine[2].face_down = true;
+        let mut eight = nine.clone();
+        eight[2] = Card { face_down: true, ..Card::parse_list("8S").unwrap()[0] };
+        let pile = |hand: &[Card]| -> Vec<Card> { standard_deck().into_iter().filter(|c| !hand.iter().any(|h| h.same_kind(c))).collect() };
+        let strength = Use { key: "c_strength".into(), at: vec![(CardEffect::UpRank, vec![2])], ..Default::default() };
+        let b = sample_board(&["j_joker"]);
+        let rounds = |hand: &[Card], back: bool| -> Vec<(u64, u64)> {
+            let mut known = Hidden::new(hand, &[2], vec![2], false);
+            known.stand = vec![hand[2]];
+            let start = RoundStart { hand: hand.to_vec(), deck: pile(hand), hand_size: 8, hands: 2, discards: 1, target: 300.0, hidden: Some(std::sync::Arc::new(known)), ..Default::default() };
+            let mut u = uses_on(&b, std::slice::from_ref(&strength), hand).remove(0);
+            if back {
+                u = u.unplaced(hand);
+            }
+            without_oracle(|| outcomes_after(&b, &start, &Move::Discard(vec![7]), 0..32, 9, &[u])).iter().map(|o| (o.won.to_bits(), o.total.to_bits())).collect()
+        };
+        assert_eq!(rounds(&nine, true), rounds(&eight, true));
+        assert_ne!(rounds(&nine, false), rounds(&eight, false));
     }
 
     #[test]
