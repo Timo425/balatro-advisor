@@ -297,7 +297,8 @@ fn player_win_rates() {
 /// error is a decision the player gets wrong; the oracle's choices are where to look.
 /// `BAV_ONLY=a,b`: the cases whose name contains any of these (the long run in parts; `x live`
 /// also takes `x live-mid`); `BAV_MID`:
-/// a face-down board's mid target given (above).
+/// a face-down board's mid target given (above); `BAV_R=0`, the player alone, and
+/// `BAV_WINS_OUT`/`BAV_WINS_BEFORE` (below), two player versions paired round by round.
 #[test]
 #[ignore]
 fn player_against_oracle() {
@@ -354,6 +355,25 @@ fn player_against_oracle() {
         let t0 = std::time::Instant::now();
         let a = play(&b, &start, 0..n, 42, 0);
         let ta = t0.elapsed();
+        // the player's rounds, round by round, so two player versions compare paired (the same
+        // rounds): `BAV_WINS_OUT=dir` writes them, `BAV_WINS_BEFORE=dir` prints the difference
+        let file = format!("{}.txt", key.replace(' ', "_"));
+        if let Some(dir) = std::env::var_os("BAV_WINS_OUT") {
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(std::path::Path::new(&dir).join(&file), a.iter().map(|x| if x.won { '1' } else { '0' }).collect::<String>()).unwrap();
+        }
+        if let Some(old) = std::env::var_os("BAV_WINS_BEFORE").and_then(|dir| std::fs::read_to_string(std::path::Path::new(&dir).join(&file)).ok()) {
+            let d: Vec<f64> = a.iter().zip(old.chars()).map(|(x, o)| x.won as u8 as f64 - (o == '1') as u8 as f64).collect();
+            let m = d.iter().sum::<f64>() / d.len() as f64;
+            let se = (d.iter().map(|x| (x - m).powi(2)).sum::<f64>() / (d.len() - 1) as f64).sqrt() / (d.len() as f64).sqrt();
+            println!("{key}: against before {:+.1} ± {:.1} points ({} rounds differ)", 100.0 * m, 100.0 * se, d.iter().filter(|x| **x != 0.0).count());
+        }
+        // `BAV_R=0`: the player alone
+        if r == 0 {
+            let win = 100.0 * a.iter().filter(|x| x.won).count() as f64 / n as f64;
+            println!("{key} (target {:.0}): player {win:.1}% ({ta:.2?})", start.target);
+            continue;
+        }
         let t1 = std::time::Instant::now();
         let o = play(&b, &start, 0..n, 42, r);
         let to = t1.elapsed();

@@ -2373,7 +2373,7 @@ fn cost(data: &GameData, key: &str) -> i64 {
 }
 
 /// The analysis' note when a round it simulates is under a boss that turns cards down
-const TURNED_DOWN_NOTE: &str = "Under The House, The Mark, The Wheel or The Fish the simulated rounds deal face down the cards the boss turns down (The House the round's first hand, The Mark face cards, The Wheel 1 in 7 cards, The Fish the cards drawn after each hand played), and the simulated player decides on 4 draws of what they could be: the consumable most of them use first, else the action most of them make (a budget, heuristic; on the player bench's boards for these bosses it wins 1 to 13 points of rounds fewer than a player that tries each choice on simulated futures and can't see them either, about 6.5 on average, 2026-11-06).";
+const TURNED_DOWN_NOTE: &str = "Under The House, The Mark, The Wheel or The Fish the simulated rounds deal face down the cards the boss turns down (The House the round's first hand, The Mark face cards, The Wheel 1 in 7 cards, The Fish the cards drawn after each hand played), and the simulated player decides on 4 draws of what they could be: the consumable most of them use first, else where they disagree and not every one has a sure win, the action the policy's own estimates of the round's points value most summed over them (heuristic: ranked in points, not by what else the round is worth, such as money or growth), else the action most of them make (the first draw's on a tie) (4 draws a budget; on the player bench's boards for these bosses it wins 2 to 14 points of rounds fewer than a player that tries each choice on simulated futures and can't see them either, about 6.4 on average, 2026-11-07).";
 
 /// What a blind row's round doesn't model, for its round: a boss disabled as its blind is set
 /// (the save's, or Chicot's: `Board::at_blind_set`, as the round is simulated) nothing; in play,
@@ -3645,7 +3645,7 @@ fn boss_reroll_option(ctx: &Ctx, run: &RunState, data: &GameData, spec: &Spec, n
     let rough_note = if rough > 0 { format!("; {rough} of them have effects that aren't simulated, so the reroll may look better than it is") } else { String::new() };
     // the bosses among them whose rounds deal cards face down: the analysis' note on them
     let turned = eligible.iter().filter(|b| crate::engine::score::turns_cards_down(&b.key)).count();
-    let rough_note = if turned > 0 { format!("{rough_note}; {turned} of them deal cards face down, decided over by a vote of 4 draws (heuristic)") } else { rough_note };
+    let rough_note = if turned > 0 { format!("{rough_note}; {turned} of them deal cards face down, decided over 4 draws of them (heuristic)") } else { rough_note };
     if avg > now {
         o.p_win = avg;
         o.money_gain = -10.0;

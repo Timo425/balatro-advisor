@@ -1729,6 +1729,36 @@ fn decide_cards(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i
 /// (`chase`), else in points
 #[allow(clippy::too_many_arguments)]
 fn decide_cards_with(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i64, need: f64, size: usize, burn: bool, given: Option<&HandParts>, reach: bool) -> Action {
+    match policy_core(b, hand, deck, hands, discards, need, size, burn, given, reach, None) {
+        PolicyOut::Act(a) => a,
+        PolicyOut::Values(_) => unreachable!("asked for no values"),
+    }
+}
+
+/// What the policy's own estimates make of each of `acts` on `hand` (`policy_core`'s values):
+/// the round's expected points from here (on its last hand, the score still needed times the
+/// chance to reach it; with `reach` off, in points there too, as the policy weighs it where
+/// nothing reaches), as its decision weighs playing on against a plan's chase. A heuristic
+/// (the policy's), labelled where it decides: the face-down choice (`decide_unseen`).
+#[allow(clippy::too_many_arguments)]
+fn policy_estimates(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i64, need: f64, size: usize, given: Option<&HandParts>, reach: bool, acts: &[Action]) -> Vec<f64> {
+    match policy_core(b, hand, deck, hands, discards, need, size, true, given, reach, Some(acts)) {
+        PolicyOut::Values(v) => v,
+        PolicyOut::Act(_) => unreachable!("asked for values"),
+    }
+}
+
+/// The policy's decision (`decide_cards_with`), or with `ask` its estimate of each decision asked
+/// (`policy_estimates`)
+enum PolicyOut {
+    Act(Action),
+    Values(Vec<f64>),
+}
+
+/// `decide_cards_with`'s body; `ask`: the decisions to value instead of deciding (`policy_estimates`)
+#[allow(clippy::too_many_arguments)]
+fn policy_core(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: i64, need: f64, size: usize, burn: bool, given: Option<&HandParts>, reach: bool, ask: Option<&[Action]>) -> PolicyOut {
+    use PolicyOut::Act;
     // the best plays of this hand and of its parts (`HandParts`)
     let own;
     let parts = match given {
@@ -1741,7 +1771,7 @@ fn decide_cards_with(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discar
     let whole: Vec<usize> = (0..hand.len()).collect();
     // every card here is read as seen: a round's face-down cards come as one draw of what they
     // could be (`decide_unseen`, gap 25 (a))
-    let Some(best) = parts.best(&whole) else { return Action::Play(vec![], false) };
+    let Some(best) = parts.best(&whole) else { return ask.map_or(Act(Action::Play(vec![], false)), |a| PolicyOut::Values(vec![0.0; a.len()])) };
     let play_best = Action::Play(with_fillers(b, hand, &best.cards), false);
     // Discards that pay money (`discard_money`, the engine's discard effects): while the
     // round is safe (on pace with this hand), cash the discard that pays most among those
@@ -1755,7 +1785,9 @@ fn decide_cards_with(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discar
     let on = || *on_cell.get_or_init(|| playing_on_with(b, hand, &best, hands, true, true, parts.shortlist()));
     let all: Vec<usize> = (0..hand.len()).collect();
     let now = discards > 1 || best.surest >= need || hands <= 1;
-    if burn && now && discards > 0 && discard_money(b, hand, &all) > 0.0 && on() >= need {
+    // the decisions below that aren't weighed by the round's points are made only when deciding
+    let deciding = ask.is_none();
+    if deciding && burn && now && discards > 0 && discard_money(b, hand, &all) > 0.0 && on() >= need {
         let n = hand.len().min(12);
         let key = |v: &[usize]| {
             let mut k: Vec<_> = v.iter().map(|&i| hand[i].order_key()).collect();
@@ -1783,24 +1815,24 @@ fn decide_cards_with(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discar
             keeps_pace(b, &rest, hands, need)
         };
         if let Some((v, _)) = paying.into_iter().take(16).find(|(v, _)| keeps_pace(v)) {
-            return Action::Discard(v);
+            return Act(Action::Discard(v));
         }
     }
     // the last hand is played now only when no discard is left: a discard is allowed with one
     // hand left (button_callbacks.lua `G.FUNCS.can_discard`: discards left and cards picked)
     // and draws back to hand size (`G.FUNCS.draw_from_deck_to_hand`), so throwing cards
     // outside the best play can only add to it; a hand that can't win yet digs first
-    if best.surest >= need {
+    if deciding && best.surest >= need {
         // the winning play worth most by the round's goals, when it has goals (`finish_play`);
         // else the best play, or when it doesn't surely win, the best that does
-        return match b.goals.as_ref().and_then(|g| finish_among(b, g, hand, need, hands, &parts.plays())) {
+        return Act(match b.goals.as_ref().and_then(|g| finish_among(b, g, hand, need, hands, &parts.plays())) {
             Some(v) => Action::Play(v, false),
             None if best.sure >= need => play_best,
             None => surely_winning(hand, &parts.plays(), need).map_or(play_best, |v| Action::Play(v, false)),
-        };
+        });
     }
-    if (hands <= 1 && discards <= 0) || deck.is_empty() {
-        return play_best;
+    if deciding && ((hands <= 1 && discards <= 0) || deck.is_empty()) {
+        return Act(play_best);
     }
     // When your best play scores more with no discards left (the engine knows which jokers
     // pay that way), discard before playing. Which cards: what the policy digs with when it's
@@ -1808,11 +1840,11 @@ fn decide_cards_with(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discar
     // discards are spent anyway, so keeping a draw costs nothing; being on pace only decides
     // whether to spend a discard, which the burn already has (inside it the policy digs whatever
     // the pace, toward the score still needed). Nothing to throw: play.
-    if burn && discards > 0 && burn_pays(b, hand, &best.cards) {
+    if deciding && burn && discards > 0 && burn_pays(b, hand, &best.cards) {
         if let Action::Discard(v) = decide_cards(b, hand, deck, hands, discards, need, size, false) {
-            return Action::Discard(v);
+            return Act(Action::Discard(v));
         }
-        return play_best;
+        return Act(play_best);
     }
     // Dig plans (`aims`): every hand you could dig for, each chased dig by dig as this policy
     // would (`chase`): the one whose chase is worth most, when that beats playing on (a later
@@ -1868,20 +1900,21 @@ fn decide_cards_with(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discar
     type Dig = Option<(Vec<usize>, bool)>;
     let digs: Vec<std::cell::OnceCell<Dig>> = all.iter().map(|_| std::cell::OnceCell::new()).collect();
     let dig_of = |k: usize| digs[k].get_or_init(|| dig_for(parts, &all[k].keep, held_keep(), discards));
-    // what a plan's completion holds beside it: with `ends`, every card its dig leaves in hand,
-    // else the cards worth holding
-    let kept_of = |k: usize| -> Vec<usize> {
-        match (ends, dig_of(k)) {
-            (Some(_), d) => {
+    // what a plan keeping `keep` holds beside its completion after a dig throwing `thrown`: with
+    // `ends`, every card the dig leaves in hand, else the cards worth holding it leaves (the
+    // policy's own digs never throw them)
+    let kept_after = |keep: &[usize], thrown: &[usize]| -> Vec<usize> {
+        let hk = held_keep();
+        match ends {
+            Some(_) => {
                 // the cards worth holding first: a dig never throws them (`held_beside`)
-                let thrown = d.as_ref().map_or(&[][..], |d| &d.0[..]);
-                let left = |i: &usize| !all[k].keep.contains(i) && !thrown.contains(i);
-                let keep = held_keep();
-                keep.iter().copied().filter(left).chain((0..hand.len()).filter(|i| left(i) && !keep.contains(i))).collect()
+                let left = |i: &usize| !keep.contains(i) && !thrown.contains(i);
+                hk.iter().copied().filter(left).chain((0..hand.len()).filter(|i| left(i) && !hk.contains(i))).collect()
             }
-            (None, _) => held_keep().clone(),
+            None => hk.iter().copied().filter(|i| !thrown.contains(i)).collect(),
         }
     };
+    let kept_of = |k: usize| -> Vec<usize> { kept_after(&all[k].keep, dig_of(k).as_ref().map_or(&[][..], |d| &d.0[..])) };
     // the board a plan's first dig leaves when it discards (`dig_board`): every hand of its
     // chase after that dig is scored there; `b` where the discard changes nothing a score reads
     let boards: Vec<std::cell::OnceCell<Option<Board>>> = all.iter().map(|_| std::cell::OnceCell::new()).collect();
@@ -1902,38 +1935,37 @@ fn decide_cards_with(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discar
     let full_of = |k: usize| *full[k].get_or_init(|| aim_score(board_of(k), &all[k], hand, &kept_of(k), ends, last, burns));
     // the screen: there every plan gets the full estimate, as one completion can't tell its share
     let quick_of = |k: usize| if last.is_some() { full_of(k) } else { *quick[k].get_or_init(|| aim_quick(board_of(k), &all[k], hand, &kept_of(k), ends)) };
-    let left: Vec<std::cell::OnceCell<f64>> = all.iter().map(|_| std::cell::OnceCell::new()).collect();
-    let left_of = |k: usize| {
-        *left[k].get_or_init(|| {
-            let thrown = dig_of(k).as_ref().map_or(&[][..], |d| &d.0[..]);
-            let rest: Vec<usize> = (0..hand.len()).filter(|i| !thrown.contains(i)).collect();
-            let on = board_of(k);
-            parts.best(&rest).map_or(0.0, |p| {
-                let played: Vec<Card> = p.cards.iter().map(|&i| hand[i]).collect();
-                let held: Vec<Card> = rest.iter().filter(|i| !p.cards.contains(i)).map(|&i| hand[i]).collect();
-                // its average on the board the dig leaves: the search's, by what that board's
-                // score of it is to this one's
-                let mean = if moved(k) { p.mean * ratio(b, on, &played, &held) } else { p.mean };
-                match ends {
-                    // the cards drawn after the dig held beside its play, on `HELD_DRAWS` draws
-                    Some(e) if !thrown.is_empty() => {
-                        let count = e.size.saturating_sub(rest.len());
-                        let own = score::score(on, &played, &held, &mut Unlucky, false).score;
-                        let drawn = (0..HELD_DRAWS)
-                            .map(|s| {
-                                let mut h = held.clone();
-                                h.extend(held_draws(e.pile, &[], count, s));
-                                score::score(on, &played, &h, &mut Unlucky, false).score
-                            })
-                            .sum::<f64>()
-                            / HELD_DRAWS as f64;
-                        mean + drawn - own
-                    }
-                    _ => mean,
+    // the hand a dig throwing `thrown` leaves, played: its best play's average on the board the
+    // dig leaves (`on`; `moved`: not `b`)
+    let left_after = |thrown: &[usize], on: &Board, moved: bool| -> f64 {
+        let rest: Vec<usize> = (0..hand.len()).filter(|i| !thrown.contains(i)).collect();
+        parts.best(&rest).map_or(0.0, |p| {
+            let played: Vec<Card> = p.cards.iter().map(|&i| hand[i]).collect();
+            let held: Vec<Card> = rest.iter().filter(|i| !p.cards.contains(i)).map(|&i| hand[i]).collect();
+            // its average on the board the dig leaves: the search's, by what that board's
+            // score of it is to this one's
+            let mean = if moved { p.mean * ratio(b, on, &played, &held) } else { p.mean };
+            match ends {
+                // the cards drawn after the dig held beside its play, on `HELD_DRAWS` draws
+                Some(e) if !thrown.is_empty() => {
+                    let count = e.size.saturating_sub(rest.len());
+                    let own = score::score(on, &played, &held, &mut Unlucky, false).score;
+                    let drawn = (0..HELD_DRAWS)
+                        .map(|s| {
+                            let mut h = held.clone();
+                            h.extend(held_draws(e.pile, &[], count, s));
+                            score::score(on, &played, &h, &mut Unlucky, false).score
+                        })
+                        .sum::<f64>()
+                        / HELD_DRAWS as f64;
+                    mean + drawn - own
                 }
-            })
+                _ => mean,
+            }
         })
     };
+    let left: Vec<std::cell::OnceCell<f64>> = all.iter().map(|_| std::cell::OnceCell::new()).collect();
+    let left_of = |k: usize| *left[k].get_or_init(|| left_after(dig_of(k).as_ref().map_or(&[][..], |d| &d.0[..]), board_of(k), moved(k)));
     // each plan's chase (`chase`): with the lesser plans it keeps alive (a lesser hand whose
     // cards it keeps), always on their full estimate (a middle completion can be far off: a
     // flush draw's may be a straight flush), and the hand it leaves
@@ -1969,6 +2001,86 @@ fn decide_cards_with(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discar
         let stays = held_keep().iter().filter(|i| !all[k].keep.contains(i)).count();
         chase(&all[k], score(k), left_of(k), &lesser, &ChaseRound { stays, lift: lift_of(k), spent: spent(), ..round })
     };
+    if let Some(acts) = ask {
+        // a play: its own cards' average now, as played (`mean_score`), then a later hand played
+        // on each hand after, as playing on counts them: the same for every play, the cards held
+        // standing in for the ones drawn (on the round's last hand, its share of rolls that
+        // reach the score needed, `play_reach`)
+        let play_value = |v: &[usize]| -> f64 {
+            if v.is_empty() {
+                return 0.0;
+            }
+            match last {
+                Some(n) => play_reach(b, hand, v, n, burns),
+                None => mean_score(b, hand, v, f64::NEG_INFINITY) + (hands - 1).max(0) as f64 * later,
+            }
+        };
+        // a dig (a discard, or a junk hand once they're gone): the better of playing on from the
+        // hand it leaves and the plans it keeps whole, chased from that dig (`chase`, the cards
+        // held for their value beside the plan held back: `ChaseRound::stays`), on the board it
+        // leaves, screened as the decision screens them (the best of a family, the finalists).
+        // Not the decision's on-pace rules (`eligible`, `ON_PACE_MARGIN`): they decide whether
+        // to start a dig, not what a dig made is worth (applying them lost 1.0 to 1.3 points of
+        // round wins on the bench's Mark boards and won 0.4 and 0.5 on two 4-hand, 3-discard boss
+        // boards, 2026-11-07). So on a hand it sees, the policy's
+        // own decision is valued at least as high as playing its best play
+        let dig_value = |v: &[usize], junk: bool| -> f64 {
+            let after = if junk { None } else { dig_board(b, hand, v, &best.cards) };
+            let on = after.as_ref().unwrap_or(b);
+            let lift = if after.is_some() { ratio(b, on, &best_played, &best_held) } else { 1.0 };
+            let left = left_after(v, on, after.is_some());
+            let rest: Vec<usize> = (0..hand.len()).filter(|i| !v.contains(i)).collect();
+            let h = if junk { hands - 1 } else { hands };
+            // a junk hand on the round's last (not made: the policy plays its best there) is a play
+            if h <= 0 {
+                return play_value(v);
+            }
+            let stay = reached(left, last) + (h - 1) as f64 * later * lift;
+            if v.is_empty() {
+                return stay;
+            }
+            let chase_of = |k: usize, full: bool| {
+                let kept = kept_after(&all[k].keep, v);
+                let score = if full || last.is_some() { aim_score(on, &all[k], hand, &kept, ends, last, burns) } else { aim_quick(on, &all[k], hand, &kept, ends) };
+                let lesser: Vec<(&Aim, f64)> = (0..all.len())
+                    .filter(|&j| (all[j].hand as usize) > (all[k].hand as usize) && all[j].keep.iter().all(|i| all[k].keep.contains(i)))
+                    .map(|j| {
+                        let kj: Vec<usize> = match ends {
+                            Some(_) => all[k].keep.iter().copied().filter(|i| !all[j].keep.contains(i)).chain(kept.iter().copied()).collect(),
+                            None => kept_after(&all[j].keep, v),
+                        };
+                        (&all[j], aim_score(on, &all[j], hand, &kj, ends, last, burns))
+                    })
+                    .collect();
+                let stays = held_keep().iter().filter(|i| rest.contains(i) && !all[k].keep.contains(i)).count();
+                // playing on's charge (`spent`) only decides `go`, which isn't read here
+                chase(&all[k], score, left, &lesser, &ChaseRound { stays, lift, spent: 1.0, ..round })
+            };
+            // screened on one completion each, the best few on the full estimate (as deciding)
+            let mut fit: Vec<(usize, f64)> = (0..all.len()).filter(|&k| all[k].keep.iter().all(|i| rest.contains(i))).map(|k| (k, chase_of(k, false).value)).collect();
+            fit.sort_by(|a, c| c.1.total_cmp(&a.1));
+            let mut families: Vec<(HandType, i32)> = vec![];
+            fit.retain(|(k, _)| match all[*k].family {
+                Some(f) if families.contains(&(all[*k].hand, f)) => false,
+                Some(f) => {
+                    families.push((all[*k].hand, f));
+                    true
+                }
+                None => true,
+            });
+            fit.truncate(AIM_FINALISTS);
+            fit.into_iter().map(|(k, _)| chase_of(k, true)).map(|c| c.value).fold(stay, f64::max)
+        };
+        return PolicyOut::Values(
+            acts.iter()
+                .map(|a| match a {
+                    Action::Play(v, false) => play_value(v),
+                    Action::Play(v, true) => dig_value(v, true),
+                    Action::Discard(v) => dig_value(v, false),
+                })
+                .collect(),
+        );
+    }
     // screened on one completion each; the best few get the full estimate
     // (a plan with nothing to throw can't be chased)
     let mut plan = (0..all.len()).filter(|&k| eligible(&all[k]) && dig_of(k).is_some()).map(|k| (k, run(k, &quick_of))).collect::<Vec<_>>();
@@ -1991,7 +2103,7 @@ fn decide_cards_with(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discar
     // held a later dig gathers, and the policy's fallback discard isn't valued, gap 6): they are
     // weighed in points, which say which comes nearest
     if last.is_some() && round.now <= 0.0 && !plan.is_empty() && plan.iter().all(|(_, c)| c.value <= 0.0) {
-        return decide_cards_with(b, hand, deck, hands, discards, need, size, burn, Some(parts), false);
+        return Act(decide_cards_with(b, hand, deck, hands, discards, need, size, burn, Some(parts), false));
     }
     let plan = plan
         .into_iter()
@@ -2000,15 +2112,15 @@ fn decide_cards_with(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discar
     if let Some((k, _)) = plan
         && let Some((v, junk)) = dig_of(k).clone()
     {
-        return if junk { Action::Play(v, true) } else { Action::Discard(v) };
+        return Act(if junk { Action::Play(v, true) } else { Action::Discard(v) });
     }
     if on_pace {
-        return play_best;
+        return Act(play_best);
     }
     if !toss().is_empty() {
-        return Action::Discard(toss().clone());
+        return Act(Action::Discard(toss().clone()));
     }
-    play_best
+    Act(play_best)
 }
 
 /// Whether `hand`'s best play keeps you on pace for `need` over `hands` hands (`playing_on`):
@@ -2279,6 +2391,21 @@ thread_local! {
     /// Decisions made with a face-down card in hand in this thread (`decide_unseen`; tests)
     #[cfg(test)]
     static UNSEEN_DECISIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Each valuation `decide_unseen` made in this thread (tests)
+    #[cfg(test)]
+    static UNSEEN_VALUED: std::cell::RefCell<Vec<UnseenValued>> = const { std::cell::RefCell::new(vec![]) };
+}
+
+/// One valuation `decide_unseen` made (tests): the draws' actions, each draw's hand and pile,
+/// every action's summed estimate, the vote's ranking and the valuation's pick
+#[cfg(test)]
+#[derive(Clone)]
+struct UnseenValued {
+    acts: Vec<Action>,
+    draws: Vec<(Vec<Card>, Vec<Card>)>,
+    sum: Vec<f64>,
+    vote: Vec<usize>,
+    pick: usize,
 }
 
 /// A yardstick for the simulated player and for picks a change moved (`advise::Options::judge`),
@@ -4304,14 +4431,16 @@ pub fn sim_round_uses(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[
 /// `seen_by` kept up), then what it plays or throws, by its places in the hand they leave.
 #[allow(clippy::too_many_arguments)]
 fn decide_step(b: &mut Board, hand: &mut Vec<Card>, deck: &[Card], used: &mut [bool], seen_by: &mut Vec<(String, f64)>, uses: &[Use], hands: i64, discards: i64, total: f64, target: f64, size: usize, rng: &mut Rng) -> (Vec<usize>, Action) {
-    let (order, act, _) = decide_step_open(b, hand, deck, used, seen_by, uses, hands, discards, total, target, size, rng);
+    let (order, act, _, _) = decide_step_open(b, hand, deck, used, seen_by, uses, hands, discards, total, target, size, rng);
     (order, act)
 }
 
-/// `decide_step`, and whether it decided with no win on the table (where the oracle,
-/// `set_oracle`, weighs the decision: `decide_unseen` asks it there only)
+/// `decide_step`, whether it decided with no finish on the table (where the oracle,
+/// `set_oracle`, weighs the decision: `decide_unseen` asks it there only), and whether its best
+/// play surely reaches the score (a win on the table by the policy's own test, `decide_cards`,
+/// with goals or without: where `decide_unseen` values its choice)
 #[allow(clippy::too_many_arguments)]
-fn decide_step_open(b: &mut Board, hand: &mut Vec<Card>, deck: &[Card], used: &mut [bool], seen_by: &mut Vec<(String, f64)>, uses: &[Use], hands: i64, discards: i64, total: f64, target: f64, size: usize, rng: &mut Rng) -> (Vec<usize>, Action, bool) {
+fn decide_step_open(b: &mut Board, hand: &mut Vec<Card>, deck: &[Card], used: &mut [bool], seen_by: &mut Vec<(String, f64)>, uses: &[Use], hands: i64, discards: i64, total: f64, target: f64, size: usize, rng: &mut Rng) -> (Vec<usize>, Action, bool, bool) {
     let mut order = use_if_better(b, hand, uses, used, target - total, hands);
     drop_used_seen(b, seen_by);
     // a win on the table: the finish (`finish_play` by the round's goals; without them, while
@@ -4324,6 +4453,9 @@ fn decide_step_open(b: &mut Board, hand: &mut Vec<Card>, deck: &[Card], used: &m
         None => win_keeping_seals(b, hand, target - total),
     };
     let open = win.is_none();
+    // a best play that surely reaches the score (without goals or a card that pays at round end
+    // held, `win_keeping_seals` finds no finish, though the policy then plays the win)
+    let sure = win.is_some() || parts.best(&all).is_some_and(|p| p.surest >= target - total);
     let act = match win {
         Some(v) => {
             // the finish, with any held consumable that makes it worth more used first
@@ -4362,12 +4494,12 @@ fn decide_step_open(b: &mut Board, hand: &mut Vec<Card>, deck: &[Card], used: &m
                     oracle_decide(b, hand, deck, hands, discards, total, target, size, &unused, rng)
                 })
                 .flatten();
-            // without goals the search wasn't made: the decision makes it, as before; with
-            // them, a play that grows the jokers less than another that keeps pace may give
-            // way to it (`spare_instead`)
+            // the whole hand's search shared with the decision (made above for the win test);
+            // with goals, a play that grows the jokers less than another that keeps pace may
+            // give way to it (`spare_instead`)
             oracle.unwrap_or_else(|| {
                 let need = target - total;
-                match decide_with(b, hand, deck, hands, discards, need, size, b.goals.is_some().then_some(&parts)) {
+                match decide_with(b, hand, deck, hands, discards, need, size, Some(&parts)) {
                     Action::Play(v, dig) if b.goals.as_ref().is_some_and(|g| !g.no_lookahead && !g.jokers.is_empty()) => {
                         let unused: Vec<Use> = uses.iter().zip(used.iter()).filter(|(_, u)| !**u).map(|(x, _)| x.clone()).collect();
                         spare_instead(b, &parts, deck, hands, discards, total, target, size, &v, seen_by, &unused, rng).map_or(Action::Play(v, dig), |s| Action::Play(s, false))
@@ -4377,11 +4509,12 @@ fn decide_step_open(b: &mut Board, hand: &mut Vec<Card>, deck: &[Card], used: &m
             })
         }
     };
-    (order, act, open)
+    (order, act, open, sure)
 }
 
-/// How many draws of the face-down cards in hand the simulated player decides on, the decision
-/// most of them make played (`decide_unseen`): a budget, not a finding
+/// How many draws of the face-down cards in hand the simulated player decides on and values its
+/// choice over (`decide_unseen`): a budget, not a finding (8 measured 2026-11-07: within noise of
+/// 4, at 1.5 times the player's cost)
 const UNSEEN_DRAWS: usize = 4;
 
 /// `decide_step` with a face-down card in `hand` (gap 25 (a)): the player can't see it, so it
@@ -4389,8 +4522,13 @@ const UNSEEN_DRAWS: usize = 4;
 /// (a consumable held for a face-down card's place on what that draw put there: `Use::unplaced`),
 /// and uses the consumable most draws use first (the earliest draw's on a tie: they're drawn at
 /// random, not ordered by the cards), on the cards as they are, then decides again on the hand
-/// it leaves (the cards it changed seen, as the game shows them); with none used first, the
-/// action most of those draws make. A draw keeps what you
+/// it leaves (the cards it changed seen, as the game shows them); with none used first, of the
+/// actions those draws make, where not every draw has a win on the table, the one the policy's own
+/// estimates value most summed over every draw (`policy_estimates`, a heuristic: no futures, so
+/// about one more policy decision a draw; on the round's last hand, where none reaches the score
+/// needed, in points), else the one most of them make. It stops drawing once the draws so far
+/// all decided the same and the rest can't outvote them (`unseen_done`: two alike of four; a
+/// budget, as the later draws' dissent isn't valued). A draw keeps what you
 /// can tell of them now (`Hidden`): their bounds among the cards you see in the game's two sorts,
 /// their order among themselves, the boss's rule (`Board::turns_down_only_faces`), from the
 /// unseen cards (the pile and themselves, as the game's deck view counts them); the pile it
@@ -4424,35 +4562,72 @@ fn decide_unseen(b: &mut Board, hand: &mut Vec<Card>, deck: &[Card], used: &mut 
     let oracle = oracle_on();
     // each draw's decision: the consumables used, in order, and the action
     let mut steps: Vec<(Vec<usize>, Action)> = vec![];
-    // whether a win is on the table in every draw (`decide_step_open`): only then is it on the
-    // table for a player who can't see the face-down cards, and the oracle stays out, as it
-    // does on a hand you see with a win on it
+    // whether some draw has no finish on the table (`decide_step_open`): one is on the table for
+    // a player who can't see the face-down cards only when it is in every draw, and the oracle
+    // stays out then, as it does on a hand you see with a finish on it
     let mut open = false;
+    // whether some draw has no sure win (its best play surely reaching the score): the decisions
+    // are valued over the draws only then
+    let mut unsure = false;
+    // each draw's hand and pile, for the valuation
+    let mut seen_draws: Vec<(Vec<Card>, Vec<Card>)> = vec![];
     for k in 0..UNSEEN_DRAWS {
         let (mut h, d, seed) = if k == 0 { first.clone() } else { imagine() };
+        seen_draws.push((h.clone(), d.clone()));
         let (mut b2, mut u2, mut s2) = (b.clone(), used.to_vec(), seen_by.clone());
         // the consumables held for a face-down card's place, on what this draw put there
         let imagined = uses_on(b, &unplaced, &h);
-        let (order, act, o) = without_oracle(|| decide_step_open(&mut b2, &mut h, &d, &mut u2, &mut s2, &imagined, hands, discards, total, target, size, &mut Rng::new(seed)));
+        let (order, act, o, sure) = without_oracle(|| decide_step_open(&mut b2, &mut h, &d, &mut u2, &mut s2, &imagined, hands, discards, total, target, size, &mut Rng::new(seed)));
         open |= o;
+        unsure |= !sure;
         steps.push((order, act));
-        // once the draws left can't change the vote's winner, the rest decide nothing: the same
-        // decision with fewer draws (a cost, not a change). Only on no consumable and an action:
+        // once the draws so far all agree and the draws left can't outvote them, the rest are
+        // skipped: a budget, as a later draw that dissents could have been valued over them
+        // (below), not a finding. Only on no consumable and an action:
         // where a consumable leads, whether it can be used decides between it and the next, and
         // where it shows every face-down card the decision after it is seeded from the draws'
         // stream past the last draw (`draws`), which stopping early would move.
         // Not for the yardstick, which weighs every draw's decision.
-        if !oracle && unseen_settled(&steps, UNSEEN_DRAWS - k - 1) {
+        if !oracle && unseen_done(&steps, UNSEEN_DRAWS - k - 1) {
             break;
         }
     }
     // the consumable most draws use first, or none (the earliest on a tie: a stable sort); the
     // next one is decided on the hand it leaves
     let (orders, made) = vote_tallies(&steps);
+    // where not every draw has a win on the table (so none is on it for the player), none used
+    // a consumable first, and they disagree: the action the policy's own estimates value most
+    // over the draws (`policy_estimates`), the vote's order on a tie. Valuing only where no draw
+    // had a win lost up to 2.9 points of round wins on the bench's boss boards (2026-11-07)
+    let valued = (unsure && made.len() >= 2 && steps.iter().all(|x| x.0.is_empty())).then(|| {
+        let acts: Vec<Action> = made.iter().map(|m| m.0.clone()).collect();
+        let sum_by = |reach: bool| {
+            let mut sum = vec![0.0; acts.len()];
+            for (h, d) in &seen_draws {
+                for (s, v) in sum.iter_mut().zip(policy_estimates(b, h, d, hands, discards, target - total, size, None, reach, &acts)) {
+                    *s += v;
+                }
+            }
+            sum
+        };
+        // on the round's last hand, where none reaches the score needed on any draw, in points,
+        // which say which comes nearest (as the policy weighs it there)
+        let mut sum = sum_by(true);
+        if hands <= 1 && sum.iter().all(|&v| v <= 0.0) {
+            sum = sum_by(false);
+        }
+        let mut rank = vote_ranking(&tally_counts(&made));
+        #[cfg(test)]
+        let vote = rank.clone();
+        rank.sort_by(|&x, &y| sum[y].total_cmp(&sum[x]));
+        #[cfg(test)]
+        UNSEEN_VALUED.with(|x| x.borrow_mut().push(UnseenValued { acts: acts.clone(), draws: seen_draws.clone(), sum: sum.clone(), vote, pick: rank[0] }));
+        rank
+    });
     for order in vote_ranking(&tally_counts(&orders)).into_iter().map(|i| &orders[i].0) {
         if order.is_empty() {
             // none: the action most of those draws make, the earliest on a tie
-            let rank = vote_ranking(&tally_counts(&made));
+            let rank = valued.clone().unwrap_or_else(|| vote_ranking(&tally_counts(&made)));
             let act = made[rank[0]].0.clone();
             if oracle && open {
                 // the other draws' actions, as the yardstick's alternatives, and the consumables
@@ -4559,6 +4734,13 @@ fn vote_tallies(steps: &[(Vec<usize>, Action)]) -> (Vec<(Vec<usize>, usize)>, Ve
 fn unseen_settled(steps: &[(Vec<usize>, Action)], left: usize) -> bool {
     let (orders, made) = vote_tallies(steps);
     vote_settled(&tally_counts(&orders), left).is_some_and(|l| orders[l].0.is_empty()) && vote_settled(&tally_counts(&made), left).is_some()
+}
+
+/// Whether `decide_unseen` stops drawing, with `left` draws still to go: the draws so far all
+/// made the same decision, using no consumable, and the rest can't outvote it
+/// (`unseen_settled`). A budget: a later draw that dissents would have been valued over them.
+fn unseen_done(steps: &[(Vec<usize>, Action)], left: usize) -> bool {
+    unseen_settled(steps, left) && steps.iter().all(|x| same_step(x, &steps[0]))
 }
 
 /// How many draws made each decision of a tally (`vote_tallies`)
@@ -5108,6 +5290,121 @@ mod tests {
             }
         }
         assert!(stopped > 0 && ran > 0, "stopped early {stopped}, ran every draw {ran}");
+    }
+
+    #[test]
+    fn the_draws_stop_only_once_they_agree_as_a_dissent_would_be_valued() {
+        // a vote of four settled on two draws alike stops; one settled with a dissent among the
+        // draws so far goes on, as that dissent is valued over every draw (`decide_unseen`)
+        let play = |i: usize| (vec![], Action::Play(vec![i], false));
+        assert!(unseen_done(&[play(0), play(0)], 2));
+        assert!(unseen_settled(&[play(0), play(0), play(1)], 1));
+        assert!(!unseen_done(&[play(0), play(0), play(1)], 1));
+        assert!(!unseen_done(&[play(0)], 3));
+        // a consumable first never stops it
+        assert!(!unseen_done(&[(vec![0], Action::Play(vec![0], false)), (vec![0], Action::Play(vec![0], false))], 2));
+    }
+
+    #[test]
+    fn a_face_down_hand_plays_the_decision_its_draws_value_most_not_the_first_draws() {
+        // The House's first hand, every card face down: each draw imagines other cards, so the
+        // draws mostly decide apart, and a vote played the first draw's pick. The decision is the
+        // one the policy's own estimates value most over the draws (`policy_estimates`), the
+        // vote's order only on a tie (gap 25 (a))
+        let mut hand = Card::parse_list("AS KH QD 9C 7S 5H 4D 2C").unwrap();
+        hand.iter_mut().for_each(|c| c.face_down = true);
+        let deck: Vec<Card> = standard_deck().into_iter().filter(|c| !hand.iter().any(|h| h.same_kind(c))).collect();
+        let cards = |a: &Action| match a {
+            Action::Play(v, j) => (u8::from(*j), { let mut v = v.clone(); v.sort_unstable(); v }),
+            Action::Discard(v) => (2, { let mut v = v.clone(); v.sort_unstable(); v }),
+        };
+        let (mut valued, mut moved) = (0, 0);
+        for (jokers, need) in [(&["j_droll", "j_tribe"][..], 2000.0), (&["j_jolly", "j_duo"], 1500.0), (&["j_joker"], 900.0)] {
+            let b = sample_board(jokers);
+            for seed in 0..6 {
+                UNSEEN_VALUED.with(|x| x.borrow_mut().clear());
+                let act = decide_unseen(&mut b.clone(), &mut hand.clone(), &deck, &mut [], &mut vec![], &[], 4, 3, 0.0, need, 8, &Rng::new(seed));
+                let Some(r) = UNSEEN_VALUED.with(|x| x.borrow().last().cloned()) else { continue };
+                valued += 1;
+                moved += usize::from(r.vote[0] != r.pick);
+                // the action played is the one valued most
+                assert_eq!(cards(&act), cards(&r.acts[r.pick]), "seed {seed}");
+                // summed over every draw, each draw's hand and pile valued as the policy would
+                let mut sum = vec![0.0; r.acts.len()];
+                for (h, d) in &r.draws {
+                    for (s, v) in sum.iter_mut().zip(policy_estimates(&b, h, d, 4, 3, need, 8, None, true, &r.acts)) {
+                        *s += v;
+                    }
+                }
+                assert_eq!(r.draws.len(), UNSEEN_DRAWS);
+                assert_eq!(sum, r.sum);
+                // the most, the vote's earliest on a tie
+                let best = sum.iter().copied().fold(f64::MIN, f64::max);
+                assert_eq!(r.pick, *r.vote.iter().find(|&&i| sum[i] == best).unwrap(), "{sum:?}");
+            }
+        }
+        assert!(valued >= 6, "{valued}");
+        // and it isn't the vote: some pick differs from the one the vote made
+        assert!(moved > 0);
+    }
+
+    #[test]
+    fn the_policys_estimates_value_its_own_decision_as_it_weighs_it() {
+        // On a hand it sees, the policy's estimate of a play is its playing on (`playing_on`:
+        // the play now, a later hand each hand after), and of the dig it makes for a plan at least
+        // that (a chase is made only when worth more than playing on, `chase`); a dig of a card
+        // the plan needs is worth less than the plan's own dig
+        let b = sample_board(&["j_droll", "j_tribe"]);
+        let hand = Card::parse_list("AH 9H 6H 3H KS QD 7C 2C").unwrap();
+        let deck: Vec<Card> = standard_deck().into_iter().filter(|c| !hand.iter().any(|h| h.same_kind(c))).collect();
+        let (hands, discards, need) = (4, 3, 3000.0);
+        let act = decide_cards(&b, &hand, &deck, hands, discards, need, 8, true);
+        let Action::Discard(dig) = &act else { panic!("{act:?}: the four hearts aren't chased") };
+        assert!((0..4).all(|i| !dig.contains(&i)), "{dig:?}");
+        let best = best_play(&b, &hand).unwrap();
+        let mut spoilt: Vec<usize> = dig.iter().copied().filter(|&i| i != dig[0]).collect();
+        spoilt.push(0);
+        let v = policy_estimates(&b, &hand, &deck, hands, discards, need, 8, None, true, &[Action::Play(best.cards.clone(), false), act.clone(), Action::Discard(spoilt)]);
+        let on = playing_on(&b, &hand, &best, hands);
+        assert!((v[0] - on).abs() <= 1e-6 * on, "{} against playing on {on}", v[0]);
+        assert!(v[1] > v[0], "{v:?}");
+        assert!(v[2] < v[1], "{v:?}");
+    }
+
+    #[test]
+    fn the_policys_own_decision_is_valued_at_least_as_its_best_play() {
+        // the estimates (`policy_estimates`) and the decision (`decide_cards`) weigh a dig
+        // alike: on a hand it sees, what it decides is worth at least playing its best play, on
+        // pace and off, on the last hand, and where the score reads the cards held
+        let cases: [(&[&str], &str, i64, i64, f64); 8] = [
+            (&["j_droll", "j_tribe"], "AH 9H 6H 3H KS QD 7C 2C", 4, 3, 3000.0),
+            (&["j_droll", "j_tribe"], "AH 9H 6H KS KD 7C 4C 2D", 4, 3, 100.0),
+            (&["j_droll"], "AH 9H 6H 3H KS QD 7C 2C", 1, 3, 900.0),
+            (&["j_raised_fist"], "KS KD 9H 7C 5D 3S 2H 2C", 4, 3, 2500.0),
+            (&["j_baron"], "KS KD KH 9H 7C 5D 3S 2C", 4, 2, 6000.0),
+            (&["j_jolly", "j_duo"], "QS QD 9H 9C 6D 5S 3H 2C", 2, 1, 1500.0),
+            (&["j_green_joker", "j_droll"], "AH 9H 6H 3H KS QD 7C 2C", 4, 3, 3000.0),
+            (&["j_droll", "j_tribe"], "AH 9H 6H 3H KS QD 7C 2C", 3, 0, 2500.0),
+        ];
+        for (jokers, cards, hands, discards, need) in cases {
+            let b = sample_board(jokers);
+            let hand = Card::parse_list(cards).unwrap();
+            let deck: Vec<Card> = standard_deck().into_iter().filter(|c| !hand.iter().any(|h| h.same_kind(c))).collect();
+            let act = decide_cards(&b, &hand, &deck, hands, discards, need, 8, true);
+            let best = best_play(&b, &hand).unwrap();
+            let acts = [act.clone(), Action::Play(best.cards.clone(), false)];
+            let mut v = policy_estimates(&b, &hand, &deck, hands, discards, need, 8, None, true, &acts);
+            if v.iter().all(|&x| x <= 0.0) {
+                v = policy_estimates(&b, &hand, &deck, hands, discards, need, 8, None, false, &acts);
+            }
+            assert!(v[0] >= v[1] * (1.0 - 1e-9), "{cards} {jokers:?}: {act:?} {v:?}");
+            // a play on its own cards with the rest held, as playing on counts it (Raised Fist,
+            // Baron: the cards held score)
+            if hands > 1 {
+                let on = playing_on(&b, &hand, &best, hands);
+                assert!((v[1] - on).abs() <= 1e-6 * on, "{cards} {jokers:?}: {} against playing on {on}", v[1]);
+            }
+        }
     }
 
     #[test]
