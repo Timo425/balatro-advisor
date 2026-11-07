@@ -390,16 +390,21 @@ impl Ops {
     /// came in. Each card's steps are a map `mult → x·mult + b` (x ≥ 1, b ≥ 0 for every card
     /// effect in the game), and swapping two neighbours helps exactly when the later one has
     /// the larger b / (x − 1): sorted by that, no swap helps (pure +Mult first, pure ×Mult
-    /// last; the exchange argument).
-    fn best_order(&self, mult: f64) -> Option<Vec<usize>> {
+    /// last; the exchange argument). Only the cards face up are arranged, by what they show
+    /// (`down`: a bit for each card face down, `down_mask`): a face-down card keeps its place
+    /// and counts as no step at all in the choice (most cards are: chips only), since the
+    /// player arranging can't see what it does (gap 25).
+    fn best_order(&self, mult: f64, down: u64) -> Option<Vec<usize>> {
         let n = self.ends.len();
         let key = |i: usize| {
             let (x, b) = self.map(i);
             if x == 1.0 { f64::INFINITY } else { b / (x - 1.0) }
         };
+        // past the 64th card: face up unless `down_mask` closed them all (`u64::MAX`)
+        let seen = |i: usize| if i >= 64 { down != u64::MAX } else { down >> i & 1 == 0 };
         // already in that order (the usual case): nothing to arrange
         let mut prev = f64::INFINITY;
-        if (0..n).all(|i| {
+        if (0..n).filter(|&i| seen(i)).all(|i| {
             let k = key(i);
             let sorted = prev >= k;
             prev = k;
@@ -407,13 +412,39 @@ impl Ops {
         }) {
             return None;
         }
-        let keys: Vec<f64> = (0..n).map(key).collect();
-        let key = |i: usize| keys[i];
+        if down == 0 {
+            // every card face up: all of them sorted by the key
+            let keys: Vec<f64> = (0..n).map(key).collect();
+            let mut order: Vec<usize> = (0..n).collect();
+            order.sort_by(|&a, &c| keys[c].total_cmp(&keys[a]));
+            let given: Vec<usize> = (0..n).collect();
+            return (order != given && self.mult_after(&order, mult) > self.mult_after(&given, mult)).then_some(order);
+        }
+        let free: Vec<usize> = (0..n).filter(|&i| seen(i)).collect();
+        let keys: Vec<f64> = (0..n).map(|i| if seen(i) { key(i) } else { 0.0 }).collect();
+        let mut sorted = free.clone();
+        sorted.sort_by(|&a, &c| keys[c].total_cmp(&keys[a]));
         let mut order: Vec<usize> = (0..n).collect();
-        order.sort_by(|&a, &c| key(c).total_cmp(&key(a)));
+        for (&at, &i) in free.iter().zip(&sorted) {
+            order[at] = i;
+        }
         let given: Vec<usize> = (0..n).collect();
-        (order != given && self.mult_after(&order, mult) > self.mult_after(&given, mult)).then_some(order)
+        let shown = |o: &[usize]| o.iter().copied().filter(|&i| seen(i)).collect::<Vec<usize>>();
+        (order != given && self.mult_after(&shown(&order), mult) > self.mult_after(&shown(&given), mult)).then_some(order)
     }
+}
+
+/// A bit for each of `cards` face down; every bit when one past the 64th is (a hand that big
+/// keeps every card in place rather than move one it can't tell is face down)
+pub(super) fn down_mask<'c>(cards: impl Iterator<Item = &'c Card>) -> u64 {
+    let mut m = 0;
+    for (i, _) in cards.enumerate().filter(|(_, c)| c.face_down) {
+        if i >= 64 {
+            return u64::MAX;
+        }
+        m |= 1 << i;
+    }
+    m
 }
 
 /// Effect a joker returns in one context. `x` = 1 means no ×Mult.
@@ -514,6 +545,12 @@ struct Pass<'a, R: Rolls + ?Sized> {
     reads_place: bool,
     /// orders to check as played (`score`): parts of the pass whose maps aren't exact
     proposed: (Option<Vec<usize>>, Option<Vec<usize>>),
+    /// a face-down card does nothing here: its own steps are skipped and no read across the
+    /// cards sees it (`shows`: Photograph's first face card, a suit, Raised Fist's lowest rank,
+    /// Blackboard, Flower Pot, Seeing Double), so orders are chosen and checked on what shows
+    /// (`score_arranged`, gap 25); the hand it makes is still the real cards' (`HandInfo`), as
+    /// the game scores it
+    mask_down: bool,
     played_order: Option<Vec<usize>>,
     held_order: Option<Vec<usize>>,
     /// `Outcome::held_used`
@@ -1277,6 +1314,25 @@ fn score_arranged<R: Rolls + ?Sized>(
     rolls: &mut R,
     trace: bool,
 ) -> Outcome {
+    // With a face-down card in hand the order is chosen and checked wholly on passes where it
+    // does nothing (`Pass::mask_down`), every roll failing: any pass on the real cards, even
+    // the one asking whether to check, would read what it is (gap 25). The order kept is then
+    // scored on the real cards with the real rolls.
+    if played.iter().chain(held).any(|c| c.face_down) {
+        // nothing to arrange (no part with two face-up cards: the scoring ones played, the
+        // held): the real cards as given, in one pass
+        let played_up = info.scoring.iter().filter(|&&i| !played[i].face_down).count();
+        if played_up < 2 && held.iter().filter(|c| !c.face_down).count() < 2 {
+            return pass(b, played, held, info, rolls, trace, false);
+        }
+        let mut base = pass_with(b, played, held, info.clone(), &mut Unlucky, false, true, true);
+        let (pp, ph) = std::mem::take(&mut base.proposed);
+        let (fp, fh) = (base.played_order.clone(), base.held_order.clone());
+        // none kept: as the masked pass arranged it where its maps are exact
+        let (p, h) = kept_order(b, played, held, &base, pp, ph, &fp, &fh, true).map_or((fp, fh), |(_, p, h)| (p, h));
+        let info = p.is_none().then_some(info);
+        return in_order_scored(b, played, held, p, h, None, info, rolls, trace);
+    }
     // The order given (each part arranged where its cards' maps are exact), noting whether
     // any roll was asked for
     let mut watched = Asked { inner: rolls, asked: false };
@@ -1288,33 +1344,63 @@ fn score_arranged<R: Rolls + ?Sized>(
     }
     // The rest is checked as played: the order is chosen before any roll, as a player
     // arranges, so on passes with every roll failing (the one just made when it asked for none)
-    let mut base = if asked { pass(b, played, held, hand::detect(played, b.rule_flags()), &mut Unlucky, false, true) } else { Outcome { trace: vec![], ..given.clone() } };
+    let mut base = if asked {
+        pass_with(b, played, held, hand::detect(played, b.rule_flags()), &mut Unlucky, false, true, false)
+    } else {
+        Outcome { trace: vec![], ..given.clone() }
+    };
     let (pp, ph) = if asked { std::mem::take(&mut base.proposed) } else { proposed };
     let (fp, fh) = (base.played_order.clone(), base.held_order.clone());
-    // the proposal, and each half of it alone (the other part as it's arranged anyway): kept
-    // when the whole hand scores more with no less money and the jokers left the same (what a
-    // hand earns or grows isn't traded for points here)
-    let mut tries = vec![(pp.clone(), ph.clone())];
+    match kept_order(b, played, held, &base, pp, ph, &fp, &fh, false) {
+        // none kept: the order given, arranged where the maps are exact
+        None => given,
+        // the order chosen, with the real rolls (the same pass when no roll is asked for)
+        Some((o, p, h)) => in_order_scored(b, played, held, p, h, (!(asked || trace)).then_some(o), None, rolls, trace),
+    }
+}
+
+type Order = Option<Vec<usize>>;
+
+/// `cards` in `order` (as they are with none).
+fn in_order(order: &Order, cards: &[Card]) -> Vec<Card> {
+    order.as_ref().map_or(cards.to_vec(), |o| o.iter().map(|&i| cards[i]).collect())
+}
+
+/// Of the proposal (`pp`, `ph`) and each half of it alone (the other part as `base` arranges it
+/// anyway: `fp`, `fh`), the order that scores the whole hand most on a pass with every roll
+/// failing (`mask_down`: one where a face-down card does nothing), if any scores more than
+/// `base` with no less money and the jokers left the same (what a hand earns or grows isn't
+/// traded for points here); with that pass.
+#[allow(clippy::too_many_arguments)]
+fn kept_order(b: &Board, played: &[Card], held: &[Card], base: &Outcome, pp: Order, ph: Order, fp: &Order, fh: &Order, mask_down: bool) -> Option<(Outcome, Order, Order)> {
+    let mut tries = vec![];
+    if pp.is_some() || ph.is_some() {
+        tries.push((pp.clone(), ph.clone()));
+    }
     if pp.is_some() && ph.is_some() {
         tries.push((pp, None));
         tries.push((None, ph));
     }
-    let arrange = |order: &Option<Vec<usize>>, cards: &[Card]| order.as_ref().map_or(cards.to_vec(), |o| o.iter().map(|&i| cards[i]).collect::<Vec<_>>());
-    type Order = Option<Vec<usize>>;
     let mut best: Option<(Outcome, Order, Order)> = None;
     for (p, h) in tries {
         let (p, h) = (p.or_else(|| fp.clone()), h.or_else(|| fh.clone()));
-        let (pl, hl) = (arrange(&p, played), arrange(&h, held));
-        let o = pass(b, &pl, &hl, hand::detect(&pl, b.rule_flags()), &mut Unlucky, false, false);
+        let (pl, hl) = (in_order(&p, played), in_order(&h, held));
+        let o = pass_with(b, &pl, &hl, hand::detect(&pl, b.rule_flags()), &mut Unlucky, false, false, mask_down);
         let bar = best.as_ref().map_or(base.score, |x| x.0.score);
         if o.score > bar * (1.0 + 1e-9) && o.dollars >= base.dollars && o.jokers == base.jokers {
             best = Some((o, p, h));
         }
     }
-    let Some((no_luck, p, h)) = best else { return given };
-    // the order chosen, with the real rolls (the same pass when no roll is asked for)
-    let (pl, hl) = (arrange(&p, played), arrange(&h, held));
-    let mut o = if asked || trace { pass(b, &pl, &hl, hand::detect(&pl, b.rule_flags()), rolls, trace, false) } else { no_luck };
+    best
+}
+
+/// The hand scored in the order chosen (`p`, `h`): `scored` when that pass already is the one
+/// (no roll asked for, no trace, no card face down), else a pass on the real cards with `rolls`
+/// (on `info`, the hand detected, when given: the played cards as they are).
+#[allow(clippy::too_many_arguments)]
+fn in_order_scored<R: Rolls + ?Sized>(b: &Board, played: &[Card], held: &[Card], p: Order, h: Order, scored: Option<Outcome>, info: Option<HandInfo>, rolls: &mut R, trace: bool) -> Outcome {
+    let (pl, hl) = (in_order(&p, played), in_order(&h, held));
+    let mut o = scored.unwrap_or_else(|| pass(b, &pl, &hl, info.unwrap_or_else(|| hand::detect(&pl, b.rule_flags())), rolls, trace, false));
     if let Some(p) = &p {
         o.scoring = o.scoring.iter().map(|&k| p[k]).collect();
     }
@@ -1351,6 +1437,12 @@ impl<R: Rolls + ?Sized> Rolls for Asked<'_, R> {
 }
 
 fn pass<R: Rolls + ?Sized>(b: &Board, played: &[Card], held: &[Card], info: HandInfo, rolls: &mut R, trace: bool, arrange: bool) -> Outcome {
+    pass_with(b, played, held, info, rolls, trace, arrange, false)
+}
+
+/// `pass`, with each face-down card doing nothing when `mask_down` (`Pass::mask_down`)
+#[allow(clippy::too_many_arguments)]
+fn pass_with<R: Rolls + ?Sized>(b: &Board, played: &[Card], held: &[Card], info: HandInfo, rolls: &mut R, trace: bool, arrange: bool, mask_down: bool) -> Outcome {
     let flags = b.rule_flags();
     let mut level = b.levels[info.hand as usize];
     level.played += 1;
@@ -1379,6 +1471,7 @@ fn pass<R: Rolls + ?Sized>(b: &Board, played: &[Card], held: &[Card], info: Hand
         card_rolls: false,
         reads_place: false,
         proposed: (None, None),
+        mask_down,
         answers: Answers::of(b),
     };
     p.run()
@@ -1399,7 +1492,9 @@ impl<R: Rolls + ?Sized> Pass<'_, R> {
     fn played_ops(&mut self, ops: &mut Ops) {
         for si in 0..self.info.scoring.len() {
             let ci = self.info.scoring[si];
-            if self.played[ci].debuff {
+            if !self.shows(&self.played[ci]) {
+                // nothing, as the player arranging sees it
+            } else if self.played[ci].debuff {
                 self.blind_triggered = true;
             } else {
                 let mut reps = 1u32;
@@ -1423,7 +1518,7 @@ impl<R: Rolls + ?Sized> Pass<'_, R> {
     /// The held cards' steps, worked out in the order of `held`.
     fn held_ops(&mut self, ops: &mut Ops) {
         for hi in 0..self.held.len() {
-            let mut reps = 1u32;
+            let mut reps = if self.shows(&self.held[hi]) { 1u32 } else { 0 };
             let mut k = 0;
             while k < reps {
                 let c = self.held[hi];
@@ -1468,13 +1563,16 @@ impl<R: Rolls + ?Sized> Pass<'_, R> {
         }
     }
 
-    /// The order a part's cards' maps say scores most (when `arrange`), and whether the maps
-    /// are exact for it: no effect read where a card sits and no card asked for a roll (an
-    /// order is chosen before any roll), so moving them changes only how their Mult adds up
-    /// and the order can be applied here. Otherwise it's a proposal `score` checks as played.
-    fn arrangement(&self, ops: &Ops, mult: f64, rolls_before: bool) -> (Option<Vec<usize>>, bool) {
-        let order = if self.arrange { ops.best_order(mult) } else { None };
+    /// The order a part's cards' maps say scores most (when `arrange`; `down`: the part's
+    /// face-down cards, `Ops::best_order`), and whether the maps are exact for it: no effect
+    /// read where a card sits and no card asked for a roll (an order is chosen before any
+    /// roll), so moving them changes only how their Mult adds up and the order can be applied
+    /// here. Otherwise it's a proposal `score` checks as played: with a face-down card in hand,
+    /// on a pass where it does nothing (`Pass::mask_down`), as the check on the real cards would
+    /// read what it is (gap 25).
+    fn arrangement(&self, ops: &Ops, mult: f64, rolls_before: bool, down: u64) -> (Option<Vec<usize>>, bool) {
         let exact = !self.reads_place && self.card_rolls == rolls_before;
+        let order = if self.arrange { ops.best_order(mult, down) } else { None };
         (order, exact)
     }
 
@@ -1614,7 +1712,8 @@ impl<R: Rolls + ?Sized> Pass<'_, R> {
         let mut ops = Ops::take();
         let rolls_before = self.card_rolls;
         self.played_ops(&mut ops);
-        let (order, exact) = self.arrangement(&ops, mult, rolls_before);
+        let down = down_mask(self.info.scoring.iter().map(|&ci| &self.played[ci]));
+        let (order, exact) = self.arrangement(&ops, mult, rolls_before, down);
         self.apply(&ops, order.as_deref().filter(|_| exact), &mut chips, &mut mult);
         let order = order.map(|o| {
             let mut v: Vec<usize> = o.iter().map(|&si| self.info.scoring[si]).collect();
@@ -1629,7 +1728,8 @@ impl<R: Rolls + ?Sized> Pass<'_, R> {
         let rolls_before = self.card_rolls;
         self.reads_place = false;
         self.held_ops(&mut ops);
-        let (order, exact) = self.arrangement(&ops, mult, rolls_before);
+        let down = down_mask(self.held.iter());
+        let (order, exact) = self.arrangement(&ops, mult, rolls_before, down);
         self.apply(&ops, order.as_deref().filter(|_| exact), &mut chips, &mut mult);
         if exact { self.held_order = order } else { self.proposed.1 = order }
         ops.give_back();
@@ -1749,12 +1849,22 @@ impl<R: Rolls + ?Sized> Pass<'_, R> {
         self.lucky_trigger = false;
     }
 
-    fn face(&self, c: &Card, idx: usize) -> bool {
-        is_face(c, idx, self.flags.pareidolia, false)
+    /// Whether the pass may read what `c` is: not a face-down card in a masked pass
+    /// (`mask_down`). Every read across the cards (another card's face, suit or rank) goes
+    /// through this.
+    fn shows(&self, c: &Card) -> bool {
+        !(self.mask_down && c.face_down)
     }
 
+    /// A face card, as the pass reads it: in a masked pass (`mask_down`) a face-down one only
+    /// with Pareidolia, which makes every card one (card.lua `Card:is_face`), so you know it
+    fn face(&self, c: &Card, idx: usize) -> bool {
+        (self.shows(c) || self.flags.pareidolia) && is_face(c, idx, self.flags.pareidolia, false)
+    }
+
+    /// Of suit `s`, as the pass reads it (`shows`)
     fn suit(&self, c: &Card, s: Suit) -> bool {
-        is_suit(c, s, false, false, self.flags.smeared)
+        self.shows(c) && is_suit(c, s, false, false, self.flags.smeared)
     }
 
     fn chance(&mut self, odds: f64) -> bool {
@@ -1854,7 +1964,8 @@ impl<R: Rolls + ?Sized> Pass<'_, R> {
                         let mut best: Option<(usize, u8)> = None;
                         let mut tied = false;
                         for (i, h) in self.held.iter().enumerate() {
-                            if h.enhancement != Some(Enhancement::Stone) && best.is_none_or(|(_, bid)| bid >= h.rank.0) {
+                            // a masked pass's face-down card isn't read (`shows`)
+                            if h.enhancement != Some(Enhancement::Stone) && self.shows(h) && best.is_none_or(|(_, bid)| bid >= h.rank.0) {
                                 tied = best.is_some_and(|(_, bid)| bid == h.rank.0);
                                 best = Some((i, h.rank.0));
                             }
@@ -1930,8 +2041,9 @@ impl<R: Rolls + ?Sized> Pass<'_, R> {
             Kind::Vampire if !blueprint => {
                 let mut count = 0.0;
                 for i in self.info.scoring.clone() {
+                    let shown = self.shows(&self.played[i]);
                     let c = &mut self.played.to_mut()[i];
-                    if c.enhancement.is_some() && !c.debuff {
+                    if shown && c.enhancement.is_some() && !c.debuff {
                         c.enhancement = None;
                         count += 1.0;
                     }
@@ -2043,8 +2155,9 @@ impl<R: Rolls + ?Sized> Pass<'_, R> {
             Kind::Blackboard => {
                 self.held_used = true;
                 let all_black = self.held.iter().all(|h| {
-                    is_suit(h, Suit::Clubs, false, true, self.flags.smeared)
-                        || is_suit(h, Suit::Spades, false, true, self.flags.smeared)
+                    self.shows(h)
+                        && (is_suit(h, Suit::Clubs, false, true, self.flags.smeared)
+                            || is_suit(h, Suit::Spades, false, true, self.flags.smeared))
                 });
                 if all_black { xm(x.n) } else { None }
             }
@@ -2075,7 +2188,7 @@ impl<R: Rolls + ?Sized> Pass<'_, R> {
         let order = [Suit::Hearts, Suit::Diamonds, Suit::Spades, Suit::Clubs];
         let sc: Vec<Card> = self.info.scoring.iter().map(|&i| self.played[i]).collect();
         for c in sc.iter().filter(|c| c.enhancement != Some(Enhancement::Wild)) {
-            if let Some(k) = order.iter().position(|&s| is_suit(c, s, true, false, self.flags.smeared) && !seen[order_idx(s)]) {
+            if let Some(k) = order.iter().position(|&s| self.shows(c) && is_suit(c, s, true, false, self.flags.smeared) && !seen[order_idx(s)]) {
                 seen[order_idx(order[k])] = true;
             }
         }

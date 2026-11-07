@@ -313,6 +313,42 @@ pub fn sort_bounds(hand: &[Card]) -> Vec<[(f64, f64); 2]> {
     out
 }
 
+/// `hand`'s places (as it sits) in the fixed order the analysis works on (`advise::analyze`):
+/// the face-up cards by `Card::order_key`, so how your hand is sorted never changes the advice,
+/// and each face-down card right after the face-up card the game's rank sort shows just above
+/// it (first if none is; several in one spot in the order that sort shows them, cards alike in
+/// the order they sit, as `sort_bounds` reads it): what you can see (the sort button shows it
+/// whatever order the hand sits in), never the card's own key (gap 25). With none face down,
+/// `order_key`'s order.
+pub fn fixed_order(hand: &[Card]) -> Vec<usize> {
+    let mut up: Vec<usize> = (0..hand.len()).filter(|&i| !hand[i].face_down).collect();
+    up.sort_by_key(|&i| hand[i].order_key());
+    if up.len() == hand.len() {
+        return up;
+    }
+    let mut by_rank: Vec<usize> = (0..hand.len()).collect();
+    by_rank.sort_by(|&a, &b| hand[b].sort_nominal(false).total_cmp(&hand[a].sort_nominal(false)));
+    // each face-down card after the face-up card just above it in the rank sort (`None`: first),
+    // several after one in the order that sort shows them
+    let mut after: Vec<(Option<usize>, usize)> = vec![];
+    let mut last_up = None;
+    for &i in &by_rank {
+        if hand[i].face_down {
+            after.push((last_up, i));
+        } else {
+            last_up = Some(i);
+        }
+    }
+    let put = |out: &mut Vec<usize>, at: Option<usize>| out.extend(after.iter().filter(|&&(a, _)| a == at).map(|&(_, j)| j));
+    let mut out = Vec::with_capacity(hand.len());
+    put(&mut out, None);
+    for &i in &up {
+        out.push(i);
+        put(&mut out, Some(i));
+    }
+    out
+}
+
 /// Each card of `hand` (as it sits, left to right) by what you can see of it: a face-up card by
 /// its `Card::label`, a face-down one (The House, Wheel, Mark, Fish) by its place in the hand and
 /// what the game's two sorts show of it ("face-down card, 1st from left: ♠ 10 to A").
@@ -505,6 +541,27 @@ mod tests {
                 c
             })
             .collect()
+    }
+
+    #[test]
+    fn the_analysis_places_a_face_down_card_by_what_the_sorts_show() {
+        // A face-down card between the 2♣ and a Stone card in both sorts: a 2♦ or a Stone card.
+        // `order_key` would put a Stone 9♥ among the 9s; the analysis' order puts either right
+        // after the 2♣, the face-up card the rank sort shows just above it.
+        // Fails if a face-down card's place reads its real key.
+        let (a, b) = (hand("AS KC 7D 4H 3D 2C ?2D QS:stone"), hand("AS KC 7D 4H 3D 2C ?9H:stone QS:stone"));
+        assert_eq!(hand_labels(&a), hand_labels(&b));
+        assert_eq!(fixed_order(&a), fixed_order(&b));
+        // the face-up cards by `order_key` (the Stone Q♠ by its rank), the face-down one after the 2♣
+        assert_eq!(fixed_order(&a), vec![0, 1, 7, 2, 3, 4, 5, 6]);
+        // nothing above it in the rank sort: first
+        assert_eq!(fixed_order(&hand("KC ?AS 2C")), vec![1, 0, 2]);
+        // with none face down, `order_key`'s order; and how the hand sits doesn't move it
+        let up = hand("2C AS 7D");
+        assert_eq!(fixed_order(&up), vec![1, 2, 0]);
+        let by_suit = hand("AS 3D ?2D 7D 4H 2C KC QS:stone");
+        let at = |h: &[Card]| fixed_order(h).iter().map(|&i| h[i].order_key()).collect::<Vec<_>>();
+        assert_eq!(at(&by_suit), at(&a));
     }
 
     #[test]

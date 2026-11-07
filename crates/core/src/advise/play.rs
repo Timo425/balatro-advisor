@@ -11,10 +11,10 @@ use super::value::{self, Gain, LongRun, Spending};
 const SHOWN_DRAWS: usize = 64;
 
 /// Best play's note on a hand holding a face-down card (in its tip and the analysis' heuristics)
-pub(super) const FACE_DOWN_NOTE: &str = "Face-down cards: every play and discard with them (in a hand of up to 12 cards; in a bigger one the plays and discards its structure gives on 4 draws of them and every play holding one, each play screened by its mean score over up to 128 draws, fewer the more plays there are to rank (past 28 cards all face down, or fewer face down in a bigger hand; 4 at the least), and where even 16 draws can't rank every play holding one (past 42 cards all face down) the structure's plays only: a budget) and a tarot on them is tried, valued over what they could be (which of them it goes on too), drawn anew in each simulated round from the unseen cards (the draw pile and themselves) as both sorts and the boss allow (their order among themselves included; drawn card by card, then each redrawn 16 times given the others: close to every set that fits being as likely, a budget); a play holding one shows the hands it makes (up to 3, likeliest first) and its lowest to highest score over 64 of those draws. A card a tarot flips face up while changing it counts as seen (the game shows it). After the first move the simulated player can't see them either: it decides on 4 draws of what they could be by what the sorts show then: the consumable most of them use first is used and what's next decided again on the cards it shows, else, of those using none, where they disagree and not every one has a sure win, the action the policy's own estimates of the round's points value most summed over them (heuristic: ranked in points, not by what else the round is worth, such as money or growth), else the action most of them make (the first draw's on a tie); 4 draws is a budget; a consumable held for a face-down card goes, in each of those draws, on the card that draw put in its place; the cards it draws later in the round are dealt face down where the boss turns them down (The Mark's face cards, The Wheel's 1 in 7, The Fish's draw after a hand) and decided on the same way";
+pub(super) const FACE_DOWN_NOTE: &str = "Face-down cards: every play and discard with them (in a hand of up to 12 cards; in a bigger one the plays and discards its structure gives on 4 draws of them and every play holding one, each play screened by its mean score over up to 128 draws, fewer the more plays there are to rank (past 28 cards all face down, or fewer face down in a bigger hand; 4 at the least), and where even 16 draws can't rank every play holding one (past 42 cards all face down) the structure's plays only: a budget) and a tarot on them is tried, valued over what they could be (which of them it goes on too), drawn anew in each simulated round from the unseen cards (the draw pile and themselves) as both sorts and the boss allow (their order among themselves included; drawn card by card, then each redrawn 16 times given the others: close to every set that fits being as likely, a budget); a play holding one shows the hands it makes (up to 3, likeliest first) and its lowest to highest score over 64 of those draws. A card a tarot flips face up while changing it counts as seen (the game shows it). After the first move the simulated player can't see them either: it decides on 4 draws of what they could be by what the sorts show then: the consumable most of them use first is used and what's next decided again on the cards it shows, else, of those using none, where they disagree and not every one has a sure win, the action the policy's own estimates of the round's points value most summed over them (heuristic: ranked in points, not by what else the round is worth, such as money or growth), else the action most of them make (the first draw's on a tie); 4 draws is a budget; a consumable held for a face-down card goes, in each of those draws, on the card that draw put in its place; the cards it draws later in the round are dealt face down where the boss turns them down (The Mark's face cards, The Wheel's 1 in 7, The Fish's draw after a hand) and decided on the same way; a play's face-up cards are arranged round a face-down card, which keeps its place and is taken as doing nothing (heuristic); a play holding one is scored in that order but still listed as your hand holds it (not yet shown)";
 
 /// Best play's fallback (no round simulated) with a face-down card in hand
-pub(super) const FACE_DOWN_FALLBACK_NOTE: &str = "Face-down cards: no round was simulated here, so this play is the one that scores the most on average over 64 draws of what they could be, by score alone (heuristic); a play holding one shows the hands it makes and its lowest to highest score over them, a play keeping one held its lowest score over them (a range where it moves)";
+pub(super) const FACE_DOWN_FALLBACK_NOTE: &str = "Face-down cards: no round was simulated here, so this play is the one that scores the most on average over 64 draws of what they could be, by score alone (heuristic); a play holding one shows the hands it makes and its lowest to highest score over them, a play keeping one held its lowest score over them (a range where it moves); its face-up cards arranged round a face-down card, which keeps its place and is taken as doing nothing (heuristic), scored in that order but still listed as your hand holds it (not yet shown)";
 
 pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[TarotValue], hand_order: &[usize], ahead: Option<&value::Ahead>) -> Option<PlayAdvice> {
     let (run, data) = (ctx.run, ctx.data);
@@ -137,7 +137,7 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
                 sim::Move::Play(v) => ("play", v),
                 sim::Move::Discard(v) => {
                     let mut v = v.clone();
-                    v.sort_by_key(|&i| match hand[i].face_down {
+                    v.sort_by_key(|&i| match drawn(st, i) {
                         false => (false, std::cmp::Reverse(hand[i].rank.0), hand[i].suit as u8, 0),
                         true => (true, std::cmp::Reverse(0), 0, hand_order.get(i).copied().unwrap_or(usize::MAX)),
                     });
@@ -146,47 +146,44 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
                 }
             };
             let mut idx = idx.clone();
+            // each card as you see it; Cryptid's copies, and a card Death copies a face-down card
+            // onto, named by the card they copy, as what the analysis holds there is a stand-in's
+            // (`drawn`)
+            let label = |i: usize| match copy_source(st, i).filter(|&p| i >= st.hand.len() || drawn(st, p)) {
+                Some(p) => format!("copy of {}", shown(hand, p, hand_order, names)),
+                None => shown(hand, i, hand_order, names),
+            };
             // a play holding a face-down card shows its hand and score over what the card could
             // be (the draws the first simulated rounds meet, `sim::hidden_hands`), never the
             // stand-in's alone: the hands it makes, likeliest first, and its lowest to highest
             // score (what it surely scores: the lowest of each draw's)
-            let blind = action == "play" && idx.iter().any(|&i| hand[i].face_down);
+            let blind = action == "play" && idx.iter().any(|&i| drawn(st, i));
             let mut range = None;
             let (name, score, sure, dig, arrange) = if blind {
                 let d = OverDraws::of(board, &sim::hidden_hands(board, st, seed, SHOWN_DRAWS), &idx);
                 range = Some((d.lo, d.hi));
                 (d.name, d.lo, d.sure, d.dig, (vec![], vec![]))
             } else if action == "play" {
-                let (order, arrange, o) = arranged(board, hand, &idx, hand_order, names);
+                let (order, arrange, o) = arranged(board, hand, &idx, hand_order, &label);
                 let dig = idx.len().saturating_sub(o.scoring.len());
                 idx = order;
                 (o.hand.name().to_string(), o.score, o.sure, dig, arrange)
             } else {
                 (String::new(), 0.0, 0.0, 0, (vec![], vec![]))
             };
-            // Cryptid's copies of a face-down card: named by the card they copy
-            let copied = st.changes.iter().find_map(|(e, p)| matches!(e, crate::engine::consumable::CardEffect::Copies(_)).then(|| p.first().copied()).flatten());
-            let cards: Vec<String> = idx
-                .iter()
-                .map(|&i| match copied.filter(|_| i >= st.hand.len()) {
-                    Some(p) => format!("copy of {}", shown(hand, p, hand_order, names)),
-                    None => shown(hand, i, hand_order, names),
-                })
-                .collect();
+            let cards: Vec<String> = idx.iter().map(|&i| label(i)).collect();
             // cards a consumable added aren't in your hand yet: no position
             let indices = idx.iter().filter(|&&i| i < hand_order.len()).map(|&i| hand_order[i]).collect();
             PlayOption { spare_hands: spare, round_money: cash, action: action.into(), cards, indices, dig, hand: name, score, score_range: range, sure, p_win: p, mean_total: mean, use_first, planets, grown, tie: false, blind, then: None, arrange: arrange.0, arrange_indices: arrange.1 }
         };
-        // Exact ties are broken by the cards themselves, so the order your hand is sorted in
-        // never changes the advice
-        let canon = |m: &sim::Move, hand: &[Card]| {
+        // Exact ties are broken by the cards themselves as you see them (`tie_key`), so neither
+        // the order your hand is sorted in nor what a face-down card is changes the advice
+        let canon = |m: &sim::Move, st: &RoundStart, hand: &[Card]| {
             let (kind, idx) = match m {
                 sim::Move::Play(v) => (0, v),
                 sim::Move::Discard(v) => (1, v),
             };
-            let mut k: Vec<_> = idx.iter().map(|&i| hand[i].order_key()).collect();
-            k.sort();
-            (kind, k)
+            (kind, tie_key(st, hand, idx))
         };
         // Every move: every play and every discard, for your hand as it is and after each
         // held consumable (used first). No move needs a rule to be considered. A hand of
@@ -231,7 +228,7 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
         let utility = |o: &sim::Outcome| goals.value(o);
         let progress = |o: &sim::Outcome| (1.0 - o.won) * (o.total / start.target.max(1.0)).min(1.0);
         let mean_u = |v: &[sim::Outcome]| v.iter().map(utility).sum::<f64>() / v.len().max(1) as f64;
-        let keys: Vec<_> = cands.iter().map(|c| (c.4.clone(), canon(&c.0, &move_hand(&c.2, &c.1)))).collect();
+        let keys: Vec<_> = cands.iter().map(|c| (c.4.clone(), canon(&c.0, &c.2, &move_hand(&c.2, &c.1)))).collect();
         let ck = |c: usize| &keys[c];
         // the budget, halving many moves (`compare::halving`)
         let budget = compare::halving(SEARCH_BUDGET, SEARCH_FIRST, cands.len());
@@ -451,8 +448,8 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
             // the first simulated rounds meet, `sim::hidden_hands`), never on one draw: of every
             // play (Best play's moves, `moves_of`), the
             // one that scores the most on average over them; an exact tie goes to the fewest
-            // cards played, then the cards, as the look-ahead's `canon` breaks it (a face-down
-            // card by its stand-in's key, which may still follow the real card's place: gap 25)
+            // cards played, then the cards as you see them, as the look-ahead's `canon` breaks it
+            // (`tie_key`)
             let mut plain: Option<(String, f64)> = None;
             let pick: Option<(Vec<usize>, Option<OverDraws>)> = if blind_hand {
                 let hands = sim::hidden_hands(&b, &start, ctx.opts.seed, SHOWN_DRAWS);
@@ -469,11 +466,7 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
                     .fold(None, |best: Option<(Vec<usize>, OverDraws)>, x| {
                         // fewer cards first (a card that doesn't score isn't thrown with it),
                         // then the cards themselves
-                        let key = |c: &[usize]| {
-                            let mut k: Vec<_> = c.iter().map(|&i| hand[i].order_key()).collect();
-                            k.sort();
-                            (c.len(), k)
-                        };
+                        let key = |c: &[usize]| (c.len(), tie_key(&start, hand, c));
                         match best {
                             Some(y) if y.1.mean > x.1.mean || (y.1.mean == x.1.mean && key(&y.0) <= key(&x.0)) => Some(y),
                             _ => Some(x),
@@ -492,7 +485,7 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
             // score over them; else arranged as it's best played, its score over the draws all
             // the same where one is held (Raised Fist, Baron, Steel cards: a range when it moves)
             let blind = cards.iter().any(|&i| hand[i].face_down);
-            let (order, (arrange, arrange_indices), o) = arranged(&b, hand, &cards, hand_order, names);
+            let (order, (arrange, arrange_indices), o) = arranged(&b, hand, &cards, hand_order, &|i| shown(hand, i, hand_order, names));
             let (order, arrange, arrange_indices) = if blind { (cards.clone(), vec![], vec![]) } else { (order, arrange, arrange_indices) };
             PlayAdvice {
             use_first: None,
@@ -585,15 +578,16 @@ impl OverDraws {
     }
 }
 
-/// The play `idx` from `hand` (in `Card::order_key` order; `hand_order`: each card's place in
+/// The play `idx` from `hand` (in the analysis' order, `model::fixed_order`; `hand_order`: each card's place in
 /// your hand, cards a consumable added have none) in the order to play it; your hand left to
-/// right as it should sit (the cards played in that order, then the cards kept), as labels and
+/// right as it should sit (the cards played in that order, then the cards kept), as labels
+/// (`label`: each card as the move's listing names it) and
 /// as the places they're in now, when the hand as it sits scores less (the game plays the
 /// selected cards in the order they sit: state_events.lua `G.FUNCS.play_cards_from_highlighted`),
 /// else none; and the play's outcome. The engine arranges the cards (`engine::score`), from the
 /// cards in a fixed order, so how your hand is sorted never changes the score.
 #[allow(clippy::type_complexity)]
-fn arranged(board: &Board, hand: &[Card], idx: &[usize], hand_order: &[usize], names: &[String]) -> (Vec<usize>, (Vec<String>, Vec<usize>), crate::engine::Outcome) {
+fn arranged(board: &Board, hand: &[Card], idx: &[usize], hand_order: &[usize], label: &dyn Fn(usize) -> String) -> (Vec<usize>, (Vec<String>, Vec<usize>), crate::engine::Outcome) {
     use crate::engine::{score, score_as_played, Unlucky};
     let rest: Vec<usize> = (0..hand.len()).filter(|i| !idx.contains(i)).collect();
     let cards = |v: &[usize]| v.iter().map(|&i| hand[i]).collect::<Vec<Card>>();
@@ -609,7 +603,7 @@ fn arranged(board: &Board, hand: &[Card], idx: &[usize], hand_order: &[usize], n
     let as_they_sit = score_as_played(board, &cards(&on_screen(idx)), &cards(&on_screen(&rest)), &mut Unlucky, false).score;
     let arrange = if as_they_sit < o.score {
         let all: Vec<usize> = play.iter().chain(&keep).copied().collect();
-        (all.iter().map(|&i| shown(hand, i, hand_order, names)).collect(), all.iter().filter_map(|&i| hand_order.get(i).copied()).collect())
+        (all.iter().map(|&i| label(i)).collect(), all.iter().filter_map(|&i| hand_order.get(i).copied()).collect())
     } else {
         (vec![], vec![])
     };
@@ -624,7 +618,7 @@ fn arranged(board: &Board, hand: &[Card], idx: &[usize], hand_order: &[usize], n
 pub(super) fn moves_of(st: &RoundStart, b: &Board, seed: u64) -> Vec<sim::Move> {
     let hand = move_hand(st, b);
     if hand.len() > sim::ALL_MOVES_MAX {
-        let draws = if hand.iter().any(|c| c.face_down) { sim::hidden_hands_par(b, st, seed ^ 0x6269_675f_6861_6e64, sim::BIG_HAND_RANK_DRAWS) } else { vec![hand.into_owned()] };
+        let draws = if st.hand.iter().any(|c| c.face_down) { sim::hidden_hands_par(b, st, seed ^ 0x6269_675f_6861_6e64, sim::BIG_HAND_RANK_DRAWS) } else { vec![hand.into_owned()] };
         debug_assert!(draws.iter().all(|h| h.len() == move_hand(st, b).len()));
         return sim::big_hand_moves(b, &draws, &st.deck, st.discards);
     }
@@ -634,22 +628,58 @@ pub(super) fn moves_of(st: &RoundStart, b: &Board, seed: u64) -> Vec<sim::Move> 
 }
 
 /// The hand a move is named and ordered on: the round's, with the cards a consumable used first
-/// on a face-down card adds at its end (`RoundStart::changes`: Cryptid's copies), unseen as the
-/// card they copy is (each simulated round draws it anew)
+/// on a face-down card adds at its end (`RoundStart::changes`: Cryptid's copies), face up as the
+/// game deals them (card.lua `Card:use_consumeable`, common_events.lua `copy_card` doesn't copy
+/// `facing`, and `CardArea:emplace` turns nothing down), though what they are is what each
+/// simulated round deals at the card they copy (`drawn`)
 pub(super) fn move_hand<'a>(st: &'a RoundStart, b: &Board) -> std::borrow::Cow<'a, [Card]> {
     if st.changes.is_empty() {
         return std::borrow::Cow::Borrowed(&st.hand);
     }
     let mut h = st.hand.clone();
     for (e, places) in &st.changes {
-        let unseen = places.iter().any(|&p| h.get(p).is_some_and(|c| c.face_down));
-        let added: Vec<Card> = sim::effect_on(b, &h, *e, places).into_iter().skip(h.len()).map(|c| Card { face_down: unseen, ..c }).collect();
+        let added: Vec<Card> = sim::effect_on(b, &h, *e, places).into_iter().skip(h.len()).collect();
         h.extend(added);
     }
     std::borrow::Cow::Owned(h)
 }
 
-/// Card `i` of `hand` (in `Card::order_key` order; `hand_order`: each card's place in your hand)
+/// The place card `i` of the hand a move is named on (`move_hand` of `st`) was copied from by a
+/// consumable used first: Cryptid's copies (the cards added after the hand) the card used on,
+/// the card Death changes its right card ("the first becomes a copy of the second")
+fn copy_source(st: &RoundStart, i: usize) -> Option<usize> {
+    use crate::engine::consumable::CardEffect;
+    st.changes.iter().rev().find_map(|(e, places)| match e {
+        CardEffect::Copies(_) if i >= st.hand.len() => places.first().copied(),
+        CardEffect::CopyLeftToRight if places.first() == Some(&i) => places.get(1).copied(),
+        _ => None,
+    })
+}
+
+/// Whether card `i` of the hand a move is named on (`move_hand` of `st`) is one each simulated
+/// round deals anew, so the analysis' card there is a stand-in: a card face down in the round's
+/// hand (changed by a consumable used first or not: `move_hand` adds what a change adds, but
+/// leaves the cards changed in place as they were), or a copy of one (`copy_source`: Cryptid's,
+/// Death's)
+fn drawn(st: &RoundStart, i: usize) -> bool {
+    let down = |p: usize| st.hand.get(p).is_some_and(|c| c.face_down);
+    down(i) || copy_source(st, i).is_some_and(down)
+}
+
+/// The key exact ties between moves are broken by (`best_play`'s `canon`, its fallback): the
+/// cards played or thrown, each by what you can see of it, so neither how your hand is sorted
+/// nor what a face-down card really is changes the advice: a face-up card by `Card::order_key`,
+/// one the rounds deal anew (`drawn`) by its place in the analysis' hand (`model::fixed_order`:
+/// what the sorts show), never by its stand-in
+type CardKey = (bool, usize, (std::cmp::Reverse<u8>, u8, String));
+
+fn tie_key(st: &RoundStart, hand: &[Card], idx: &[usize]) -> Vec<CardKey> {
+    let mut k: Vec<CardKey> = idx.iter().map(|&i| if drawn(st, i) { (true, i, (std::cmp::Reverse(0), 0, String::new())) } else { (false, 0, hand[i].order_key()) }).collect();
+    k.sort();
+    k
+}
+
+/// Card `i` of `hand` (in the analysis' order, `model::fixed_order`; `hand_order`: each card's place in your hand)
 /// as you'd name it: a face-down card by its place and what the sorts show (`names`, from
 /// `model::hand_labels` of your hand), never by the stand-in the advisor picked for it; any
 /// other card (and one a consumable added) by its `Card::label`.
@@ -657,5 +687,56 @@ fn shown(hand: &[Card], i: usize, hand_order: &[usize], names: &[String]) -> Str
     match hand_order.get(i).and_then(|&p| names.get(p)) {
         Some(n) if hand[i].face_down => n.clone(),
         _ => hand[i].label(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::consumable::CardEffect;
+
+    #[test]
+    fn copies_of_a_face_down_card_are_drawn_and_cryptids_dealt_face_up_and_tied_by_place() {
+        // Cryptid used first on a face-down card (place 1): the game deals its copies face up
+        // (card.lua `Card:use_consumeable`, common_events.lua `copy_card`), so they're listed
+        // face up, while what they are is what each simulated round deals at the card they
+        // copy (`drawn`). A tie between moves reads where those cards sit, never the stand-in:
+        // two starts with different stand-ins there give the same keys. Fails if the copies are
+        // dealt face down again or a tie reads a stand-in's key.
+        let start = |down: &str| {
+            let mut hand = Card::parse_list(&format!("AS {down} 7D 4H")).unwrap();
+            hand[1].face_down = true;
+            RoundStart { hand, changes: vec![(CardEffect::Copies(2), vec![1])], ..Default::default() }
+        };
+        let b = Board::empty();
+        let (a, c) = (start("9S"), start("8C"));
+        let h = move_hand(&a, &b);
+        assert_eq!(h.len(), 6);
+        assert!(h[4..].iter().all(|x| !x.face_down && x.rank == h[1].rank && x.suit == h[1].suit), "{h:?}");
+        assert!(h[1].face_down);
+        assert_eq!((0..6).map(|i| drawn(&a, i)).collect::<Vec<_>>(), vec![false, true, false, false, true, true]);
+        let hc = move_hand(&c, &b);
+        for idx in [vec![1, 4], vec![0, 5], vec![1, 2, 3]] {
+            assert_eq!(tie_key(&a, &h, &idx), tie_key(&c, &hc, &idx), "{idx:?}");
+        }
+        // a face-up card still by what it is
+        assert_ne!(tie_key(&a, &h, &[0]), tie_key(&a, &h, &[2]));
+        // with no change on a face-down card, nothing it adds is drawn
+        let plain = RoundStart { hand: Card::parse_list("AS 9S 7D").unwrap(), changes: vec![(CardEffect::Copies(2), vec![1])], ..Default::default() };
+        assert!(!(0..5).any(|i| drawn(&plain, i)));
+        // Death used first on a face-up card and a face-down one: the first becomes a copy of
+        // the second, so what it is too is each round's draw; on two face-up cards, neither
+        let mut hand = Card::parse_list("AS 9S 7D").unwrap();
+        hand[1].face_down = true;
+        let death = RoundStart { hand, changes: vec![(CardEffect::CopyLeftToRight, vec![0, 1])], ..Default::default() };
+        assert_eq!((0..3).map(|i| drawn(&death, i)).collect::<Vec<_>>(), vec![true, true, false]);
+        let seen = RoundStart { hand: Card::parse_list("AS 9S 7D").unwrap(), changes: vec![(CardEffect::CopyLeftToRight, vec![0, 1])], ..Default::default() };
+        assert!(!(0..3).any(|i| drawn(&seen, i)));
+        // a face-down card Death turns into a copy of a face-up one: still each round's card
+        // (the hand Best play names holds its stand-in there, unchanged: gap 25 (g))
+        let mut hand = Card::parse_list("AS 9S 7D").unwrap();
+        hand[0].face_down = true;
+        let known = RoundStart { hand, changes: vec![(CardEffect::CopyLeftToRight, vec![0, 1])], ..Default::default() };
+        assert_eq!((0..3).map(|i| drawn(&known, i)).collect::<Vec<_>>(), vec![true, false, false]);
     }
 }

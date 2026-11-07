@@ -244,8 +244,9 @@ pub struct PlayAdvice {
     /// Planets from Blue Seals held at the end, on average (counted in the ranking)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub planets: Option<f64>,
-    /// A play holding a face-down card: `hand` is the hands it makes over what the card could be
-    /// (likeliest first), `score` its lowest and `score_range` lowest to highest; with no round
+    /// A play holding a card each simulated round deals anew (a face-down card, one a consumable
+    /// used first changed, or Cryptid's copy of one): `hand` is the hands it makes over what the
+    /// card could be (likeliest first), `score` its lowest and `score_range` lowest to highest; with no round
     /// simulated (Best play's fallback), a play keeping one held: `score` its lowest over them
     /// and `score_range` where that moves
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -300,8 +301,10 @@ pub struct PlayOption {
     /// As good as the best move, as far as the simulation can tell
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub tie: bool,
-    /// A play holding a face-down card: `hand` is the hands it makes over what the card could be
-    /// (likeliest first, `play.rs` `SHOWN_DRAWS` draws), `score` and `sure` its lowest
+    /// A play holding a card each simulated round deals anew (a face-down card, one a consumable
+    /// used first changed, or Cryptid's copy of one: `play.rs` `drawn`): `hand` is the hands it
+    /// makes over what the card could be (likeliest first, `play.rs` `SHOWN_DRAWS` draws),
+    /// `score` and `sure` its lowest
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub blind: bool,
     /// Its lowest to highest score over those draws
@@ -1022,9 +1025,9 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
     };
     let base = Board::from_run(run, data);
     // The hand in a fixed order (how you've sorted it doesn't matter, and the search breaks
-    // ties by position): every play is worked out on this order and mapped back to yours.
-    let mut hand_order: Vec<usize> = (0..run.hand.len()).collect();
-    hand_order.sort_by_key(|&i| run.hand[i].order_key());
+    // ties by position), a face-down card placed by what you see of it (`model::fixed_order`):
+    // every play is worked out on this order and mapped back to yours.
+    let hand_order = crate::model::fixed_order(&run.hand);
     // Face-down cards are unknown to you, so to the advisor too: they're drawn together from the
     // unseen cards (the draw pile and themselves) as everything you can tell of them allows
     // (`sim::Hidden`: their places in both sorts, among the face-up cards and among themselves,
@@ -2373,7 +2376,7 @@ fn cost(data: &GameData, key: &str) -> i64 {
 }
 
 /// The analysis' note when a round it simulates is under a boss that turns cards down
-const TURNED_DOWN_NOTE: &str = "Under The House, The Mark, The Wheel or The Fish the simulated rounds deal face down the cards the boss turns down (The House the round's first hand, The Mark face cards, The Wheel 1 in 7 cards, The Fish the cards drawn after each hand played), and the simulated player decides on 4 draws of what they could be: the consumable most of them use first, else where they disagree and not every one has a sure win, the action the policy's own estimates of the round's points value most summed over them (heuristic: ranked in points, not by what else the round is worth, such as money or growth), else the action most of them make (the first draw's on a tie) (4 draws a budget; on the player bench's boards for these bosses it wins 2 to 14 points of rounds fewer than a player that tries each choice on simulated futures and can't see them either, about 6.4 on average, 2026-11-07).";
+const TURNED_DOWN_NOTE: &str = "Under The House, The Mark, The Wheel or The Fish the simulated rounds deal face down the cards the boss turns down (The House the round's first hand, The Mark face cards, The Wheel 1 in 7 cards, The Fish the cards drawn after each hand played), and the simulated player decides on 4 draws of what they could be: the consumable most of them use first, else where they disagree and not every one has a sure win, the action the policy's own estimates of the round's points value most summed over them (heuristic: ranked in points, not by what else the round is worth, such as money or growth), else the action most of them make (the first draw's on a tie) (4 draws a budget; on the player bench's boards for these bosses it wins 2 to 14 points of rounds fewer than a player that tries each choice on simulated futures and can't see them either, about 6.4 on average, 2026-11-07); a play's face-up cards are arranged round a face-down card, which keeps its place and is taken as doing nothing (heuristic); a play holding one is scored in that order but still listed as your hand holds it (not yet shown).";
 
 /// What a blind row's round doesn't model, for its round: a boss disabled as its blind is set
 /// (the save's, or Chicot's: `Board::at_blind_set`, as the round is simulated) nothing; in play,
@@ -3857,8 +3860,7 @@ fn tarot_values(
     // otherwise a fresh round with the changed deck. The hand in the round's order (`analyze`'s
     // `hand_order`), where a face-down card the change left alone stays the stand-in each
     // simulated round draws anew (`sim::deal_hidden`), not the card it really is.
-    let mut round_order: Vec<usize> = (0..run.hand.len()).collect();
-    round_order.sort_by_key(|&i| run.hand[i].order_key());
+    let round_order = crate::model::fixed_order(&run.hand);
     // the places in the round's hand of deck cards `v`, when all are in your hand
     let places_of = |v: &[usize]| -> Option<Vec<usize>> {
         if spec.start.hand.len() != round_order.len() {

@@ -133,6 +133,88 @@ fn cards_are_arranged_as_the_player_would() {
 }
 
 #[test]
+fn a_face_down_card_past_the_64th_closes_the_whole_mask() {
+    // `down_mask` holds 64 bits: a face-down card past them must not read as face up, or the
+    // arrangement would move it and propose an order checked on what it really is (gap 25)
+    let mut hand = cards(&"2C ".repeat(70));
+    assert_eq!(score::down_mask(hand.iter()), 0);
+    hand[3].face_down = true;
+    assert_eq!(score::down_mask(hand.iter()), 1 << 3);
+    hand[66].face_down = true;
+    assert_eq!(score::down_mask(hand.iter()), u64::MAX);
+}
+
+#[test]
+fn a_face_down_card_keeps_its_place_when_the_cards_are_arranged() {
+    // The player arranging can't see what a face-down card does (gap 25), so it stays where it
+    // sits and the face-up cards are arranged round it by what they show, whatever it is.
+    // Fails if the arrangement reads a face-down card's real enhancement.
+    let b = Board::empty();
+    let down = |s: &str| Card { face_down: true, ..cards(s)[0] };
+    // Glass, a face-down King, a Mult card: the two face up swap round it, the same order
+    // whether it's plain, Glass, a Mult card or a Lucky card (whose roll makes the real cards'
+    // maps inexact: the order is then chosen on a pass where it does nothing, the same way)
+    for mid in ["KD", "KD:glass", "KD:mult", "KD:lucky"] {
+        let played = vec![cards("KS:glass")[0], down(mid), cards("KH:mult")[0]];
+        assert_eq!(score(&b, &played, &[], &mut Unlucky, false).played_order, Some(vec![2, 1, 0]), "{mid}");
+    }
+    // face down first, then a Mult card: as it sits, a Glass card there too (face up it goes last)
+    for first in ["KS", "KS:glass"] {
+        let played = vec![down(first), cards("KH:mult")[0]];
+        assert_eq!(score(&b, &played, &[], &mut Unlucky, false).played_order, None, "{first}");
+    }
+    assert_eq!(score(&b, &cards("KS:glass KH:mult"), &[], &mut Unlucky, false).played_order, Some(vec![1, 0]));
+    // held: Baron's ×1.5 on a face-down King stays ahead of Shoot the Moon's Queen (face up,
+    // the Queen goes first: `cards_are_arranged_as_the_player_would`)
+    let b = board(&["j_shoot_the_moon", "j_baron"]);
+    let held = vec![down("KD"), cards("QD")[0]];
+    assert_eq!(score(&b, &cards("AS"), &held, &mut Unlucky, false).held_order, None);
+    // where the maps aren't exact (Photograph reads the first face card), the order is checked
+    // on a pass where the face-down card does nothing, never on what it really scores: the
+    // same whether it's plain, Glass or Lucky
+    let b = board(&["j_photograph"]);
+    for mid in ["KD", "KD:glass", "KD:lucky"] {
+        let played = vec![cards("KS:glass")[0], down(mid), cards("KH:mult")[0]];
+        assert_eq!(score(&b, &played, &[], &mut Unlucky, false).played_order, Some(vec![2, 1, 0]), "{mid}");
+    }
+    let played = vec![down("KS:glass"), cards("KH:mult")[0]];
+    assert_eq!(score(&b, &played, &[], &mut Unlucky, false).played_order, None);
+    // nor by what other cards' effects would read of it: a face-down heart, a 2 or a Queen,
+    // gets the same order (a Flush, all scoring; the face-up King, Photograph's, goes last
+    // after the Mult 5; before gap 25 (h) a face-down 2 was sorted in among them)
+    for mid in ["2H", "QH"] {
+        let played = vec![cards("KH")[0], down(mid), cards("5H:mult")[0], cards("7H")[0], cards("9H")[0]];
+        assert_eq!(score(&b, &played, &[], &mut Unlucky, false).played_order, Some(vec![2, 1, 3, 4, 0]), "{mid}");
+    }
+    // nor is whether to check found on the real cards: a face-down King first would take
+    // Photograph there and leave nothing to arrange, a face-down 2 leave it to the Queen; either
+    // way the Queen Photograph multiplies goes last, after the Mult 5
+    for first in ["KH", "2H"] {
+        let played = vec![down(first), cards("QH:mult")[0], cards("5H:mult")[0], cards("7H")[0], cards("9H")[0]];
+        assert_eq!(score(&b, &played, &[], &mut Unlucky, false).played_order, Some(vec![0, 2, 3, 4, 1]), "{first}");
+    }
+    // held: Raised Fist doubles the lowest rank held, so a 3 held goes ahead of a Steel King's
+    // ×1.5, whether a face-down card held may be lower than it or not
+    let b = board(&["j_raised_fist"]);
+    for first in ["2C", "QC"] {
+        let held = vec![down(first), cards("KS:steel")[0], cards("3S")[0]];
+        assert_eq!(score(&b, &cards("AS"), &held, &mut Unlucky, false).held_order, Some(vec![0, 2, 1]), "{first}");
+    }
+    // the order is chosen as if the face-down card did nothing, but the hand is then scored on
+    // the real cards with the real rolls: a face-down Lucky card pays its $20, alone or with
+    // face-up cards arranged round it
+    for played in [vec![down("KD:lucky")], vec![cards("KS:glass")[0], down("KD:lucky"), cards("KH:mult")[0]]] {
+        assert_eq!(score(&b, &played, &[], &mut Lucky, false).dollars, 20.0);
+        assert_eq!(score(&b, &played, &[], &mut Unlucky, false).dollars, 0.0);
+    }
+    // and an order that scores less on what shows is kept out: Hanging Chad retriggers the
+    // Glass King first; moving the Mult card ahead of it would hand the retriggers to the +4
+    let b = board(&["j_hanging_chad"]);
+    let played = vec![cards("KH:glass")[0], down("9H"), cards("QH:mult")[0], cards("5H")[0], cards("3H")[0]];
+    assert_eq!(score(&b, &played, &[], &mut Unlucky, false).played_order, None);
+}
+
+#[test]
 fn retriggers() {
     assert_eq!(sc(&board(&["j_hanging_chad"]), "KS KH", ""), 100.0); // KS ×3: (10 + 30 + 10) × 2
     assert_eq!(sc(&board(&["j_sock_and_buskin"]), "KS KH", ""), 100.0); // both faces ×2
