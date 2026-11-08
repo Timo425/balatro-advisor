@@ -817,6 +817,15 @@ the same retriggered ×Mult.
   2 WORSE (one hand saved twice, inside Best play's tie band), 15 unclear. Left: the choice is
   ranked in points, not by the round's goals (a bend of rule 3, queued); each draw's decision and
   estimate is made with that draw's card known, and where a consumable leads it's still the vote.
+  Tried 2026-11-09 and not kept: each draw's estimate capped at the score needed (min(estimate,
+  need), so a sure win counts the same however far it overshoots): the pick changed on 26% of
+  valued decisions (14,048 of 54,104), and the paired player bench (2,000 rounds, player alone)
+  moved −2.9 ± 0.6 points on The House with one hand, −0.9 ± 0.5 with three discards, −1.1 to
+  −1.6 on The Wheel, +6.8 ± 1.2 on the live House round at mid target, −2.0 ± 0.4 on its live
+  round, and within noise on The Mark and The Fish. A cap only where some action reaches the
+  score needed is the same rule (min(estimate, need) leaves a draw with no such action unchanged),
+  so it's the same result. Mixed in sign and size: not a measured-small bend, so the points
+  stay until goal-scale valuation (below) is measured.
 - **Done 2026-11-07 (partly):** no play order, copy, tie or stand-in's place is chosen by
   what a face-down card is, but for a copy of one kept in hand (gap 25 (h)): the engine arranges the face-up cards round one as if it did
   nothing, Cryptid's copies of one are dealt face up as in the game, exact ties are broken by
