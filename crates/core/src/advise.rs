@@ -1049,6 +1049,8 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
             label: "This blind".into(),
             blind_key: cb.key.clone(),
             blind_name: cb.name.clone(),
+            // the hand as the save has it: one short since its last draw (a consumable that
+            // destroyed cards) is filled by the draw after its next play or discard
             start: RoundStart {
                 hand: live_hand.clone(),
                 deck: live_pile.clone(),
@@ -1063,7 +1065,9 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
                 blind: cb.key.clone(),
                 disabled: cb.disabled,
                 juggle: 0,
-            },
+                short: 0,
+            }
+            .dealt(),
             horizon: false,
         });
     }
@@ -1113,6 +1117,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
                 juggle: 0,
                 hidden: None,
                 changes: vec![],
+                short: 0,
             },
             horizon: true,
         });
@@ -4418,6 +4423,7 @@ fn blind_from_start(key: &str, target: f64, run: &RunState, deck: &[Card]) -> Ro
         juggle: 0,
         hidden: None,
         changes: vec![],
+        short: 0,
     }
 }
 
@@ -5417,6 +5423,7 @@ fn archetype_outlook(
             juggle: 0,
             hidden: None,
             changes: vec![],
+            short: 0,
         },
         horizon: true,
     };

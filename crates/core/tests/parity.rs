@@ -787,6 +787,7 @@ fn judge(job: &Job, ran: Ran, data: &GameData) -> Judged {
                 juggle: b.0.round_start_tags(),
                 hidden: None,
                 changes: vec![],
+                short: 0,
             };
             let g = Board::from_run(&h.0, data);
             let setup = |seed: u64| {

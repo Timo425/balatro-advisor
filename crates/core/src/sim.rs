@@ -821,7 +821,10 @@ pub fn outcomes_after(b: &Board, start: &RoundStart, first: &Move, range: std::o
             shuffle(&mut deck, &mut rng);
             let mut hand = start.hand.clone();
             let mut bb = b.clone();
-            draw(&mut bb, &mut hand, &mut deck, size, &mut flip_stream(&rng));
+            // the draw owed before the first move (`RoundStart::first_fill`): a hand short since
+            // its last draw plays as it is, and the draw after the move fills it
+            let fill = start.first_fill(&hand, size);
+            draw(&mut bb, &mut hand, &mut deck, fill, &mut flip_stream(&rng));
             bb.hands_left = hands;
             bb.discards_left = discards;
             bb.deck_remaining = deck.len() as i64;
@@ -857,14 +860,14 @@ pub fn outcomes_after(b: &Board, start: &RoundStart, first: &Move, range: std::o
                         o.total = total;
                         return o;
                     }
-                    RoundStart { hand: held, deck, hands: hands - 1, discards, scored: total, fresh: false, hidden: None, changes: vec![], ..start.clone() }
+                    RoundStart { hand: held, deck, hands: hands - 1, discards, scored: total, fresh: false, hidden: None, changes: vec![], short: 0, ..start.clone() }
                 }
                 Move::Discard(idx) => {
                     let was = jokers_now(&bb);
                     o.cash += bb.discard(&picked(&hand, idx));
                     o.grown += grown_since(&bb, &was);
                     let kept: Vec<Card> = (0..hand.len()).filter(|k| !idx.contains(k)).map(|k| hand[k]).collect();
-                    RoundStart { hand: kept, deck, hands, discards: (discards - 1).max(0), fresh: false, hidden: None, changes: vec![], ..start.clone() }
+                    RoundStart { hand: kept, deck, hands, discards: (discards - 1).max(0), fresh: false, hidden: None, changes: vec![], short: 0, ..start.clone() }
                 }
             };
             // the rest of the round plays on the board the first move left
@@ -1129,6 +1132,16 @@ pub struct RoundStart {
     /// in `hand` it goes on, done to the cards each round deals there (`effect_on`, in
     /// `deal_hidden`)
     pub changes: Vec<(CardEffect, Vec<usize>)>,
+    /// The cards `hand` lacks of `hand_size` that no draw is owed for before its next play or
+    /// discard (`RoundStart::dealt`): a hand the round's last draw left, cards taken from it
+    /// since (a consumable that destroys them). The game draws only after a play or a discard
+    /// (game.lua `Game:update_hand_played`, state_events.lua
+    /// `G.FUNCS.discard_cards_from_highlighted`: both go to the draw-to-hand state, whose
+    /// `G.FUNCS.draw_from_deck_to_hand` fills the hand), at once only into an empty hand (game.lua
+    /// `Game:update`, the hand-selecting state) or for a hand size raised (cardarea.lua
+    /// `CardArea:change_size`: those cards). None: the hand is filled as the round starts (a
+    /// fresh round's first deal, or the draw after the move before).
+    pub short: usize,
 }
 
 /// `hand` with a consumable's card effect done on the cards at `places` (`consumable::apply`) on
@@ -1477,6 +1490,27 @@ pub fn deal_hidden(b: &Board, start: &RoundStart, rng: &Rng) -> Option<RoundStar
 }
 
 impl RoundStart {
+    /// This round in progress with its hand as the round's last draw left it: the cards it lacks
+    /// of its hand size wait for the draw after its next play or discard (`short`); an empty
+    /// hand is filled at once, and so is a fresh round's (its first deal, state_events.lua
+    /// `new_round`)
+    pub fn dealt(self) -> RoundStart {
+        let short = if self.hand.is_empty() || self.fresh { 0 } else { (self.hand_size.max(1) as usize).saturating_sub(self.hand.len()) };
+        RoundStart { short, ..self }
+    }
+
+    /// The round in progress at a simulated decision on `hand` (as the round's last draw left
+    /// it, `dealt`)
+    fn at_decision(hand: &[Card], deck: &[Card], size: usize, hands: i64, discards: i64, scored: f64, target: f64) -> RoundStart {
+        RoundStart { hand: hand.to_vec(), deck: deck.to_vec(), hand_size: size as i64, hands, discards, scored, target, fresh: false, ..Default::default() }.dealt()
+    }
+
+    /// How many cards the round's first draw fills `hand` to, of `size` (`short`): all of them
+    /// into an empty hand
+    fn first_fill(&self, hand: &[Card], size: usize) -> usize {
+        if hand.is_empty() { size } else { size.saturating_sub(self.short) }
+    }
+
     /// The hands and discards the round is played with on `b`: a fresh round's as its blind is
     /// set on it (`Board::at_blind_set`: the boss's, then Burglar's), a
     /// round in progress its own, set when it started.
@@ -2458,7 +2492,7 @@ fn oracle_decide(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: 
     }
     let base = decide(b, hand, deck, hands, discards, target - scored, size);
     let alts = oracle_alts(b, hand, deck, hands, discards, &base);
-    let start = RoundStart { hand: hand.to_vec(), deck: deck.to_vec(), hand_size: size as i64, hands, discards, scored, target, fresh: false, ..Default::default() };
+    let start = RoundStart::at_decision(hand, deck, size, hands, discards, scored, target);
     oracle_pick(b, &start, base, alts, uses, rng)
 }
 
@@ -3957,7 +3991,7 @@ fn play_on_instead(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards
         return None;
     }
     // winning now (with its uses) and each way of playing on, on the same futures
-    let start = RoundStart { hand: hand.to_vec(), deck: deck.to_vec(), hand_size: size as i64, hands, discards, scored, target, fresh: false, ..Default::default() };
+    let start = RoundStart::at_decision(hand, deck, size, hands, discards, scored, target);
     let fstart = RoundStart { hand: fh.to_vec(), ..start.clone() };
     let mut moves: Vec<(&Board, &RoundStart, Move, &[Use])> = vec![(fb, &fstart, Move::Play(fw.to_vec()), fu)];
     moves.extend(alts.iter().map(|m| (b, &start, m.clone(), uses)));
@@ -4109,7 +4143,7 @@ fn spare_instead(b: &Board, parts: &HandParts, deck: &[Card], hands: i64, discar
         return None;
     }
     // the second half of the futures only when the first shows a gain
-    let round = RoundStart { hand: hand.to_vec(), deck: deck.to_vec(), hand_size: size as i64, hands, discards, scored, target, fresh: false, ..Default::default() };
+    let round = RoundStart::at_decision(hand, deck, size, hands, discards, scored, target);
     let moves = [(b, &round, Move::Play(chosen.to_vec()), uses), (b, &round, Move::Play(spare.clone()), uses)];
     let seed = lookahead_seed(rng, hands, discards);
     let half = SPARE_ROLLOUTS / 2;
@@ -4690,7 +4724,7 @@ fn oracle_unseen(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: 
         .collect();
     if slots.is_empty() {
         alts.extend(oracle_alts(b, hand, deck, hands, discards, &base));
-        let start = RoundStart { hand: hand.to_vec(), deck: deck.to_vec(), hand_size: size as i64, hands, discards, scored, target, fresh: false, ..Default::default() };
+        let start = RoundStart::at_decision(hand, deck, size, hands, discards, scored, target);
         return oracle_pick(b, &start, base, alts, uses, rng);
     }
     let mut known = Hidden::new(hand, &slots, slots.clone(), b.turns_down_only_faces(&b.blind.key));
@@ -4703,7 +4737,7 @@ fn oracle_unseen(b: &Board, hand: &[Card], deck: &[Card], hands: i64, discards: 
         }
         alts.extend(oracle_alts(b, &h, &d, hands, discards, &base));
     }
-    let start = RoundStart { hand: hand.to_vec(), deck: deck.to_vec(), hand_size: size as i64, hands, discards, scored, target, fresh: false, hidden: Some(std::sync::Arc::new(known)), ..Default::default() };
+    let start = RoundStart { hidden: Some(std::sync::Arc::new(known)), ..RoundStart::at_decision(hand, deck, size, hands, discards, scored, target) };
     oracle_pick(b, &start, base, alts, uses, rng)
 }
 
@@ -4799,9 +4833,12 @@ fn play_round(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[Use]) ->
     shuffle(&mut deck, rng);
     let size = start.hand_size.max(1) as usize;
     let mut hand = std::mem::take(&mut start.hand);
-    // the cards the boss turns down dealt face down (`Board::stays_flipped`)
+    // the cards the boss turns down dealt face down (`Board::stays_flipped`); a hand short
+    // since its last draw plays as it is, the draw after its next play or discard fills it
+    // (`RoundStart::first_fill`)
     let mut flips = flip_stream(rng);
-    draw(&mut b, &mut hand, &mut deck, size, &mut flips);
+    let fill = start.first_fill(&hand, size);
+    draw(&mut b, &mut hand, &mut deck, fill, &mut flips);
     let (mut hands, mut discards) = (start.hands, start.discards);
     let mut total = start.scored;
     let mut best_hand: f64 = 0.0;
@@ -7482,6 +7519,40 @@ mod tests {
         };
         assert_eq!(after(Move::Play(vec![2]), 2, 0), 1);
         assert_eq!(after(Move::Discard(vec![2]), 1, 1), 0);
+    }
+
+    #[test]
+    fn a_hand_short_since_its_last_draw_plays_as_it_is_until_its_next_move() {
+        // the game draws only after a play or a discard (game.lua `Game:update_hand_played`,
+        // state_events.lua `G.FUNCS.discard_cards_from_highlighted`, then
+        // `G.FUNCS.draw_from_deck_to_hand`), so a hand a consumable took cards from makes its
+        // next move as it is: A♠ alone, held
+        // beside nothing, though the pile is Steel cards (×1.5 Mult each held)
+        let ace = Card::parse_list("AS").unwrap();
+        let steel = Card::parse_list("KS:steel KH:steel KD:steel KC:steel QS:steel QH:steel QD:steel QC:steel").unwrap();
+        let b = Board::empty();
+        let start = RoundStart { hand: ace.clone(), deck: steel, hand_size: 8, hands: 1, discards: 0, scored: 0.0, target: 1e12, fresh: false, ..Default::default() };
+        let dealt = start.clone().dealt();
+        assert_eq!(dealt.short, 7);
+        let alone = score::score(&b, &ace, &[], &mut Unlucky, false).score;
+        // Best play's line: its first move on the hand as it is
+        let first = |s: &RoundStart| outcomes_after(&b, s, &Move::Play(vec![0]), 0..1, 3, &[])[0].total;
+        assert_eq!(first(&dealt), alone);
+        // the round simulated from there, its one hand the same
+        assert_eq!(sim_round(&b, &dealt, &mut Rng::new(3)).total, alone);
+        // a hand whose draw is still owed (the rest of a round after a move) is filled first:
+        // the Steel cards held beside it
+        assert!(first(&start) > alone);
+        // with a hand more, the draw after the first play fills it: the second hand plays the
+        // Steel cards
+        let two = RoundStart { hands: 2, ..dealt.clone() };
+        assert!(sim_round(&b, &two, &mut Rng::new(3)).total > 2.0 * alone);
+        // an empty hand is filled at once (game.lua `Game:update`, the hand-selecting state), and
+        // a fresh round's first deal fills it whatever it holds
+        assert_eq!(RoundStart { hand: vec![], ..start.clone() }.dealt().short, 0);
+        assert_eq!(RoundStart { fresh: true, ..start.clone() }.dealt().short, 0);
+        // a decision's futures (the oracle's) start from the hand as it is too
+        assert_eq!(RoundStart::at_decision(&ace, &start.deck, 8, 1, 0, 0.0, 1e12).short, 7);
     }
 
     #[test]

@@ -198,6 +198,7 @@ fn rounds() -> Vec<(String, Board, sim::RoundStart)> {
                 blind: boss.to_string(),
                 disabled: false,
                 juggle: 0,
+                short: 0,
             }));
         }
     }
@@ -320,7 +321,7 @@ fn player_against_oracle() {
             // face-down cards drawn as the advice draws them (`advise::face_down_drawn`)
             let order: Vec<usize> = (0..run.hand.len()).collect();
             let (hand, deck, hidden) = balatro_advisor::advise::face_down_drawn(&run, &b, &run.hand, &order, &run.draw_pile, 42);
-            let live = sim::RoundStart { hand, deck, hand_size: run.round_hand_size(), hands: run.hands_left, discards: run.discards_left, scored: cb.scored, target: cb.target, fresh: false, blind: cb.key.clone(), disabled: cb.disabled, juggle: 0, hidden, changes: vec![] };
+            let live = sim::RoundStart { hand, deck, hand_size: run.round_hand_size(), hands: run.hands_left, discards: run.discards_left, scored: cb.scored, target: cb.target, fresh: false, blind: cb.key.clone(), disabled: cb.disabled, juggle: 0, hidden, changes: vec![], short: 0 }.dealt();
             // with a face-down card in hand, also at the score the player wins it half the time
             // from there: the real target can leave it near sure or near hopeless, where no
             // decision moves the odds
@@ -344,7 +345,7 @@ fn player_against_oracle() {
             c.debuff = false;
         }
         deck.sort_by_key(|c| c.order_key());
-        let mut start = sim::RoundStart { hand: vec![], deck, hand_size: run.hand_size, hands: run.round_hands, discards: run.round_discards, scored: 0.0, target: 1.0, fresh: true, blind: String::new(), disabled: false, juggle: 0, hidden: None, changes: vec![] };
+        let mut start = sim::RoundStart { hand: vec![], deck, hand_size: run.hand_size, hands: run.round_hands, discards: run.round_discards, scored: 0.0, target: 1.0, fresh: true, blind: String::new(), disabled: false, juggle: 0, hidden: None, changes: vec![], short: 0 };
         start.target = half_point(&fresh, &start, 200, 7);
         cases.push((format!("{name} fresh"), fresh, start));
     }

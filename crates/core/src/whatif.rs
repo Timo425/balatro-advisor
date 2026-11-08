@@ -239,7 +239,10 @@ pub fn run(run: &RunState, data: &GameData, plan: &Plan, sims: usize, seed: u64)
                     blind: bl.key.clone(),
                     disabled: cb.is_some_and(|c| c.disabled),
                     juggle: 0,
+                    short: 0,
                 }
+                // a hand short since its last draw waits for the draw after its next move
+                .dealt()
             } else {
                 let start = RoundStart {
                     hand: vec![],
@@ -256,6 +259,7 @@ pub fn run(run: &RunState, data: &GameData, plan: &Plan, sims: usize, seed: u64)
                     juggle: if i == 0 { run.round_start_tags() } else { 0 },
                     hidden: None,
                     changes: vec![],
+                    short: 0,
                 };
                 // the plan's jokers; all of blind.lua Blind:set_blind, then the jokers',
                 // come as it's set on the board, per round (sim::round_odds -> Board::at_blind_set_drawn)
