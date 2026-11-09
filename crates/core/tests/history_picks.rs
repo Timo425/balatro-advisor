@@ -1,6 +1,7 @@
 //! Best play's pick on the owner's saved states, for the history check (D12, `history.rs`
 //! judges the picks a change moved). Uses only long-stable API, so it can be copied into a
-//! `git worktree` of an older base commit (with `common/stamp.rs`) and run there:
+//! `git worktree` of an older base commit (with `common/stamp.rs` and `common/source_hash.rs`)
+//! and run there:
 //! `BAV_PICKS=/tmp/before cargo test --release --test history_picks -- --ignored history_picks`.
 //! A fixed-size sample of the states the live page saved (`~/.local/share/balatro-advisor/
 //! history/<seed>/*.jkr`, never in the repo; `BAV_HISTORY` for another folder), whatever the
