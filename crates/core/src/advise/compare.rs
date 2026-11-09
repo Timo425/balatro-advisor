@@ -121,7 +121,27 @@ pub(super) fn race<T: Send + Sync>(
     tie_order: impl Fn(usize, usize) -> std::cmp::Ordering,
     lost_outright: bool,
 ) -> Race<T> {
-    race_keeping(n, first, max, budget, sample, value, secondary, tie_order, lost_outright, None)
+    race_with(n, first, max, budget, sample, value, secondary, tie_order, lost_outright, None, 0)
+}
+
+/// `race`, where each round is sampled on its own (`sample_round(i, round)`: no round reads
+/// another's), so a batch with fewer options still in than cores also splits each option's
+/// rounds between them: the same race, the cores it leaves idle otherwise (Best play's last
+/// batches keep a few moves for hundreds of rounds) put to work
+#[allow(clippy::too_many_arguments)]
+pub(super) fn race_by_round<T: Send + Sync>(
+    n: usize,
+    first: usize,
+    max: usize,
+    budget: impl Fn(usize) -> usize,
+    sample_round: impl Fn(usize, usize) -> T + Sync,
+    value: impl Fn(&T) -> f64,
+    secondary: impl Fn(&T) -> f64,
+    tie_order: impl Fn(usize, usize) -> std::cmp::Ordering,
+    lost_outright: bool,
+) -> Race<T> {
+    let sample = |c: usize, rounds: std::ops::Range<usize>| rounds.map(|i| sample_round(c, i)).collect();
+    race_with(n, first, max, budget, sample, value, secondary, tie_order, lost_outright, None, std::thread::available_parallelism().map_or(4, |c| c.get()))
 }
 
 /// `race`, where option `keep` (the status quo: changing nothing) is never cut by the budget:
@@ -140,6 +160,25 @@ pub(super) fn race_keeping<T: Send + Sync>(
     lost_outright: bool,
     keep: Option<usize>,
 ) -> Race<T> {
+    race_with(n, first, max, budget, sample, value, secondary, tie_order, lost_outright, keep, 0)
+}
+
+/// `race_keeping`; `cores`: with fewer options still in than these, each option's rounds split
+/// between them, as `race_by_round` does (0: never)
+#[allow(clippy::too_many_arguments)]
+fn race_with<T: Send + Sync>(
+    n: usize,
+    first: usize,
+    max: usize,
+    budget: impl Fn(usize) -> usize,
+    sample: impl Fn(usize, std::ops::Range<usize>) -> Vec<T> + Sync,
+    value: impl Fn(&T) -> f64,
+    secondary: impl Fn(&T) -> f64,
+    tie_order: impl Fn(usize, usize) -> std::cmp::Ordering,
+    lost_outright: bool,
+    keep: Option<usize>,
+    cores: usize,
+) -> Race<T> {
     let mut samples: Vec<Vec<T>> = (0..n).map(|_| Vec::new()).collect();
     let mut alive: Vec<usize> = (0..n).collect();
     let mut tied = vec![false; n];
@@ -151,7 +190,19 @@ pub(super) fn race_keeping<T: Send + Sync>(
     let mut leader = 0usize;
     while done < max && !alive.is_empty() {
         let to = (done + batch).min(max);
-        let new = par_map(&alive, |&c| sample(c, done..to));
+        let new: Vec<Vec<T>> = if alive.len() < cores {
+            // each option's rounds in pieces, about four for each core: put back together in order
+            let pieces = (4 * cores).div_ceil(alive.len());
+            let size = (to - done).div_ceil(pieces).max(1);
+            let tasks: Vec<(usize, std::ops::Range<usize>)> = (0..alive.len()).flat_map(|k| (done..to).step_by(size).map(move |a| (k, a..(a + size).min(to)))).collect();
+            let mut out: Vec<Vec<T>> = alive.iter().map(|_| vec![]).collect();
+            for ((k, _), v) in tasks.iter().zip(par_map(&tasks, |(k, r)| sample(alive[*k], r.clone()))) {
+                out[*k].extend(v);
+            }
+            out
+        } else {
+            par_map(&alive, |&c| sample(c, done..to))
+        };
         for (&c, v) in alive.iter().zip(new) {
             samples[c].extend(v);
         }
@@ -296,6 +347,23 @@ mod tests {
         };
         let race = race(3, 32, MAX, |_| 2, sample, |x| *x, |x| *x, |x, y| y.cmp(&x), true);
         assert_eq!(race.leader, 1, "{:?}", race.left);
+    }
+
+    #[test]
+    fn a_race_by_round_is_the_race_with_each_options_rounds_split_between_the_cores() {
+        // options whose every round is its own (a value of the option and the round alone):
+        // `race_by_round` splits a batch's rounds between the cores once fewer options are left
+        // than cores (here 8 cores asked for, and after the first batch room for 2), and finds
+        // what `race` finds, sample for sample; on this machine's own cores too
+        let noise = |o: usize, i: usize| ((i.wrapping_mul(2_654_435_761) ^ o.wrapping_mul(40_503)).wrapping_mul(2_246_822_519) % 1000) as f64 / 1000.0 - 0.5;
+        let round = |o: usize, i: usize| 1.0 + 0.4 * noise(o, i) - 0.003 * o as f64;
+        let sample = |o: usize, r: std::ops::Range<usize>| -> Vec<f64> { r.map(|i| round(o, i)).collect() };
+        let a = race(6, 16, MAX, |_| 2, sample, |x| *x, |x| *x, |x, y| y.cmp(&x), true);
+        let b = race_with(6, 16, MAX, |_| 2, sample, |x| *x, |x| *x, |x, y| y.cmp(&x), true, None, 8);
+        let c = race_by_round(6, 16, MAX, |_| 2, round, |x| *x, |x| *x, |x, y| y.cmp(&x), true);
+        assert_eq!((&c.samples, c.leader, &c.left), (&a.samples, a.leader, &a.left));
+        assert!(a.samples.iter().any(|v| v.len() > 16), "{:?}", a.left);
+        assert_eq!((a.samples, a.leader, a.tied, a.undecided, a.left), (b.samples, b.leader, b.tied, b.undecided, b.left));
     }
 
     #[test]

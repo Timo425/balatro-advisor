@@ -495,24 +495,63 @@ struct SeenFloor {
 struct HandParts<'a> {
     b: &'a Board,
     hand: &'a [Card],
-    /// what's known of the plays, by mask (nothing for a hand of more than `PARTS_MAX` cards)
+    /// what's known of the plays, by mask (nothing for a hand of more than `SHARE_MAX` cards)
     detected: std::cell::RefCell<Vec<Option<SeenPlay>>>,
     done: std::cell::RefCell<Vec<(u32, Option<Play>)>>,
-    /// the whole hand's plays as its search scored them (`best_play_among`): their front
-    /// (`front_of`) is where `playing_on`'s later hands start
+    /// in a hand of more than `SHARE_MAX` cards, each part's best play (`best_play` of its
+    /// cards, searched once), by the places asked for
+    big: std::cell::RefCell<Vec<(Vec<usize>, Option<Play>)>>,
+    /// the whole hand's plays as its search scored them (`best_play_among`; a hand of up to
+    /// `SHARE_MAX` cards): their front (`front_of`) is where `playing_on`'s later hands start
+    /// (up to `PARTS_MAX` cards)
     scored: std::cell::RefCell<Option<Vec<Scored>>>,
     /// the board each card's discard alone leaves, by card, when they're not all alike
     /// (`card_discards`)
     discards: std::cell::OnceCell<Option<Vec<Board>>>,
 }
 
-/// The largest hand `HandParts` shares detections for (2^n of them)
+/// What a hand's searches found (`HandParts`), handed on to a later search of the same hand on
+/// the same board (`HandParts::with`): `decide_unseen` values each draw's decision on the hand
+/// and board it was decided on, whose parts that decision already searched
+#[derive(Default)]
+struct Searched {
+    /// the hand searched
+    hand: Vec<Card>,
+    detected: Vec<Option<SeenPlay>>,
+    done: Vec<(u32, Option<Play>)>,
+    big: Vec<(Vec<usize>, Option<Play>)>,
+    scored: Option<Vec<Scored>>,
+    discards: std::cell::OnceCell<Option<Vec<Board>>>,
+}
+
+/// The largest hand whose decision's own search seeds playing on's shortlist
+/// (`HandParts::shortlist`); a bigger one's first later hand searches in full, as before the
+/// shared table reached past it (`SHARE_MAX`): seeding it there would move playing on's totals
+/// in the cases the shortlist misses (the register), unmeasured on hands that big
 const PARTS_MAX: usize = 12;
+
+/// The largest hand `HandParts` shares detections for (2^n of them): every hand whose best play
+/// tries every subset (`SUBSETS_MAX`); a bigger one's parts are searched each on its own, once
+const SHARE_MAX: usize = SUBSETS_MAX;
 
 impl<'a> HandParts<'a> {
     fn new(b: &'a Board, hand: &'a [Card]) -> Self {
-        let size = if hand.len() <= PARTS_MAX { 1 << hand.len() } else { 0 };
-        HandParts { b, hand, detected: std::cell::RefCell::new(vec![None; size]), done: std::cell::RefCell::new(vec![]), scored: std::cell::RefCell::new(None), discards: std::cell::OnceCell::new() }
+        Self::with(b, hand, Searched::default())
+    }
+
+    /// `new`, knowing what an earlier search of the same hand on the same board found (`found`:
+    /// its `searched`); the same results, as each is what that search would work out again. Of
+    /// another hand nothing is kept (the board isn't checked: the caller's to keep the same)
+    fn with(b: &'a Board, hand: &'a [Card], found: Searched) -> Self {
+        let size = if hand.len() <= SHARE_MAX { 1 << hand.len() } else { 0 };
+        let found = if found.hand.as_slice() == hand && found.detected.len() == size { found } else { Searched::default() };
+        let detected = if found.detected.len() == size { found.detected } else { vec![None; size] };
+        HandParts { b, hand, detected: std::cell::RefCell::new(detected), done: std::cell::RefCell::new(found.done), big: std::cell::RefCell::new(found.big), scored: std::cell::RefCell::new(found.scored), discards: found.discards }
+    }
+
+    /// What its searches found, to hand on (`with`)
+    fn searched(self) -> Searched {
+        Searched { hand: self.hand.to_vec(), detected: self.detected.into_inner(), done: self.done.into_inner(), big: self.big.into_inner(), scored: self.scored.into_inner(), discards: self.discards }
     }
 
     /// The board each card's discard alone leaves (the engine's step, `Board::discard`), by
@@ -543,7 +582,7 @@ impl<'a> HandParts<'a> {
     /// The whole hand's unbeaten plays (`front_of`), once its best play was worked out: the
     /// shortlist `playing_on` starts from (none for a hand of more than `PARTS_MAX` cards)
     fn shortlist(&self) -> Option<Shortlist> {
-        self.scored.borrow().clone().filter(|_| front_holds(self.b, self.hand)).map(|v| Shortlist { plays: front_of(v), stale: false })
+        self.scored.borrow().clone().filter(|_| self.hand.len() <= PARTS_MAX && front_holds(self.b, self.hand)).map(|v| Shortlist { plays: front_of(v), stale: false })
     }
 
     /// The whole hand's plays as `best_play` tries them, with their floors (`plays_tried`): its
@@ -555,14 +594,23 @@ impl<'a> HandParts<'a> {
     /// `best_play` of the cards at `idx` (indices into the hand, in order): the play's cards
     /// as indices into the hand
     fn best(&self, idx: &[usize]) -> Option<Play> {
+        // (in order: a part searched by mask, as up to `SHARE_MAX` cards are, comes out in the
+        // hand's order, which is the order asked only then)
+        debug_assert!(idx.windows(2).all(|w| w[0] < w[1]), "parts are asked in the hand's order: {idx:?}");
         let (b, hand) = (self.b, self.hand);
-        let rest: Vec<Card> = idx.iter().map(|&i| hand[i]).collect();
-        if hand.len() > PARTS_MAX {
-            return best_play(b, &rest).map(|mut p| {
+        if hand.len() > SHARE_MAX {
+            if let Some((_, p)) = self.big.borrow().iter().find(|e| e.0 == idx) {
+                return p.clone();
+            }
+            let rest: Vec<Card> = idx.iter().map(|&i| hand[i]).collect();
+            let p = best_play(b, &rest).map(|mut p| {
                 p.cards = p.cards.iter().map(|&k| idx[k]).collect();
                 p
             });
+            self.big.borrow_mut().push((idx.to_vec(), p.clone()));
+            return p;
         }
+        let rest: Vec<Card> = idx.iter().map(|&i| hand[i]).collect();
         let part: u32 = idx.iter().fold(0, |m, &i| m | 1 << i);
         if let Some((_, p)) = self.done.borrow().iter().find(|e| e.0 == part) {
             return p.clone();
@@ -1236,9 +1284,13 @@ pub struct Hidden {
     pub fell_back: std::sync::atomic::AtomicU8,
 }
 
-/// Whether a card could be face-down card k, the cards drawn for the others as they are
+/// Whether pool card j could be face-down card k, given the window in both sorts the cards drawn
+/// for the others leave it (`Hidden::draw`; none where their order isn't kept)
+type Fits<'a> = dyn Fn(usize, usize, Option<&[(f64, f64); 2]>) -> bool + 'a;
+
+/// The window in both sorts the pool cards drawn for the others (by index) leave face-down card k
 /// (`Hidden::draw`)
-type Fits<'a> = dyn Fn(usize, &Card, &[Option<Card>]) -> bool + 'a;
+type Window<'a> = dyn Fn(usize, &[Option<usize>]) -> Option<[(f64, f64); 2]> + 'a;
 
 /// A round's draw of the face-down cards (`deal_hidden`): its seed and which were drawn
 type DrawKey = (u64, Vec<bool>);
@@ -1307,21 +1359,6 @@ impl Hidden {
         !self.face_only || crate::engine::hand::is_face(c, 0, false, true)
     }
 
-    /// Whether card `c` as face-down card `k` keeps both sorts' order with the cards drawn for
-    /// the others (`at`)
-    fn in_order(&self, k: usize, c: &Card, at: &[Option<Card>]) -> bool {
-        (0..2).all(|s| {
-            let x = c.sort_nominal(s == 1);
-            at.iter().enumerate().all(|(o, d)| match d {
-                Some(d) if o != k => {
-                    let y = d.sort_nominal(s == 1);
-                    if self.place[o][s] < self.place[k][s] { y >= x } else { x >= y }
-                }
-                _ => true,
-            })
-        })
-    }
-
     /// A draw of what the face-down cards marked `live` could be, from `pool` (each card used
     /// once): the cards of `pool` for them, by index. Drawn card by card in the rank sort's
     /// order, each among the cards that fit with those before it (backtracking where none
@@ -1334,18 +1371,46 @@ impl Hidden {
     fn draw(&self, live: &[bool], pool: &[Card], rng: &mut Rng) -> Vec<usize> {
         let mut seq: Vec<usize> = (0..self.pos.len()).filter(|&k| live[k]).collect();
         seq.sort_by_key(|&k| self.place[k][0]);
+        // each pool card's place in both sorts, worked out once: the draw asks it of every card
+        // many times
+        let nom: Vec<[f64; 2]> = pool.iter().map(|c| [c.sort_nominal(false), c.sort_nominal(true)]).collect();
+        // where face-down card `k` keeps both sorts' order with the pool cards drawn for the others
+        // (`at`): in each sort, at or above every one drawn below it and at or below every one
+        // drawn above it
+        let window = |k: usize, at: &[Option<usize>]| -> [(f64, f64); 2] {
+            std::array::from_fn(|s| {
+                at.iter().enumerate().fold((f64::NEG_INFINITY, f64::INFINITY), |(lo, hi), (o, d)| match *d {
+                    Some(d) if o != k => {
+                        let y = nom[d][s];
+                        if self.place[o][s] < self.place[k][s] { (lo, hi.min(y)) } else { (lo.max(y), hi) }
+                    }
+                    _ => (lo, hi),
+                })
+            })
+        };
         for level in 0..4 {
             // with no boss's rule in force, level 1 is level 0 again
             if level == 1 && !self.face_only {
                 continue;
             }
-            let ok = |k: usize, c: &Card, at: &[Option<Card>]| match level {
-                0 => self.fits(k, c) && self.in_order(k, c, at) && self.boss_allows(c),
-                1 => self.fits(k, c) && self.in_order(k, c, at),
-                2 => self.fits(k, c),
-                _ => true,
-            };
-            let mut at: Vec<Option<Card>> = vec![None; self.pos.len()];
+            // what doesn't change as the others are drawn: each pool card against each face-down
+            // card's bounds, and the boss's rule
+            let fixed: Vec<Vec<bool>> = (0..self.pos.len())
+                .map(|k| {
+                    pool.iter()
+                        .map(|c| match level {
+                            0 => self.fits(k, c) && self.boss_allows(c),
+                            1 | 2 => self.fits(k, c),
+                            _ => true,
+                        })
+                        .collect()
+                })
+                .collect();
+            // whether pool card `j` could be face-down card `k`, its order with the others given as
+            // their `window` (none past level 1)
+            let ok = |k: usize, j: usize, w: Option<&[(f64, f64); 2]>| fixed[k][j] && w.is_none_or(|w| (0..2).all(|s| w[s].0 <= nom[j][s] && nom[j][s] <= w[s].1));
+            let window = |k: usize, at: &[Option<usize>]| (level < 2).then(|| window(k, at));
+            let mut at: Vec<Option<usize>> = vec![None; self.pos.len()];
             let mut pick = vec![usize::MAX; self.pos.len()];
             let mut used = vec![false; pool.len()];
             let mut budget = HIDDEN_TRIES;
@@ -1355,14 +1420,16 @@ impl Hidden {
                 seq: &[usize],
                 pool: &[Card],
                 ok: &Fits,
-                at: &mut [Option<Card>],
+                window: &Window,
+                at: &mut [Option<usize>],
                 pick: &mut [usize],
                 used: &mut [bool],
                 budget: &mut usize,
                 rng: &mut Rng,
             ) -> bool {
                 let Some(&k) = seq.get(i) else { return true };
-                let mut cands: Vec<usize> = (0..pool.len()).filter(|&j| !used[j] && ok(k, &pool[j], at)).collect();
+                let w = window(k, at);
+                let mut cands: Vec<usize> = (0..pool.len()).filter(|&j| !used[j] && ok(k, j, w.as_ref())).collect();
                 shuffle(&mut cands, rng);
                 // each kind of card once (a kind with more copies is the likelier first pick)
                 let mut tried: Vec<Card> = vec![];
@@ -1375,27 +1442,31 @@ impl Hidden {
                     }
                     tried.push(pool[j]);
                     *budget -= 1;
-                    (used[j], at[k], pick[k]) = (true, Some(pool[j]), j);
+                    (used[j], at[k], pick[k]) = (true, Some(j), j);
                     // every card still to draw keeps a card it could be (else this pick is a
                     // dead end, found now rather than deep in the search)
-                    let open = seq[i + 1..].iter().all(|&r| (0..pool.len()).any(|q| !used[q] && ok(r, &pool[q], at)));
-                    if open && dfs(i + 1, seq, pool, ok, at, pick, used, budget, rng) {
+                    let open = seq[i + 1..].iter().all(|&r| {
+                        let w = window(r, at);
+                        (0..pool.len()).any(|q| !used[q] && ok(r, q, w.as_ref()))
+                    });
+                    if open && dfs(i + 1, seq, pool, ok, window, at, pick, used, budget, rng) {
                         return true;
                     }
                     (used[j], at[k]) = (false, None);
                 }
                 false
             }
-            if !dfs(0, &seq, pool, &ok, &mut at, &mut pick, &mut used, &mut budget, rng) {
+            if !dfs(0, &seq, pool, &ok, &window, &mut at, &mut pick, &mut used, &mut budget, rng) {
                 continue;
             }
             self.fell_back.fetch_max(level as u8, std::sync::atomic::Ordering::Relaxed);
             for _ in 0..HIDDEN_SWEEPS {
                 for &k in &seq {
                     let cur = pick[k];
-                    let cands: Vec<usize> = (0..pool.len()).filter(|&j| (j == cur || !used[j]) && ok(k, &pool[j], &at)).collect();
+                    let w = window(k, &at);
+                    let cands: Vec<usize> = (0..pool.len()).filter(|&j| (j == cur || !used[j]) && ok(k, j, w.as_ref())).collect();
                     let j = cands[rng.below(cands.len())];
-                    (used[cur], used[j], pick[k], at[k]) = (false, true, j, Some(pool[j]));
+                    (used[cur], used[j], pick[k], at[k]) = (false, true, j, Some(j));
                 }
             }
             return pick;
@@ -4466,16 +4537,18 @@ pub fn sim_round_uses(board: &Board, start: &RoundStart, rng: &mut Rng, uses: &[
 /// `seen_by` kept up), then what it plays or throws, by its places in the hand they leave.
 #[allow(clippy::too_many_arguments)]
 fn decide_step(b: &mut Board, hand: &mut Vec<Card>, deck: &[Card], used: &mut [bool], seen_by: &mut Vec<(String, f64)>, uses: &[Use], hands: i64, discards: i64, total: f64, target: f64, size: usize, rng: &mut Rng) -> (Vec<usize>, Action) {
-    let (order, act, _, _) = decide_step_open(b, hand, deck, used, seen_by, uses, hands, discards, total, target, size, rng);
+    let (order, act, ..) = decide_step_open(b, hand, deck, used, seen_by, uses, hands, discards, total, target, size, rng);
     (order, act)
 }
 
 /// `decide_step`, whether it decided with no finish on the table (where the oracle,
-/// `set_oracle`, weighs the decision: `decide_unseen` asks it there only), and whether its best
+/// `set_oracle`, weighs the decision: `decide_unseen` asks it there only), whether its best
 /// play surely reaches the score (a win on the table by the policy's own test, `decide_cards`,
-/// with goals or without: where `decide_unseen` values its choice)
-#[allow(clippy::too_many_arguments)]
-fn decide_step_open(b: &mut Board, hand: &mut Vec<Card>, deck: &[Card], used: &mut [bool], seen_by: &mut Vec<(String, f64)>, uses: &[Use], hands: i64, discards: i64, total: f64, target: f64, size: usize, rng: &mut Rng) -> (Vec<usize>, Action, bool, bool) {
+/// with goals or without: where `decide_unseen` values its choice), and, where it used no
+/// consumable, what its search of the hand found (`HandParts::searched`: of the board and hand
+/// it was given, as nothing changed them; none where one changed them)
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn decide_step_open(b: &mut Board, hand: &mut Vec<Card>, deck: &[Card], used: &mut [bool], seen_by: &mut Vec<(String, f64)>, uses: &[Use], hands: i64, discards: i64, total: f64, target: f64, size: usize, rng: &mut Rng) -> (Vec<usize>, Action, bool, bool, Option<Searched>) {
     let mut order = use_if_better(b, hand, uses, used, target - total, hands);
     drop_used_seen(b, seen_by);
     // a win on the table: the finish (`finish_play` by the round's goals; without them, while
@@ -4491,6 +4564,9 @@ fn decide_step_open(b: &mut Board, hand: &mut Vec<Card>, deck: &[Card], used: &m
     // a best play that surely reaches the score (without goals or a card that pays at round end
     // held, `win_keeping_seals` finds no finish, though the policy then plays the win)
     let sure = win.is_some() || parts.best(&all).is_some_and(|p| p.surest >= target - total);
+    // the board and hand a finish using consumables leaves, taken on once the search's finds of
+    // this hand are handed on
+    let mut finished: Option<(Board, Vec<Card>)> = None;
     let act = match win {
         Some(v) => {
             // the finish, with any held consumable that makes it worth more used first
@@ -4503,17 +4579,15 @@ fn decide_step_open(b: &mut Board, hand: &mut Vec<Card>, deck: &[Card], used: &m
                 Some(a) => a,
                 None => match fin {
                     Some((b2, h2, v2, ks, _)) => {
-                        *b = b2;
-                        *hand = h2;
+                        finished = Some((b2, h2));
                         ks.iter().for_each(|&k| used[k] = true);
                         order.extend(ks);
-                        drop_used_seen(b, seen_by);
                         Action::Play(v2, false)
                     }
                     // a discard would pay: the policy may cash it first, while the round
                     // stays safe (`decide_cards`, a threshold in the register), never with a
                     // card that pays at round end; else the finish
-                    None if b.goals.is_some() && discards > 0 && discard_money(b, hand, &(0..hand.len()).collect::<Vec<_>>()) > 0.0 => match decide(b, hand, deck, hands, discards, target - total, size) {
+                    None if b.goals.is_some() && discards > 0 && discard_money(b, hand, &(0..hand.len()).collect::<Vec<_>>()) > 0.0 => match decide_with(b, hand, deck, hands, discards, target - total, size, Some(&parts)) {
                         Action::Discard(d) if discard_money(b, hand, &d) > 0.0 && !pays_at_end(b, hand).iter().any(|i| d.contains(i)) => Action::Discard(d),
                         _ => Action::Play(v, false),
                     },
@@ -4544,7 +4618,13 @@ fn decide_step_open(b: &mut Board, hand: &mut Vec<Card>, deck: &[Card], used: &m
             })
         }
     };
-    (order, act, open, sure)
+    let found = order.is_empty().then(|| parts.searched());
+    if let Some((b2, h2)) = finished {
+        *b = b2;
+        *hand = h2;
+        drop_used_seen(b, seen_by);
+    }
+    (order, act, open, sure, found)
 }
 
 /// How many draws of the face-down cards in hand the simulated player decides on and values its
@@ -4559,9 +4639,9 @@ const UNSEEN_DRAWS: usize = 4;
 /// random, not ordered by the cards), on the cards as they are, then decides again on the hand
 /// it leaves (the cards it changed seen, as the game shows them); with none used first, of the
 /// actions those draws make, where not every draw has a win on the table, the one the policy's own
-/// estimates value most summed over every draw (`policy_estimates`, a heuristic: no futures, so
-/// about one more policy decision a draw; on the round's last hand, where none reaches the score
-/// needed, in points), else the one most of them make. It stops drawing once the draws so far
+/// estimates value most summed over every draw (`policy_estimates`, a heuristic: no futures, and
+/// on what each draw's decision already searched of its hand, `HandParts::with`; on the round's
+/// last hand, where none reaches the score needed, in points), else the one most of them make. It stops drawing once the draws so far
 /// all decided the same and the rest can't outvote them (`unseen_done`: two alike of four; a
 /// budget, as the later draws' dissent isn't valued). A draw keeps what you
 /// can tell of them now (`Hidden`): their bounds among the cards you see in the game's two sorts,
@@ -4604,17 +4684,20 @@ fn decide_unseen(b: &mut Board, hand: &mut Vec<Card>, deck: &[Card], used: &mut 
     // whether some draw has no sure win (its best play surely reaching the score): the decisions
     // are valued over the draws only then
     let mut unsure = false;
-    // each draw's hand and pile, for the valuation
+    // each draw's hand and pile, for the valuation, and what its decision's search of that hand
+    // found (`decide_step_open`)
     let mut seen_draws: Vec<(Vec<Card>, Vec<Card>)> = vec![];
+    let mut found: Vec<Option<Searched>> = vec![];
     for k in 0..UNSEEN_DRAWS {
         let (mut h, d, seed) = if k == 0 { first.clone() } else { imagine() };
         seen_draws.push((h.clone(), d.clone()));
         let (mut b2, mut u2, mut s2) = (b.clone(), used.to_vec(), seen_by.clone());
         // the consumables held for a face-down card's place, on what this draw put there
         let imagined = uses_on(b, &unplaced, &h);
-        let (order, act, o, sure) = without_oracle(|| decide_step_open(&mut b2, &mut h, &d, &mut u2, &mut s2, &imagined, hands, discards, total, target, size, &mut Rng::new(seed)));
+        let (order, act, o, sure, f) = without_oracle(|| decide_step_open(&mut b2, &mut h, &d, &mut u2, &mut s2, &imagined, hands, discards, total, target, size, &mut Rng::new(seed)));
         open |= o;
         unsure |= !sure;
+        found.push(f);
         steps.push((order, act));
         // once the draws so far all agree and the draws left can't outvote them, the rest are
         // skipped: a budget, as a later draw that dissents could have been valued over them
@@ -4636,10 +4719,13 @@ fn decide_unseen(b: &mut Board, hand: &mut Vec<Card>, deck: &[Card], used: &mut 
     // had a win lost up to 2.9 points of round wins on the bench's boss boards (2026-11-07)
     let valued = (unsure && made.len() >= 2 && steps.iter().all(|x| x.0.is_empty())).then(|| {
         let acts: Vec<Action> = made.iter().map(|m| m.0.clone()).collect();
+        // each draw on the board and hand its decision was made on (no consumable used), with
+        // what that decision's search found: the same estimates, without searching the hand again
+        let parts: Vec<HandParts> = seen_draws.iter().zip(found.drain(..)).map(|((h, _), f)| HandParts::with(b, h, f.unwrap_or_default())).collect();
         let sum_by = |reach: bool| {
             let mut sum = vec![0.0; acts.len()];
-            for (h, d) in &seen_draws {
-                for (s, v) in sum.iter_mut().zip(policy_estimates(b, h, d, hands, discards, target - total, size, None, reach, &acts)) {
+            for ((h, d), p) in seen_draws.iter().zip(&parts) {
+                for (s, v) in sum.iter_mut().zip(policy_estimates(b, h, d, hands, discards, target - total, size, Some(p), reach, &acts)) {
                     *s += v;
                 }
             }
@@ -5179,17 +5265,19 @@ pub fn round_odds(b: &Board, start: &RoundStart, sims: usize, seed: u64) -> (f64
 }
 
 /// Which hands score the points in simulated rounds: (hand, share of points, share of
-/// hands played, mean score). Junk hands played to dig are left out.
+/// hands played, mean score). Junk hands played to dig are left out. The rounds on every core,
+/// added up in their order.
 pub fn round_hand_mix(b: &Board, start: &RoundStart, sims: usize, seed: u64) -> Vec<(HandType, f64, f64, f64)> {
+    let plays = crate::progress::par_map(&(0..sims).collect::<Vec<_>>(), |&i| {
+        let mut rng = Rng::new(seed.wrapping_add(i as u64 * 7919));
+        sim_round(b, start, &mut rng).plays
+    });
     let mut pts = [0.0f64; 12];
     let mut cnt = [0usize; 12];
-    for i in 0..sims {
-        let mut rng = Rng::new(seed.wrapping_add(i as u64 * 7919));
-        for (h, s, dig) in sim_round(b, start, &mut rng).plays {
-            if !dig {
-                pts[h as usize] += s;
-                cnt[h as usize] += 1;
-            }
+    for (h, s, dig) in plays.into_iter().flatten() {
+        if !dig {
+            pts[h as usize] += s;
+            cnt[h as usize] += 1;
         }
     }
     let (tp, tc) = (pts.iter().sum::<f64>().max(1.0), cnt.iter().sum::<usize>().max(1) as f64);
@@ -5328,6 +5416,39 @@ mod tests {
             }
         }
         assert!(stopped > 0 && ran > 0, "stopped early {stopped}, ran every draw {ran}");
+    }
+
+    #[test]
+    fn a_draws_valuation_on_its_decisions_search_is_the_one_searched_afresh() {
+        // `decide_unseen` values each draw on what its decision's search of that hand found
+        // (`HandParts::with`): the same sums as the policy's estimates searched afresh, on hands
+        // of 8 cards and of 14 (past `PARTS_MAX`: the shared table up to `SHARE_MAX`), on a
+        // board where held cards score and one where they don't
+        let mut checked = [0; 2];
+        for (m, n) in [8, 14].into_iter().enumerate() {
+            for (jokers, need) in [(&["j_droll", "j_tribe"][..], 2000.0), (&["j_blackboard", "j_baron"], 1500.0)] {
+                let b = sample_board(jokers);
+                for seed in 0..6u64 {
+                    let mut deck = standard_deck();
+                    shuffle(&mut deck, &mut Rng::new(seed + 100));
+                    let mut hand: Vec<Card> = deck[..n].to_vec();
+                    hand.iter_mut().for_each(|c| c.face_down = true);
+                    let deck = deck[n..].to_vec();
+                    UNSEEN_VALUED.with(|x| x.borrow_mut().clear());
+                    decide_unseen(&mut b.clone(), &mut hand.clone(), &deck, &mut [], &mut vec![], &[], 4, 3, 0.0, need, n, &Rng::new(seed));
+                    let Some(r) = UNSEEN_VALUED.with(|x| x.borrow().last().cloned()) else { continue };
+                    let mut sum = vec![0.0; r.acts.len()];
+                    for (h, d) in &r.draws {
+                        for (s, v) in sum.iter_mut().zip(policy_estimates(&b, h, d, 4, 3, need, n, None, true, &r.acts)) {
+                            *s += v;
+                        }
+                    }
+                    assert_eq!(sum, r.sum, "{n} cards, {jokers:?}, seed {seed}");
+                    checked[m] += 1;
+                }
+            }
+        }
+        assert!(checked.iter().all(|&k| k >= 3), "valued on 8 and 14 cards: {checked:?}");
     }
 
     #[test]
@@ -5810,6 +5931,133 @@ mod tests {
             let c = deal_hidden(&Board::empty(), &start, &Rng::new(i)).unwrap().hand[3];
             assert!((11..=13).contains(&c.rank.0) && c.suit != Suit::Spades, "{c:?}");
         }
+    }
+
+    /// `Hidden::draw` as it was written before each pool card's sort values and order window were
+    /// worked out once (2026-11-09): the plain form the draw must pick exactly as
+    fn plain_draw(h: &Hidden, live: &[bool], pool: &[Card], rng: &mut Rng) -> Vec<usize> {
+        type Ok<'a> = dyn Fn(usize, &Card, &[Option<Card>]) -> bool + 'a;
+        let in_order = |k: usize, c: &Card, at: &[Option<Card>]| {
+            (0..2).all(|s| {
+                let x = c.sort_nominal(s == 1);
+                at.iter().enumerate().all(|(o, d)| match d {
+                    Some(d) if o != k => {
+                        let y = d.sort_nominal(s == 1);
+                        if h.place[o][s] < h.place[k][s] { y >= x } else { x >= y }
+                    }
+                    _ => true,
+                })
+            })
+        };
+        let mut seq: Vec<usize> = (0..h.pos.len()).filter(|&k| live[k]).collect();
+        seq.sort_by_key(|&k| h.place[k][0]);
+        for level in 0..4 {
+            if level == 1 && !h.face_only {
+                continue;
+            }
+            let ok = |k: usize, c: &Card, at: &[Option<Card>]| match level {
+                0 => h.fits(k, c) && in_order(k, c, at) && h.boss_allows(c),
+                1 => h.fits(k, c) && in_order(k, c, at),
+                2 => h.fits(k, c),
+                _ => true,
+            };
+            let mut at: Vec<Option<Card>> = vec![None; h.pos.len()];
+            let mut pick = vec![usize::MAX; h.pos.len()];
+            let mut used = vec![false; pool.len()];
+            let mut budget = HIDDEN_TRIES;
+            #[allow(clippy::too_many_arguments)]
+            fn dfs(i: usize, seq: &[usize], pool: &[Card], ok: &Ok, at: &mut [Option<Card>], pick: &mut [usize], used: &mut [bool], budget: &mut usize, rng: &mut Rng) -> bool {
+                let Some(&k) = seq.get(i) else { return true };
+                let mut cands: Vec<usize> = (0..pool.len()).filter(|&j| !used[j] && ok(k, &pool[j], at)).collect();
+                shuffle(&mut cands, rng);
+                let mut tried: Vec<Card> = vec![];
+                for j in cands {
+                    if *budget == 0 {
+                        return false;
+                    }
+                    if tried.iter().any(|t| t.order_eq(&pool[j])) {
+                        continue;
+                    }
+                    tried.push(pool[j]);
+                    *budget -= 1;
+                    (used[j], at[k], pick[k]) = (true, Some(pool[j]), j);
+                    let open = seq[i + 1..].iter().all(|&r| (0..pool.len()).any(|q| !used[q] && ok(r, &pool[q], at)));
+                    if open && dfs(i + 1, seq, pool, ok, at, pick, used, budget, rng) {
+                        return true;
+                    }
+                    (used[j], at[k]) = (false, None);
+                }
+                false
+            }
+            if !dfs(0, &seq, pool, &ok, &mut at, &mut pick, &mut used, &mut budget, rng) {
+                continue;
+            }
+            for _ in 0..HIDDEN_SWEEPS {
+                for &k in &seq {
+                    let cur = pick[k];
+                    let cands: Vec<usize> = (0..pool.len()).filter(|&j| (j == cur || !used[j]) && ok(k, &pool[j], &at)).collect();
+                    let j = cands[rng.below(cands.len())];
+                    (used[cur], used[j], pick[k], at[k]) = (false, true, j, Some(pool[j]));
+                }
+            }
+            return pick;
+        }
+        unreachable!()
+    }
+
+    #[test]
+    fn the_draw_of_face_down_cards_picks_as_its_plain_form_does() {
+        // `Hidden::draw` works each pool card's sort values, bounds and the boss's rule out once,
+        // and a card's order with the others as one window per sort: the same cards drawn, and
+        // the same rolls taken, as its plain form (`plain_draw`), on random hands of 4 to 14
+        // cards (in either sort or as dealt), some or all face down, some redrawn only in part,
+        // under a boss that turns down only face cards or not, and where nothing fits a bound or
+        // the order among themselves (each fallback level)
+        let mut rng = Rng::new(17);
+        let mut cases = 0;
+        // how many draws came out at each fallback level (`Hidden::fell_back`)
+        let mut levels = [0; 4];
+        for t in 0..400 {
+            let mut deck = standard_deck();
+            shuffle(&mut deck, &mut rng);
+            let n = 4 + t % 11;
+            let mut hand: Vec<Card> = deck[..n].to_vec();
+            match t % 3 {
+                0 => hand.sort_by(|a, b| b.sort_nominal(false).total_cmp(&a.sort_nominal(false))),
+                1 => hand.sort_by(|a, b| b.sort_nominal(true).total_cmp(&a.sort_nominal(true))),
+                _ => {}
+            }
+            let slots: Vec<usize> = (0..n).filter(|_| t % 9 == 0 || rng.below(2) == 0).collect();
+            if slots.is_empty() {
+                continue;
+            }
+            for &s in &slots {
+                hand[s].face_down = true;
+            }
+            let mut h = Hidden::new(&hand, &slots, slots.clone(), t % 4 == 0);
+            if t % 7 == 0 {
+                h.bounds[0] = [(100.0, 101.0), (100.0, 101.0)];
+            }
+            if t % 5 == 0 && slots.len() > 2 {
+                h.place.swap(0, slots.len() - 1);
+            }
+            let live: Vec<bool> = slots.iter().map(|_| t % 6 != 0 || rng.below(3) != 0).collect();
+            if !live.contains(&true) {
+                continue;
+            }
+            // the pool as `Hidden::deal` makes it: the pile and the cards redrawn, in a fixed order
+            let mut pool: Vec<Card> = deck[n..].to_vec();
+            pool.extend(slots.iter().zip(&live).filter(|(_, l)| **l).map(|(&s, _)| Card { face_down: false, ..hand[s] }));
+            pool.sort_by(Card::order_cmp);
+            let seed = rng.next_u64();
+            let (mut a, mut b) = (Rng::new(seed), Rng::new(seed));
+            assert_eq!(h.draw(&live, &pool, &mut a), plain_draw(&h, &live, &pool, &mut b), "case {t}");
+            assert_eq!(a.next_u64(), b.next_u64(), "case {t}: the rolls taken");
+            levels[h.fell_back.load(std::sync::atomic::Ordering::Relaxed) as usize] += 1;
+            cases += 1;
+        }
+        assert!(cases > 300, "{cases}");
+        assert!(levels.iter().all(|&n| n >= 3), "draws at each fallback level: {levels:?}");
     }
 
     #[test]
@@ -6770,7 +7018,9 @@ mod tests {
         // parts of a hand and remembers each part: the same best play, average included, as
         // `best_play` of the part's cards, on random hands and parts (the whole hand first or
         // not), Stone, Wild and Steel cards among them, and on boards where held cards and
-        // random effects score
+        // random effects score; on hands of 6 to 10 cards and of 13 to 17 (past `SUBSETS_MAX`,
+        // each part's own search remembered), and again once what it found is handed on
+        // (`HandParts::with`)
         let mut rng = Rng::new(9);
         let boards: [&[&str]; 8] = [
             &[],
@@ -6784,10 +7034,10 @@ mod tests {
         ];
         for keys in boards {
             let b = sample_board(keys);
-            for t in 0..100 {
+            for t in 0..116 {
                 let mut deck = standard_deck();
                 shuffle(&mut deck, &mut rng);
-                let mut hand: Vec<Card> = deck[..6 + t % 5].to_vec();
+                let mut hand: Vec<Card> = deck[..if t < 100 { 6 + t % 5 } else { 13 + t % 5 }].to_vec();
                 if rng.below(3) == 0 {
                     hand[rng.below(6)].enhancement = Some(Enhancement::Stone);
                 }
@@ -6801,15 +7051,50 @@ mod tests {
                 if t % 2 == 0 {
                     let whole: Vec<usize> = (0..hand.len()).collect();
                     assert_eq!(parts.best(&whole).map(|p| (p.cards, p.floor, p.mean)), best_play(&b, &hand).map(|p| (p.cards, p.floor, p.mean)));
+                    // the whole hand's plays as searched are the plays `best_play` tries, up to
+                    // `SHARE_MAX` cards; the shortlist from them only up to `PARTS_MAX`
+                    if hand.len() <= SHARE_MAX {
+                        assert!(parts.plays() == plays_tried(&b, &hand), "{keys:?} {hand:?}");
+                    }
+                    assert_eq!(parts.shortlist().is_some(), hand.len() <= PARTS_MAX && front_holds(&b, &hand));
                 }
-                for _ in 0..12 {
-                    let m = rng.below(1 << hand.len()) as u32 | 1;
-                    let idx: Vec<usize> = (0..hand.len()).filter(|i| m & (1 << i) != 0).collect();
+                let mut asked: Vec<Vec<usize>> = vec![];
+                let check = |parts: &HandParts, idx: &[usize]| {
                     let cards: Vec<Card> = idx.iter().map(|&i| hand[i]).collect();
                     let want = best_play(&b, &cards).map(|p| (p.cards.iter().map(|&k| idx[k]).collect::<Vec<_>>(), p.hand, p.floor, p.mean));
-                    let got = parts.best(&idx).map(|p| (p.cards, p.hand, p.floor, p.mean));
+                    let got = parts.best(idx).map(|p| (p.cards, p.hand, p.floor, p.mean));
                     assert_eq!(got, want, "{keys:?} {hand:?} {idx:?}");
+                };
+                for k in 0..12 {
+                    // (some asked twice: what a part found is remembered)
+                    let idx: Vec<usize> = if k % 4 == 3 {
+                        asked[rng.below(asked.len())].clone()
+                    } else {
+                        let m = rng.below(1 << hand.len()) as u32 | 1;
+                        (0..hand.len()).filter(|i| m & (1 << i) != 0).collect()
+                    };
+                    check(&parts, &idx);
+                    asked.push(idx);
                 }
+                // the whole hand's plays as `best_play` tries them, its parts searched first or not
+                let whole: Vec<usize> = (0..hand.len()).collect();
+                check(&parts, &whole);
+                if hand.len() <= SHARE_MAX {
+                    assert!(parts.plays() == plays_tried(&b, &hand), "{keys:?} {hand:?}");
+                }
+                // handed on: the parts asked before and new ones, and the whole hand's plays; to
+                // another hand, nothing
+                let again = HandParts::with(&b, &hand, parts.searched());
+                for k in 0..4 {
+                    let idx = if k % 2 == 0 { asked[rng.below(asked.len())].clone() } else { (0..hand.len()).filter(|i| (rng.below(2) == 0) || *i == 0).collect() };
+                    check(&again, &idx);
+                }
+                assert!(again.plays() == plays_tried(&b, &hand), "{keys:?} {hand:?}");
+                let mut other = hand.clone();
+                other[0] = Card { suit: if other[0].suit == Suit::Spades { Suit::Hearts } else { Suit::Spades }, ..other[0] };
+                let elsewhere = HandParts::with(&b, &other, again.searched());
+                let cards: Vec<Card> = whole.iter().map(|&i| other[i]).collect();
+                assert_eq!(elsewhere.best(&whole).map(|p| (p.cards, p.floor, p.mean)), best_play(&b, &cards).map(|p| (p.cards, p.floor, p.mean)), "{keys:?} {other:?}");
             }
         }
     }

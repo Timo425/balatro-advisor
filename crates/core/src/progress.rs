@@ -101,36 +101,55 @@ pub(crate) fn joined<R>(r: std::thread::Result<R>) -> R {
 }
 
 /// Runs `f` over `items` on all cores, keeping order: the analysis' fan-out (`advise`) and a big
-/// hand's screen (`sim::big_hand_moves`). The workers work for this thread's analysis: a stop
-/// reaches them (`checkpoint`), and a worker's panic passes on as it was (`joined`).
+/// hand's screen (`sim::big_hand_moves`). Each worker takes the next item not yet taken, so items
+/// that cost more than others don't leave cores idle. The workers work for this thread's
+/// analysis: a stop reaches them (`checkpoint`), and a worker's panic passes on as it was
+/// (`joined`).
 pub(crate) fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).min(items.len().max(1));
-    let chunk = items.len().div_ceil(threads.max(1)).max(1);
+    let next = std::sync::atomic::AtomicUsize::new(0);
     // the workers work for this thread's analysis (`progress`): a stop reaches them
     let p = current();
-    std::thread::scope(|s| {
-        let handles: Vec<_> = items
-            .chunks(chunk)
-            .map(|c| {
-                let (p, f) = (p.clone(), &f);
+    let mut done: Vec<(usize, R)> = std::thread::scope(|s| {
+        let handles: Vec<_> = (0..threads)
+            .map(|_| {
+                let (p, f, next) = (p.clone(), &f, &next);
                 s.spawn(move || {
                     let _p = enter(p);
-                    c.iter()
-                        .map(|x| {
-                            checkpoint();
-                            f(x)
-                        })
-                        .collect::<Vec<R>>()
+                    let mut out = vec![];
+                    loop {
+                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(x) = items.get(i) else { break };
+                        checkpoint();
+                        out.push((i, f(x)));
+                    }
+                    out
                 })
             })
             .collect();
         handles.into_iter().flat_map(|h| joined(h.join())).collect()
-    })
+    });
+    done.sort_unstable_by_key(|x| x.0);
+    done.into_iter().map(|x| x.1).collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn par_map_keeps_the_items_order_whatever_each_costs() {
+        // the workers take items one at a time, the costly ones (every seventh) taking longer
+        let items: Vec<u64> = (0..300).collect();
+        let out = par_map(&items, |&x| {
+            let mut s = x;
+            for _ in 0..if x % 7 == 0 { 200_000 } else { 10 } {
+                s = s.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            }
+            (x, s)
+        });
+        assert!(out.iter().enumerate().all(|(i, o)| o.0 == i as u64));
+    }
 
     #[test]
     fn a_stop_reaches_the_threads_and_unwinds_as_stopped() {

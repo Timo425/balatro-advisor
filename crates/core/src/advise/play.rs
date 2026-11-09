@@ -232,14 +232,14 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
         let ck = |c: usize| &keys[c];
         // the budget, halving many moves (`compare::halving`)
         let budget = compare::halving(SEARCH_BUDGET, SEARCH_FIRST, cands.len());
-        let race = compare::race(
+        let race = compare::race_by_round(
             cands.len(),
             SEARCH_FIRST,
             compare::MAX,
             budget,
-            |c, rounds| {
+            |c, i| {
                 let (m, b, st, u, _) = &cands[c];
-                sim::outcomes_after(b, st, m, rounds, seed, u)
+                sim::outcomes_after(b, st, m, i..i + 1, seed, u).remove(0)
             },
             utility,
             progress,

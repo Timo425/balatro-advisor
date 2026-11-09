@@ -188,3 +188,56 @@ fn search_against_reference() {
         }
     }
 }
+
+/// Times the analysis of a built big face-down hand (gap 20, gap 25 (c)): the first House hand of
+/// `house_all_face_down_burglar` (BAVANG10, Burglar: no discards) with the next six cards the
+/// game would draw (the pile's last, cardarea.lua `CardArea:remove_card`), 14 cards in the rank
+/// sort with the round's hand size raised to hold them, all face down, then the same cards face
+/// up. Prints each pass's time, its steps and Best play's pick, and with `BAV_SNAPSHOT_DIR` writes
+/// each analysis there as `snapshot` does (timings left out); asserts nothing. `BAV_FULL`: the
+/// full pass, else the quick one the live page shows first; `BAV_WHICH=down` or `up`: one of them.
+/// Run: `cargo test --release --test replay -- --ignored big_face_down_hand_timing --nocapture`
+#[test]
+#[ignore]
+fn big_face_down_hand_timing() {
+    let f = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/private/house_all_face_down_burglar.json");
+    let Ok(text) = std::fs::read_to_string(f) else { return };
+    let v: Value = serde_json::from_str(&text).unwrap();
+    let full = std::env::var_os("BAV_FULL").is_some();
+    let which = std::env::var("BAV_WHICH").ok();
+    for down in [true, false] {
+        let name = if down { "down" } else { "up" };
+        if which.as_ref().is_some_and(|w| w != name) {
+            continue;
+        }
+        let mut s = v["state"].clone();
+        let pile = s["draw_pile"].as_array().unwrap().clone();
+        let n = pile.len();
+        let mut hand = s["hand"].as_array().unwrap().clone();
+        hand.extend(pile[n - 6..].iter().rev().cloned());
+        // the game's rank sort: rank, then Spades, Hearts, Clubs, Diamonds (card.lua `Card:get_nominal`)
+        let suit = |c: &Value| ["Diamonds", "Clubs", "Hearts", "Spades"].iter().position(|x| c["suit"] == *x).unwrap();
+        hand.sort_by_key(|c| std::cmp::Reverse((c["rank"].as_i64().unwrap(), suit(c))));
+        for c in hand.iter_mut() {
+            c["face_down"] = Value::Bool(down);
+        }
+        s["hand"] = Value::Array(hand);
+        s["draw_pile"] = Value::Array(pile[..n - 6].to_vec());
+        s["round_hand_size_delta"] = 6.into();
+        let run: RunState = serde_json::from_value(s).unwrap();
+        let t = std::time::Instant::now();
+        let a = advise::analyze(&run, GameData::bundled(), None, &advise::Options { quick: !full, ..Default::default() });
+        let pick = a.best_play.as_ref().map(|b| format!("{} {} ({:.1}%)", b.action, b.cards.join(" "), 100.0 * b.p_win.unwrap_or(0.0))).unwrap_or_default();
+        println!("{name}, {} pass: {:.1} s; Best play {pick}", if full { "full" } else { "quick" }, t.elapsed().as_secs_f64());
+        println!("  {:?}", a.steps_ms);
+        if let Some(dir) = std::env::var_os("BAV_SNAPSHOT_DIR") {
+            let mut j = serde_json::to_value(&a).unwrap();
+            for k in ["elapsed_ms", "steps_ms", "save_age_secs", "live"] {
+                j.as_object_mut().unwrap().remove(k);
+            }
+            std::fs::create_dir_all(&dir).unwrap();
+            let file = format!("big_face_down_hand_{name}_{}.json", if full { "full" } else { "quick" });
+            std::fs::write(std::path::Path::new(&dir).join(file), serde_json::to_string_pretty(&j).unwrap()).unwrap();
+        }
+    }
+}
