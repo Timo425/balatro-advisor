@@ -390,16 +390,37 @@ fn player_against_oracle() {
 /// round's goals, `sim::RoundGoals`, fixed here as an analysis would set them): jokers that grow
 /// in the round, Blue Seal cards (a planet each, the last hand's) and Gold cards ($3 each) held
 /// at the end. Each: its jokers, each joker's worth per Mult, ×Mult and Chip (`JokerWorth::per`,
-/// about the sizes `LongRun::joker_worth` measured, design.md's register), and its deck's
-/// changed cards.
-type GoalBoard = (&'static str, &'static [(&'static str, [f64; 3])], &'static [&'static str]);
+/// about the sizes `LongRun::joker_worth` measured, design.md's register), its deck's changed
+/// cards and its boss ("" for none).
+type GoalBoard = (&'static str, &'static [(&'static str, [f64; 3])], &'static [&'static str], &'static str);
 const GOAL_BOARDS: &[GoalBoard] = &[
-    ("square", &[("j_square", [0.0, 0.0, 0.0037]), ("j_joker", [0.0; 3])], &[]),
-    ("growers", &[("j_green_joker", [0.019, 0.0, 0.0]), ("j_ride_the_bus", [0.012, 0.0, 0.0]), ("j_runner", [0.0, 0.0, 0.002])], &[]),
-    ("trousers", &[("j_trousers", [0.0048, 0.0, 0.0]), ("j_trousers", [0.0048, 0.0, 0.0]), ("j_joker", [0.0; 3])], &[]),
-    ("seals", &[("j_joker", [0.0; 3]), ("j_droll", [0.0; 3])], &["3S:blue", "7H:blue", "KD:blue", "2C:blue", "5D:gold", "9C:gold", "QS:gold"]),
-    ("seals_growers", &[("j_green_joker", [0.019, 0.0, 0.0]), ("j_square", [0.0, 0.0, 0.0037])], &["3S:blue", "7H:blue", "KD:blue", "5D:gold", "9C:gold"]),
-    ("castle", &[("j_castle", [0.0, 0.0, 0.0037]), ("j_joker", [0.0; 3])], &[]),
+    ("square", &[("j_square", [0.0, 0.0, 0.0037]), ("j_joker", [0.0; 3])], &[], ""),
+    ("growers", &[("j_green_joker", [0.019, 0.0, 0.0]), ("j_ride_the_bus", [0.012, 0.0, 0.0]), ("j_runner", [0.0, 0.0, 0.002])], &[], ""),
+    ("trousers", &[("j_trousers", [0.0048, 0.0, 0.0]), ("j_trousers", [0.0048, 0.0, 0.0]), ("j_joker", [0.0; 3])], &[], ""),
+    ("seals", &[("j_joker", [0.0; 3]), ("j_droll", [0.0; 3])], &["3S:blue", "7H:blue", "KD:blue", "2C:blue", "5D:gold", "9C:gold", "QS:gold"], ""),
+    ("seals_growers", &[("j_green_joker", [0.019, 0.0, 0.0]), ("j_square", [0.0, 0.0, 0.0037])], &["3S:blue", "7H:blue", "KD:blue", "5D:gold", "9C:gold"], ""),
+    ("castle", &[("j_castle", [0.0, 0.0, 0.0037]), ("j_joker", [0.0; 3])], &[], ""),
+    // under The House, its first deal face down (blind.lua `Blind:stay_flipped`): the player's
+    // first decisions are over draws of those cards (`sim::decide_unseen`, gap 25 (a)), each
+    // draw's decision made for the round's goals: the jokers' growth (Ride the Bus's turns on
+    // whether a face-down card is a face card), the seals and Gold cards held, Mail-In Rebate's
+    // discards
+    ("growers_house", &[("j_green_joker", [0.019, 0.0, 0.0]), ("j_ride_the_bus", [0.012, 0.0, 0.0]), ("j_runner", [0.0, 0.0, 0.002])], &[], "bl_house"),
+    ("seals_house", &[("j_joker", [0.0; 3]), ("j_droll", [0.0; 3])], &["3S:blue", "7H:blue", "KD:blue", "2C:blue", "5D:gold", "9C:gold", "QS:gold"], "bl_house"),
+    ("mail_house", &[("j_mail", [0.0; 3]), ("j_joker", [0.0; 3])], &[], "bl_house"),
+];
+
+/// The targets of the `GOAL_BOARDS` with a boss, set once (by `half_point` as `player_values`
+/// finds the others', on b4c8c8b): a change to how the player decides over face-down cards
+/// moves its half point without goals too, so a target found anew each run would differ between
+/// the two versions compared (as a live-mid board's without `BAV_MID`)
+const GOAL_TARGETS: &[(&str, f64)] = &[
+    ("growers_house_4h3d", 1435.0),
+    ("growers_house_4h1d", 1189.0),
+    ("seals_house_4h3d", 3000.0),
+    ("seals_house_4h1d", 2028.0),
+    ("mail_house_4h3d", 1647.0),
+    ("mail_house_4h1d", 1319.0),
 ];
 
 /// The simulated player's rounds valued as Best play values them (`RoundGoals::value`: 0 lost,
@@ -410,18 +431,22 @@ const GOAL_BOARDS: &[GoalBoard] = &[
 /// goals better scores higher here; `player_win_rates` can't see it (its boards have no goals).
 /// `BAV_N` rounds per board (default 2000). `BAV_VALUES_OUT=dir` writes each round's value and
 /// win (`<board>.tsv`), so two versions compare paired, round by round (the same rounds):
-/// `BAV_VALUES_BEFORE=dir` prints the paired difference against such a dir.
+/// `BAV_VALUES_BEFORE=dir` prints the paired difference against such a dir. `BAV_ONLY=a,b`: the
+/// boards (`<board>_<hands>h<discards>d`) whose name contains any of these. A board with a boss
+/// plays at its target in `GOAL_TARGETS`; one not there yet gets its half point, printed.
 #[test]
 #[ignore]
 fn player_values() {
     let n: usize = std::env::var("BAV_N").ok().and_then(|s| s.parse().ok()).unwrap_or(2000);
+    let only = std::env::var("BAV_ONLY").ok();
+    let wanted = |key: &str| only.as_ref().is_none_or(|o| o.split(',').filter(|o| !o.is_empty()).any(|o| key.contains(o)));
     let mut planet = [0.03; 12];
     planet[5] = 0.06; // Flush
     planet[2] = 0.05; // Two Pair
     planet[4] = 0.05; // Straight
     let (mut values, mut wins) = (vec![], vec![]);
     let t0 = std::time::Instant::now();
-    for (name, jokers, cards) in GOAL_BOARDS {
+    for (name, jokers, cards, boss) in GOAL_BOARDS {
         let keys: Vec<&str> = jokers.iter().map(|j| j.0).collect();
         let mut b = bench::sample_board(&keys);
         assert_eq!(b.jokers.len(), keys.len(), "{name}: unknown joker key");
@@ -439,8 +464,21 @@ fn player_values() {
             *deck.iter_mut().find(|d| d.rank == c.rank && d.suit == c.suit).unwrap() = c;
         }
         for (hands, discards) in [(4, 3), (4, 1)] {
-            let mut start = sim::RoundStart { hand: vec![], deck: deck.clone(), hand_size: 8, hands, discards, scored: 0.0, target: 1.0, fresh: true, ..Default::default() };
-            start.target = half_point(&b, &start, 400, 7);
+            let key = format!("{name}_{hands}h{discards}d");
+            if !wanted(&key) {
+                continue;
+            }
+            let mut start = sim::RoundStart { hand: vec![], deck: deck.clone(), hand_size: 8, hands, discards, scored: 0.0, target: 1.0, fresh: true, blind: boss.to_string(), ..Default::default() };
+            start.target = match GOAL_TARGETS.iter().find(|t| t.0 == key) {
+                Some(t) => t.1,
+                None => {
+                    let t = half_point(&b, &start, 400, 7);
+                    if !boss.is_empty() {
+                        println!("(\"{key}\", {t:.0}.0), not in GOAL_TARGETS yet");
+                    }
+                    t
+                }
+            };
             let mut gb = b.clone();
             gb.goals = Some(goals.clone());
             let t = std::time::Instant::now();
@@ -455,8 +493,7 @@ fn player_values() {
             let m = v.iter().sum::<f64>() / n as f64;
             let se = (v.iter().map(|x| (x - m).powi(2)).sum::<f64>() / (n - 1) as f64).sqrt() / (n as f64).sqrt();
             let w = rs.iter().filter(|r| r.won).count() as f64 / n as f64;
-            println!("{name}_{hands}h{discards}d: value {m:.4} ± {se:.4}, won {:.1}% ({:.2?})", 100.0 * w, t.elapsed());
-            let key = format!("{name}_{hands}h{discards}d");
+            println!("{key} (target {:.0}): value {m:.4} ± {se:.4}, won {:.1}% ({:.2?})", start.target, 100.0 * w, t.elapsed());
             if let Some(dir) = std::env::var_os("BAV_VALUES_OUT") {
                 std::fs::create_dir_all(&dir).unwrap();
                 let rows: String = v.iter().zip(&rs).map(|(x, r)| format!("{x}\t{}\n", r.won as u8)).collect();
