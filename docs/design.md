@@ -2195,7 +2195,8 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    change as committed but for a guard added after, which only keeps one hand's search from
    being handed to another (the spread is the laptop's between runs), a raced round 353 against
    117 ms. What's left is the
-   vote's own cost (each decision on 2.8 draws: 3.0 times a face-up round's CPU) and the race's
+   vote's own cost (each decision on 2.8 draws; a raced round still 3.0 times a face-up one's CPU,
+   353 against 117 ms, most of it likely the vote's, not split further) and the race's
    undecided moves (1.57 times the rounds), whose cuts change decisions: the race's undecided
    moves are queued; the vote's draws not (4 is a budget measured within noise of 8, gap 25
    (a); fewer would decide on less). The full pass not timed again (`BAV_FULL`; over an
