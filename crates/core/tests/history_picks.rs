@@ -1,6 +1,6 @@
 //! Best play's pick on the owner's saved states, for the history check (D12, `history.rs`
 //! judges the picks a change moved). Uses only long-stable API, so it can be copied into a
-//! `git worktree` of an older base commit and run there:
+//! `git worktree` of an older base commit (with `common/stamp.rs`) and run there:
 //! `BAV_PICKS=/tmp/before cargo test --release --test history_picks -- --ignored history_picks`.
 //! A fixed-size sample of the states the live page saved (`~/.local/share/balatro-advisor/
 //! history/<seed>/*.jkr`, never in the repo; `BAV_HISTORY` for another folder), whatever the
@@ -15,6 +15,9 @@
 use std::path::{Path, PathBuf};
 
 use balatro_advisor::{advise, calibration, data::GameData, save};
+
+#[path = "common/stamp.rs"]
+pub mod stamp;
 
 pub fn states() -> Vec<PathBuf> {
     sample(std::env::var("BAV_SAMPLE").ok().and_then(|s| s.parse().ok()).unwrap_or(350))
@@ -71,13 +74,16 @@ pub fn by_positions(bp: &advise::PlayAdvice) -> String {
 
 /// Writes Best play's pick on every saved state in a blind to `$BAV_PICKS/picks.tsv`: the
 /// state, the pick by positions, the pick as shown (a state that won't load or has no pick
-/// gets a row saying so, so a change that loses picks shows).
+/// gets a row saying so, so a change that loses picks shows). An earlier run's file is moved
+/// aside first (`picks.previous.tsv`).
 #[test]
 #[ignore]
 fn history_picks() {
     let Some(out) = std::env::var_os("BAV_PICKS") else { panic!("set BAV_PICKS") };
     let out = PathBuf::from(out);
     std::fs::create_dir_all(&out).unwrap();
+    let _run = stamp::start("history_picks", Some(&out));
+    stamp::set_aside(&out, "picks.tsv");
     let t0 = std::time::Instant::now();
     let mut lines = String::new();
     let mut n = 0;

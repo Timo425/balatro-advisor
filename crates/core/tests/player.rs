@@ -3,6 +3,9 @@
 //! `cargo test --release --test player -- --ignored --nocapture` (`BAV_N`: rounds per board).
 //! Each board's rounds play across all cores (`play`), with the same results as one by one.
 
+#[path = "common/stamp.rs"]
+mod stamp;
+
 use balatro_advisor::{bench, data::GameData, engine::score::Board, model::Card, save::RunState, sim};
 use serde_json::Value;
 
@@ -250,6 +253,7 @@ fn half_point(b: &Board, start: &sim::RoundStart, n: usize, seed: u64) -> f64 {
 #[test]
 #[ignore]
 fn player_targets() {
+    let _run = stamp::start("player_targets", None);
     let n: usize = std::env::var("BAV_N").ok().and_then(|s| s.parse().ok()).unwrap_or(2000);
     let only = std::env::var("BAV_ONLY").ok();
     for (key, b, start) in rounds() {
@@ -265,6 +269,7 @@ fn player_targets() {
 #[test]
 #[ignore]
 fn player_win_rates() {
+    let _run = stamp::start("player_win_rates", None);
     let n: usize = std::env::var("BAV_N").ok().and_then(|s| s.parse().ok()).unwrap_or(2000);
     let t0 = std::time::Instant::now();
     let all = rounds();
@@ -303,6 +308,7 @@ fn player_win_rates() {
 #[test]
 #[ignore]
 fn player_against_oracle() {
+    let _run = stamp::start("player_against_oracle", std::env::var_os("BAV_WINS_OUT").as_deref().map(std::path::Path::new));
     let n: usize = std::env::var("BAV_N").ok().and_then(|s| s.parse().ok()).unwrap_or(200);
     let r: usize = std::env::var("BAV_R").ok().and_then(|s| s.parse().ok()).unwrap_or(24);
     let mut cases = rounds();
@@ -437,6 +443,7 @@ const GOAL_TARGETS: &[(&str, f64)] = &[
 #[test]
 #[ignore]
 fn player_values() {
+    let _run = stamp::start("player_values", std::env::var_os("BAV_VALUES_OUT").as_deref().map(std::path::Path::new));
     let n: usize = std::env::var("BAV_N").ok().and_then(|s| s.parse().ok()).unwrap_or(2000);
     let only = std::env::var("BAV_ONLY").ok();
     let wanted = |key: &str| only.as_ref().is_none_or(|o| o.split(',').filter(|o| !o.is_empty()).any(|o| key.contains(o)));

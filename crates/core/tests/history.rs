@@ -50,6 +50,7 @@ fn cards_of(shown: &str) -> String {
 #[test]
 #[ignore]
 fn history_judge() {
+    let _run = history_picks::stamp::start("history_judge", None);
     let (Ok(before), Ok(after)) = (std::env::var("BAV_PICKS_BEFORE"), std::env::var("BAV_PICKS_AFTER")) else { panic!("set BAV_PICKS_BEFORE and BAV_PICKS_AFTER") };
     let rounds: usize = std::env::var("BAV_JUDGE_ROUNDS").ok().and_then(|s| s.parse().ok()).unwrap_or(400);
     let (before, after) = (picks(&before), picks(&after));

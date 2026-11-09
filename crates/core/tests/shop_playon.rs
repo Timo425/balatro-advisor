@@ -21,6 +21,9 @@
 //! (the same with this shop's rerolls first); both also with "spend8", rerolling up to 8 times a
 //! shop as the advice's money walk may; `BAV_PLAYON_TRIALS` (24), `BAV_PLAYON_SIMS` (150).
 
+#[path = "common/stamp.rs"]
+mod stamp;
+
 use std::collections::HashMap;
 use std::sync::Mutex;
 
@@ -388,6 +391,7 @@ fn mean_se(v: &[f64]) -> (f64, f64) {
 #[test]
 #[ignore]
 fn shop_playon() {
+    let _run = stamp::start("shop_playon", None);
     let Some(list) = std::env::var_os("BAV_PLAYON") else { panic!("set BAV_PLAYON to a list of `<state.jkr> <option>` lines") };
     let num = |k: &str, d: usize| std::env::var(k).ok().and_then(|s| s.parse().ok()).unwrap_or(d);
     let (trials, sims) = (num("BAV_PLAYON_TRIALS", 24), num("BAV_PLAYON_SIMS", 150));
@@ -482,6 +486,7 @@ fn money_finds(path: &str, trials: usize, sims: usize) -> String {
 #[test]
 #[ignore]
 fn money_finds_test() {
+    let _run = stamp::start("money_finds", None);
     let Some(list) = std::env::var_os("BAV_FINDS") else { panic!("set BAV_FINDS to a list of shop states") };
     let num = |k: &str, d: usize| std::env::var(k).ok().and_then(|s| s.parse().ok()).unwrap_or(d);
     let (trials, sims) = (num("BAV_PLAYON_TRIALS", 24), num("BAV_PLAYON_SIMS", 150));

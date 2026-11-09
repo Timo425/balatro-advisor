@@ -5,6 +5,9 @@
 //! "pending_gap", the gap in docs/design.md): the test fails once all of it holds, so the fix
 //! that closes the gap moves it back into "expect".
 
+#[path = "common/stamp.rs"]
+mod stamp;
+
 use balatro_advisor::{advise, data::GameData, save::RunState};
 use serde_json::Value;
 
@@ -125,6 +128,7 @@ fn snapshot() {
     let Some(out) = std::env::var_os("BAV_SNAPSHOT_DIR") else { panic!("set BAV_SNAPSHOT_DIR") };
     let out = std::path::PathBuf::from(out);
     std::fs::create_dir_all(&out).unwrap();
+    let _run = stamp::start("snapshot", Some(&out));
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/private");
     let Ok(entries) = std::fs::read_dir(&dir) else { return };
     let mut files: Vec<_> = entries.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")).collect();
@@ -157,6 +161,7 @@ fn snapshot() {
 #[test]
 #[ignore]
 fn search_against_reference() {
+    let _run = stamp::start("search_against_reference", None);
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/private");
     let Ok(entries) = std::fs::read_dir(&dir) else { return };
     let mut files: Vec<_> = entries.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")).collect();
@@ -200,6 +205,7 @@ fn search_against_reference() {
 #[test]
 #[ignore]
 fn big_face_down_hand_timing() {
+    let _run = stamp::start("big_face_down_hand_timing", std::env::var_os("BAV_SNAPSHOT_DIR").as_deref().map(std::path::Path::new));
     let f = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/private/house_all_face_down_burglar.json");
     let Ok(text) = std::fs::read_to_string(f) else { return };
     let v: Value = serde_json::from_str(&text).unwrap();

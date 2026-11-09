@@ -147,6 +147,10 @@ decides or values things follows these steps, in order:
      Skipped, saying why, when the change can't reach Best play's quick pass in a blind (it counts
      no shops: tell by what the quick pass runs, not by the file), unless the snapshot moves a Best
      play pick (D12).
+   - Each check refuses to start on a test program older than the code (run it through `cargo
+     test`). Before comparing results or committing, `tools/checks.py <after folders>` tells
+     whether every run in them finished on the code you commit; one on older code names what
+     changed since (step 5 says what to run again).
 
    Where it applies:
    - Simulated player or simulated game (the engine, what a round simulates): `cargo test --release

@@ -992,6 +992,11 @@ fn parity() {
             return;
         }
     };
+    let out = std::env::var_os("BAV_PARITY_DIR").map(PathBuf::from);
+    let _run = history_picks::stamp::start("parity", out.as_deref());
+    if let Some(dir) = &out {
+        history_picks::stamp::set_aside(dir, "summary.txt");
+    }
     let data = GameData::bundled();
     let size: usize = std::env::var("BAV_PARITY_SAMPLE").ok().and_then(|s| s.parse().ok()).unwrap_or(8000);
     let sample = history_picks::sample(size);
@@ -1038,8 +1043,7 @@ fn parity() {
     let text = report.text(&head);
     println!("{text}");
     eprintln!("parity: {} jobs on {workers} runners in {:.0?}", jobs.len(), t0.elapsed());
-    if let Some(dir) = std::env::var_os("BAV_PARITY_DIR") {
-        let dir = PathBuf::from(dir);
+    if let Some(dir) = out {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("summary.txt"), &text).unwrap();
     }
