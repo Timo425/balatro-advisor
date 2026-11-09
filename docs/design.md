@@ -815,7 +815,7 @@ the same retriggered ×Mult.
   one run each). The gap to the oracle on the boss boards +7.3 → +6.4 points on average (400
   rounds). The snapshot moved no Best play pick (in a shop facing The Wheel two options 1–3% apart swapped, and a sell moved within a tie); 20 of 120 saved picks facing these bosses moved, 1 BETTER,
   2 WORSE (one hand saved twice, inside Best play's tie band), 15 unclear. Left: the choice is
-  ranked in points, not by the round's goals (a bend of rule 3, queued, measured small below); each
+  ranked in points, not by the round's goals (a bend of rule 3, measured small below, not queued: the owner's call 2026-11-09); each
   draw's decision and estimate is made with that draw's card known, and where a consumable leads
   it's still the vote. Tried 2026-11-09 and not kept (on 3ddc053's code, the player bench paired,
   the player alone, every target fixed, the live rounds' mid targets given with `BAV_MID`): each
@@ -2428,8 +2428,8 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    round end kept, a finish) is weighed without it, and a sure win in some draws is valued in
    points like any play (a discard that keeps its cards ties it there), and as the sum is of
    points, uncapped off the last hand, one draw's big score can outweigh the others' sure wins; a discard that keeps the
-   best play ties playing it and the vote decides, but a growth play can be outranked (queued:
-   the face-down choice valued by `RoundGoals`; measured small 2026-11-09: a draw's decision made
+   best play ties playing it and the vote decides, but a growth play can be outranked (the face-down
+   choice valued by `RoundGoals` not queued, the owner's call 2026-11-09, as measured small: a draw's decision made
    for the goals is outranked in at most about 3 decisions in 100 rounds on goal boards under
    The House, The Wheel and The Mark, and a cap on the points, in every draw or only in a draw
    whose hand holds a sure win, lost: the 2026-11-07 passage). What's left of it: the estimates are the
