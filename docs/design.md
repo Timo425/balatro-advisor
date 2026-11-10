@@ -866,15 +866,19 @@ the same retriggered ×Mult.
   player's dig odds counting only the cards dealt face up (The Mark 8.4 to 8.7 points of round
   wins lower, The Fish 5 and 20 with 4 hands, The Wheel within 0.2), likely as the sorts show most of a face-down
   card.
-- **Done 2026-11-09:** a big face-down hand's analysis split and about half of it cut, every
-  decision the same (gap 20, gap 25 (c)): on the built 14-card House hand (this laptop, quick
-  pass) 2,617 → 1,282–1,394 s face down and 600 → 289–307 s face up, the analysis' output
-  identical on both, the snapshot, the player bench's face-down boards round for round and
-  Best play's pick on the 97 saved face-down or big hands. The time was the
+- **Done 2026-11-09:** a big face-down hand's analysis split and about half of it cut on the
+  built hand, every decision the same (gap 20, gap 25 (c)), little of it on the owner's own
+  face-down spots: on the built 14-card House hand (this laptop, quick pass) 2,617 →
+  1,282–1,394 s face down and 600 → 289–307 s face up (face down still about 4.5 times face up),
+  the analysis' output identical on both, the snapshot, the player bench's face-down boards round
+  for round and Best play's pick on 97 of the 103 saved face-down or big hands; on those saved
+  hands the owner's 70 with a face-down card 5% faster, the bot's 21 27%, the 6 of 13 or more
+  cards 60%, the owner's slowest (Ante 7, The Mark) still 15–22 minutes, nearly all of it Best
+  play's race run to the round cap between moves that all win. The time was the
   simulated player's search for a hand's best play (93%), which a decision repeated on parts of
   a hand of more than 12 cards and the vote's valuation repeated on every draw; the race also
   played 1.57 times the rounds, 7 blind plays undecided to the 1,600-round cap. Left: the vote's
-  own cost (2.8 draws a decision) and those undecided moves, whose cuts change decisions.
+  own cost (2.7 draws a decision) and those undecided moves, whose cuts change decisions.
 - **Next:** a free hand banked before the
   hand that wins (gap 34); Ceremonial Dagger's value (gap 8); the blind odds shown and the
   outlook chained as Best play's blinds ahead are (gap 28).
@@ -2167,13 +2171,15 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    times the CPU (697 against 213 ms). Of the analysis' thread time 93% (92% face up) was the
    simulated player's search for a hand's best play (`best_play`; on this board Blackboard reads
    the held cards, so every play of each part searched is scored), 3.6 million searches against
-   0.72 million: the vote decides each decision with a face-down card in hand on 2.8 draws, each
+   0.72 million: the vote decides each decision with a face-down card in hand on 2.7 draws, each
    a full decision searching 6.8 parts of the hand (the whole hand, what each plan's dig leaves);
    its valuation searched each draw's hand again (12%) and drawing the face-down cards took
    2.6%. Cut that day, every decision the same (both hands' analysis identical to the last
    field; the snapshot's 40 fixtures byte for byte; the player bench's 21 face-down boards, 1,000
-   rounds each, round for round; Best play's pick on all 97 saved states in a blind with a
-   face-down card or 13 or more cards in hand, the owner's and the bot's, in 9,707 s against
+   rounds each, round for round, and the snapshot, on the change before its last two review fixes,
+   which reach neither: 13 to 16-card hands, and a guard; Best play's pick on 97 of the 103 saved
+   states in a blind with a face-down card or 13 or more cards in hand, the owner's and the bot's
+   (six more saves of one 28-card round left out for time, one kept), in 9,707 s against
    12,180 s: a sample of where the change reaches, as any analysis that simulates a face-down
    boss ahead runs it too, the tests against the plain forms standing for the rest): a decision's
    parts of a hand of 13 to 16 cards share hand detection, and floors no held card takes part
@@ -2191,12 +2197,22 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    threads half of them sat idle from 256 rounds on, by count, not timed there), and the
    analysis' fan-out hands items out one at a time (unmeasured on its own; on 2026-10-12 it gave
    nothing where the threads were busy anyway). Then the quick pass took 1,282–1,394 s face down
-   (Best play 1,023–1,037 s) and 289–307 s face up (192–214 s), two runs, the second on the
-   change as committed but for a guard added after, which only keeps one hand's search from
-   being handed to another (the spread is the laptop's between runs), a raced round 353 against
-   117 ms. What's left is the
-   vote's own cost (each decision on 2.8 draws; a raced round still 3.0 times a face-up one's CPU,
-   353 against 117 ms, most of it likely the vote's, not split further) and the race's
+   (Best play 1,023–1,037 s) and 289–307 s face up (192–214 s), two runs: 1,282 s on a build
+   instrumented to profile, before the review's fixes, 1,394 s on the change as committed but for
+   a guard added after, which only keeps one hand's search from being handed to another (the gap
+   between them not explained); face down still about 4.5 times face up, as before; a raced round
+   353 against 117 ms. On the saved states the cut is smaller: in the history check above, the
+   owner's 70 with a face-down card took 7,639 → 7,284 s (5%; the median state 7% faster, 21 of
+   67 slower, one run each, so not told from noise), the bot's 21 1,886 → 1,369 s (27%), the 6
+   hands of 13 or more cards 2,654 → 1,052 s (60%). The owner's slowest, three Ante 7 states at
+   The Mark (seed 7JR7ZTZ6: three of nine cards face down, nine jokers with Blackboard, the round
+   99% won), took 936–1,298 s each after; saved 1 to 24 s apart, they got no Best play on the live
+   page (which drops a pass once a newer save comes) before or after. On one, 1,206 of the quick
+   pass' 1,251 s were Best play: a discard raced to the 1,600-round cap with 4 ties, every move
+   shown winning 99.6–100% of its rounds (the race's undecided moves below). What's left is the
+   vote's own cost (each decision on 2.7 draws; a raced round still 3.0 times a face-up one's CPU,
+   353 against 117 ms; on the profiled build the vote's decisions were 98% of the analysis'
+   thread time, the search for a hand's best play 85%, 2.86 million searches) and the race's
    undecided moves (1.57 times the rounds), whose cuts change decisions: the race's undecided
    moves are queued; the vote's draws not (4 is a budget measured within noise of 8, gap 25
    (a); fewer would decide on less). The full pass not timed again (`BAV_FULL`; over an
@@ -2634,8 +2650,9 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    272–277 s, Best play 200 s (at 16810dd 413 s and 323 s: the vote's stop, (a); the screen's
    128 draws cost the race nothing
    there), against 100 s and 47 s face up; the full pass 1,565 s without the stop, 1,292 s with
-   it (face up not timed). Where the rest goes was split and about half of it cut on
-   2026-11-09, every decision the same (gap 20); the reference search on the built hand not
+   it (face up not timed). Where the rest goes was split and about half of it cut on the built
+   hand on 2026-11-09, every decision the same; on the owner's 70 saved face-down states 5%, their
+   slowest still Best play's race run to the cap (gap 20); the reference search on the built hand not
    timed again. No saved state holds a face-down card in
    a hand of more than 9 (2026-11-06: of the owner's 6,270, 70 hold one; of the bot's 4,656, 21,
    in hands of up to 8). (h) done 2026-11-07, but for a copy of one kept in hand (Not yet, below): no order, copy, tie
