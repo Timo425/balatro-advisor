@@ -606,7 +606,8 @@ current state"; the plan with the three levels and per-card preconditions).
   for each machine (`tools/timing-states.txt`), which a row of changes each inside the limit
   can't creep past and only the owner moves. Set 2026-11-10 to what the build of 2026-11-07
   takes on the main PC (30 s for the five hands, 120 s for the five shops): no slower than
-  today (the code of 761226d, timed 2026-11-11: 27.5 and 117.7 s). The reviewer's ninth check weighs cost against effect.
+  today (the code of 761226d, timed 2026-11-11: 27.5 and 117.7 s; the budget raised that day
+  to 33 and 130 s, since 120 s left the shops 2% of room, about the totals' run-to-run spread). The reviewer's ninth check weighs cost against effect.
 - A follow-up found while working a card is parked at the queue's end ("Found along the way"),
   not put on top, and moves up on the owner's word or as a prerequisite; what is left of a gap
   is one card there (the queue's "Placing a card").

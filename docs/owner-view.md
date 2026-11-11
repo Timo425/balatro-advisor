@@ -19,6 +19,14 @@ said. `tools/status.py` reads the ratings below; CLAUDE.md says when to read thi
   be the best way to get step by step from a youtube video and i doubt a transscript would do
   it so i probably need to manually play equal to them to get it recoded" ("i have some stuff
   setup for it already").
+- **2026-11-11** "I Just created this repo to have a balatro advisor, something that can help me
+  beat gold stakes more easily. while i can beat it sometimes, a pro player can beat it more
+  often than not, so there is definitely a lot of hidden potential there"; the bot, added later,
+  "should also be able to beat gold stake and in a reasonable time not like run for 3 days or
+  something per session". "i dont like micromanaging the repo much deeper than that like
+  ordering or judging cards and stuff like that, but i try to keep tabs on what an agent is
+  doing because sometimes at least opus tends to tunnel vision on specific problems too much
+  and lose the big picture".
 
 ## Speed and priority, in the owner's words
 
@@ -31,6 +39,15 @@ said. `tools/status.py` reads the ratings below; CLAUDE.md says when to read thi
   queue being stacked on a task and then spawning many subtasks for it as the work continues,
   which could end up claude spending weeks on edge cases before returning to main cards that
   actually affect things most of the time".
+- **2026-11-11** On the work's own speed: "developing the repo is already quite slow, like hours
+  or sometimes almost a day for a single task, so if we add optimization tasks there we are
+  just getting nowhere"; the wish: "not blindly spend time on results when a much quicker but
+  more or less same result can happen". On comparing with October: "shop was likely much faster
+  before because it was also considerably more basic, something that claude agents seem to miss
+  when conmparing to past state". On the queue's order: "queue order by my rating happened
+  because at one point if felt like claude kept working on some less important tasks for days
+  and not getting to the juicy ones, but im also not too interested in micromanaging the tasks
+  order myself, i barely understand most of them at this stage".
 
 ## The state, in the owner's words
 

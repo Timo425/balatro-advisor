@@ -883,7 +883,7 @@ the same retriggered ×Mult.
   step 4). Ten of the owner's states, main PC: the build of 2026-10-22 (a46578b) against the one
   of 2026-11-07 (98d7f26), five hands in a blind on the quick pass 21.9 → 29.0 s, five shops on
   the full pass 94.9 → 117.9 s; the code of 761226d, timed 2026-11-11, 27.5 and 117.7 s, inside
-  the budget of 30 and 120 s. In the owner's logged play of October a shop's analysis finished
+  the budget (33 and 130 s). In the owner's logged play of October a shop's analysis finished
   in 129 of 538 shop visits (queued: the shop's answer on screen while you're still in the
   shop). Which part of the depth pays for its time isn't measured (parked in the queue: "What
   each part of the depth buys").
