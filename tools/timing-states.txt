@@ -1,0 +1,26 @@
+# The states tools/timing.py times: `quick|full <seed>/<file under the saved history> [slow]`.
+# Ten of the owner's states from 2026-10-18..22, picked across what the live page logged for a
+# finished pass then (the 30th, 50th, 70th, 80th and 90th percentile of each kind), and one hand
+# with face-down cards that took minutes (slow: only with --slow, totalled on its own). The files
+# are the owner's saved history, never in the repo; the tool keeps its own copy of each beside
+# the history.
+#
+# `budget <group> <seconds> <machine>`: what a group's total may be on that machine (its
+# `hostname`), whatever the base took: a row of changes each inside the limit can't creep past
+# it. The owner's numbers. Set 2026-11-10 to what the build of 2026-11-07 took on the main PC
+# (29.0 s and 117.9 s), rounded up: no slower than today until the owner says otherwise. The code
+# of 761226d took 27.5 s and 117.7 s (2026-11-11): the shops have 2% of room, about what one
+# build's totals vary by, so a shop total just over on one run is run again before it's believed.
+budget quick 30 timo-PC
+budget full 120 timo-PC
+quick LK1JWUX3/1792347642903-a2-r4-SelectingHand.jkr
+quick 545MMUWQ/1792334743688-a6-r18-SelectingHand.jkr
+quick GA74B7U3/1792436456876-a3-r7-SelectingHand.jkr
+quick 545MMUWQ/1792335740704-a8-r22-SelectingHand.jkr
+quick P4NKP4S7/1792441437324-a6-r17-SelectingHand.jkr
+full LK1JWUX3/1792348521690-a3-r5-Shop.jkr
+full LK1JWUX3/1792347406386-a2-r2-Shop.jkr
+full LK1JWUX3/1792348560690-a3-r5-Shop.jkr
+full P4NKP4S7/1792441572531-a7-r17-Shop.jkr
+full 545MMUWQ/1792335519797-a8-r21-Shop.jkr
+quick 7JR7ZTZ6/1791825821655-a7-r22-SelectingHand.jkr slow   # The Mark, three of nine cards face down

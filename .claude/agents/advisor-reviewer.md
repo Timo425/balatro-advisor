@@ -48,6 +48,13 @@ Check, with file:line references:
    needs no entry: check that its gap quotes the sentence and names what replaces it. Never ask
    for the owner's approval of a technical rule (CLAUDE.md, "When the rules don't fit the fix").
 
+9. **Cost against effect** (CLAUDE.md steps 2 and 4, D21). What does the change cost (the
+   timing set before and after, `tools/timing.py`; the code it adds) and what does it move (the
+   picks moved on the saved states, judged; over a run where the effect adds up)? Flag a set
+   slower than its limit with nothing said for it, a set over the machine's budget without the
+   owner's word, a fix built without its diagnosis saying what it could be worth at most, and
+   work on what is left of a gap that the owner hasn't rated high and whose worth is small.
+
 Report only the findings, ranked by how likely they are to cause the next "patch on
 patch", each with what a general fix looks like; don't restate the change. Be specific and
 skeptical, no praise. If something you'd flag is a genuine game fact or already listed as a

@@ -1,8 +1,8 @@
 # balatro-advisor: design
 
-How the advice is built, and how to change it. Read this before changing what the advice
-says. The required workflow for a change (fixture, diagnosis, fix, proof, review, record) is
-in `CLAUDE.md`.
+How the advice is built, and how to change it. Read it before changing what the advice says
+(`CLAUDE.md` says how much of it). The required workflow for a change (fixture, diagnosis, fix,
+proof, review, record) is in `CLAUDE.md`.
 
 ## The question every piece of advice answers
 
@@ -879,6 +879,14 @@ the same retriggered ×Mult.
   a hand of more than 12 cards and the vote's valuation repeated on every draw; the race also
   played 1.57 times the rounds, 7 blind plays undecided to the 1,600-round cap. Left: the vote's
   own cost (2.7 draws a decision) and those undecided moves, whose cuts change decisions.
+- **Done 2026-11-10:** the advice's time has a check and a budget (D21, `tools/timing.py`, CLAUDE.md
+  step 4). Ten of the owner's states, main PC: the build of 2026-10-22 (a46578b) against the one
+  of 2026-11-07 (98d7f26), five hands in a blind on the quick pass 21.9 → 29.0 s, five shops on
+  the full pass 94.9 → 117.9 s; the code of 761226d, timed 2026-11-11, 27.5 and 117.7 s, inside
+  the budget of 30 and 120 s. In the owner's logged play of October a shop's analysis finished
+  in 129 of 538 shop visits (queued: the shop's answer on screen while you're still in the
+  shop). Which part of the depth pays for its time isn't measured (parked in the queue: "What
+  each part of the depth buys").
 - **Next:** a free hand banked before the
   hand that wins (gap 34); Ceremonial Dagger's value (gap 8); the blind odds shown and the
   outlook chained as Best play's blinds ahead are (gap 28).

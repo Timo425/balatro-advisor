@@ -10,6 +10,27 @@ said. `tools/status.py` reads the ratings below; CLAUDE.md says when to read thi
   manage to hit that point, maybe we can learn from better players". On the bot: it's a work in
   progress, ironed out so it plays end to end; "bot running is proportional to the task and to
   the bot's current state".
+- **2026-11-10** "the goal is to have a repo that [...] can beat gold stake (and then as an extra
+  has enough architecture and design to keep improving it, by analyzing actually good players";
+  "beating gold stake was the original goal (advisor being at that level and also later -
+  independent botrunner) then later the idea that ofc we would want it to play even better and
+  not take a whole day to beat it once". Goalposts like "as good as me" are "for now, then lets
+  take it from there if we manage to do it". On learning from better players: "idk what would
+  be the best way to get step by step from a youtube video and i doubt a transscript would do
+  it so i probably need to manually play equal to them to get it recoded" ("i have some stuff
+  setup for it already").
+
+## Speed and priority, in the owner's words
+
+- **2026-11-10** On how long the advice may take: "it should be a balance thing, wouldnt want a
+  shop to take 20 mins when a 30 second shop can do most of the same kind of thing"; and the
+  worry that the advisor may be "at my level or better" only when it isn't "relatively fast
+  (like not 8 mins slow)". On the logged times of October: "the times you are comparing against
+  is when the advisor was weaker and simpler, i havent played since".
+- **2026-11-10** On priority: "i've struggled with priority a couple of times"; against "the
+  queue being stacked on a task and then spawning many subtasks for it as the work continues,
+  which could end up claude spending weeks on edge cases before returning to main cards that
+  actually affect things most of the time".
 
 ## The state, in the owner's words
 

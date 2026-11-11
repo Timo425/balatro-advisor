@@ -559,7 +559,7 @@ in the morning, a run left holding the game).
 
 Approved by the owner 2026-10-31 ("no overnight runs is a dumb rule get rid of it").
 
-## D20. A card is tested by what it changes, at the level its question needs; bot runs only where earlier levels can't show the effect (accepted)
+## D20. A card is tested by what it changes, at the level its question needs; bot runs only where earlier levels can't show the effect (accepted, amended 2026-11-10)
 
 **What.** Three levels of test, each for its own question (CLAUDE.md, "Test a card by what it
 changes"): snapshots before every commit (the advice: step 4's tests and history check; the bot:
@@ -579,11 +579,79 @@ see it do that. Meanwhile bot changes had no regression check at all. One differ
 makes the rest of a run another game, so whole runs can't compare old and new decision by
 decision; snapshots can, in minutes. A fixed "until the bot is mature" gate would be as arbitrary
 as the 25 seeds: what a card needs from the bot is a fact per card, and making the bot do it is
-queue work. The goal (docs/owner-view.md) is an advisor as good as the owner or better; hours of
-runs that tell little take effort from the gaps.
+queue work. The goal (docs/owner-view.md) is an advisor as good as the owner or better (said
+since 2026-11-10 as beating Gold Stake, that being a goalpost: D21); hours of runs that tell
+little take effort from the gaps.
 
 **Revisit if** cards keep naming runs whose results don't move a decision, or the bot's snapshot
 check misses what live runs then catch.
 
 Approved by the owner 2026-11-02 ("bot running is proportional to the task and to the bot's
 current state"; the plan with the three levels and per-card preconditions).
+
+## D21. The advice's time is weighed against what a change moves; work is placed by what it's worth to the goal (accepted)
+
+**What.** Four changes to the workflow, and the goal said as the owner means it.
+- The goal (CLAUDE.md's first line, `docs/owner-view.md` 2026-11-10): advice that beats Gold
+  Stake, first with the advisor at that level, later with the bot playing a run through on its
+  own; then better and faster, learning from better players. "As good as the owner" is a goalpost
+  on the way.
+- Step 2 says what a fix can be worth at most before it's built (how often its situation comes
+  up in the saved games it is about, how far the pick, the chance or a run's money can move
+  there); a small ceiling on a gap the owner hasn't rated high is recorded and not built.
+- Step 4 times old and new on the same saved states, one after the other (`tools/timing.py`, ten
+  states and the builds alternating, each state's fastest of two runs). Two lines: a limit
+  against the base, 10% on a group's total (one build's totals repeat within 0.4-2.3% on the
+  set; a starting line), over which the commit says what the time buys; and a budget in seconds
+  for each machine (`tools/timing-states.txt`), which a row of changes each inside the limit
+  can't creep past and only the owner moves. Set 2026-11-10 to what the build of 2026-11-07
+  takes on the main PC (30 s for the five hands, 120 s for the five shops): no slower than
+  today (the code of 761226d, timed 2026-11-11: 27.5 and 117.7 s). The reviewer's ninth check weighs cost against effect.
+- A follow-up found while working a card is parked at the queue's end ("Found along the way"),
+  not put on top, and moves up on the owner's word or as a prerequisite; what is left of a gap
+  is one card there (the queue's "Placing a card").
+- Reading: `docs/design.md`'s top and the gaps a card names, not the whole file.
+
+The sentences this makes untrue: CLAUDE.md's "an advisor as good as the owner or better, and
+then learning from better players" (as the whole goal); "Read it before changing what the advice
+says" and "the whole `docs/design.md`" (now its top and the gaps named: the file is 374 kB, about
+140,000 tokens, 69% of it the gaps' dated records); the queue header's "at the right place" (now
+defined).
+
+**Why.** Nothing limited how long the advice takes or said how big an effect must be to be worth
+building, while every change to it was proven, reviewed and reviewed again: guarded against
+half-done work only. Measured 2026-11-10 (the logs as they stood; the builds named below):
+- In the owner's logged play (2026-10-09..22) a shop's analysis finished in 129 of 538 shop
+  visits; every stop was a newer save, 4 to 5 s after the one before at the median, against a full
+  pass of 20 s at the median: the shop advice mostly never reached the screen. A blind's quick pass
+  finished 78% of the time.
+- The build of 2026-10-22 (a46578b) against the one installed 2026-11-07 (98d7f26), same PC,
+  idle, back to back, two runs each: five hands in a blind on the quick pass 22.0 → 29.2 s in
+  all (+33%), five shops on the full pass 95 → 118 s (+24%); ten states, one PC.
+- One of the owner's hands at The Mark with three of nine cards face down (7JR7ZTZ6 Ante 7,
+  the quick pass): 23 → 257 s. The newer build no longer reads the face-down cards, the gain;
+  the round is won 99.8% and 100%. 70 of the owner's 2,334 saved states in a blind hold a
+  face-down card; gap 25 was named in 23 of the 42 commits that named a gap in the 14 days
+  before, and held five of the queue's first eight cards.
+- Each change that added to it said its own cost in its commit ("about twice as slow" 4428670,
+  "20-28% slower" 98d7f26) and none had a line to hold it against.
+The owner's rating "highest" for gap 32 had no card at all, and the economy cards the owner's
+own words point at ("doesnt seem to have any strategy [...] building joker set and economy
+properly") sat from the eleventh place down: follow-ups went on top of the queue because the
+card that found them was there.
+
+How long is worth it depends on what the time buys (the owner: "a balance thing, wouldnt want a
+shop to take 20 mins when a 30 second shop can do most of the same kind of thing"), so the
+budget is the owner's to move and starts at today's times, not at a number picked for them. A
+per-state flag isn't used: one run each, 21 of 67 states came out slower after a change that
+only cut work (gap 20's record). The bot needs the speed as much as the page: its runs are
+91-97% analysis (7.3 of 7.8 minutes at the median over 190 logged runs, already at 100 rounds
+a board against the page's 300), and the owner wants a win to take less than a day.
+
+**Revisit if** the timing set stops looking like the states the owner plays (it is ten states
+of October 2026, kept beside the history so its pruning doesn't take them), the limit keeps
+being crossed by changes worth keeping, the ceiling in step 2 keeps cards from being built that
+later turn out to decide runs, or parked follow-ups pile up unread.
+
+Approved by the owner 2026-11-10 ("yes all five and also consider what i wrote now": the
+goal, the balance of speed and strength, and the queue stacked on one task's sub-tasks).

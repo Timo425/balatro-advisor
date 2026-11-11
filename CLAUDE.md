@@ -1,7 +1,10 @@
 # balatro-advisor: working rules
 
-**The goal** (the owner, `docs/owner-view.md`): an advisor as good as the owner or better, and
-then learning from better players. Every task serves that; judge its effort by it.
+**The goal** (the owner, `docs/owner-view.md`): advice that beats Gold Stake, first with the
+advisor at that level, later with the bot playing a run through on its own; then playing better
+and faster, learning from better players. "As good as the owner" is a goalpost on the way. Every
+task serves that; judge its effort by it, and its cost in the advice's time by what it moves
+(steps 2 and 4 below).
 
 - **Commit and push** each change once its checks passed (for changes to the advice: step 4 below,
   and the reviewer ran on the fixes). **Ask first** only before heavy dependencies or a change of
@@ -55,7 +58,8 @@ then learning from better players. Every task serves that; judge its effort by i
 - **Review the crucial steps, not only code.** Once per task, before the final report, run
   `/fan-out-review` (at least the Opus lead; step 5's skip for docs doesn't apply) on the report,
   the queue cards written from it and any verdict committed to docs, together. Give it the raw results and, as paths it reads itself: the
-  queue card, `docs/owner-view.md`, the whole `docs/design.md`, and the owner's history
+  queue card, `docs/owner-view.md`, `docs/design.md` (as "Refining the advice" says to read it), and
+  the owner's history
   (`~/.local/share/balatro-advisor/history/`) when the result is about play. Act on what holds up.
 - **Shelve on a missing prerequisite.** When a task turns out to need something not there yet (a
   judge that can't see the change, an engine step not modelled), don't iterate on a proof that
@@ -72,13 +76,14 @@ then learning from better players. Every task serves that; judge its effort by i
   file apply to every card without being copied into it.
 - **Shared checkout, no branches.** Other chats commit to main here: commit only your files by name,
   and check `git log` before committing and when a diff looks unexplained.
-- **Heavy jobs** (cargo test, the snapshot, the history check, the bench, the shop judge) run one at
+- **Heavy jobs** (cargo test, the snapshot, the history check, the bench, the shop judge, the timing) run one at
   a time per PC across all chats, under `nice -n 19`. When load is high, check your own jobs first
   (a launcher in `ps` doesn't mean the owner is playing).
 - **Split runs over ~50 minutes** into parts (`BAV_ONLY`, `BAV_SEEDS`): the prompt cache lasts an
   hour. **Ask before any run that holds the game or the PC for over an hour**, saying how long and
   why a shorter check (above: "Test a card by what it changes") won't answer the card (D19).
-- **After code changes**, `cargo install --path crates/cli` (the owner restarts `ui`). The bot plays
+- **After code changes**, your own or pulled, `cargo install --path crates/cli` (the owner restarts
+  `ui`): the installed `balatro-advisor` is whatever was last installed on this machine. The bot plays
   only on Profile 3, never the owner's Profile 1.
 - **Normal play runs Lovely with only `Mods/advisor-live`.** Never put Steamodded back (it turns
   achievements off); `balatro-agent/tools/mods.sh bot|play` switches.
@@ -112,7 +117,9 @@ is your part.
 
 `docs/design.md` is the architecture: the four stages every piece of advice goes through (moves
 tried, simulated player, valuation, noise), the patterns and rules, the register of hand-set values
-and the retire list. Read it before changing what the advice says. Every change to how the advice
+and the retire list. Before changing what the advice says, read its top (to "Known gaps"), that
+section's "Where things stand" and the gaps your card names; the rest by search when you meet it.
+Every change to how the advice
 decides or values things follows these steps, in order:
 
 1. **Capture.** When the owner says a suggestion is wrong, save that state as a replay fixture before
@@ -128,6 +135,13 @@ decides or values things follows these steps, in order:
    or scratch programs), not by guessing. Name the stage that failed and run `git log --oneline |
    grep -i '<stage>'` (commits before d8c27ef aren't prefixed: read the recent log too); if it was
    fixed before, change how the stage works for every case instead of adding a rule to it.
+   Then say what the fix can be worth at most, before building it: how often the situation comes
+   up in the saved games it is about (the owner's, or the bot's for spots only the bot reaches:
+   "Which saved data serves what"; states, of how many of their kind), and how far the pick, the
+   chance or a run's money can move there, a small lean that repeats every shop counted over the
+   run (measured, or "not measured" and why). When that is small and the owner hasn't rated the
+   gap high or above, record it in the gap, tell the owner in one line and take the next card:
+   an edge case fixed is paid for by every analysis it slows and every card that waits (D21).
 3. **Fix the stage, generally.** Ask what the case is an example of and where the game (or the
    simulation) already defines that group. A fix that only makes sense for one joker, suit, hand or
    card is the wrong fix. New hand-set numbers go in the register.
@@ -151,6 +165,14 @@ decides or values things follows these steps, in order:
      test`). Before comparing results or committing, `tools/checks.py <after folders>` tells
      whether every run in them finished on the code you commit; one on older code names what
      changed since (step 5 says what to run again).
+   - The advice's time: `tools/timing.py --old <the base's build> --new <yours>` (about 10
+     minutes; `cargo build --release` in both) times both on the same saved states, one after the
+     other. Inside its limit, nothing to say. Over the limit, the commit says what the time buys,
+     with the evidence there is (picks moved and judged better, a fixture restored, or an effect
+     past what the judges see, named as that); with nothing to say for it, it's fixed or dropped.
+     Over this machine's budget (the owner's numbers, `tools/timing-states.txt`), ask the owner
+     before committing: only they move it. A change about states the set doesn't hold (face-down
+     cards, a big hand) times those too, `--slow` or its own list (D21).
 
    Where it applies:
    - Simulated player or simulated game (the engine, what a round simulates): `cargo test --release
