@@ -589,7 +589,7 @@ check misses what live runs then catch.
 Approved by the owner 2026-11-02 ("bot running is proportional to the task and to the bot's
 current state"; the plan with the three levels and per-card preconditions).
 
-## D21. The advice's time is weighed against what a change moves; work is placed by what it's worth to the goal (accepted)
+## D21. The advice's time is weighed against what a change moves; work is placed by what it's worth to the goal (accepted, amended 2026-11-11)
 
 **What.** Four changes to the workflow, and the goal said as the owner means it.
 - The goal (CLAUDE.md's first line, `docs/owner-view.md` 2026-11-10): advice that beats Gold
@@ -656,3 +656,23 @@ later turn out to decide runs, or parked follow-ups pile up unread.
 
 Approved by the owner 2026-11-10 ("yes all five and also consider what i wrote now": the
 goal, the balance of speed and strength, and the queue stacked on one task's sub-tasks).
+
+**Amended 2026-11-11.** Three changes, the owner not wanting to order or judge cards.
+- The queue's order is set by a direction check after every five finished cards (the queue's
+  header), not on the owner's word card by card: where things stand on recent code, the cards
+  above the parked ones put in order, the owner told in five lines. It writes no cards and puts
+  none on top for being new. This replaces "moves up on the owner's word" above; the owner can
+  still change the order by saying so.
+- A card has a time box (CLAUDE.md, "A card has a time box"): a line at about four hours, the
+  leftovers parked; at about eight the rest goes back as the card. Six task chats on the main
+  PC (2026-11-04..07, all face-down work) took 3.4-8.3 hours each, nearly all of it waiting on
+  the checks before and after.
+- The checks may run on just the states a change can reach (the queue card of that name changes
+  step 4's wording when it's done).
+
+Parking isn't free: a parked card done later is read into anew. It pays when the card is never
+needed, which is what an edge case's leftovers should mostly be; a card's main effect isn't
+parked by the time box.
+
+Approved by the owner 2026-11-11 ("order without me is better yes, but just order and dont
+randomly throw cards at the top. ok with all 3").

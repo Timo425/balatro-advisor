@@ -65,11 +65,18 @@ task serves that; judge its effort by it, and its cost in the advice's time by w
   judge that can't see the change, an engine step not modelled), don't iterate on a proof that
   can't see it: tell the owner in one line, queue the prerequisite ahead of the rest, commit only
   what's proven (the rest named in its gap) and move on.
+- **A card has a time box.** At about four hours on one card (the checks' waits counted), say in
+  one line what is proven, what is left and how long that takes. Go on only when what is left is
+  the card's main effect; edge cases, ties and reads wrong in the safe direction become the gap's
+  parked card (the queue's "Placing a card") and the proven part is committed. At about eight
+  hours, commit what's proven, put the rest back as the card with what was learned, tell the owner
+  in one line why it ran long, and take the next card (D21).
 
 ## Working on the owner's PC
 
 - **The work queue** is `Arvutimängud/Balatro/advisor-queue.md` in the owner's vault (its header
-  has the claim rules and the `After:` lines that order cards), not `docs/design.md`'s "Next" line.
+  has the claim rules, the `After:` lines, where a follow-up goes and the direction check that
+  sets the order), not `docs/design.md`'s "Next" line.
   A follow-up from work in this repo goes into the queue as a card, by its header's rules, not as
   a task card (the owner's choice for this project, over the global task-card rule). A card holds
   only what is its own (what's wrong, what it changes, which test level, done); the rules in this

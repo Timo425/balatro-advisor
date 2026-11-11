@@ -48,6 +48,15 @@ said. `tools/status.py` reads the ratings below; CLAUDE.md says when to read thi
   because at one point if felt like claude kept working on some less important tasks for days
   and not getting to the juicy ones, but im also not too interested in micromanaging the tasks
   order myself, i barely understand most of them at this stage".
+- **2026-11-11** On a direction check ordering the queue, a time box for a card and checks sized
+  to a change: "order without me is better yes, but just order and dont randomly throw cards at
+  the top. ok with all 3". On parking: "parking a card - isnt that just MORE time in the end?".
+  On the bot's logged runs: "its not like these 212 runs or whatever were done on the current
+  state of the tool, so who knows what they were failing on at the time, but it was pretty basic
+  stuff like bot not selling or opening a pack and just skipping it". On the shop: "anything to
+  make the shop reasonably smoother instead of 'redo everything from the beginning all the way
+  to the very end on every click'", asking whether that would "just add more total runtime in
+  the end".
 
 ## The state, in the owner's words
 
