@@ -22,9 +22,10 @@ saved history) isn't stamped: a fixture changed since shows nowhere here.
     tools/checks.py                      the last day's runs
     tools/checks.py --hours 3
     tools/checks.py /tmp/after ...       every run logged into these folders; exits 1 unless
-                                         each has one from this checkout and every one since its
-                                         last full run (without BAV_ONLY, BAV_SEEDS or BAV_WHICH:
-                                         those write part of a folder) finished on this code
+                                         each has one from this checkout and, for each check that
+                                         wrote there, every run since its last full one (without
+                                         BAV_ONLY, BAV_SEEDS or BAV_WHICH: those write part of a
+                                         folder) finished on this code
 """
 import argparse
 import os
@@ -146,9 +147,14 @@ def main():
         print(f"{'':13} -> {r['out'] or '(no output folder)'}{'  ' + settings if settings else ''}")
     bad = []
     for d in a.dirs:
-        mine = [r for r in shown if r["out"] and same_dir(r["out"], d) and same_dir(r["crate"], CRATE)]
-        full = [i for i, r in enumerate(mine) if not any(s.startswith(FILTERS) for s in r["settings"].split())]
-        mine = mine[full[-1]:] if full else mine
+        here = [r for r in shown if r["out"] and same_dir(r["out"], d) and same_dir(r["crate"], CRATE)]
+        # each check writes its own files into the folder: one check's later run says nothing
+        # of another's files there (the snapshot's, then the history picks into the same folder)
+        mine = []
+        for check in dict.fromkeys(r["check"] for r in here):
+            its = [r for r in here if r["check"] == check]
+            full = [i for i, r in enumerate(its) if not any(s.startswith(FILTERS) for s in r["settings"].split())]
+            mine += its[full[-1]:] if full else its
         if not mine:
             bad.append(d)
             print(f"{d}: NO run logged into it from this checkout")
