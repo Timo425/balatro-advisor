@@ -43,6 +43,23 @@ Raised Fist); `score_as_played` keeps the order given, for the golden checks; Be
 the hand's order when the hand as it sits scores less), `sim` (rounds), `advise` (the four
 stages above, and the output).
 
+In a shop or an open pack the live page shows a first ranking while the full analysis works
+(`advise::FirstSink`, handed over once the offers' By Ante 8 values are in): the options that
+read nothing worked out after that (`FIRST_KINDS`: the jokers, planets and vouchers on offer, the
+planets held, a sale, leaving, and in a pack its joker and planet picks and the skip), each with the numbers the
+finished analysis gives it, ranked among themselves, the rest named as still to come. None is
+made with more money than the planet-level cap (`Spending::starts_at`: every amount up to it
+reads the same, so no option's money changes its number), nor in a pack none of whose picks it
+holds. An option that starts reading a later value (the pool's By Ante 8, a tarot's, a planet
+not on offer, a pack's playing cards, the money past the cap) leaves `FIRST_KINDS` with that
+change: the replay test, `tests/first_ranking.rs` and the shop test in `advise.rs` fail on a
+first-ranking number that differs from the finished one. While options are still to come, the
+page holds leaving back until the full ranking (it can't be undone, and what's still to come, the
+reroll and the packs, is what spends the money it keeps: a first ranking put it on top 48 times
+in 113, the finished one agreed in 17). The finished analysis is the same
+with or without it; its options are valued twice (measured in "Where things stand", Done
+2026-11-12).
+
 The engine is checked against every hand the owner plays (`handlog`): the save before a hand
 and the save after it give the cards played (followed by their ids from the hand to the
 discard pile, in play order; The Hook's reach the pile first), the cards held and the score
@@ -884,9 +901,39 @@ the same retriggered ×Mult.
   of 2026-11-07 (98d7f26), five hands in a blind on the quick pass 21.9 → 29.0 s, five shops on
   the full pass 94.9 → 117.9 s; the code of 761226d, timed 2026-11-11, 27.5 and 117.7 s, inside
   the budget (33 and 130 s). In the owner's logged play of October a shop's analysis finished
-  in 129 of 538 shop visits (queued: the shop's answer on screen while you're still in the
-  shop). Which part of the depth pays for its time isn't measured (parked in the queue: "What
-  each part of the depth buys").
+  in 129 of 538 shop visits (since 2026-11-12 a first ranking comes before it: below). Which
+  part of the depth pays for its time isn't measured (parked in the queue: "What each part of
+  the depth buys").
+- **Done 2026-11-12:** a shop's first ranking on the live page (the paragraph after the
+  layers): the jokers, planets and vouchers on offer, the sales, leaving and a pack's joker and
+  planet picks, each with the finished analysis' numbers, shown once the offers' By Ante 8
+  values are in, the rest named as still to come. On 140 of the owner's saved shop and pack
+  states (this laptop; 70 a visit's first shop screen, 70 later screens; each one's wait to the
+  next save from the history's file names, which come a little after the click), a ranking was
+  made before the next save on 39 of 70 first screens (the whole pass: 24) and 19 of 70 later
+  screens (9); one whose top was the finished top on 22 and 11 (19 and 9 with leaving held back,
+  below). At the main PC's speed, 1.3 to 1.5 times (its timing of the same shops, 117.7 s,
+  against this laptop's 90.7 and 77.4 s), 37 to 34 and 19 to 17 (the whole pass 20 to 17 and 6).
+  On first screens the first ranking came at a median 3.3 s, the whole pass 12.3 s. Its top was
+  the finished top in 60 of the 113 made; most of the finished tops it lacked were the reroll
+  (13) and a Buffoon or Arcana pack (Buffoon 14, Arcana 13), which read every pool joker's or
+  tarot's By Ante 8 value. Leaving was its top in 48, the finished top in 17 of them: so the
+  page holds leaving back while options are to come (one made on screen in time with leaving on
+  top and another finished top: 4 first screens, 2 later). By the finished ranking's value
+  (`ShopOption::rank`), of the 53 the first ranking's top was above the finished top's in 4 (the
+  finished one in trouble, ordered by the score reached, or within its tie band), up to 5% below
+  it in 13 (2 within the 3% tie band), 5-10% in 15, 10-50% in 17 and below half in 4 (at worst
+  leaving, where a Mega Buffoon Pack was worth 7 times as much): the page names what
+  isn't ranked yet above the table. In one the finished top was in it but second (Gluttonous Joker above leaving
+  at half its value): the tie bands and the trouble rule (`rank_options`) are decided on the
+  options each ranking holds. None made in 27: 16 shops with money past the planet-level cap (the run's
+  interest cap + $30), 11 Tarot, Spectral or Standard packs. The finished analysis is unchanged (the snapshot of the 40
+  fixtures the same with and without it; the history check's 135 picks the same; the timing
+  shops 77.4 -> 77.7 s); the first ranking's own work is a median 1.7% of a pass where one is made, at most
+  4.7 s of 119 s. Left (parked): the
+  reroll and the Buffoon packs in a second ranking once the pool's By Ante 8 values are in;
+  values not worked out yet unavailable to the first pass rather than empty; the analysis
+  carried across a buy or a reroll, for later screens.
 - **Next:** a free hand banked before the
   hand that wins (gap 34); Ceremonial Dagger's value (gap 8); the blind odds shown and the
   outlook chained as Best play's blinds ahead are (gap 28).

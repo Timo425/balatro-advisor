@@ -212,7 +212,8 @@ function rescueOdds(a) {
 // What a skip tag is worth, in the same currency as the dig panel where it is about jokers.
 function tagInfo(tag, a, o) {
   const name = roundName(a.rounds[o.round]), at = Math.round(o.t * 100) + "%";
-  const good = (p) => `<b>${pct(p)}</b> chance of a joker that gets ${esc(name)} to ${at}`;
+  // (none from a pass that screens no pool: a blind's quick pass, a shop's first ranking)
+  const good = (p) => a.pool && a.pool.length ? `<b>${pct(p)}</b> chance of a joker that gets ${esc(name)} to ${at}` : `its chance of a joker that gets ${esc(name)} to ${at} comes with the full analysis`;
   switch (tag.key) {
     case "tag_rare": return { text: "free Rare joker in the next shop · " + good(o.g[3]), why: "Chance the free Rare is one of the jokers that reach your target" };
     case "tag_uncommon": return { text: "free Uncommon joker in the next shop · " + good(o.g[2]), why: "Chance the free Uncommon is one of the jokers that reach your target" };
@@ -391,30 +392,44 @@ function render(d) {
   if (a.order_tips && a.order_tips.length) {
     right += `<section><h2>Order tips <small>doing one thing before another</small></h2>${a.order_tips.map((t) => `<div class="order">💡 ${esc(t)}</div>`).join("")}</section>`;
   }
+  // A shop's first ranking (shown while the full analysis works out the rest): the options whose
+  // numbers are final already, ranked among themselves; `a.pending` names the ones still to come
+  const first = !!d.first;
+  // (above the table: what's missing from it is read before its top, which a pending option
+  // can beat by far)
+  if (first) {
+    right += `<section><div>${a.pending && a.pending.length ? `⏳ <b>Not ranked yet, and may go above these:</b> ${a.pending.map(esc).join(", ")} <span class="muted">(they wait on what's worked out after these: every joker's and tarot's By Ante 8 value, the planets not on offer, a pack's playing cards' own rounds, what money past the planet-level cap buys). They join the ranking when` : `<span class="muted">The rest comes when`} the full analysis finishes, with the skip-or-play line and the order tips.</span></div></section>`;
+  }
   if (a.options && a.options.length) {
     const r = a.rounds[a.options_round];
     // While a pack is open: its picks first, and the shop options below for what comes after
     const inPack = a.screen.endsWith("Pack");
     const isPick = (o) => o.label.startsWith("pick ") || o.kind === "skip";
     const picks = a.options.filter(isPick);
-    const shopRows = a.options.filter((o) => !isPick(o));
+    // Leaving waits for the full ranking while options are still to come: it can't be undone, and
+    // the pending ones (the reroll, the packs) are what spends the money it keeps, so a first
+    // ranking puts it on top far more often than the finished one does
+    const holdLeave = first && a.pending && a.pending.length > 0;
+    const shopRows = a.options.filter((o) => !isPick(o) && !(holdLeave && o.kind === "leave"));
     const sections = [];
     if (inPack && picks.length) {
-      sections.push([`Pick from the pack vs ${esc(roundName(r))} <small>win chance after each pick (now ${pct(r.p_win)}) · money isn't turned into win chance</small>`,
+      sections.push([`Pick from the pack${first ? " so far" : ""} vs ${esc(roundName(r))} <small>${first ? "a first ranking: these picks' numbers are final, their order is among themselves · " : ""}win chance after each pick (now ${pct(r.p_win)}) · money isn't turned into win chance</small>`,
         picks]);
-      if (shopRows.length) sections.push([`Then in the shop <small>after you close the pack</small>`, shopRows]);
+      if (shopRows.length) sections.push([`Then in the shop${first ? " so far" : ""} <small>after you close the pack</small>`, shopRows]);
     } else {
-      sections.push([`Your options vs ${esc(roundName(r))} <small>everything you can buy now, ranked by win chance × By Ante 8 (now ${pct(r.p_win)}) · ≈ can't be told apart from the one above · packs and rerolls are averages over what they can show</small>`, shopRows]);
+      sections.push([`${first ? "Your options so far" : "Your options"} vs ${esc(roundName(r))} <small>${first ? `a first ranking: the options valued so far (the rest is named above), their numbers final, their order among themselves, by win chance × By Ante 8 (now ${pct(r.p_win)}) · ≈ can't be told apart from the one above` : `everything you can buy now, ranked by win chance × By Ante 8 (now ${pct(r.p_win)}) · ≈ can't be told apart from the one above · packs and rerolls are averages over what they can show`}</small>`, shopRows]);
     }
+    // (no ticks on a first ranking: "as if bought" works from the finished analysis)
     // A tie is with the option above in the full ranking: shown only when that one is the row above here too
     const tiedAbove = (rows, i) => rows[i].tied && i > 0 && a.options.indexOf(rows[i]) === a.options.indexOf(rows[i - 1]) + 1;
     for (const [title, rows] of sections) {
     right += `<section><h2>${title}</h2><table><tr><th></th><th class="num">Cost</th><th class="num" title="Money you'd have left, and the interest it earns per round">Left · interest</th><th class="num">Win chance</th><th class="num" title="${esc(a.long_assumptions || "")}">By Ante 8</th></tr>` +
-      rows.map((o, i) => `<tr${o.unaffordable ? ' class="broke" title="You can\'t afford this right now"' : ""}><td class="name"${o.desc ? ` title="${esc(o.desc)}"` : ""}>${o.kind === "joker" ? '<span class="muted">🃏</span> ' : ""}${plannable(o) ? `<input type="checkbox" class="plan" data-plan="${esc(o.label)}" title="As if bought: show all the advice with this bought (about 7s)"> ` : ""}${tiedAbove(rows, i) ? '<span class="muted" title="Can\'t be told apart from the option above (within 3% of the top\'s value): their order is a tie-break, keeping your money first">≈</span> ' : ""}<b>${esc(o.label)}</b>${o.kind === "joker" && noGold.has(o.key) ? ' <span class="star" title="No Gold sticker yet">★</span>' : ""}${o.key ? styleTags(a, o.key) : ""}${o.unaffordable ? ' <span class="down">can\'t afford</span>' : ""} <span class="muted">${esc(o.note)}</span>${o.key ? growthLine(a, o.key) : ""}</td><td class="num">$${o.cost}</td>
+      rows.map((o, i) => `<tr${o.unaffordable ? ' class="broke" title="You can\'t afford this right now"' : ""}><td class="name"${o.desc ? ` title="${esc(o.desc)}"` : ""}>${o.kind === "joker" ? '<span class="muted">🃏</span> ' : ""}${!first && plannable(o) ? `<input type="checkbox" class="plan" data-plan="${esc(o.label)}" title="As if bought: show all the advice with this bought (about 7s)"> ` : ""}${tiedAbove(rows, i) ? '<span class="muted" title="Can\'t be told apart from the option above (within 3% of the top\'s value): their order is a tie-break, keeping your money first">≈</span> ' : ""}<b>${esc(o.label)}</b>${o.kind === "joker" && noGold.has(o.key) ? ' <span class="star" title="No Gold sticker yet">★</span>' : ""}${o.key ? styleTags(a, o.key) : ""}${o.unaffordable ? ' <span class="down">can\'t afford</span>' : ""} <span class="muted">${esc(o.note)}</span>${o.key ? growthLine(a, o.key) : ""}</td><td class="num">$${o.cost}</td>
         <td class="num" title="Money left, and the interest it earns per round ($1 per $5, before payouts)"><span class="${o.interest_after < o.interest_now ? "down" : o.interest_after > o.interest_now || o.money_gain ? "up" : "muted"}">$${Math.round(o.money_after)} · int $${o.interest_after}${o.interest_after < o.interest_now ? ` (−$${o.interest_now - o.interest_after})` : o.interest_after > o.interest_now ? ` (+$${o.interest_after - o.interest_now})` : ""}</span></td>
         <td class="num"><span class="muted">${pct(r.p_win)}</span><span class="arr">→</span>${Math.abs(o.p_win - r.p_win) < NOISE ? `<span class="flat" title="Within simulation noise">±0</span>` : `<span class="${o.p_win > r.p_win ? "up" : "down"}">${pct(o.p_win)}</span>`}</td>
         <td class="num" title="${esc(a.long_assumptions || "")}">${longTxt(o.long_mult)}</td></tr>`).join("") + `</table></section>`;
     }
+    if (holdLeave) right += `<section><div>⏸ <b>Next round</b> is shown when the full ranking lands: leaving can't be undone, and what's not ranked yet (above) is what would spend the money it keeps.</div></section>`;
   }
   const roundOpts = a.rounds.map((r, i) => r.horizon ? "" : `<option value="${i}" ${i === odds.round ? "selected" : ""}>${esc(roundName(r))}</option>`).join("");
   let tab = "jokers";
@@ -422,7 +437,7 @@ function render(d) {
   const tabs = `<span class="tabs">${["jokers", "tarots"].map((t) => `<a href="#" class="${t === tab ? "on" : ""}" onclick="try{localStorage.setItem('digTab','${t}')}catch(e){};render(last);return false">${t === "jokers" ? "Jokers" : "Tarots"}</a>`).join("")}</span>`;
   if (d.partial) {
     // the blind's quick pass: the dig list and the outlook come with the full analysis
-    right += `<section><h2>Worth digging for</h2><div class="empty">Coming with the full analysis (the shop pool, every tarot and the style outlook), shown when it finishes. Best play seldom changes then, and only between moves about equal.</div></section>`;
+    right += `<section><h2>Worth digging for</h2><div class="empty">Coming with the full analysis (the shop pool, every tarot and the style outlook), shown when it finishes.${first ? "" : " Best play seldom changes then, and only between moves about equal."}</div></section>`;
   } else if (tab === "tarots") {
     const hz = a.rounds.find((r) => r.horizon);
     const tr = [...(a.tarots || [])].sort((x, y) => y.reach - x.reach);

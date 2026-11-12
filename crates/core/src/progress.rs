@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 /// The steps `advise::analyze` counts (`step`): one per stage it reports with `BAV_TIMING`
-pub const STEPS: usize = 12;
+pub const STEPS: usize = 19;
 
 #[derive(Default)]
 struct Inner {

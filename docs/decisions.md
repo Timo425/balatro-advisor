@@ -625,7 +625,10 @@ half-done work only. Measured 2026-11-10 (the logs as they stood; the builds nam
 - In the owner's logged play (2026-10-09..22) a shop's analysis finished in 129 of 538 shop
   visits; every stop was a newer save, 4 to 5 s after the one before at the median, against a full
   pass of 20 s at the median: the shop advice mostly never reached the screen. A blind's quick pass
-  finished 78% of the time.
+  finished 78% of the time. (Amended 2026-11-12: with a shop's first ranking shown first, a ranking was
+  made before the next save on 39 of 70 sampled first shop screens on the owner's laptop (one with
+  the finished top on 22), the whole pass on 24; at the main PC's speed about 34 to 37 (17 to 20);
+  `docs/design.md` "Where things stand".)
 - The build of 2026-10-22 (a46578b) against the one installed 2026-11-07 (98d7f26), same PC,
   idle, back to back, two runs each: five hands in a blind on the quick pass 22.0 → 29.2 s in
   all (+33%), five shops on the full pass 95 → 118 s (+24%); ten states, one PC.

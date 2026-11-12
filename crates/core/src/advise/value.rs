@@ -1726,10 +1726,17 @@ impl<'a> Spending<'a> {
         v
     }
 
+    /// The money rerolls and packs start from (the planet-level cap: the interest line, the run's
+    /// interest cap, + $30, a register value): every amount up to it has the same `factor`, so between two such amounts
+    /// there is nothing to apply (a shop's first ranking holds only those, `advise::FirstSink`)
+    pub fn starts_at(lr: &LongRun) -> f64 {
+        lr.line + 30.0
+    }
+
     /// What holding `m` is worth by Ante 8 through rerolls and packs (a factor; compare two
     /// amounts by their ratio)
     pub fn factor(&self, m: f64) -> f64 {
-        let excess = (m - (self.lr.line + 30.0)).max(0.0);
+        let excess = (m - Self::starts_at(self.lr)).max(0.0);
         let mut best = self.rerolls(excess);
         let mut packs = 0.0;
         for p in 1..=(2 * self.shops) {

@@ -7,6 +7,8 @@
 
 #[path = "common/stamp.rs"]
 mod stamp;
+#[path = "common/first.rs"]
+mod first;
 
 use balatro_advisor::{advise, data::GameData, save::RunState};
 use serde_json::Value;
@@ -24,7 +26,14 @@ fn replayed_states_give_the_expected_advice() {
         let name = f.file_stem().unwrap().to_string_lossy().to_string();
         let v: Value = serde_json::from_str(&std::fs::read_to_string(f).unwrap()).unwrap();
         let run: RunState = serde_json::from_value(v["state"].clone()).unwrap_or_else(|e| panic!("{name}: {e}"));
-        let a = serde_json::to_value(advise::analyze(&run, data, None, &opts)).unwrap();
+        // (with a shop's first ranking asked for: each option in it must have the numbers the
+        // finished analysis gives it, `advise::FirstSink`)
+        let (with_first, caught) = first::catching(&opts, std::time::Instant::now());
+        let analysis = advise::analyze(&run, data, None, &with_first);
+        if let Some((_, early)) = caught.lock().unwrap().as_ref() {
+            failures.extend(first::differences(early, &analysis).into_iter().map(|d| format!("{name}: first ranking: {d}")));
+        }
+        let a = serde_json::to_value(analysis).unwrap();
         let bp = &a["best_play"];
         // whether the best move uses card `c`: a label ("9♠"), or "#n", the nth card from the left
         // of your hand as it sits (a face-down card, or one of two alike: by its place, through
@@ -142,7 +151,11 @@ fn snapshot() {
         }
         let v: Value = serde_json::from_str(&std::fs::read_to_string(f).unwrap()).unwrap();
         let run: RunState = serde_json::from_value(v["state"].clone()).unwrap();
-        let mut a = serde_json::to_value(advise::analyze(&run, GameData::bundled(), None, &advise::Options { sims: 300, seed, ..Default::default() })).unwrap();
+        // `BAV_SNAPSHOT_FIRST=1`: with a shop's first ranking asked for (discarded), so the
+        // snapshot shows the finished analysis is the same either way (`advise::FirstSink`)
+        let opts = advise::Options { sims: 300, seed, ..Default::default() };
+        let opts = if std::env::var_os("BAV_SNAPSHOT_FIRST").is_some() { first::catching(&opts, std::time::Instant::now()).0 } else { opts };
+        let mut a = serde_json::to_value(advise::analyze(&run, GameData::bundled(), None, &opts)).unwrap();
         for k in ["elapsed_ms", "steps_ms", "save_age_secs", "live"] {
             a.as_object_mut().unwrap().remove(k);
         }

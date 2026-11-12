@@ -162,7 +162,18 @@ pub fn run(save_dir: PathBuf, profile: u8, port: u16, open: bool) -> Result<()> 
                                 }
                             }
                             let stale = newer(m.as_ref().and_then(|x| x.1), last_fp.clone().unwrap_or_default());
-                            let analysed = stoppable(&shared, &r, "full", stale, |p| advise::analyze(&r, data, g.as_ref(), &Options { progress: Some(p), ..Default::default() }));
+                            // In a shop or an open pack, the first ranking is shown as soon as the
+                            // analysis has it (`advise::FirstSink`: the options whose numbers are
+                            // final once the joker pool is screened), the full analysis replacing it
+                            let first = (!r.screen.in_blind() && plan.is_empty()).then(|| {
+                                let (shared, g) = (shared.clone(), g.clone());
+                                advise::FirstSink(Arc::new(move |a| {
+                                    let mut s = shared.lock().unwrap();
+                                    s.body = serde_json::json!({ "status": "ok", "analysis": a, "gold": g, "partial": true, "first": true }).to_string();
+                                    s.version += 1;
+                                }))
+                            });
+                            let analysed = stoppable(&shared, &r, "full", stale, |p| advise::analyze(&r, data, g.as_ref(), &Options { progress: Some(p), first, ..Default::default() }));
                             match analysed {
                                 Ok(Some(a)) => {
                                     if let Some(k) = &keep {
