@@ -923,8 +923,10 @@ the same retriggered ×Mult.
   (`ShopOption::rank`), of the 53 the first ranking's top was above the finished top's in 4 (the
   finished one in trouble, ordered by the score reached, or within its tie band), up to 5% below
   it in 13 (2 within the 3% tie band), 5-10% in 15, 10-50% in 17 and below half in 4 (at worst
-  leaving, where a Mega Buffoon Pack was worth 7 times as much): the page names what
-  isn't ranked yet above the table. In one the finished top was in it but second (Gluttonous Joker above leaving
+  leaving, where a Mega Buffoon Pack was worth 7 times as much): the page shows what
+  isn't ranked yet as greyed "still working out" rows in the table, and "next round" as one
+  waiting for them (the owner's look on 2026-11-13: a paragraph above the table, and one below
+  it on leaving, were hard to connect to the table). In one the finished top was in it but second (Gluttonous Joker above leaving
   at half its value): the tie bands and the trouble rule (`rank_options`) are decided on the
   options each ranking holds. None made in 27: 16 shops with money past the planet-level cap (the run's
   interest cap + $30), 11 Tarot, Spectral or Standard packs. The finished analysis is unchanged (the snapshot of the 40

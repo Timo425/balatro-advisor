@@ -49,6 +49,7 @@
   .tabs a.on { color: #0c1715; background: var(--gold); border-color: var(--gold); }
   tr.hit td { background: #1a4533; }
   tr.broke td { opacity: .5; }
+  tr.wait td { opacity: .6; font-style: italic; }
   tr.hit td:first-child { box-shadow: inset 3px 0 0 var(--good); }
   .dig input[type=range] { width: 110px; accent-color: var(--gold); }
   .bar { height: 6px; background: #0e1b18; border-radius: 99px; overflow: hidden; }
@@ -393,13 +394,10 @@ function render(d) {
     right += `<section><h2>Order tips <small>doing one thing before another</small></h2>${a.order_tips.map((t) => `<div class="order">💡 ${esc(t)}</div>`).join("")}</section>`;
   }
   // A shop's first ranking (shown while the full analysis works out the rest): the options whose
-  // numbers are final already, ranked among themselves; `a.pending` names the ones still to come
+  // numbers are final already, ranked among themselves; `a.pending` names the ones still to come,
+  // shown as greyed rows at the foot of their table (what's missing is read in the table it would
+  // join, not in a paragraph of its own)
   const first = !!d.first;
-  // (above the table: what's missing from it is read before its top, which a pending option
-  // can beat by far)
-  if (first) {
-    right += `<section><div>${a.pending && a.pending.length ? `⏳ <b>Not ranked yet, and may go above these:</b> ${a.pending.map(esc).join(", ")} <span class="muted">(they wait on what's worked out after these: every joker's and tarot's By Ante 8 value, the planets not on offer, a pack's playing cards' own rounds, what money past the planet-level cap buys). They join the ranking when` : `<span class="muted">The rest comes when`} the full analysis finishes, with the skip-or-play line and the order tips.</span></div></section>`;
-  }
   if (a.options && a.options.length) {
     const r = a.rounds[a.options_round];
     // While a pack is open: its picks first, and the shop options below for what comes after
@@ -409,27 +407,31 @@ function render(d) {
     // Leaving waits for the full ranking while options are still to come: it can't be undone, and
     // the pending ones (the reroll, the packs) are what spends the money it keeps, so a first
     // ranking puts it on top far more often than the finished one does
-    const holdLeave = first && a.pending && a.pending.length > 0;
+    const pending = first ? (a.pending || []) : [];
+    const holdLeave = pending.length > 0 && a.options.some((o) => o.kind === "leave");
     const shopRows = a.options.filter((o) => !isPick(o) && !(holdLeave && o.kind === "leave"));
+    const waitRow = (label, why) => `<tr class="wait"><td class="name">${label} <span class="muted">${why}</span></td><td colspan="4"></td></tr>`;
+    const pendingRows = (pick) => pending.filter((l) => l.startsWith("pick ") === pick).map((l) => waitRow(`⏳ <b>${esc(l)}</b>`, "still working out")).join("");
+    const leaveRow = holdLeave ? waitRow("⏸ <b>next round</b>", "shown once the ⏳ rows are ranked: they're what you'd spend the money on, and once you leave the shop you can't buy them") : "";
+    const firstNote = (pending.length ? "a first ranking: these numbers are final; ⏳ rows are still being worked out and may end up anywhere above" : "a first ranking: these numbers are final; the full list comes in a few seconds");
     const sections = [];
     if (inPack && picks.length) {
-      sections.push([`Pick from the pack${first ? " so far" : ""} vs ${esc(roundName(r))} <small>${first ? "a first ranking: these picks' numbers are final, their order is among themselves · " : ""}win chance after each pick (now ${pct(r.p_win)}) · money isn't turned into win chance</small>`,
-        picks]);
-      if (shopRows.length) sections.push([`Then in the shop${first ? " so far" : ""} <small>after you close the pack</small>`, shopRows]);
+      sections.push([`Pick from the pack${first ? " so far" : ""} vs ${esc(roundName(r))} <small>${first ? `${firstNote} · win chance after each pick (now ${pct(r.p_win)})` : `win chance after each pick (now ${pct(r.p_win)}) · money isn't turned into win chance`}</small>`,
+        picks, pendingRows(true)]);
+      if (shopRows.length || pending.some((l) => !l.startsWith("pick ")) || holdLeave) sections.push([`Then in the shop${first ? " so far" : ""} <small>after you close the pack</small>`, shopRows, pendingRows(false) + leaveRow]);
     } else {
-      sections.push([`${first ? "Your options so far" : "Your options"} vs ${esc(roundName(r))} <small>${first ? `a first ranking: the options valued so far (the rest is named above), their numbers final, their order among themselves, by win chance × By Ante 8 (now ${pct(r.p_win)}) · ≈ can't be told apart from the one above` : `everything you can buy now, ranked by win chance × By Ante 8 (now ${pct(r.p_win)}) · ≈ can't be told apart from the one above · packs and rerolls are averages over what they can show`}</small>`, shopRows]);
+      sections.push([`${first ? "Your options so far" : "Your options"} vs ${esc(roundName(r))} <small>${first ? `${firstNote} · win chance × By Ante 8 (now ${pct(r.p_win)}) · ≈ can't be told apart from the one above` : `everything you can buy now, ranked by win chance × By Ante 8 (now ${pct(r.p_win)}) · ≈ can't be told apart from the one above · packs and rerolls are averages over what they can show`}</small>`, shopRows, pendingRows(false) + leaveRow]);
     }
     // (no ticks on a first ranking: "as if bought" works from the finished analysis)
     // A tie is with the option above in the full ranking: shown only when that one is the row above here too
     const tiedAbove = (rows, i) => rows[i].tied && i > 0 && a.options.indexOf(rows[i]) === a.options.indexOf(rows[i - 1]) + 1;
-    for (const [title, rows] of sections) {
+    for (const [title, rows, waiting] of sections) {
     right += `<section><h2>${title}</h2><table><tr><th></th><th class="num">Cost</th><th class="num" title="Money you'd have left, and the interest it earns per round">Left · interest</th><th class="num">Win chance</th><th class="num" title="${esc(a.long_assumptions || "")}">By Ante 8</th></tr>` +
       rows.map((o, i) => `<tr${o.unaffordable ? ' class="broke" title="You can\'t afford this right now"' : ""}><td class="name"${o.desc ? ` title="${esc(o.desc)}"` : ""}>${o.kind === "joker" ? '<span class="muted">🃏</span> ' : ""}${!first && plannable(o) ? `<input type="checkbox" class="plan" data-plan="${esc(o.label)}" title="As if bought: show all the advice with this bought (about 7s)"> ` : ""}${tiedAbove(rows, i) ? '<span class="muted" title="Can\'t be told apart from the option above (within 3% of the top\'s value): their order is a tie-break, keeping your money first">≈</span> ' : ""}<b>${esc(o.label)}</b>${o.kind === "joker" && noGold.has(o.key) ? ' <span class="star" title="No Gold sticker yet">★</span>' : ""}${o.key ? styleTags(a, o.key) : ""}${o.unaffordable ? ' <span class="down">can\'t afford</span>' : ""} <span class="muted">${esc(o.note)}</span>${o.key ? growthLine(a, o.key) : ""}</td><td class="num">$${o.cost}</td>
         <td class="num" title="Money left, and the interest it earns per round ($1 per $5, before payouts)"><span class="${o.interest_after < o.interest_now ? "down" : o.interest_after > o.interest_now || o.money_gain ? "up" : "muted"}">$${Math.round(o.money_after)} · int $${o.interest_after}${o.interest_after < o.interest_now ? ` (−$${o.interest_now - o.interest_after})` : o.interest_after > o.interest_now ? ` (+$${o.interest_after - o.interest_now})` : ""}</span></td>
         <td class="num"><span class="muted">${pct(r.p_win)}</span><span class="arr">→</span>${Math.abs(o.p_win - r.p_win) < NOISE ? `<span class="flat" title="Within simulation noise">±0</span>` : `<span class="${o.p_win > r.p_win ? "up" : "down"}">${pct(o.p_win)}</span>`}</td>
-        <td class="num" title="${esc(a.long_assumptions || "")}">${longTxt(o.long_mult)}</td></tr>`).join("") + `</table></section>`;
+        <td class="num" title="${esc(a.long_assumptions || "")}">${longTxt(o.long_mult)}</td></tr>`).join("") + waiting + `</table></section>`;
     }
-    if (holdLeave) right += `<section><div>⏸ <b>Next round</b> is shown when the full ranking lands: leaving can't be undone, and what's not ranked yet (above) is what would spend the money it keeps.</div></section>`;
   }
   const roundOpts = a.rounds.map((r, i) => r.horizon ? "" : `<option value="${i}" ${i === odds.round ? "selected" : ""}>${esc(roundName(r))}</option>`).join("");
   let tab = "jokers";
