@@ -53,9 +53,10 @@ task serves that; judge its effort by it, and its cost in the advice's time by w
   (chats write those for chats: no model for it). Each new text says what they're looking at or
   what to do, in the game's words and the page's existing ones, in one short line, placed on the
   thing it's about (a row, a cell); the reason goes in a tooltip. Before committing new or changed
-  page text, a reader that hasn't seen the change (an agent given only the screen as it will
-  show: a screenshot where the machine can render one, else the text laid out as on the page)
-  says what each text tells it; what it gets wrong is rewritten.
+  page text, look at it drawn (`tools/page_shot.py <saved state>`: screenshots of the page in
+  headless Chrome, a shop's first ranking and the full analysis), and a reader that hasn't seen
+  the change (an agent given only the screenshot) says what each text tells it; what it gets
+  wrong is rewritten.
 - **No coupling** to `balatro-agent` or other local repos: copy and adapt with attribution.
 - **Know where things stand before judging.** A chat that brainstorms, judges a gap or picks work
   first runs `tools/status.py`, reads `docs/owner-view.md` (the owner's words only) and says what's
