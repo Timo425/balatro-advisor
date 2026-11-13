@@ -1487,12 +1487,12 @@ impl<'a> LongRun<'a> {
     /// Your deck projected on the first `rounds` rounds (`deck_base`'s when they're as many)
     fn deck_base_on(&self, rounds: usize) -> crate::sim::Stats {
         if rounds == TAROT_ROUNDS {
-            return *self.deck_base();
+            return self.deck_base().clone();
         }
-        let cached = self.deck_base_n.lock().unwrap().get(&rounds).copied();
+        let cached = self.deck_base_n.lock().unwrap().get(&rounds).cloned();
         cached.unwrap_or_else(|| {
             let st = self.deck_stats_n(&self.ctx.fresh_deck, self.run.dollars, 0.0, 0.0, rounds);
-            self.deck_base_n.lock().unwrap().insert(rounds, st);
+            self.deck_base_n.lock().unwrap().insert(rounds, st.clone());
             st
         })
     }
@@ -1521,7 +1521,7 @@ impl<'a> LongRun<'a> {
     /// `deck_value` with the planets its Blue Seal cards make by Ante 8 given (a deck that
     /// changes over the run counts them round by round, not as its last deck's all run)
     pub fn deck_value_with_planets(&self, d: &[Card], money_once: f64, planets: f64) -> f64 {
-        let base = *self.deck_base();
+        let base = self.deck_base().clone();
         self.value_against(d, money_once, TAROT_ROUNDS, 0, &base, Some(planets), (0, 0, 0))
     }
 
@@ -1643,7 +1643,7 @@ impl<'a> LongRun<'a> {
     }
 
     fn deck_rounds_raw(&self, decks: &[Vec<Card>], money_once: f64, range: std::ops::Range<usize>, income: Option<f64>, planets_share: f64) -> (Vec<f64>, f64) {
-        let base = *self.deck_base();
+        let base = self.deck_base().clone();
         let seed = self.ctx.opts.seed;
         // each distinct deck these rounds play once (draws of a face-down card often repeat one)
         let which: Vec<usize> = (0..decks.len()).map(|k| (0..k).find(|&x| decks[x] == decks[k]).unwrap_or(k)).collect();

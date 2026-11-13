@@ -5162,7 +5162,7 @@ fn chained(b: &Board, rounds: &[RoundStart], sims: usize, seed: u64, saves: bool
 }
 
 /// Mean and quantiles of a sample.
-#[derive(Debug, Clone, Copy, Default, serde::Serialize)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct Stats {
     pub mean: f64,
     pub p10: f64,
@@ -5178,6 +5178,19 @@ pub struct Stats {
     /// Chance of getting through with Mr. Bones' save counted (round simulations only).
     #[serde(skip)]
     pub p_saved: f64,
+    /// Each simulated round, in order (`round_odds` only: round i draws the same cards on every
+    /// board, so two boards' rounds pair up): what the shop ranking tells its options apart on
+    /// (`advise` `Noise`)
+    #[serde(skip)]
+    pub rounds: Option<std::sync::Arc<Vec<Sampled>>>,
+}
+
+/// One simulated round of `round_odds`, as `Stats::rounds` keeps it
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Sampled {
+    /// Beaten on score (`RoundResult::won`)
+    pub won: bool,
+    pub total: f64,
 }
 
 impl Stats {
@@ -5187,7 +5200,7 @@ impl Stats {
         }
         v.sort_by(f64::total_cmp);
         let q = |p: f64| v[((v.len() - 1) as f64 * p).round() as usize];
-        Stats { mean: v.iter().sum::<f64>() / v.len() as f64, p10: q(0.1), p50: q(0.5), p90: q(0.9), n: v.len(), money: 0.0, hands_left: 0.0, p_saved: 0.0 }
+        Stats { mean: v.iter().sum::<f64>() / v.len() as f64, p10: q(0.1), p50: q(0.5), p90: q(0.9), n: v.len(), money: 0.0, hands_left: 0.0, p_saved: 0.0, rounds: None }
     }
 }
 
@@ -5257,10 +5270,12 @@ pub fn round_odds(b: &Board, start: &RoundStart, sims: usize, seed: u64) -> (f64
     let saved = results.iter().filter(|r| r.saved).count();
     let money = results.iter().map(|r| r.money).sum::<f64>() / results.len().max(1) as f64;
     let hands_left = results.iter().map(|r| if r.won { r.hands_left as f64 } else { 0.0 }).sum::<f64>() / results.len().max(1) as f64;
+    let rounds: Vec<Sampled> = results.iter().map(|r| Sampled { won: r.won, total: r.total }).collect();
     let mut st = Stats::of(results.into_iter().map(|r| r.total).collect());
     st.money = money;
     st.hands_left = hands_left;
     st.p_saved = (wins + saved) as f64 / sims.max(1) as f64;
+    st.rounds = Some(std::sync::Arc::new(rounds));
     (wins as f64 / sims.max(1) as f64, st)
 }
 

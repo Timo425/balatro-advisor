@@ -18,7 +18,7 @@ the picks noise decides, so its paired difference is the noise a real change is 
 
 Strategy "advisor": play the advisor's best play; in the shop take the advisor's top
 option it can act on while it's worth it (clear of keeping the money by more than the
-ranking's noise: each option's `rank` against the advisor's `shop_tie`), else leave. A joker
+ranking's noise: the advisor's `beats_keep` on each option), else leave. A joker
 bought into full slots sells the one the advisor's option names by place and key
 (`sell_index`, `sell_key`).
 
@@ -385,13 +385,17 @@ def play_hand(sims, log):
 def worth(o, a):
     """The advisor ranks every option against keeping the money ("next round" / "skip the
     pack"). Worth taking: ranked above that and clear of it by more than the ranking's noise
-    (each option's `rank`, the ranking's own measure; ties within `tie` of the top's, the
-    advisor's `shop_tie`). When the round is in trouble the ranking goes by the score reached
-    (`trouble`), and ranked above keeping the money is enough.
+    (the advisor's `beats_keep` on each option; from an older build, which has none, each
+    option's `rank` above keeping the money's by more than `tie` of the top's, the advisor's
+    `shop_tie`). When
+    the round is in trouble the ranking goes by the score reached (`trouble`), and ranked above
+    keeping the money is enough.
 
-    Neither is a rule of the bot's own: the margin is the advisor's `shop_tie` (`SHOP_TIE`, 3%,
-    the register's "Shop ranking" entry in docs/design.md), and in trouble the advisor says its
-    ties don't apply (advise.rs `ShopTie`), so its ranking is followed as it stands. What the bot
+    Neither is a rule of the bot's own: `beats_keep` is the advisor's own test (advise.rs
+    `clearly_better`: the option against keeping the money on the simulated rounds and shops
+    both rest on, the register's "Shop ranking" entry in docs/design.md), and in trouble the
+    advisor says its ties don't apply (advise.rs `ShopTie`), so its ranking is followed as it
+    stands. What the bot
     decides by hand is only which side of a tie to fall on: keeping the money. Both belong to
     the advisor's ranking already; nothing here to move there."""
     options, noise = a.get("options", []), a.get("shop_tie")
@@ -401,6 +405,11 @@ def worth(o, a):
     k = options[keep] if keep < len(options) else None
     if k is None or noise is None or noise.get("trouble") or o.get("rank") is None or k.get("rank") is None:
         return True
+    # the advisor's own finding, where it gives one (`beats_keep`: above keeping the money by
+    # more than its simulated rounds' noise and its margin for what no round shows, advise.rs
+    # `clearly_better`)
+    if o.get("beats_keep") is not None:
+        return bool(o["beats_keep"])
     top = max(x.get("rank") or 0.0 for x in options)
     return o["rank"] - k["rank"] > noise["tie"] * top
 

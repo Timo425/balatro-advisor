@@ -89,6 +89,91 @@ pub(super) fn better_by(a: &[f64], b: &[f64], lost_outright: bool) -> f64 {
     m - 2.0 * se
 }
 
+/// What an estimate's own samples say of its error, where it isn't a mean of rounds but worked
+/// out from several (the shop ranking's measure: `advise` `rank_options`): for each set of
+/// simulated rounds it rests on (`parts`: which set, then each round's influence on the
+/// estimate as a share of it: its slope on that set's mean × the round's distance from the
+/// mean ÷ the rounds, over the estimate), so the estimate's variance is the sum of the squares
+/// (× the estimate squared). Round i of a set is the same draw for
+/// every option, so two options' influences pair up round by round (`apart`): what both owe to
+/// the same lucky round cancels, as in `paired`.
+#[derive(Debug, Clone, Default)]
+pub struct Noise {
+    /// (the set, each round's influence: read with the estimate's slope were its luck good,
+    /// the truth below it, and were it bad)
+    pub parts: Vec<(u8, Vec<[f64; 2]>)>,
+}
+
+impl Noise {
+    /// `rounds`' influence on an estimate whose slope on their mean is `slope` (below the
+    /// mean, above it: the same where the estimate is a straight line in it): one more part
+    /// (added to the part of the same set, round by round, when there is one)
+    pub(super) fn add(&mut self, set: u8, slope: (f64, f64), rounds: impl ExactSizeIterator<Item = f64>) {
+        let n = rounds.len().max(1) as f64;
+        let x: Vec<f64> = rounds.collect();
+        let mean = x.iter().sum::<f64>() / n;
+        let at = match self.parts.iter().position(|p| p.0 == set) {
+            Some(at) => at,
+            None => {
+                self.parts.push((set, vec![]));
+                self.parts.len() - 1
+            }
+        };
+        let part = &mut self.parts[at].1;
+        if part.len() < x.len() {
+            part.resize(x.len(), [0.0; 2]);
+        }
+        for (p, v) in part.iter_mut().zip(&x) {
+            p[0] += slope.0 * (v - mean) / n;
+            p[1] += slope.1 * (v - mean) / n;
+        }
+    }
+}
+
+/// How far luck alone may have put estimate `a` (its value `at`) above `b` (`bt`): the standard
+/// error of their difference from their rounds' influences (each a share of its estimate),
+/// paired set by set and round by round (a set or a round only one rests on counts whole).
+/// With slopes the same both ways this is the paired standard error of the difference. Where
+/// an estimate bends, two readings, weighed by how far the two share their luck (the
+/// correlation of their influences, none below 0):
+/// - luck of their own: `a` was lucky and `b` unlucky, so `a` falls by its slope below and `b`
+///   rises by its slope above;
+/// - one luck (two options on one board's rounds): both were lucky, and `a` falls further than
+///   `b` (counted where `a`'s fall is the larger), or both unlucky, and `b` rises further
+///   (where `b`'s rise is the larger). A sure thing and a chance near none on the same rounds
+///   aren't parted by the one's fall against the other's rise, which one luck can't do.
+pub(super) fn over(a: &Noise, at: f64, b: &Noise, bt: f64) -> f64 {
+    fn part(n: &Noise, set: u8) -> &[[f64; 2]] {
+        n.parts.iter().find(|p| p.0 == set).map_or(&[], |p| p.1.as_slice())
+    }
+    let mut var = 0.0;
+    let mut sets: Vec<u8> = a.parts.iter().chain(&b.parts).map(|p| p.0).collect();
+    sets.sort_unstable();
+    sets.dedup();
+    for set in sets {
+        let (x, y) = (part(a, set), part(b, set));
+        // (a's fall against b's rise; both falling; both rising; then for the share of luck
+        // they have in common: the falls' product and each one's size, falling and rising)
+        let (mut apart, mut lucky, mut unlucky) = (0.0, 0.0, 0.0);
+        let (mut dot, mut fall_a, mut fall_b, mut rise_a, mut rise_b) = (0.0, 0.0, 0.0, 0.0, 0.0);
+        for i in 0..x.len().max(y.len()) {
+            let (x, y) = (x.get(i).map_or([0.0; 2], |v| [v[0] * at, v[1] * at]), y.get(i).map_or([0.0; 2], |v| [v[0] * bt, v[1] * bt]));
+            apart += (x[0] - y[1]) * (x[0] - y[1]);
+            lucky += (x[0] - y[0]) * (x[0] - y[0]);
+            unlucky += (y[1] - x[1]) * (y[1] - x[1]);
+            dot += x[0] * y[0];
+            fall_a += x[0] * x[0];
+            fall_b += y[0] * y[0];
+            rise_a += x[1] * x[1];
+            rise_b += y[1] * y[1];
+        }
+        let shared = if fall_a > 0.0 && fall_b > 0.0 { (dot / (fall_a * fall_b).sqrt()).clamp(0.0, 1.0) } else { 0.0 };
+        let one_luck = (if fall_a >= fall_b { lucky } else { 0.0 }).max(if rise_b >= rise_a { unlucky } else { 0.0 });
+        var += (1.0 - shared) * apart + shared * one_luck;
+    }
+    var.sqrt()
+}
+
 /// A budget for `race` (`budget(rounds done)`): `table` ((up to this many rounds done, at most
 /// this many options still undecided), its last row beyond), and with many options at least
 /// half of the `n` raced for each doubling of the rounds after the `first` batch (successive
@@ -282,6 +367,48 @@ fn race_with<T: Send + Sync>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn estimates_on_the_same_rounds_are_apart_only_by_what_differs() {
+        // an estimate with slope 2 on a chance from 100 rounds, half of them won: its own error
+        // is 2 × 0.05; another on the same rounds with the same slope isn't apart from it at
+        // all, one with slope 1 by the difference's error, one on other rounds (a set of its
+        // own) by both errors together
+        let won = |from: usize| (0..100).map(move |i| ((i + from) % 2) as f64);
+        let noise = |set: u8, slope: (f64, f64), from: usize| {
+            let mut n = Noise::default();
+            n.add(set, slope, won(from));
+            n
+        };
+        let a = noise(0, (2.0, 2.0), 0);
+        assert!((over(&a, 1.0, &Noise::default(), 1.0) - 0.1).abs() < 1e-9);
+        assert!(over(&a, 1.0, &noise(0, (2.0, 2.0), 0), 1.0) < 1e-12);
+        assert!((over(&a, 1.0, &noise(0, (1.0, 1.0), 0), 1.0) - 0.05).abs() < 1e-9);
+        assert!((over(&a, 1.0, &noise(1, (2.0, 2.0), 0), 1.0) - 0.1 * 2f64.sqrt()).abs() < 1e-9);
+        // rounds that go the other way double it (one wins where the other loses)
+        assert!((over(&a, 1.0, &noise(0, (2.0, 2.0), 1), 1.0) - 0.2).abs() < 1e-9);
+        // two parts on one set add round by round, a shorter one's rounds the first of the set
+        // (each of its 50 rounds weighs twice a round of 100: slope −1 there cancels the first
+        // half of slope 2 on all 100)
+        let mut both = noise(0, (2.0, 2.0), 0);
+        both.add(0, (-1.0, -1.0), (0..50).map(|i| (i % 2) as f64));
+        assert!((over(&both, 1.0, &Noise::default(), 1.0) - 0.1 * 0.5f64.sqrt()).abs() < 1e-9, "{}", over(&both, 1.0, &Noise::default(), 1.0));
+        // an estimate that bends (slope 0.5 below its chance, 4 above: a chance near none):
+        // luck can have put it above a sure thing by its slope below only, and the sure thing
+        // above it by its slope above. Fails if one slope serves both ways
+        let bent = noise(0, (0.5, 4.0), 0);
+        assert!((over(&bent, 1.0, &Noise::default(), 1.0) - 0.025).abs() < 1e-9);
+        assert!((over(&Noise::default(), 1.0, &bent, 1.0) - 0.2).abs() < 1e-9);
+        // two on the same rounds bend the same way: one luck moved both, so they're apart by
+        // how their slopes differ on one side of it (the larger), not by one's fall against
+        // the other's rise
+        assert!((over(&bent, 1.0, &noise(0, (0.4, 4.0), 0), 1.0) - 0.005).abs() < 1e-9);
+        // and by the larger fall where only that differs (slope 2 against 1 below, 2 above for
+        // both): not nothing, as one's fall against the other's rise would have it
+        assert!((over(&a, 1.0, &noise(0, (1.0, 2.0), 0), 1.0) - 0.05).abs() < 1e-9);
+        // each a share of its estimate: twice the estimate, twice the error
+        assert!((over(&a, 2.0, &Noise::default(), 1.0) - 0.2).abs() < 1e-9);
+    }
 
     #[test]
     fn options_that_part_ways_rarely_arent_called_equal_on_a_few_rounds() {
