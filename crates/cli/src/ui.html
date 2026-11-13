@@ -410,9 +410,9 @@ function render(d) {
     const pending = first ? (a.pending || []) : [];
     const holdLeave = pending.length > 0 && a.options.some((o) => o.kind === "leave");
     const shopRows = a.options.filter((o) => !isPick(o) && !(holdLeave && o.kind === "leave"));
-    const waitRow = (label, why) => `<tr class="wait"><td class="name">${label} <span class="muted">${why}</span></td><td colspan="4"></td></tr>`;
+    const waitRow = (label, why, tip) => `<tr class="wait"${tip ? ` title="${tip}"` : ""}><td class="name">${label} <span class="muted">${why}</span></td><td colspan="4"></td></tr>`;
     const pendingRows = (pick) => pending.filter((l) => l.startsWith("pick ") === pick).map((l) => waitRow(`⏳ <b>${esc(l)}</b>`, "still working out")).join("");
-    const leaveRow = holdLeave ? waitRow("⏸ <b>next round</b>", "shown once the ⏳ rows are ranked: they're what you'd spend the money on, and once you leave the shop you can't buy them") : "";
+    const leaveRow = holdLeave ? waitRow("⏳ <b>next round</b>", "waits until the rest is ranked", "Leaving the shop can't be undone, and until the reroll and packs are ranked it can look better than it is") : "";
     const firstNote = (pending.length ? "a first ranking: these numbers are final; ⏳ rows are still being worked out and may end up anywhere above" : "a first ranking: these numbers are final; the full list comes in a few seconds");
     const sections = [];
     if (inPack && picks.length) {

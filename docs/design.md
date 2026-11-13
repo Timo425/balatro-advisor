@@ -925,7 +925,7 @@ the same retriggered ×Mult.
   it in 13 (2 within the 3% tie band), 5-10% in 15, 10-50% in 17 and below half in 4 (at worst
   leaving, where a Mega Buffoon Pack was worth 7 times as much): the page shows what
   isn't ranked yet as greyed "still working out" rows in the table, and "next round" as one
-  waiting for them (the owner's look on 2026-11-13: a paragraph above the table, and one below
+  "waits until the rest is ranked" (the owner's look on 2026-11-13: a paragraph above the table, and one below
   it on leaving, were hard to connect to the table). In one the finished top was in it but second (Gluttonous Joker above leaving
   at half its value): the tie bands and the trouble rule (`rank_options`) are decided on the
   options each ranking holds. None made in 27: 16 shops with money past the planet-level cap (the run's
