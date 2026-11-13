@@ -944,8 +944,8 @@ the same retriggered ×Mult.
   and the order is anchored on keeping your money; the bot buys on that finding
   (`beats_keep`). On 54 shops on 3 seeds the bot's first take flips by seed in 7 (8 before),
   buy-or-keep in 2 (2 before): the error read is about 1.5× short of the spread by seed. Left
-  (gap 7): this ante's every round read (queued), the error's missing parts and the rest
-  (parked: "What's left of gap 7").
+  (gap 7): this ante's every round read (queued), the error's missing parts, a let-go or
+  perished joker's sale still inside the 3% margin, and the rest (parked: "What's left of gap 7").
 - **Next:** a free hand banked before the
   hand that wins (gap 34); Ceremonial Dagger's value (gap 8); the blind odds shown and the
   outlook chained as Best play's blinds ahead are (gap 28).
@@ -1299,11 +1299,15 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    **Measured after** (the same 54 shops and seeds, 2026-11-13, the commit's code): on seed 42
    the bot's first take moved in 2 shops, both between two options that beat keeping your
    money (inside their tie, by value), and buy-or-keep in none; 5 options stopped being worth
-   taking (packs, a planet, a voucher at +4.3 to +5.4% against errors of 2.2 to 2.4%) and 2
+   taking (packs, a planet, a voucher at +3.8 to +5.4% against errors of 2.2 to 2.4%) and 2
    started (rerolls at +4.0 and +4.2%, errors 0.3 to 1.3%). By seed the first take still differs
-   in 7 shops (8 before), in 5 of them between options each worth taking on every seed (tied,
-   so their order is noise by definition), and buy-or-keep in 2 (2 before; one the same shop).
-   The error read is too small: the spread over seeds of an option's gap to keeping your
+   in 7 shops (8 before). In 2 it's buy or keep (2 before; one the same shop): a Celestial Pack
+   at +0.8 to +3.3% over keeping your money, an Arcana Pack at +3.5 to +11%. In 4 it's between
+   two options worth taking on every seed, but tied on every seed in only 1: in the other 3 one
+   seed tells them apart where another lists them the other way (Half Joker over Gluttonous
+   Joker, Gros Michel over Abstract Joker, and near zero Devious Joker and a reroll, told apart
+   both ways). In 1 it's a Spectral Pack against a sale, the pack not worth taking on one seed.
+   A finding another seed reverses is the error read short again. The error read is too small: the spread over seeds of an option's gap to keeping your
    money, over its predicted error, is at the median 1.26 for jokers (69), 1.25 for sales
    (119), 1.03 for rerolls (41), 1.74 for planets (10), 2.03 for packs (58), 2.08 for vouchers
    (31), where three seeds would put it at 0.83 if the error were right (the median of a
@@ -1313,8 +1317,8 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    walks leaving shares), none outside the shop; the bot's first take moved in 3 of 23:
    Gluttonous Joker and a $2 Mad Joker sale became "keep" (the first the owner's call in
    shop_gluttonous_spent_below_interest, now expected), a reroll became Uranus (both findings,
-   by value); shop_mail_in_sold_rich lists leaving above the Mail-In sale (now expected; by
-   the margin alone, below).
+   by value); shop_mail_in_sold_rich lists leaving above the Mail-In sale (now expected; chiefly
+   by the margin, below).
 
    **Left.**
    - *Only this ante's hardest round is read.* A blind before the boss is under 90% in 7 of 27
