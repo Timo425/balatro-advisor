@@ -24,7 +24,7 @@ saved history) isn't stamped: a fixture changed since shows nowhere here.
     tools/checks.py /tmp/after ...       every run logged into these folders; exits 1 unless
                                          each has one from this checkout and, for each check that
                                          wrote there, every run since its last full one (without
-                                         BAV_ONLY, BAV_SEEDS or BAV_WHICH: those write part of a
+                                         BAV_ONLY, BAV_HOLDS, BAV_SEEDS or BAV_WHICH: those write part of a
                                          folder) finished on this code
 """
 import argparse
@@ -36,7 +36,7 @@ import time
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CRATE = os.path.join(REPO, "crates", "core")
 INPUTS = ["src", "../../data/game.json"]  # crates/core/tests/common/source_hash.rs INPUTS
-FILTERS = ("BAV_ONLY=", "BAV_SEEDS=", "BAV_WHICH=")
+FILTERS = ("BAV_ONLY=", "BAV_HOLDS=", "BAV_SEEDS=", "BAV_WHICH=")
 
 
 def temp_dir():

@@ -22,7 +22,7 @@
 //! `BAV_PARITY_DIR=/tmp/before nice -n 19 cargo test --release --test parity -- --ignored parity
 //! --nocapture`, then `diff -r` the two `summary.txt`. `BAV_PARITY_SAMPLE` states (default 8000,
 //! about 5 minutes on 6 runners on LuaJIT 2.0.5, 10-15 on 2.1; 0: all, today's too), `BAV_WORKERS` runners (default half the
-//! cores), `BAV_ONLY` as the history check's, `BAV_LUAJIT` the LuaJIT to run (default `luajit` on
+//! cores), `BAV_ONLY` and `BAV_HOLDS` as the history check's, `BAV_LUAJIT` the LuaJIT to run (default `luajit` on
 //! the PATH). The game's own is LuaJIT 2.0.5 (its `lua51.dll`); 2.1 seeds its string hashing
 //! anew at each launch, so a list the game builds with `pairs()` over string keys and picks from
 //! (To Do List's hand, card.lua; an Orbital Tag's, UI_definitions.lua `orbital_choices`) comes out

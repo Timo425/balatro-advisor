@@ -277,7 +277,7 @@ model changes the trade.
 
 Approved by the owner 2026-10-09.
 
-## D12. Proof in two tiers; picks a change moves on the owner's history, judged by the oracle (accepted, amended 2026-10-23, 2026-11-03)
+## D12. Proof in two tiers; picks a change moves on the owner's history, judged by the oracle (accepted, amended 2026-10-23, 2026-11-03, 2026-11-14)
 
 **Decision.** Every change to how advice is decided or valued runs a fixed set of checks:
 tests, clippy, the snapshot diff, and the history check (`tests/history_picks.rs`, which
@@ -351,8 +351,32 @@ It moved no pick on 15 commits; on the changes confined to the shops it moved on
 unclear picks. What made cards long was rerunning the chain after each fix, a habit no rule asked
 for. Revisit if a skipped change turns out to have moved a pick the owner then finds.
 
+**Amended 2026-11-14: the history check on the states a change can reach.** It runs on the states
+the change can reach, told by what its code does and widened to every kind of state the snapshot
+moved, which runs first and on every fixture: `BAV_HOLDS` keeps the states holding a face-down
+card, a boss, a big hand, or a joker or another game key, and `BAV_ONLY` takes several names
+(`tests/common/filter.rs`, applied after the sample, so a filtered run's states and picks are a
+part of the full run's). A kind is taken as the quick pass plays it, past the screen into the
+round's later draws and the ante's blinds ahead (drawn cards turned face down are the four bosses
+that do it, by their keys). The full sample runs when every state's analysis runs through the
+change, and after three filtered checks in a row, with the last full one's commit as its before,
+so a change that reached states its filter left out shows within four checks. The commit names
+the check in a `History-check:` line, which `tools/status.py` reads.
+Why: a change that could move only the states with a face-down card in hand, 4 of the check's
+135 in a blind, replayed all 135 twice (about 40 minutes, 2026-11-03), and six face-down task
+chats took 3.4-8.3 hours each, nearly all of it waiting on checks (D21's amendment). The risk is a
+change that reaches states its filter left out: the snapshot in full shows a moved fixture of
+another kind, the periodic full check what the fixtures don't hold. The cost is one full check in
+four (15-30 minutes a side: the 134 states in a blind took 29 minutes on the main PC under load,
+2026-11-14; and the judge on the moved picks of the changes since), against a filtered
+check that takes what its states take. The snapshot in full stays (about 16 minutes a side on the
+main PC, 2026-11-14), now the larger part of a filtered change's wait.
+Revisit if a full check finds a WORSE pick outside the filters of the checks before it, or the
+filtered checks keep needing most of the sample anyway.
+
 Approved by the owner 2026-10-09; the limits amended with D17, approved 2026-10-23; the 2026-11-03
-amendment approved 2026-11-03.
+amendment approved 2026-11-03; the 2026-11-14 amendment approved 2026-11-11 (D21's amendment, "ok
+with all 3").
 
 ## D13. The test suite runs in the test profile, with overflow checks (accepted)
 
@@ -670,8 +694,8 @@ goal, the balance of speed and strength, and the queue stacked on one task's sub
   leftovers parked; at about eight the rest goes back as the card. Six task chats on the main
   PC (2026-11-04..07, all face-down work) took 3.4-8.3 hours each, nearly all of it waiting on
   the checks before and after.
-- The checks may run on just the states a change can reach (the queue card of that name changes
-  step 4's wording when it's done).
+- The checks may run on just the states a change can reach (done 2026-11-14: D12's amendment of
+  that date).
 
 Parking isn't free: a parked card done later is read into anew. It pays when the card is never
 needed, which is what an edge case's leftovers should mostly be; a card's main effect isn't

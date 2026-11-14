@@ -1,14 +1,17 @@
 //! Best play's pick on the owner's saved states, for the history check (D12, `history.rs`
 //! judges the picks a change moved). Uses only long-stable API, so it can be copied into a
-//! `git worktree` of an older base commit (with `common/stamp.rs` and `common/source_hash.rs`)
-//! and run there:
-//! `BAV_PICKS=/tmp/before cargo test --release --test history_picks -- --ignored history_picks`.
+//! `git worktree` of an older base commit (with `common/stamp.rs`, `common/source_hash.rs` and
+//! `common/filter.rs`) and run there:
+//! `BAV_PICKS=/tmp/before cargo test --release --test history_picks -- --ignored history_picks
+//! --nocapture` (without it, a filter's "n of 350 kept" line doesn't show).
 //! A fixed-size sample of the states the live page saved (`~/.local/share/balatro-advisor/
 //! history/<seed>/*.jkr`, never in the repo; `BAV_HISTORY` for another folder), whatever the
 //! history's size: `BAV_SAMPLE` states (default 350, over a third of them in a blind; 0: all,
 //! today's too), the quick pass as the live page shows first on those in a blind, 1-60 s a
 //! state by the Ante, about 15 minutes a run (136 in a blind in 13 min on 2026-10-17);
-//! `BAV_ONLY=text` for the sampled states whose path contains it; `BAV_SEED` for another seed
+//! `BAV_ONLY=a,b` for the sampled states whose path contains any of these, `BAV_HOLDS` for those
+//! holding what a change can reach (`common/filter.rs`: a face-down card, a boss, a joker...),
+//! each a part of the full run's states with the same picks; `BAV_SEED` for another seed
 //! than the analysis' default (what noise alone moves: a placebo for a check's moved picks).
 
 #![allow(dead_code)]
@@ -19,17 +22,19 @@ use balatro_advisor::{advise, calibration, data::GameData, save};
 
 #[path = "common/stamp.rs"]
 pub mod stamp;
+#[path = "common/filter.rs"]
+pub mod filter;
 
 pub fn states() -> Vec<PathBuf> {
     sample(std::env::var("BAV_SAMPLE").ok().and_then(|s| s.parse().ok()).unwrap_or(350))
 }
 
-/// `size` of the saved states, chosen by name (0: all, today's too); `BAV_HISTORY`, `BAV_ONLY`
-/// as for `states`
+/// `size` of the saved states, chosen by name (0: all, today's too), then those `BAV_ONLY` and
+/// `BAV_HOLDS` keep (`filter::keep`, after the sample, so a filtered run's states are among the
+/// full run's); `BAV_HISTORY` as for `states`
 pub fn sample(size: usize) -> Vec<PathBuf> {
     let dir = std::env::var_os("BAV_HISTORY").map(PathBuf::from).or_else(|| calibration::default_dir().map(|d| d.join("history")));
     let Some(dir) = dir else { return vec![] };
-    let only = std::env::var("BAV_ONLY").ok();
     let mut out = vec![];
     for run in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
         for f in std::fs::read_dir(run.path()).into_iter().flatten().flatten() {
@@ -55,9 +60,8 @@ pub fn sample(size: usize) -> Vec<PathBuf> {
         out.sort_by_cached_key(|p| (fnv(&name(p)), name(p)));
         out.truncate(size);
     }
-    out.retain(|p| only.as_ref().is_none_or(|o| p.to_string_lossy().contains(o.as_str())));
     out.sort();
-    out
+    filter::keep(out, |p| p.to_string_lossy().to_string(), |p| save::load(p, GameData::bundled()).ok().and_then(|r| serde_json::to_value(r).ok()))
 }
 
 pub fn name(p: &Path) -> String {

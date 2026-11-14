@@ -165,14 +165,31 @@ decides or values things follows these steps, in order:
    - `cargo test` (not `--release`: the test profile is optimised and keeps overflow checks, D13)
      exits 0 (check the exit status), replay fixtures included; `cargo clippy --release
      --all-targets` reports no warnings from your change.
-   - Snapshot diff: `BAV_SNAPSHOT_DIR=/tmp/before cargo test --release --test replay -- --ignored
-     snapshot` before, `/tmp/after` after, `diff -r`. A pure restructuring leaves it unchanged; a
-     behaviour change explains every difference.
+   - Snapshot diff, first and on every fixture: `BAV_SNAPSHOT_DIR=/tmp/before cargo test
+     --release --test replay -- --ignored snapshot` before, `/tmp/after` after, `diff -r`. A pure
+     restructuring leaves it unchanged; a behaviour change explains every difference.
    - History check: `tests/history_picks.rs` before (in a `git worktree` of the base commit, started
-     while you work) and after (~15 min each, 350 saved states), then
+     while you work) and after, then
      `history_judge` in `tests/history.rs` (each moved pick against the old one, the oracle playing
      on). Explain or fix every WORSE, unclear, ? and LOST pick (the
      judge shares the valuation and engine: a change to those half judges itself, so say so).
+     It runs on the states the change can reach, told by what its code does and widened to every
+     kind of state the snapshot moved, a kind taken as the quick pass plays it: past the screen,
+     into the round's later draws and the ante's blinds ahead (`tests/common/filter.rs`). A change
+     to drawn face-down cards is `BAV_HOLDS=face_down,bl_house,bl_wheel,bl_fish,bl_mark`, a boss's
+     rule `bl_<its key>`, `boss` only code about the blind being played; a joker by its key,
+     `hand:N` a big hand, `BAV_ONLY=a,b` states by name. A rare kind runs over the whole history
+     with `BAV_SAMPLE=0`; a reach of the slowest states can take hours (97 face-down hands in a
+     blind, 3 h 23 min a side on the Windows laptop, 2026-11-09): past an hour, ask first.
+     On the full sample (350 saved states, 15-30 min a side) when every state's analysis runs
+     through the change (how the valuation, the engine, the simulated player or the search work
+     for every board, not for one kind of card or blind). Every fourth check runs in full too,
+     once the last three ran filtered: its before runs, today, in a worktree of the last full
+     one's commit, so it also catches the picks the filters since left out (explain those moved
+     outside them; up to an hour a side, and the judge). The commit message names the check in a
+     line of its own, `History-check: full`, `History-check: BAV_HOLDS=face_down (5 in a blind)`
+     or `History-check: skipped`; `tools/status.py` shows the last full one and how many ran
+     filtered since.
      Skipped, saying why, when the change can't reach Best play's quick pass in a blind (it counts
      no shops: tell by what the quick pass runs, not by the file), unless the snapshot moves a Best
      play pick (D12).

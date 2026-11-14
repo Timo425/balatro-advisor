@@ -36,6 +36,9 @@ Check, with file:line references:
    restructuring left the snapshots identical; the history check (`tests/history_picks.rs`,
    `tests/history.rs`) ran, or the change can't reach Best play's quick pass and says why, and
    every pick it flagged WORSE, unclear, ? or LOST is explained or fixed (CLAUDE.md step 4, D12).
+   A history check run on part of the states (`BAV_HOLDS`, `BAV_ONLY`): does the filter hold
+   every kind of state the change can reach by what its code does, and every kind the snapshot
+   moved? Name a kind it reaches that the filter leaves out.
 8. **Rule changes.** Does the change need a `docs/decisions.md` entry by `CLAUDE.md`'s
    definition ("What needs a decision")? Flag a missing entry only by quoting the sentence of
    `docs/design.md`'s stages, patterns or numbered rules, the workflow or a project-wide choice

@@ -5,8 +5,9 @@
 //! a change to those is half judging itself: read the verdicts with that in mind). Slow;
 //! prints. Run on the change:
 //! `BAV_PICKS_BEFORE=/tmp/before BAV_PICKS_AFTER=/tmp/after cargo test --release --test
-//! history -- --ignored history_judge --nocapture` (the same `BAV_SAMPLE`/`BAV_ONLY` as the
-//! picks, on the same UTC day: the sample leaves out that day's states; `BAV_JUDGE_ROUNDS`,
+//! history -- --ignored history_judge --nocapture` (the same `BAV_SAMPLE`/`BAV_ONLY`/`BAV_HOLDS`
+//! as the picks, on the same UTC day: the sample leaves out that day's states, but `BAV_SAMPLE=0`
+//! takes them too, so states saved between the two runs show as "only after"; `BAV_JUDGE_ROUNDS`,
 //! default 400). A pick moves when the cards' places in your hand
 //! change (a new arrangement of the same cards isn't a move), or, with a consumable used first,
 //! the cards it changes or adds. Worst first: BETTER / WORSE: clearly apart and by more than

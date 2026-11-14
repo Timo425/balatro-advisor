@@ -88,6 +88,26 @@ def code(args):
           "  [a commit with two stage prefixes counts in both]")
     for line in git("log", "-8", "--format=%h %as %s").splitlines():
         print("  " + line[:150])
+    history_checks()
+
+
+def history_checks():
+    """The last full history check and the filtered ones since, by the commits' `History-check:`
+    lines, anywhere in the message (CLAUDE.md step 4: after three filtered ones the next runs in
+    full, against the last full one's commit); skipped ones aren't counted"""
+    ran = []
+    for rec in git("log", "--format=%h %as%x00%B%x1e").split("\x1e"):
+        c, _, body = rec.strip().partition("\0")
+        found = re.findall(r"^History-check:[ \t]*(.*\S)", body, re.M | re.I)
+        if found and not found[-1].lower().startswith("skipped"):
+            ran.append((c, found[-1]))
+    full = next((i for i, (_, v) in enumerate(ran) if v.lower().startswith("full")), None)
+    if full is None:
+        print("history check: no full one recorded (`History-check: full`): the next one runs in full")
+        return
+    due = ": the next one runs in full, its before at that commit" if full >= 3 else ""
+    filtered = "; ".join(f"{c.split()[0]} {v}" for c, v in ran[:full])
+    print(f"history check: the last full one at {ran[full][0]}; {full} filtered since{f' ({filtered})' if filtered else ''}{due}")
 
 
 def run_state(path):

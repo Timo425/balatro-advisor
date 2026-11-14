@@ -9,9 +9,29 @@
 mod stamp;
 #[path = "common/first.rs"]
 mod first;
+#[path = "common/filter.rs"]
+mod filter;
 
 use balatro_advisor::{advise, data::GameData, save::RunState};
 use serde_json::Value;
+
+/// The fixtures a check runs on, sorted by name: (file, name, the fixture) for each that
+/// `BAV_ONLY` (by name) and `BAV_HOLDS` (by its state) keep (`filter::keep`); none without the
+/// fixtures' folder
+fn fixtures() -> Vec<(std::path::PathBuf, String, Value)> {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/private");
+    let Ok(entries) = std::fs::read_dir(&dir) else { return vec![] };
+    let mut files: Vec<_> = entries.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")).collect();
+    files.sort();
+    let all = files
+        .into_iter()
+        .map(|f| {
+            let v: Value = serde_json::from_str(&std::fs::read_to_string(&f).unwrap()).unwrap();
+            (f.clone(), f.file_stem().unwrap().to_string_lossy().to_string(), v)
+        })
+        .collect();
+    filter::keep(all, |(_, name, _)| name.clone(), |(_, _, v)| Some(v["state"].clone()))
+}
 
 #[test]
 fn replayed_states_give_the_expected_advice() {
@@ -127,10 +147,37 @@ fn replayed_states_give_the_expected_advice() {
     assert!(failures.is_empty(), "\n{}", failures.join("\n"));
 }
 
+/// `BAV_HOLDS`'s terms on a built state (`common/filter.rs`)
+#[test]
+fn holds_terms() {
+    use filter::{Term, parse};
+    assert_eq!(parse("face_down, boss,hand:13,j_blackboard,"), vec![Term::FaceDown, Term::Boss, Term::Hand(13), Term::Key("j_blackboard".into())]);
+    let s = serde_json::json!({
+        "hand": [{"rank": 14, "suit": "Spades", "face_down": true}, {"rank": 2, "suit": "Clubs"}],
+        "jokers": [{"key": "j_blackboard", "name": "Blackboard"}],
+        "used_jokers": ["j_burglar"],
+        "current_blind": {"key": "bl_house"},
+        "shop": {"boosters": [{"key": "p_arcana_normal_3"}]},
+        "tags": ["tag_double"],
+    });
+    let holds = |t: &str| parse(t)[0].holds(&s);
+    assert!(holds("face_down") && holds("boss") && holds("hand:2") && !holds("hand:3"));
+    assert!(holds("j_blackboard") && holds("p_arcana") && holds("tag_double") && holds("bl_house"));
+    assert!(!holds("j_burglar"), "the run's history isn't what a state holds");
+    let small = serde_json::json!({"hand": [{"rank": 2, "suit": "Clubs"}], "current_blind": {"key": "bl_small"}});
+    assert!(!parse("boss")[0].holds(&small) && !parse("face_down")[0].holds(&small));
+    let shop = serde_json::json!({"hand": [], "current_blind": null});
+    assert!(!parse("boss")[0].holds(&shop));
+    assert!(std::panic::catch_unwind(|| parse("facedown")).is_err());
+    assert!(std::panic::catch_unwind(|| parse("hand:many")).is_err());
+}
+
 /// For refactoring: writes the full analysis of every fixture (timing fields dropped) to
 /// `$BAV_SNAPSHOT_DIR`, so the output before and after a change can be compared with
 /// `diff -r`. Run: `BAV_SNAPSHOT_DIR=/tmp/before cargo test --release --test replay -- --ignored snapshot`
-/// (`BAV_ONLY=name` for some fixtures; `BAV_SEED` for another seed than 42: what noise alone changes)
+/// (`BAV_ONLY=a,b` for the fixtures whose name contains any of these, `BAV_HOLDS` for those
+/// holding what a change can reach, `common/filter.rs`; `BAV_SEED` for another seed than 42:
+/// what noise alone changes)
 #[test]
 #[ignore]
 fn snapshot() {
@@ -138,18 +185,8 @@ fn snapshot() {
     let out = std::path::PathBuf::from(out);
     std::fs::create_dir_all(&out).unwrap();
     let _run = stamp::start("snapshot", Some(&out));
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/private");
-    let Ok(entries) = std::fs::read_dir(&dir) else { return };
-    let mut files: Vec<_> = entries.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")).collect();
-    files.sort();
-    let only = std::env::var("BAV_ONLY").ok();
     let seed: u64 = std::env::var("BAV_SEED").ok().and_then(|s| s.trim().parse().ok()).unwrap_or(42);
-    for f in &files {
-        let name = f.file_stem().unwrap().to_string_lossy().to_string();
-        if only.as_ref().is_some_and(|o| !name.contains(o.as_str())) {
-            continue;
-        }
-        let v: Value = serde_json::from_str(&std::fs::read_to_string(f).unwrap()).unwrap();
+    for (f, _, v) in &fixtures() {
         let run: RunState = serde_json::from_value(v["state"].clone()).unwrap();
         // `BAV_SNAPSHOT_FIRST=1`: with a shop's first ranking asked for (discarded), so the
         // snapshot shows the finished analysis is the same either way (`advise::FirstSink`)
@@ -169,24 +206,14 @@ fn snapshot() {
 /// each fixture in a blind and each seed in `BAV_SEEDS` (default 42,43,44): how far the pick
 /// is below the best, its rank, and how many moves are within the 1% tie margin. A pick
 /// passes when it could be within the tie margin: gap − 2·se ≤ 1%. Prints; asserts nothing.
-/// Slow (`BAV_ONLY=name` for one fixture).
+/// Slow (`BAV_ONLY=a,b`, `BAV_HOLDS` as for `snapshot`, for some fixtures).
 /// Run: `cargo test --release --test replay -- --ignored search_against_reference --nocapture`
 #[test]
 #[ignore]
 fn search_against_reference() {
     let _run = stamp::start("search_against_reference", None);
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/private");
-    let Ok(entries) = std::fs::read_dir(&dir) else { return };
-    let mut files: Vec<_> = entries.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")).collect();
-    files.sort();
-    let only = std::env::var("BAV_ONLY").ok();
     let seeds: Vec<u64> = std::env::var("BAV_SEEDS").unwrap_or_else(|_| "42,43,44".into()).split(',').filter_map(|s| s.trim().parse().ok()).collect();
-    for f in &files {
-        let name = f.file_stem().unwrap().to_string_lossy().to_string();
-        if only.as_ref().is_some_and(|o| !name.contains(o.as_str())) {
-            continue;
-        }
-        let v: Value = serde_json::from_str(&std::fs::read_to_string(f).unwrap()).unwrap();
+    for (_, name, v) in &fixtures() {
         let run: RunState = serde_json::from_value(v["state"].clone()).unwrap();
         for &seed in &seeds {
             let a = advise::analyze(&run, GameData::bundled(), None, &advise::Options { sims: 300, seed, reference: true, ..Default::default() });

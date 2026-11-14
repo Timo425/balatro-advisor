@@ -4,7 +4,7 @@
 //!     cargo test --release --test first_ranking -- --ignored first_ranking --nocapture
 //!
 //! The shop and pack states among the history check's sample (`history_picks::states`:
-//! `BAV_SAMPLE`, `BAV_HISTORY`, `BAV_ONLY` as there), or the states `BAV_FIRST_LIST=<file>` lists
+//! `BAV_SAMPLE`, `BAV_HISTORY`, `BAV_ONLY`, `BAV_HOLDS` as there), or the states `BAV_FIRST_LIST=<file>` lists
 //! (a line each, under the history's folder). `BAV_FIRST_OUT=<folder>` writes `first.tsv` there,
 //! one line a state: its file, the money, ms to the first ranking (empty: none made), ms to the
 //! full ranking, ms in all, the options in each, the first ranking's top, the full ranking's top,
