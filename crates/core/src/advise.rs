@@ -1285,17 +1285,18 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
 
     lap("order + hand mix");
     // Shop jokers (and an open Buffoon pack)
-    let mut offers: Vec<(Joker, i64, bool)> = Vec::new();
+    // (each with its price and what it sells for, `offer_sells`)
+    let mut offers: Vec<(Joker, i64, bool, i64)> = Vec::new();
     if let Some(shop) = &run.shop {
         for j in &shop.jokers {
-            offers.push((Joker::from_save(j, data), j.cost, j.rental));
+            offers.push((Joker::from_save(j, data), j.cost, j.rental, shop_sells(j)));
         }
     }
     for c in run.open_pack.iter().filter(|c| c.set == "Joker") {
         if let Some(mut j) = Joker::from_key(&c.key, data) {
             j.edition = c.edition;
             j.eternal = c.eternal;
-            offers.push((j, 0, c.rental));
+            offers.push((j, 0, c.rental, value::sell_value(c.cost, c.rental)));
         }
     }
     // Every joker the shop could still offer
@@ -1337,7 +1338,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
         let _ = ctx.removal_rank.set(ranks);
     }
     lap("removal");
-    let shop = par_map(&offers, |(j, cost, rental)| evaluate_candidate(&lr, j.clone(), *cost, *rental, &base_odds, base_typical.mean, opts.sims, true))
+    let shop = par_map(&offers, |(j, cost, rental, _)| evaluate_candidate(&lr, j.clone(), *cost, *rental, &base_odds, base_typical.mean, opts.sims, true))
         .into_iter()
         .map(|mut c| {
             c.missing_gold = missing(&c.key);
@@ -1427,19 +1428,19 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
     // The long run of a joker bought (on offer, or one the shops could offer): with the joker
     // it replaces sold (`evaluate_candidate`) while your slots are still full by Ante 8 (a
     // perishable that runs out makes room), at least what it's worth to sell it later for a
-    // typical find (`floor_for`), unless it's eternal
-    let long_mult = |c: &Candidate, j: &Joker, rental: bool, eternal: bool| -> Option<f64> {
+    // typical find (`floor_for`: `sells`, what it sells for), unless it's eternal
+    let long_mult = |c: &Candidate, j: &Joker, rental: bool, eternal: bool, sells: i64| -> Option<f64> {
         let negative = j.edition == Some(Edition::Negative);
         let sell = if full && !negative { c.sell_index } else { None };
         if full && sell.is_none() && !negative {
             return None;
         }
         let v = lr.ratio(lr.long_of(j, sell, c.cost, rental), sell);
-        Some(if eternal { v } else { v.max(lr.floor_for(c.cost, rental, &c.key, sell)) })
+        Some(if eternal { v } else { v.max(lr.floor_for(c.cost, sells, rental, &c.key, sell)) })
     };
-    for (c, (j, _, rental)) in shop.iter_mut().zip(&offers) {
+    for (c, (j, _, rental, sells)) in shop.iter_mut().zip(&offers) {
         let eternal = offer_stickers(run, &c.key).is_some_and(|s| s.eternal);
-        if let Some(m) = long_mult(c, j, *rental, eternal) {
+        if let Some(m) = long_mult(c, j, *rental, eternal, *sells) {
             c.long_mult = Some(m);
         }
     }
@@ -1991,10 +1992,11 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
             let eternal = o.kind == "joker" && o.key.as_deref().and_then(|k| offer_stickers(run, k)).is_some_and(|s| s.eternal);
             if buys && !eternal && !money_only(o) && (free > 0 || o.sell_index.is_some()) {
                 let gone = owned.iter().find(|e| Some(e.0) == o.sell_index).map_or(1.0, |e| e.1);
-                // (its sale's money: card.lua `Card:set_cost`, half its price, at least $1)
-                // (a rental sells for $1, and its rent stops then)
+                // (its sale's money: an offered joker's `offer_sells`, a pack's half its price, at
+                // least $1, card.lua `Card:set_cost`; a rental sells for $1, and its rent stops then)
                 let rental = bought_rental(o);
-                out.push((ratio * gone, if rental { 1.0 } else { (o.cost / 2).max(1) as f64 }, rent_of(rental)));
+                let sells = o.key.as_deref().filter(|_| o.kind == "joker").and_then(|k| offer_sells(run, k)).unwrap_or((o.cost / 2).max(1));
+                out.push((ratio * gone, if rental { 1.0 } else { sells as f64 }, rent_of(rental)));
             }
             out
         };
@@ -2138,10 +2140,10 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
             let board_of = |o: &ShopOption| -> (Board, Option<Joker>, Option<Joker>) {
                 let sold = o.sell_index.and_then(|i| ctx.base.jokers.get(i).cloned());
                 let rest = o.sell_index.map_or_else(|| ctx.base.clone(), |i| without(&ctx.base, i));
-                match offers.iter().find(|(j, _, _)| o.kind == "joker" && o.key.as_deref() == Some(j.key.as_str())) {
+                match offers.iter().find(|(j, _, _, _)| o.kind == "joker" && o.key.as_deref() == Some(j.key.as_str())) {
                     // (put where `evaluate_candidate` puts it before arranging: the sold joker's place,
                     // else the right end, so both arrange the same board)
-                    Some((j, _, _)) => {
+                    Some((j, _, _, _)) => {
                         let at = o.sell_index.unwrap_or(rest.jokers.len());
                         (with_joker(&rest, j.clone(), at), Some(j.clone()), sold)
                     }
@@ -2357,7 +2359,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
     let long_mults: Vec<Option<f64>> = par_map(&pool_entries, |c| {
         let mut j = Joker::from_key(&c.key, data)?;
         j.edition = c.edition;
-        long_mult(c, &j, false, false)
+        long_mult(c, &j, false, false, value::sell_value(c.cost, false))
     });
     for (c, m) in pool_entries.iter_mut().zip(long_mults) {
         c.long_mult = m;
@@ -2679,7 +2681,7 @@ const HEURISTICS: [&str; 8] = [
         "Blue Seal planets by Ante 8 assume a consumable held at round end in a measured share of rounds (one run).",
         "The shop ranking counts what each option's money left buys in the shops ahead: the money spent shop by shop on 2000 simulated walks (rerolls and the jokers they show, bought in the shop they show in while the money lasts, into a free slot or in place of the joker whose loss costs least, yours sold for it; the most rerolls a shop chosen on half the walks, at most 8: a budget), starting from the board the option leaves; several jokers' score gains added (most jokers' Chips and Mult add), read off your board's score spread in that round as a lognormal (heuristic); an option with no simulated chance at the next ante's boss read the same way from its score there. Rent comes off at each round's end: your rentals', one the option buys, a Buffoon pack's picks as often as the stake makes them rentals. Planets, packs and tarots the money could buy aren't counted, nor the stickers of the jokers the walk finds (not modelled).",
         "With your joker slots full, the joker a shop or pool joker replaces is chosen by the shop ranking's measure: the chance through this ante's hardest round × the next ante's boss × the geometric mean of the long run with that sale (its income and growth by Ante 8) and the strength at the next ante, with Mr. Bones' save counted at the two bosses it plays (the shop ranking counts it through every round ahead: on chained runs, the share of lost rounds a save rescues applied to each option's survival, a heuristic); the swaps (outside a blind each on the board it leaves as you'd arrange it; in a blind, the freed slot and the right end) raced on the same simulated rounds (to the full count), those it can't tell apart reported as ties; when no swap gets through 20% this round, the score reached decides and no ties are shown, as in the shop ranking (heuristic budget: at most 6 swaps after 32 rounds, 4 after 64, 3 after 128; a sale's places that play the first 32 rounds the same count as one). A Negative joker is never the one sold to make room (its slot goes with it), nor a charged Invisible Joker (it copies another joker into the row as it's sold). What a sale does that isn't modelled is said on the option (a joker that acts when sold: Diet Cola, a charged Invisible Joker; Campfire's growth from it). A joker's money is the money a round won pays on the board with it against without it, on the same rounds of this ante's plain blinds (scoring, discards, the round's end, hands left); a joker whose money that doesn't reach (Gift Card, Credit Card, Matador's boss payout) is said \"not modelled\" on an option that sells it. The pool's quick screen tries only the joker whose removal leaves most by the same measure. A perished joker is the one sold.",
-        "Shop options are told apart by the simulation's own noise: one is listed above another, or above keeping your money, only when it's ahead by more than 2 standard errors of their difference on the simulated rounds and shops both rest on, with 3% of the rank counted in for what no round shows (the By Ante 8 projection's own luck, a pack's or a reroll's cards, an estimate, an effect left out). Closer than that is a tie (≈), keeping your money first.",
+        "Shop options are told apart by the simulation's own noise: one is listed above another, or above keeping your money, only when it's ahead by more than 2 standard errors of their difference on the simulated rounds and shops both rest on, with 3% of the rank counted in for what no round shows (the By Ante 8 projection's own luck, a pack's or a reroll's cards, an estimate, an effect left out). Closer than that is a tie (≈), keeping your money first; skipping an open pack goes after the pack's picks worth more that leave no less money (its cards are gone once it closes).",
 ];
 
 /// Said with a shop's first ranking (`FirstSink`)
@@ -3805,6 +3807,7 @@ fn shop_options(
         o.interest_now = interest(run.dollars, run.interest_amount, run.interest_cap);
         o.interest_after = interest(o.money_after, run.interest_amount, run.interest_cap);
     }
+    // (no skip among them: the open pack's is added with the other ways of keeping your money)
     rank_options(&mut out, base_reach, next_rounds(ctx));
     (out, tarots)
 }
@@ -4120,14 +4123,19 @@ fn clearly_better(a: &ShopOption, b: &ShopOption) -> bool {
 /// boss (both with the shops before them), times the long-run value (the average of how
 /// much stronger it makes you at the next ante and By Ante 8):
 /// the long run only counts if you survive to it, so when a round is at risk the win
-/// chance dominates, and when it's safe the long run does. The order is anchored on keeping your
-/// money, as a race is on its status quo (D8): first the options found better than keeping it
-/// (`clearly_better`), then keeping it, then the rest, so nothing is listed above keeping your
-/// money that isn't found better. Within each, options that can't be told apart are a tie (the
-/// best by value and every option not clearly worse than it, then the best of the rest and so
-/// on; keeping your money's tie: what it isn't clearly better than), ordered by value (two
-/// planets by the hand easier to make first), then the score reached this round. With no real
-/// chance at all (under 20%), the score reached comes first.
+/// chance dominates, and when it's safe the long run does. The order is anchored on the status
+/// quo (leaving the shop, skipping an open pack), as a race is (D8): first the options found
+/// better than it (`clearly_better`), then it with what it isn't clearly better than, then the
+/// rest, so nothing is listed above it that isn't found better or tied with it. Within each,
+/// options that can't be told apart are a tie (the best by value and every option not clearly
+/// worse than it, then the best of the rest and so on), ordered by value (two planets by the
+/// hand easier to make first), then the score reached this round. In its own tie the status
+/// quo goes where what it keeps puts it (D8: a choice that can't be told from it is made only
+/// when not making it keeps nothing for later): leaving first; skipping a pack above the shop's
+/// buys, what you hold and a pick that leaves less money (it keeps the money and the consumable
+/// they spend), and below the pack's picks worth more by value (it keeps nothing against them:
+/// the best estimate leads, as a race's leader does). With no real chance at all (under 20%),
+/// the score reached comes first.
 fn rank_options(out: &mut [ShopOption], base_reach: f64, next_rounds: usize) {
     let trouble = shop_tie(out).trouble;
     // A chance at the next ante's boss under 3 wins in its rounds (`next_rounds`) can't be
@@ -4141,8 +4149,7 @@ fn rank_options(out: &mut [ShopOption], base_reach: f64, next_rounds: usize) {
         o.rank = Some(option_value(o, next_floor));
     }
     let value = |o: &ShopOption| o.rank.unwrap_or(0.0);
-    // Keeping your money (next round / skip the pack) wins a tie: spending only beats it
-    // when it's actually better, not within noise (a sale too: leaving keeps the joker, D8)
+    // The status quo every option is told from: leaving the shop, or skipping the open pack
     let keep = |o: &ShopOption| matches!(o.kind.as_str(), "leave" | "skip");
     // Each option against keeping your money: the gap, its error, and whether it's a finding
     let k = out.iter().position(keep);
@@ -4188,6 +4195,31 @@ fn rank_options(out: &mut [ShopOption], base_reach: f64, next_rounds: usize) {
             tie_up((0..out.len()).collect(), 0, &mut tiers);
         }
     }
+    // Each option's place in the status quo's tie, first to last (D8: a choice that can't be
+    // told from the status quo is made only when not making it keeps nothing for later; out of
+    // trouble, where ties are shown). Leaving the shop first: the money it keeps is spent in the
+    // shops ahead, a later chance no option holds. Skipping an open pack keeps the money a shop's
+    // buy spends and the consumable a held one's use spends, so it stays above them; but the
+    // pack's cards are gone once it closes and its price is paid, so against a pick it keeps
+    // nothing (one that sells a joker to make room too: both boards are valued, and only the pick
+    // is gone; a sale alone can wait for a later shop), and the picks worth more by value go above it, as a race's leader is taken when
+    // the status quo keeps nothing. A joker that grows from the skip (Red Card) is in the skip's
+    // own value; a pick valued exactly as the skip (a tarot with no target worth it, a card not
+    // valued) isn't worth more, and stays below
+    let mut place = vec![1u8; out.len()];
+    if let Some(k) = k {
+        if out[k].kind == "leave" {
+            place[k] = 0;
+        } else {
+            let skip = value(&out[k]);
+            // (a pick that leaves less money, Wraith, spends what skipping keeps, as a buy does)
+            let keeps_money = out[k].money_after;
+            for i in (0..out.len()).filter(|&i| i != k && tiers[i] == tiers[k]) {
+                let pick = out[i].label.starts_with("pick ") && out[i].money_after >= keeps_money;
+                place[i] = if pick && value(&out[i]) > skip { 0 } else { 2 };
+            }
+        }
+    }
     let reach = |o: &ShopOption| o.reach.unwrap_or(base_reach);
     let mut order: Vec<usize> = (0..out.len()).collect();
     order.sort_by(|&x, &y| {
@@ -4198,8 +4230,7 @@ fn rank_options(out: &mut [ShopOption], base_reach: f64, next_rounds: usize) {
             (Some(x), Some(y)) => y.total_cmp(&x),
             _ => std::cmp::Ordering::Equal,
         };
-        // (keeping your money leads its tie)
-        let by_keep = keep(b).cmp(&keep(a));
+        let by_keep = place[x].cmp(&place[y]);
         let by_tier = tiers[x].cmp(&tiers[y]);
         let by_value = value(b).total_cmp(&value(a));
         // (a tie is what the rounds can't tell apart: the value is still the best estimate, and
@@ -4719,9 +4750,17 @@ fn tarot_values(
         if hand_cards.len() < min {
             return Some(if (0..deck.len()).filter(|&i| ih[i]).count() >= min { TarotValue { note: format!("{what}: no card in hand it can go on"), ..base } } else { base });
         }
-        // D8's tie rule is for the use-now decision on the hand on screen; a sampled hand has no
-        // later the consumable is kept for, so the best set is taken
-        let price = UsePrice { keeps: real, ..UsePrice::default() };
+        // D8's tie rule is for the use-now decision on the hand on screen of a consumable you'd
+        // hold (one you have, a shop's you'd buy), which not using keeps; a sampled hand has no
+        // later it's kept for, and one only the open pack offers is gone once the pack closes (a
+        // pick from it is used at once), so the best set is taken. A kind you also have or the
+        // shop sells shares that one's value, which keeps (on a tie its pick keeps "no target",
+        // valued as the skip): no Tarot or Spectral pack of the owner's 347 shows a copy of one
+        // they hold
+        let pack_only = run.open_pack.iter().any(|c| c.key == t.key)
+            && !run.consumables.iter().any(|c| c.key == t.key)
+            && !run.shop.as_ref().is_some_and(|s| s.other_cards.iter().any(|c| c.key == t.key));
+        let price = UsePrice { keeps: real && !pack_only, ..UsePrice::default() };
         let TargetRanking { sets: mut ranked, as_good: k, .. } = target_race_budget(lr, &outcomes, min, max, deck, &hand_cards, None, price, (budget.first, budget.cap), draws)?;
         ranked.truncate(k);
         // the decks a set leaves, each with its chance: over the outcomes, and on a face-down
@@ -5567,6 +5606,19 @@ pub(super) struct Stickers {
     pub edition: Option<Edition>,
 }
 
+/// What an offered joker sells for once yours: a pack's half its own cost though it's free
+/// (`value::sell_value`), a shop's the save's `sell_cost`, which the game sets before a coupon
+/// or a tag makes it free (card.lua `Card:set_cost`)
+pub(super) fn offer_sells(run: &RunState, key: &str) -> Option<i64> {
+    let pack = run.open_pack.iter().find(|c| c.key == key).map(|c| value::sell_value(c.cost, c.rental));
+    pack.or_else(|| run.shop.as_ref().and_then(|sh| sh.jokers.iter().find(|j| j.key == key)).map(shop_sells))
+}
+
+/// A shop joker's sale (`offer_sells`): the save's, or by its cost where the save gives none
+fn shop_sells(j: &crate::save::JokerCard) -> i64 {
+    if j.sell_value > 0 { j.sell_value } else { value::sell_value(j.cost, j.rental) }
+}
+
 pub(super) fn offer_stickers(run: &RunState, key: &str) -> Option<Stickers> {
     let pack = run.open_pack.iter().find(|c| c.key == key).map(|c| Stickers { rental: c.rental, eternal: c.eternal, perishable: c.perishable, edition: c.edition });
     pack.or_else(|| run.shop.as_ref().and_then(|sh| sh.jokers.iter().find(|j| j.key == key)).map(|j| Stickers { rental: j.rental, eternal: j.eternal, perishable: j.perishable, edition: j.edition }))
@@ -6338,7 +6390,7 @@ mod tests {
         let (m, b) = (beside("j_mail"), beside("j_mr_bones"));
         assert!((m / b - 1.0).abs() < 1e-9, "{m} {b}");
         let mix = [HandShare { hand: "Pair".into(), share: 1.0, played: 1.0, mean: 1.0 }];
-        let floors = |r: &RunState| with_long_run_mix(r, &mix, |lr| (lr.floor_for(4, false, "j_mail", None), lr.floor_for(4, false, "j_mr_bones", None)));
+        let floors = |r: &RunState| with_long_run_mix(r, &mix, |lr| (lr.floor_for(4, 2, false, "j_mail", None), lr.floor_for(4, 2, false, "j_mr_bones", None)));
         let (mail_floor, bones_floor) = floors(&shop_run(&[("j_burglar", None, None), ("j_joker", None, None)], &[]));
         assert_eq!(mail_floor, bones_floor);
         let (mail_floor, bones_floor) = floors(&shop_run(&[("j_joker", None, None)], &[]));
@@ -6812,6 +6864,85 @@ mod tests {
         rank_options(&mut v, 0.5, 100);
         let labels: Vec<&str> = v.iter().map(|o| o.label.as_str()).collect();
         assert_eq!(labels, ["long shot", "gros michel", "golden", "next round"]);
+    }
+
+    #[test]
+    fn an_open_packs_skip_gives_way_in_its_tie_to_a_pick_worth_more() {
+        // (gap 32) These carry no rounds, so within 3% (`SHOP_TIE`) is a tie
+        let opt = |label: &str, kind: &str, p: f64| ShopOption {
+            tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, p_with_save: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None,
+            reach: None, label: label.into(), kind: kind.into(), cost: 0, p_win: p, note: String::new(), money_after: 0.0,
+            interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: Some(1.0), key: None, desc: None,
+        };
+        let shown = |v: &[ShopOption]| v.iter().map(|o| (o.label.clone(), o.tied)).collect::<Vec<_>>();
+        let s = |l: &str, t: bool| (l.to_string(), t);
+        // the picks worth more than skipping by value go above it (the pack's cards are gone once
+        // it closes: it keeps nothing against them), the one found better above them, the one
+        // clearly worse below; Saturn, below it by value, stays below it
+        let mut v = vec![opt("skip the pack", "skip", 0.90), opt("pick Mercury", "planet", 0.905), opt("pick Saturn", "planet", 0.895), opt("pick Earth", "planet", 0.80), opt("pick Pluto", "planet", 0.99)];
+        rank_options(&mut v, 0.5, 300);
+        assert_eq!(shown(&v), [s("pick Pluto", false), s("pick Mercury", false), s("skip the pack", true), s("pick Saturn", true), s("pick Earth", false)]);
+        assert!(v.iter().filter(|o| o.kind != "skip").all(|o| o.beats_keep == Some(o.label == "pick Pluto")), "still each told from skipping");
+        // the skip ahead of every pick by value leads (D8: the best estimate is taken when the
+        // status quo keeps nothing), as a skip that grows Red Card does, its growth in its value
+        let mut v = vec![opt("skip the pack", "skip", 0.90), opt("pick Mars", "planet", 0.899)];
+        rank_options(&mut v, 0.5, 300);
+        assert_eq!(shown(&v), [s("skip the pack", false), s("pick Mars", true)]);
+        // a shop's buy it can't be told from stays below the skip even when worth more by value
+        // (it spends the money skipping keeps), and so does a pick valued exactly as it, which
+        // changes nothing the ranking sees (a tarot with no target worth it)
+        let mut v = vec![opt("skip the pack", "skip", 0.90), opt("pick The Devil", "tarot", 0.90), opt("pick Mercury", "planet", 0.905), opt("Joker", "joker", 0.91)];
+        rank_options(&mut v, 0.5, 300);
+        assert_eq!(shown(&v), [s("pick Mercury", false), s("skip the pack", true), s("Joker", true), s("pick The Devil", true)]);
+        // a pick that sells one of yours to make room goes above it too (both boards are valued,
+        // and only the pick is gone); one that leaves less money (Wraith) spends what it keeps
+        let mut v = vec![opt("skip the pack", "skip", 0.90), opt("pick Red Card", "joker", 0.905), opt("pick Wraith", "spectral", 0.91)];
+        v[1].sell_index = Some(0);
+        v[0].money_after = 10.0;
+        v[1].money_after = 12.0;
+        rank_options(&mut v, 0.5, 300);
+        assert_eq!(shown(&v), [s("pick Red Card", false), s("skip the pack", true), s("pick Wraith", true)]);
+        // in trouble (no tie shown) the score reached, then value, decide, as before
+        let mut v = vec![opt("skip the pack", "skip", 0.10), opt("pick Mars", "planet", 0.101), opt("pick Venus", "planet", 0.099)];
+        rank_options(&mut v, 0.5, 300);
+        assert_eq!(shown(&v), [s("pick Mars", false), s("skip the pack", false), s("pick Venus", false)]);
+        // leaving the shop still leads its tie (D8: it keeps the money for the shops ahead)
+        let mut v = vec![opt("pick Mars", "planet", 0.901), opt("next round", "leave", 0.90)];
+        rank_options(&mut v, 0.5, 300);
+        assert_eq!(shown(&v), [s("next round", false), s("pick Mars", true)]);
+    }
+
+    #[test]
+    fn a_packs_joker_pick_sells_for_half_its_own_cost() {
+        // A pick from a Buffoon pack is free, but sells for half the card's cost (card.lua
+        // `Card:set_cost`), as the sale its sell-later floor counts (`floor_for`): Credit Card
+        // does nothing on this board, so its floor is its worth, and one costing $40 (a $20 sale,
+        // at $0: about two levels) is worth more than one costing $2 ($1). (A few dollars apart
+        // is within the floor's own noise: its long run's score on 48 rounds.)
+        let pick = |cost: i64| {
+            let mut r = shop_run(&[("j_joker", None, None)], &[]);
+            r.joker_slots = 5;
+            r.dollars = 0.0;
+            r.screen = crate::save::Screen::BuffoonPack;
+            r.open_pack = vec![crate::save::ItemCard { key: "j_credit_card".into(), name: "Credit Card".into(), set: "Joker".into(), cost, edition: None, card: None, rental: false, eternal: false, perishable: None }];
+            let a = analyze(&r, GameData::bundled(), None, &quick());
+            a.options.into_iter().find(|o| o.kind == "joker" && o.label.starts_with("pick ")).and_then(|o| o.long_mult).expect("the pack's pick")
+        };
+        let (cheap, dear) = (pick(2), pick(40));
+        assert!(dear > cheap * 1.01, "a $20 sale {dear} vs a $1 one {cheap}");
+        // a shop joker a coupon or a tag made free sells for what the game set before it did
+        // (the save's `sell_cost`), not $1
+        let free = |sells: i64| {
+            let mut r = shop_run(&[("j_joker", None, None)], &["j_credit_card"]);
+            r.joker_slots = 5;
+            r.dollars = 0.0;
+            let j = &mut r.shop.as_mut().unwrap().jokers[0];
+            (j.cost, j.sell_value) = (0, sells);
+            let a = analyze(&r, GameData::bundled(), None, &quick());
+            a.options.into_iter().find(|o| o.kind == "joker" && o.label.contains("Credit Card") && !o.label.starts_with("sell")).and_then(|o| o.long_mult).expect("the shop's Credit Card")
+        };
+        let (cheap, dear) = (free(1), free(20));
+        assert!(dear > cheap * 1.01, "a $20 sale {dear} vs a $1 one {cheap}");
     }
 
     #[test]

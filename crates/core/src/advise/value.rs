@@ -31,6 +31,14 @@ pub(super) const RENT_PER_ROUND: f64 = 3.0;
 /// Rent ($3 a round) comes out of the money that would buy planets, rerolls and pack skips:
 /// each rental counts as one ante of rent less money held.
 pub(super) const RENT_PER_ANTE: f64 = 3.0 * RENT_PER_ROUND;
+/// What a joker of cost `cost` (the card's own, whatever you pay: one from a pack is free)
+/// sells for: half its cost, at least $1; a rental's cost is $1, so it sells for $1 (card.lua
+/// `Card:set_cost`, which sets the sale before a coupon or a tag makes a card free: a shop
+/// joker's is the save's `sell_cost`, this for a card the save gives none, a pack's)
+pub fn sell_value(cost: i64, rental: bool) -> i64 {
+    if rental { 1 } else { (cost / 2).max(1) }
+}
+
 /// From stake 8 a joker made for the shop or a pack is a rental 3 times in 10 (game.lua
 /// `start_run`: `enable_rentals_in_shop`; common_events.lua `create_card`: a roll over 0.7)
 pub(super) const RENTAL_STAKE: u8 = 8;
@@ -1246,15 +1254,15 @@ impl<'a> LongRun<'a> {
     }
 
     /// A sellable option you'd later replace is worth at least a typical find, less what it
-    /// costs net: its price minus what selling it gives back (Card:set_cost: half the price
-    /// paid, at least $1; a rental sells for $1; a free one from a tag still sells for $1).
-    /// A money joker earns while you hold it (about an ante before it's replaced: its money a
+    /// costs net: its price `cost` minus what selling it gives back (`sells`: `sell_value` of
+    /// the card's own cost, so a pick from a pack, free, still sells for half its cost). A
+    /// money joker earns while you hold it (about an ante before it's replaced: its money a
     /// round on your board, `added_money`), as a rental pays rent. Scored on the board you'd hold: with
     /// `sold` (the joker the option replaces) gone and its sale counted, against the same
     /// baseline as the option (`ratio`).
-    pub fn floor_for(&self, cost: i64, rental: bool, key: &str, sold: Option<usize>) -> f64 {
+    pub fn floor_for(&self, cost: i64, sells: i64, rental: bool, key: &str, sold: Option<usize>) -> f64 {
         let (run, data) = (self.run, self.data);
-        let sell = if rental { 1 } else { (cost / 2).max(1) };
+        let sell = sells;
         let rent = if rental { RENT_PER_ANTE } else { 0.0 };
         let back = sold.map_or(0, |i| run.jokers[i].sell_value) as f64;
         // (over the ante or so it's held: its boss's raise a third of the time)
