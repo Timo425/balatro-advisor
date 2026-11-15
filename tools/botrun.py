@@ -46,16 +46,28 @@ verdict on the advice. As of 2026-10-24 the bot:
   planet Best play says to use first; a Standard pack's playing-card pick (found by its label:
   the advisor offers no Standard pack in the shop and doesn't value the Standard Tag, so no run
   has opened one yet). Before, every voucher, tarot and spectral was left and every "use X first"
-  ignored uncounted.
-- doesn't: tarots and spectrals that go on cards ("needs targets": their cards aren't in the
-  output, gap 31), the ones the advisor doesn't value ("not valued": Ectoplasm, Ouija), one that
-  makes a joker with your slots full ("needs a free joker slot"), The Emperor ("makes tarots that
-  need targets", `MAKES_TAROTS`), Arcana and Spectral packs,
-  "use X first" for a tarot ("blind: use X first (needs targets)"), a skip whose tag is valued as a tarot or spectral pick (Charm, Ethereal) or not valued at all (Foil,
-  Double, Juggle on a Small blind…), and a blind whose analysis failed: it plays. Skip-or-play
+  ignored uncounted. Since 2026-11-15, tarots and spectrals that go on cards, on the cards the
+  advisor names (its `targets`, gap 31): picked from Arcana and Spectral packs, those
+  opened by a Charm or Ethereal Tag included (Death's two cards put in order first, `target_places`);
+  one held (made by a joker or a seal), used in a blind before a move when Best play says "use X
+  first" (its `use_targets`, `tarot_to_use`), each use followed by a new analysis; a use refused
+  (or one it can't make) plays Best play's best move without a use, where its list has one.
+- doesn't: a held tarot whose own value names cards in the hand when Best play doesn't say to use
+  it first: held, and logged once a blind ("hold X: its value names …"; that value is against
+  never using it, not against using it later: gap 2); for the same reason a shop tarot or
+  spectral that goes on cards ("would hold it until Best play uses it (gap 2)": Best play never
+  names The Hanged Man, and seldom The Devil, The Moon or Justice) and The Emperor ("makes tarots
+  it would hold", `MAKES_TAROTS`); the tarots and spectrals the advisor doesn't value ("not valued": Ectoplasm, Ouija),
+  one that makes a joker with your slots full ("needs a free joker slot"), a shop one with your
+  consumable slots full ("needs a free consumable slot"), a held Aura ("BalatroBot's use can't
+  select its card": use.lua selects cards only for a consumable with `max_highlighted`), a pack
+  pick that goes on cards whose value names none ("no cards named"), a skip whose tag is not
+  valued at all (Foil, Double, Juggle on a Small blind…), and a blind whose analysis failed: it
+  plays. Skip-or-play
   doesn't read the tags held (gap 21). Vouchers move the money a run holds: compare runs on
   either side of 2026-11-02 knowing it.
-  Counted in `not_followed`, as is a pack pick it couldn't make ("pack
+  Counted in `not_followed` (all but the held tarot: holding it is Best play's own call), as is a
+  pack pick it couldn't make ("pack
   pick needing a sale", "pack pick refused", "pack pick not in the pack": the bot then takes the
   best pick it can above skipping; "pack pick refused after its sale": it skips the pack). Since 2026-10-25 it also sells a joker on its own when the
   advisor's "sell X" option clears keeping the money (`worth`).
@@ -269,37 +281,94 @@ def analyze(sims, quick=False, keep=None):
 # `max_highlighted` (data/game.json, as BalatroBot's `use` reads it), less Aura, which needs one
 # card in hand all the same (card.lua `Card:can_use_consumeable`). Of those, the ones that act on
 # the cards in hand can only be used in a blind (the same function, its SELECTING_HAND branch);
-# the ones that make a joker need a free joker slot.
+# the ones that make a joker need a free joker slot. The rest go on the cards the advisor names
+# (its `targets`, gap 31): picked from an open pack on them, or held and used in a blind.
 _GAME = json.loads((pathlib.Path(__file__).resolve().parent.parent / "data/game.json").read_text())
 TARGET_FREE = {c["key"] for c in (_GAME["centers"] if isinstance(_GAME["centers"], list) else _GAME["centers"].values())
                if c.get("set") in ("Tarot", "Spectral") and "max_highlighted" not in (c.get("config") or {})} - {"c_aura"}
 NEEDS_HAND = {"c_familiar", "c_grim", "c_incantation", "c_immolate", "c_sigil", "c_ouija"}
 MAKES_JOKER = {"c_judgement", "c_wraith", "c_soul"}
 # The Emperor's value counts the 2 random tarots it makes as used, and most go on cards: the bot
-# would hold them unused, its consumable slots full, and buy no planet after
+# uses a held one only when Best play says "use X first" (`tarot_to_use`), so it would hold them,
+# its consumable slots full, and buy no planet after
 MAKES_TAROTS = {"c_emperor"}
+# BalatroBot's `use` selects cards only for a consumable with `max_highlighted` (use.lua): a held
+# Aura can't be given its card (an open pack's can: pack.lua names it)
+USE_CANT_SELECT = {"c_aura"}
 
 
 def held(o):
     return o["label"].endswith("(you have it)")
 
 
+def free_consumable_slot(gs):
+    return len(cards(gs, "consumables")) < (gs.get("consumables") or {}).get("limit", 2)
+
+
 def why_not_tarot(o, gs):
-    """Why the bot doesn't take this tarot or spectral option (bought and used, or used from
-    your consumables), as `not_followed` words it; None when it can. The advisor's own words
-    decide "not valued" (its note: Ectoplasm, Ouija, ...)."""
+    """Why the bot doesn't take this shop tarot or spectral option (bought, then used or held for
+    a blind; or used from your consumables), as `not_followed` words it; None when it can. The
+    advisor's own words decide "not valued" (its note: Ectoplasm, Ouija, ...)."""
     key = o.get("key")
-    if key not in TARGET_FREE:
-        return "needs targets"
     if key in MAKES_TAROTS:
-        return "makes tarots that need targets"
+        return "makes tarots it would hold"
     if "not valued" in o["note"] or "not modelled" in o["note"]:
         return "not valued"
     if key in MAKES_JOKER and len(cards(gs, "jokers")) >= (gs.get("jokers") or {}).get("limit", 5):
         return "needs a free joker slot"
-    if held(o) and key in NEEDS_HAND:
-        return "used in a blind"
+    if key in USE_CANT_SELECT:
+        return "BalatroBot's use can't select its card"
+    if held(o):
+        # one that goes on the cards in hand: used in a blind (a `NEEDS_HAND` one at its start;
+        # one you pick cards for when Best play says "use X first", on them: `play_hand`)
+        return "used in a blind" if key in NEEDS_HAND or key not in TARGET_FREE else None
+    if key not in TARGET_FREE:
+        # its value here counts it used on the next blind's best cards (`targets_later`), but a
+        # held one is used only on Best play's word, which never names one whose use doesn't
+        # help the blind played (gap 2; The Hanged Man never): bought, it would fill a slot
+        return "would hold it until Best play uses it (gap 2)"
+    if not free_consumable_slot(gs):
+        return "needs a free consumable slot"
     return None
+
+
+def why_not_pick(o, a, gs):
+    """Why the bot doesn't take this tarot or spectral pick from the open pack (used at once, on
+    the cards its value names when it goes on cards), as `not_followed` words it; None when it can."""
+    key = o.get("key")
+    if key in MAKES_TAROTS:
+        return "makes tarots it would hold"
+    if "not valued" in o["note"] or "not modelled" in o["note"]:
+        return "not valued"
+    if key in MAKES_JOKER and len(cards(gs, "jokers")) >= (gs.get("jokers") or {}).get("limit", 5):
+        return "needs a free joker slot"
+    if key not in TARGET_FREE and targets_of(a, key) is None:
+        return "no cards named"
+    return None
+
+
+def targets_of(a, key):
+    """The cards in hand the advisor values this consumable on (its `tarots` entry's `targets`,
+    gap 31): a held one in a blind, or an open pack's, on the hand on screen; None when not using
+    it is kept (no set worth more; one only the open pack offers takes its best set even on a
+    tie: used at once or gone)."""
+    return next((t["targets"] for t in a.get("tarots", []) if t.get("key") == key and t.get("targets")), None)
+
+
+def target_places(t, log):
+    """The places in hand to select for these targets. Death (`ordered`: the first becomes a copy
+    of the second) copies the rightmost of the two by where they sit on screen (card.lua
+    `Card:use_consumeable`), so when the card to copy sits left of the other, the two swap places
+    first (`rearrange`: a player drags them, in a blind or an open pack, cardarea.lua
+    `CardArea:set_ranks`; the game lines the cards up by their new order each frame,
+    `CardArea:align_cards`)."""
+    places = list(t["places"])
+    if t.get("ordered") and len(places) == 2 and places[1] < places[0]:
+        perm = list(range(len(cards(rpc("gamestate"), "hand"))))
+        perm[places[0]], perm[places[1]] = perm[places[1]], perm[places[0]]
+        rpc("rearrange", hand=perm)
+        log.append(f"move {t['cards'][1]} to the right of {t['cards'][0]}")
+    return sorted(places)
 
 
 def cards(gs, area):
@@ -335,6 +404,33 @@ def use_held(gs, key=None, label=None):
     return True
 
 
+def tarot_to_use(a, gs, refused):
+    """The held tarot or spectral Best play says to use before this move ("use X first", on its
+    `use_targets`), as (key, label, targets or None), or None. Only Best play's word: a held one
+    whose own value names cards (its `targets`) says using it on them is worth more than never
+    using it, not that now beats later in the blind (gap 2; a destroying use isn't in the round at
+    all), so the bot holds it until Best play names it (`play_hand` logs it). A planet Best play
+    names is left to `play_hand` (it changes no card in hand). `refused`: keys the game refused
+    this move."""
+    bp = a.get("best_play") or {}
+    u = bp.get("use_first")
+    c = next((c for c in cards(gs, "consumables") if c.get("label") == u and c.get("set") in ("TAROT", "SPECTRAL")), None)
+    if c is None or c.get("key") in refused or c.get("key") in USE_CANT_SELECT:
+        return None
+    if bp.get("use_targets"):
+        return c["key"], u, bp["use_targets"]
+    if c["key"] in TARGET_FREE:
+        return c["key"], u, None
+    return None
+
+
+# At most this many consumables used before one move (each followed by a new analysis)
+MOVE_USES = 4
+# (ante, round, key) of the held tarots whose own value named cards Best play didn't use, logged
+# once a blind, this run
+NAMED_LOGGED = set()
+
+
 def play_hand(sims, log):
     gs = rpc("gamestate")
     # a spectral bought in the shop to use on a hand (`NEEDS_HAND`): at the blind's start, as its
@@ -347,15 +443,49 @@ def play_hand(sims, log):
                 gs = rpc("gamestate")
         except RpcError as e:
             log.append(f"use {key} failed: {e}")
-    a = analyze(sims, quick=True)
+    # a tarot or spectral Best play says to use first (`tarot_to_use`): used, then the hand it
+    # changed analysed again; one the game refuses isn't tried again this move
+    refused, counted = set(), set()  # keys refused; labels already counted in `not_followed`
+    for n in range(MOVE_USES + 1):
+        a = analyze(sims, quick=True)
+        gs = rpc("gamestate")
+        use = tarot_to_use(a, gs, refused)
+        if use is None:
+            break
+        key, label, t = use
+        if n == MOVE_USES:
+            NOT_FOLLOWED.append(f"blind: use {label} first (more than {MOVE_USES} uses before one move)")
+            counted.add(label)
+            break
+        try:
+            i = next(i for i in reversed(range(len(cards(gs, "consumables")))) if cards(gs, "consumables")[i].get("key") == key)
+            if t is None:
+                rpc("use", consumable=i)
+                log.append(f"use {label} first")
+            else:
+                places = target_places(t, log)
+                rpc("use", consumable=i, cards=places)
+                log.append(f"use {label} on {' '.join(t['cards'])} first")
+        except RpcError as e:
+            log.append(f"use {label} failed: {e}")
+            NOT_FOLLOWED.append(f"blind: use {label} first refused")
+            refused.add(key)
+            counted.add(label)
     bp = a.get("best_play")
     gs = rpc("gamestate")
     hand = cards(gs, "hand")
+    # a held one whose own value names cards in this hand that Best play doesn't use first: held
+    # (`tarot_to_use`), logged once a blind (gap 2: what holding it on to a later hand costs)
+    for c in cards(gs, "consumables"):
+        t = targets_of(a, c.get("key"))
+        tag = (gs.get("ante_num"), gs.get("round_num"), c.get("key"))
+        if t is not None and c.get("label") != (bp or {}).get("use_first") and tag not in NAMED_LOGGED:
+            NAMED_LOGGED.add(tag)
+            log.append(f"hold {c.get('label')}: its value names {' '.join(t['cards'])}, Best play doesn't use it first")
     if not bp or not bp.get("indices"):
         idx = list(range(min(5, len(hand))))
         rpc("play", cards=idx)
         return
-    idx = [i for i in bp["indices"] if i < len(hand)]
     blind = next((b for b in (gs.get("blinds") or {}).values() if isinstance(b, dict) and b.get("status") == "CURRENT"), {})
     if VERBOSE:
         print(f"  ante {gs['ante_num']} {blind.get('name', '?')}: {gs['round'].get('chips')}/{blind.get('score', '?')} · "
@@ -363,8 +493,10 @@ def play_hand(sims, log):
               f"({bp.get('hand', '')} {bp.get('score', 0):.0f}, win {bp.get('p_win')})")
     if bp["action"] not in ("play", "discard"):
         NOT_FOLLOWED.append(f"blind: {bp['action']} {' '.join(bp.get('cards') or [])}")
-    # "use X first": a planet changes no card in hand, so the move's places stand after it; a
-    # tarot Best play names goes on cards (its targets aren't in the output: gap 31)
+    # "use X first" left after the uses above: a planet changes no card in hand, so the move's
+    # places stand after it; a tarot still named wasn't used (refused, past the cap, no cards
+    # named, a held Aura: `USE_CANT_SELECT`), and the move was valued after it: the best move
+    # without a use is played instead
     u = bp.get("use_first")
     if u:
         c = next((c for c in cards(gs, "consumables") if c.get("label") == u), None)
@@ -375,7 +507,18 @@ def play_hand(sims, log):
             except RpcError as e:
                 log.append(f"use {u} first failed: {e}")
         else:
-            NOT_FOLLOWED.append(f"blind: use {u} first ({'needs targets' if c is not None else 'not held'})")
+            if u not in counted:
+                why = "not held" if c is None else "BalatroBot's use can't select its card" if c.get("key") in USE_CANT_SELECT else "no cards named"
+                NOT_FOLLOWED.append(f"blind: use {u} first ({why})")
+            # (Best play lists its 4 next moves, which can all use it: then its own move is
+            # played, on the cards it would have played after the use)
+            alt = next((o for o in bp.get("alternatives") or [] if not o.get("use_first") and o.get("indices")), None)
+            if alt is not None:
+                log.append(f"without {u}: {alt['action']} {' '.join(alt.get('cards') or [])}")
+                bp = alt
+            else:
+                NOT_FOLLOWED.append(f"blind: no move without {u} listed")
+    idx = [i for i in bp["indices"] if i < len(hand)]
     if bp["action"] == "discard" and gs["round"]["discards_left"] > 0:
         rpc("discard", cards=idx)
     else:
@@ -571,7 +714,7 @@ def take(o, a, gs, sims, log):
             if held(o):
                 raise
         return "tarot"
-    if kind == "pack" and (key.startswith("p_buffoon") or key.startswith("p_celestial")):
+    if kind == "pack" and key.startswith(("p_buffoon", "p_celestial", "p_arcana", "p_spectral")):
         i = index_of_key(gs, "packs", key)
         if i is None:
             return None
@@ -617,11 +760,11 @@ def pack_index(o, gs):
     return next((i for i, c in enumerate(cards(gs, "pack")) if card_label(c) == want), None)
 
 
-def pick_from_pack(o, gs, log):
+def pick_from_pack(o, gs, log, targets=None):
     """Takes one pick from the open pack, first selling the joker the advisor names for it (the
     game sells on any screen, card.lua `Card:can_sell_card`; BalatroBot's `sell` needs the
-    bot's patched copy, see the docstring). None when taken, else why not, as `not_followed`
-    words it."""
+    bot's patched copy, see the docstring); a tarot or spectral that goes on cards, on the ones
+    its value names (`targets`). None when taken, else why not, as `not_followed` words it."""
     i = pack_index(o, gs)
     if i is None:
         log.append(f"pack pick: no {o.get('key') or o['label']} in the pack")
@@ -636,18 +779,23 @@ def pick_from_pack(o, gs, log):
         gs = rpc("gamestate")
         i = pack_index(o, gs)
     try:
-        rpc("pack", card=i)
+        if targets:
+            rpc("pack", card=i, targets=target_places(targets, log))
+        else:
+            rpc("pack", card=i)
     except RpcError as e:
         log.append(f"pack pick failed{' after its sale' if sold else ''}: {e}")
         return "pack pick refused after its sale" if sold else "pack pick refused"
-    log.append(o["label"])
+    log.append(o["label"] + (f" on {' '.join(targets['cards'])}" if targets else ""))
     return None
 
 
 def open_pack(sims, log):
-    """Takes the advisor's top pick while it is one the bot follows (a joker, a planet or a
-    Standard pack's playing card), else the best one it follows ranked above skipping, else
-    skips. Each time the top pick isn't the one taken, `not_followed` says why: a kind the bot doesn't take ("pack: tarot pick …"), a sale
+    """Takes the advisor's top pick while it is one the bot follows (a joker, a planet, a tarot or
+    spectral, on the cards its value names when it goes on cards, or a Standard pack's playing
+    card), else the best one it follows ranked above skipping, else skips. Each time the top pick
+    isn't the one taken, `not_followed` says why: a kind the bot doesn't take ("pack: …"), one it
+    can't (`why_not_pick`: "not valued", "no cards named", ...), a sale
     it couldn't make ("pack pick needing a sale: …"), a pick the game refused or not found. A pick
     refused after its sale went through skips the pack: the analysis's other sales were named
     for the board before it."""
@@ -665,10 +813,12 @@ def open_pack(sims, log):
                 break
             if not o["label"].startswith("pick "):
                 continue
-            if o["kind"] not in ("joker", "planet", "card"):
+            if o["kind"] not in ("joker", "planet", "card", "tarot"):
                 why = "pack"  # a kind the bot doesn't take
+            elif o["kind"] == "tarot" and (w := why_not_pick(o, a, gs)):
+                why = w
             else:
-                why = pick_from_pack(o, gs, log)
+                why = pick_from_pack(o, gs, log, targets_of(a, o.get("key")) if o["kind"] == "tarot" else None)
                 if why is None:
                     took = o
                     break
@@ -690,11 +840,12 @@ def open_pack(sims, log):
             return
 
 
-# Tags whose value in skip-or-play is a pick the bot doesn't make yet: a Mega Arcana or Spectral
-# pack's best pick, targets included (advise.rs, the skip-or-play block). A tag the advisor
+# Tags whose value in skip-or-play is a pick the bot doesn't make yet (none since 2026-11-15:
+# Charm's and Ethereal's packs, valued as their best pick with its targets, advise.rs's
+# skip-or-play block, are opened and picked from as `open_pack` follows them). A tag the advisor
 # doesn't value at all (`valued` false) isn't followed either: its skip is a verdict on what
 # skipping costs alone, so unmodelled, and the bot plays.
-TAGS_NOT_FOLLOWED = {"tag_charm": "a tarot pick", "tag_ethereal": "a spectral pick"}
+TAGS_NOT_FOLLOWED = {}
 
 
 def blind_select(args, log, skips, a=None):
@@ -1146,6 +1297,7 @@ def one_run(args, n, seed=None):
     ANALYSIS_S = 0.0
     NOT_FOLLOWED.clear()
     FOR_BLIND.clear()
+    NAMED_LOGGED.clear()
     rpc("menu")
     seed = seed or f"BOT{int(time.time()) % 100000:05d}{n}"
     # a seed played again (paired runs, --repeat) keeps its states in a folder of its own

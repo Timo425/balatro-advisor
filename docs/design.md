@@ -151,11 +151,20 @@ selling, skipping.
 
 The bot bench (`tools/botrun.py`, through BalatroBot in the real game on the bot's own profile)
 plays whole runs with the advisor choosing. It isn't a check for changes to the advice: a run
-measures the advisor only where the bot follows it, and the bot doesn't follow tarots that go on
-cards, Arcana and Spectral packs, "use X first" for a tarot or a skip whose tag the advice
-values as a tarot or spectral pick or doesn't value (it follows skip-or-play since 2026-10-31,
-vouchers and the tarots and spectrals that go on no card since 2026-11-02) (its docstring
+measures the advisor only where the bot follows it, and the bot doesn't follow a skip whose tag
+the advice doesn't value, a shop tarot that goes on cards or The Emperor (it would hold them:
+a held one is used only when Best play says "use X first", gap 2) (it follows skip-or-play since
+2026-10-31, vouchers and the tarots and spectrals that go on no card since 2026-11-02, and since
+2026-11-15 Arcana and Spectral packs, their picks on the cards the advice names (gap 31), "use X
+first" for a tarot and the Charm and Ethereal tags' skips) (its docstring
 keeps the list; each run records the advisor's top choices it couldn't take, `not_followed`).
+On 2026-11-15 (10a7f09 and the bot change after it) BAVANG20 and BAVANG16 (Anaglyph Deck, Gold
+Stake) reached Antes 4 and 6, with no errors and nothing in `not_followed`: on BAVANG16 the bot
+took both Ethereal Tags and picked Talisman on K♦, and in a Jumbo Arcana Pack moved K♠ to the
+right of 3♣ and picked Death on them (the 3♣ became a second K♠: a Five of a Kind at Ante 6). A
+held tarot used in a blind came up in neither run; on the same game, with tarots added by hand,
+The Star went on its three cards and Death on two given right to left, as Best play's "use X
+first" would have it.
 What was measured on 2026-10-23/24, at 1904f2d (Red Deck, 100 simulations a board): a run on the
 same game seed with the same advisor seed is the same run (10 seeds played twice, every pair
 identical), so before and after can be paired seed by seed and re-run when needed rather than
@@ -3117,12 +3126,14 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    tooltip says to put the copied card to the right: the game copies the rightmost, card.lua
    `Card:use_consumeable`). One valued on hands you'd hold (a shop's, a pack that deals no hand) is
    marked `targets_later`: its cards are chosen in the next blind's hand, where it is valued again.
-   What's left is gap 2's: a held tarot's own cards say using it on them beats never using it, not
-   that now beats later in the blind, and Best play's round value doesn't count the deck a use
-   leaves (a destroying use isn't in the round at all), so "use X first" shows only when the use
-   helps the blind being played. In 74 of 130 blind states of the owner's holding such a tarot (13
-   runs, 2026-11-15, quick pass) its own value named cards; Best play said to use one first in 26
-   (queue card "A tarot whose target wins this blind is used").
+   The bot picks pack tarots on their cards and uses a held one when Best play says to
+   (tools/botrun.py), and so buys none in the shop yet. What's left is gap 2's: a held tarot's own
+   cards say using it on them beats never using it, not that now beats later in the blind, and Best
+   play's round value doesn't count the deck a use leaves (a destroying use isn't in the round at
+   all), so "use X first" shows only when the use helps the blind being played. In 74 of 130 blind
+   states of the owner's holding such a tarot (13 runs, 2026-11-15, quick pass) its own value named
+   cards; Best play said to use one first in 26. The bot holds the rest and logs them (queue card
+   "A tarot whose target wins this blind is used").
    Not fixed, as small: a card in hand is matched to the deck by `Card::same_kind`, which ignores a
    perma bonus (Hiker), so with two cards alike but for that bonus in hand the named place can be
    the other twin's (their values differ by the bonus only; none of the 130 blind states above
