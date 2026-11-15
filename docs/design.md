@@ -161,10 +161,10 @@ keeps the list; each run records the advisor's top choices it couldn't take, `no
 On 2026-11-15 (10a7f09 and the bot change after it) BAVANG20 and BAVANG16 (Anaglyph Deck, Gold
 Stake) reached Antes 4 and 6, with no errors and nothing in `not_followed`: on BAVANG16 the bot
 took both Ethereal Tags and picked Talisman on K♦, and in a Jumbo Arcana Pack moved K♠ to the
-right of 3♣ and picked Death on them (the 3♣ became a second K♠: a Five of a Kind at Ante 6). A
-held tarot used in a blind came up in neither run; on the same game, with tarots added by hand,
-The Star went on its three cards and Death on two given right to left, as Best play's "use X
-first" would have it.
+right of 3♣ and picked Death on them (the deck's K♠ went from two to three, its one 3♣ gone). A
+held tarot used in a blind came up in neither run; on the same game, with The Star and Death
+added by hand and Best play's "use X first" stood in for, the bot's path for it used The Star on
+its three cards and Death on two given right to left.
 What was measured on 2026-10-23/24, at 1904f2d (Red Deck, 100 simulations a board): a run on the
 same game seed with the same advisor seed is the same run (10 seeds played twice, every pair
 identical), so before and after can be paired seed by seed and re-run when needed rather than
@@ -3130,10 +3130,14 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    (tools/botrun.py), and so buys none in the shop yet. What's left is gap 2's: a held tarot's own
    cards say using it on them beats never using it, not that now beats later in the blind, and Best
    play's round value doesn't count the deck a use leaves (a destroying use isn't in the round at
-   all), so "use X first" shows only when the use helps the blind being played. In 74 of 130 blind
-   states of the owner's holding such a tarot (13 runs, 2026-11-15, quick pass) its own value named
-   cards; Best play said to use one first in 26. The bot holds the rest and logs them (queue card
-   "A tarot whose target wins this blind is used").
+   all), so "use X first" shows only when the use helps the blind being played. Of the owner's 264
+   blind states holding such a tarot, in the 130 of the first 13 runs by name (2026-11-15, quick
+   pass) its own value named cards in 74; Best play said to use one first in 26, by tarot unevenly
+   (The Empress in 11 of the 16 holding it, The Hanged Man, The Devil and The Moon in none of 50).
+   The bot holds the rest and logs them (queue card "A tarot whose target wins this blind is
+   used"); in the shop, a tarot that goes on cards was the advisor's top pick the bot refused in 10
+   of its 161 Gold Stake runs (older code: Justice 4, The Hierophant 2, The Moon, The Sun, The
+   Magician, Strength).
    Not fixed, as small: a card in hand is matched to the deck by `Card::same_kind`, which ignores a
    perma bonus (Hiker), so with two cards alike but for that bonus in hand the named place can be
    the other twin's (their values differ by the bonus only; none of the 130 blind states above

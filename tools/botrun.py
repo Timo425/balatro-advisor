@@ -39,11 +39,12 @@ verdict on the advice. As of 2026-10-24 the bot:
   every blind unasked. Since 2026-11-02: vouchers the advisor values (not one whose note says
   "not valued"); shop tarots and spectrals that go on no card you pick (`TARGET_FREE`, from the
   game's data) and that the advisor values, bought and used at once, or, those that act on the
-  cards in hand (`NEEDS_HAND`: Familiar, Grim, Incantation, Immolate, Sigil), at the next blind's
+  cards in hand (`NEEDS_HAND`: Familiar, Grim, Incantation, Immolate, Sigil, Ouija), at the next blind's
   start, as their value counted them; a planet or such a tarot you hold, used when its
   "(you have it)" option is worth it (Blue Seals' planets, which it had held unused, and The
-  High Priestess's); a
-  planet Best play says to use first; a Standard pack's playing-card pick (found by its label:
+  High Priestess's; a held one that acts on the cards in hand or goes on cards is used only in a
+  blind, on Best play's word, below: its "(you have it)" option ranked first in the shop is
+  counted, "used in a blind"); a planet Best play says to use first; a Standard pack's playing-card pick (found by its label:
   the advisor offers no Standard pack in the shop and doesn't value the Standard Tag, so no run
   has opened one yet). Before, every voucher, tarot and spectral was left and every "use X first"
   ignored uncounted. Since 2026-11-15, tarots and spectrals that go on cards, on the cards the
@@ -55,9 +56,10 @@ verdict on the advice. As of 2026-10-24 the bot:
 - doesn't: a held tarot whose own value names cards in the hand when Best play doesn't say to use
   it first: held, and logged once a blind ("hold X: its value names …"; that value is against
   never using it, not against using it later: gap 2); for the same reason a shop tarot or
-  spectral that goes on cards ("would hold it until Best play uses it (gap 2)": Best play never
-  names The Hanged Man, and seldom The Devil, The Moon or Justice) and The Emperor ("makes tarots
-  it would hold", `MAKES_TAROTS`); the tarots and spectrals the advisor doesn't value ("not valued": Ectoplasm, Ouija),
+  spectral that goes on cards ("would hold it until Best play uses it (gap 2)": in 130 of the
+  owner's blind states holding one, Best play names some never or seldom, The Hanged Man, The Devil and
+  The Moon in none of 50, Justice in 1 of 16, and some often, The Empress in 11 of 16) and The Emperor ("makes tarots
+  it would hold", `MAKES_TAROTS`); the tarots and spectrals the advisor doesn't value ("not valued": Ectoplasm),
   one that makes a joker with your slots full ("needs a free joker slot"), a shop one with your
   consumable slots full ("needs a free consumable slot"), a held Aura ("BalatroBot's use can't
   select its card": use.lua selects cards only for a consumable with `max_highlighted`), a pack
@@ -308,7 +310,7 @@ def free_consumable_slot(gs):
 def why_not_tarot(o, gs):
     """Why the bot doesn't take this shop tarot or spectral option (bought, then used or held for
     a blind; or used from your consumables), as `not_followed` words it; None when it can. The
-    advisor's own words decide "not valued" (its note: Ectoplasm, Ouija, ...)."""
+    advisor's own words decide "not valued" (its note: Ectoplasm, ...)."""
     key = o.get("key")
     if key in MAKES_TAROTS:
         return "makes tarots it would hold"
@@ -319,13 +321,14 @@ def why_not_tarot(o, gs):
     if key in USE_CANT_SELECT:
         return "BalatroBot's use can't select its card"
     if held(o):
-        # one that goes on the cards in hand: used in a blind (a `NEEDS_HAND` one at its start;
-        # one you pick cards for when Best play says "use X first", on them: `play_hand`)
+        # one that acts on the cards in hand or goes on cards: used in a blind, when Best play
+        # says "use X first" (on its cards: `tarot_to_use`); in the shop its top rank is counted
         return "used in a blind" if key in NEEDS_HAND or key not in TARGET_FREE else None
     if key not in TARGET_FREE:
         # its value here counts it used on the next blind's best cards (`targets_later`), but a
-        # held one is used only on Best play's word, which never names one whose use doesn't
-        # help the blind played (gap 2; The Hanged Man never): bought, it would fill a slot
+        # held one is used only on Best play's word, which names one only when its use helps the
+        # blind played (gap 2; The Hanged Man never, The Empress often): bought, it can fill a
+        # slot unused
         return "would hold it until Best play uses it (gap 2)"
     if not free_consumable_slot(gs):
         return "needs a free consumable slot"
