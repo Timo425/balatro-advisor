@@ -226,6 +226,9 @@ pub struct PlayAdvice {
     /// A consumable to use before the move (its effect is in the win chance).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub use_first: Option<String>,
+    /// The cards in your hand it goes on (`PlayOption::use_targets`)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub use_targets: Option<Targets>,
     /// After a discard: the hand you most often go on to play (see `PlayOption::then`)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub then: Option<(String, f64, f64)>,
@@ -315,6 +318,11 @@ pub struct PlayOption {
     /// A consumable to use before the move.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub use_first: Option<String>,
+    /// The cards in your hand it goes on, when it goes on cards you pick: the ones its value was
+    /// worked out on (`TarotValue::targets`, the same use), before the move; the move's own cards
+    /// are the hand it leaves
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub use_targets: Option<Targets>,
     /// Planets from Blue Seals held at the end, on average (counted in the ranking)
     pub planets: f64,
     /// What the round's hands and discards leave the jokers a round changes (`PlayAdvice::grows`),
@@ -586,6 +594,32 @@ pub struct TarotValue {
     /// change (Ouija's −1 hand size), for By Ante 8
     #[serde(skip)]
     pub round: (i64, i64, i64),
+    /// The cards in your hand it was valued on (its target race's pick, gap 31), where it goes
+    /// on cards you pick and is valued on the hand on screen (one you hold or an open pack's,
+    /// in a blind or an Arcana or Spectral pack); none when not using it is kept (D8: no set is
+    /// worth more, the note says so). One only the open pack offers takes its best set even on a
+    /// tie (used at once if picked, gone if not: `pack_only`)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub targets: Option<Targets>,
+    /// It goes on cards you pick but was valued on hands you'd hold (in a shop, or a pack that
+    /// deals no hand): its cards are chosen in the next blind's hand, where it's valued again
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub targets_later: bool,
+}
+
+/// The cards a consumable goes on (`TarotValue::targets`, `PlayOption::use_targets`), as the
+/// target race chose them (gap 31): the same cards its value was worked out on
+#[derive(Debug, Clone, Default, Serialize, PartialEq)]
+pub struct Targets {
+    /// Their places in your hand now (0 = leftmost, the game's order), for bots
+    pub places: Vec<usize>,
+    /// Each as you see it (a face-down one by its place and the sorts: `model::hand_labels`)
+    pub cards: Vec<String>,
+    /// Their order matters: the first becomes a copy of the second (Death; the game copies the
+    /// rightmost of the two onto the other, card.lua `Card:use_consumeable`, so the second goes
+    /// to the right of the first)
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub ordered: bool,
 }
 
 impl TarotValue {
@@ -4483,7 +4517,7 @@ fn tarot_values(
     // Spectral cards (card.lua Card:use_consumeable), each simulated by what it changes.
     let spectral_value = |t: &crate::data::Center, sims: usize| -> TarotValue {
         let tv = |p: f64, reach: f64, note: String, simulated: bool, deck: Option<Vec<Card>>, gain: f64| TarotValue {
-            use_effect: None, target: None, round: (0, 0, 0), long_mult: None, decks: vec![], spectral: true, deck, key: t.key.clone(), name: t.name.clone(), p_win: p, note, simulated,
+            use_effect: None, target: None, targets: None, targets_later: false, round: (0, 0, 0), long_mult: None, decks: vec![], spectral: true, deck, key: t.key.clone(), name: t.name.clone(), p_win: p, note, simulated,
             per_shop: spectral_per_shop, reach, reach_now, money_gain: gain,
         };
         let mut rng = crate::engine::Rng::new(ctx.opts.seed ^ 0x5bec ^ t.order as u64);
@@ -4676,14 +4710,14 @@ fn tarot_values(
                 "c_judgement" => {
                     let mut rng = crate::engine::Rng::new(ctx.opts.seed ^ 0x7a70);
                     let reach = pool_reach(pool, 1, &mut rng).unwrap_or(reach_now).max(reach_now);
-                    return TarotValue { use_effect: None, target: None, round: (0, 0, 0), long_mult: None, decks: vec![], spectral: false, deck: None, key: t.key.clone(), name: t.name.clone(), p_win: expected_best(ctx, pool, round, now, 1, 1.0, f64::INFINITY, per_rarity, &mut rng).max(now), note, simulated: true, per_shop, reach, reach_now, money_gain: 0.0 };
+                    return TarotValue { use_effect: None, target: None, targets: None, targets_later: false, round: (0, 0, 0), long_mult: None, decks: vec![], spectral: false, deck: None, key: t.key.clone(), name: t.name.clone(), p_win: expected_best(ctx, pool, round, now, 1, 1.0, f64::INFINITY, per_rarity, &mut rng).max(now), note, simulated: true, per_shop, reach, reach_now, money_gain: 0.0 };
                 }
                 "c_wheel_of_fortune" => {
                     // card.lua: 1 in 4 hits a random joker without an edition; the edition is
                     // poll_edition(guaranteed, no negative): Polychrome 15%, Holo 35%, Foil 50%.
                     let plain: Vec<usize> = ctx.base.jokers.iter().enumerate().filter(|(_, j)| j.edition.is_none()).map(|(i, _)| i).collect();
                     if plain.is_empty() {
-                        return TarotValue { use_effect: None, target: None, round: (0, 0, 0), long_mult: None, decks: vec![], spectral: false, deck: None, key: t.key.clone(), name: t.name.clone(), p_win: now, note: "no joker without an edition to hit".into(), simulated: true, per_shop, reach: reach_now, reach_now, money_gain: 0.0 };
+                        return TarotValue { use_effect: None, target: None, targets: None, targets_later: false, round: (0, 0, 0), long_mult: None, decks: vec![], spectral: false, deck: None, key: t.key.clone(), name: t.name.clone(), p_win: now, note: "no joker without an edition to hit".into(), simulated: true, per_shop, reach: reach_now, reach_now, money_gain: 0.0 };
                     }
                     let hit = (run.probability_normal / 4.0).min(1.0);
                     let (mut p, mut r) = (0.0, 0.0);
@@ -4701,12 +4735,12 @@ fn tarot_values(
                     let p = (1.0 - hit) * now + hit * p / k;
                     let reach = (1.0 - hit) * reach_now + hit * r / k;
                     let note = format!("{:.0}% chance: one of your {} jokers without an edition gets Polychrome 15% / Holo 35% / Foil 50%", hit * 100.0, plain.len());
-                    return TarotValue { use_effect: None, target: None, round: (0, 0, 0), long_mult: None, decks: vec![], spectral: false, deck: None, key: t.key.clone(), name: t.name.clone(), p_win: p, note, simulated: true, per_shop, reach, reach_now, money_gain: 0.0 };
+                    return TarotValue { use_effect: None, target: None, targets: None, targets_later: false, round: (0, 0, 0), long_mult: None, decks: vec![], spectral: false, deck: None, key: t.key.clone(), name: t.name.clone(), p_win: p, note, simulated: true, per_shop, reach, reach_now, money_gain: 0.0 };
                 }
                 "c_high_priestess" if !planet_p.is_empty() => best_of_subsets(planet_p, 2).0.max(now),
                 _ => now,
             };
-            TarotValue { use_effect: None, target: None, round: (0, 0, 0), long_mult: None, decks: vec![], spectral: false, deck: None, key: t.key.clone(), name: t.name.clone(), p_win: p, note, simulated: p != now, per_shop, reach: reach_now, reach_now, money_gain: 0.0 }
+            TarotValue { use_effect: None, target: None, targets: None, targets_later: false, round: (0, 0, 0), long_mult: None, decks: vec![], spectral: false, deck: None, key: t.key.clone(), name: t.name.clone(), p_win: p, note, simulated: p != now, per_shop, reach: reach_now, reach_now, money_gain: 0.0 }
         }
     };
     // With no hand on screen, a card-targeting tarot is valued on hands you'd hold (random
@@ -4733,7 +4767,7 @@ fn tarot_values(
         let (outcomes, min, max) = consumable::card_outcomes(&t.key, &t.config)?;
         let spectral = t.set == "Spectral";
         let base = TarotValue {
-            use_effect: None, target: None, round: (0, 0, 0), long_mult: None, decks: vec![], spectral, deck: None, key: t.key.clone(), name: t.name.clone(), p_win: now,
+            use_effect: None, target: None, targets: None, targets_later: !real, round: (0, 0, 0), long_mult: None, decks: vec![], spectral, deck: None, key: t.key.clone(), name: t.name.clone(), p_win: now,
             note: format!("needs {min} card{} in hand", if min > 1 { "s" } else { "" }), simulated: false,
             per_shop: if spectral { spectral_per_shop } else { per_shop }, reach: reach_now, reach_now, money_gain: 0.0,
         };
@@ -4788,17 +4822,14 @@ fn tarot_values(
             return Some(TarotValue { simulated: true, deck: Some(deck.clone()), note: format!("{what}: {note}"), ..base });
         }
         let (p, r) = odds(&sets[best]);
-        // a card of your hand by what you can see of it (a face-down one by its place and the
-        // sorts: `model::hand_labels`), never the card the deck knows
-        let label = |v: &[usize]| {
-            v.iter()
-                .map(|&i| match hand_idx.iter().position(|&h| h == Some(i)) {
-                    Some(p) if run.hand[p].face_down => names[p].clone(),
-                    _ => deck[i].label(),
-                })
-                .collect::<Vec<_>>()
-                .join(" ")
+        // a card of your hand as your hand shows it (`model::hand_labels`: a debuffed one marked,
+        // a face-down one by its place and the sorts), never the deck's copy of it (debuffs
+        // cleared, `fresh_deck_of`); the deck's label only for a card not in hand
+        let card_label = |i: usize| match hand_idx.iter().position(|&h| h == Some(i)) {
+            Some(p) => names[p].clone(),
+            None => deck[i].label(),
         };
+        let label = |v: &[usize]| v.iter().map(|&i| card_label(i)).collect::<Vec<_>>().join(" ");
         // the deck it leaves (a random effect, or one on a face-down card: each outcome's, by its
         // chance)
         let mut decks: Vec<(f64, Vec<Card>)> = decks_of(&sets[best]).into_iter().map(|(_, w, d)| (w, d)).collect();
@@ -4812,7 +4843,14 @@ fn tarot_values(
         };
         // the effect and its targets, for Best play's move with it (one outcome only)
         let target = (outcomes.len() == 1).then(|| (outcomes[0].1, sets[best].clone()));
-        Some(TarotValue { p_win: p, reach: r, simulated: true, deck: d, decks, note, target, ..base })
+        // the same cards as places in your hand, for bots (on the hand on screen only: a sampled
+        // hand's cards aren't yours)
+        let targets = real.then(|| Targets {
+            places: sets[best].iter().filter_map(|&i| hand_idx.iter().position(|&h| h == Some(i))).collect(),
+            cards: sets[best].iter().map(|&i| card_label(i)).collect(),
+            ordered: outcomes.iter().any(|&(_, e)| e == CardEffect::CopyLeftToRight),
+        });
+        Some(TarotValue { p_win: p, reach: r, simulated: true, deck: d, decks, note, target, targets, ..base })
     };
     // A consumable you hold or can pick from the open pack goes on the hand on screen; the
     // rest of the pool on hands you'd hold
@@ -8608,6 +8646,43 @@ mod tests {
         let t = a.tarots.iter().find(|t| t.key == "c_death").unwrap();
         assert!(t.note.contains("hands you'd hold"), "{}", t.note);
         assert!(t.use_effect.is_none());
+        // no cards of this hand named: they're chosen in the hand it's used on (gap 31)
+        assert!(t.targets.is_none() && t.targets_later);
+    }
+
+    #[test]
+    fn a_held_tarot_names_the_cards_it_was_valued_on_in_the_games_order() {
+        // Death held in a blind, with Baron (held Kings x1.5) and a Steel King to copy: the cards
+        // its value chose are named by their places in the hand and as the hand shows them, and
+        // in Death's order: the first becomes a copy of the second (the deck it was valued with
+        // holds the second card at the first's place; the game copies the rightmost, card.lua
+        // `Card:use_consumeable`). Fails if the places, the labels or the order come from
+        // anything but the set its value was worked out on.
+        let mut r = shop_run(&[("j_baron", None, None)], &[]);
+        r.screen = crate::save::Screen::SelectingHand;
+        r.shop = None;
+        r.hand = Card::parse_list("KS:steel QH 9C 7S 5H 4D 3S 2C").unwrap();
+        r.draw_pile = crate::bench::standard_deck().into_iter().filter(|c| !r.hand.iter().any(|h| h.rank == c.rank && h.suit == c.suit)).collect();
+        r.consumables = vec![crate::save::ItemCard { key: "c_death".into(), name: "Death".into(), set: "Tarot".into(), cost: 3, edition: None, card: None, rental: false, eternal: false, perishable: None }];
+        r.blinds[0].state = "Current".into();
+        r.current_blind = Some(crate::save::CurrentBlind {
+            key: "bl_small".into(), name: "Small Blind".into(), target: 1500.0, scored: 0.0, disabled: false, hands_seen: vec![], only_hand: None,
+        });
+        let a = analyze(&r, GameData::bundled(), None, &quick());
+        let t = a.tarots.iter().find(|t| t.key == "c_death").unwrap();
+        let x = t.targets.as_ref().unwrap_or_else(|| panic!("no cards named: {}", t.note));
+        assert!(x.ordered && !t.targets_later);
+        assert!(x.places.len() == 2 && x.places[0] != x.places[1], "{x:?}");
+        let names = crate::model::hand_labels(&r.hand);
+        assert_eq!(x.cards, x.places.iter().map(|&p| names[p].clone()).collect::<Vec<_>>());
+        // the deck cards its value was worked out on are the hand's cards at those places (in a
+        // blind the race's deck is `fresh_deck_of` the run), and the deck it leaves holds the
+        // second at the first's place
+        let ((_, v), d, before) = (t.target.as_ref().unwrap(), t.deck.as_ref().unwrap(), fresh_deck_of(&r));
+        for k in 0..2 {
+            assert!(before[v[k]].same_kind(&r.hand[x.places[k]]), "{x:?}: deck card {} valued for place {}", before[v[k]].label(), x.places[k]);
+        }
+        assert!(d[v[0]].same_kind(&r.hand[x.places[1]]), "{x:?}: {} at the first's place", d[v[0]].label());
     }
 
     #[test]

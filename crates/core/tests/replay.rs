@@ -54,6 +54,24 @@ fn replayed_states_give_the_expected_advice() {
             failures.extend(first::differences(early, &analysis).into_iter().map(|d| format!("{name}: first ranking: {d}")));
         }
         let a = serde_json::to_value(analysis).unwrap();
+        // every target the advice names (a tarot's, a Best play "use X first"'s) is a place in
+        // your hand labelled as the hand shows that card (`hand_labels`: debuffs marked, face-down
+        // ones by place), one place a card, as a bot would select it. (Which deck card was valued
+        // there is the unit test's: advise.rs `a_held_tarot_names_the_cards_it_was_valued_on_…`.)
+        let names = balatro_advisor::model::hand_labels(&run.hand);
+        let mut check_targets = |what: String, t: &Value| {
+            let (places, cards) = (t["places"].as_array().unwrap(), t["cards"].as_array().unwrap());
+            let at: Vec<Option<&String>> = places.iter().map(|p| names.get(p.as_u64().unwrap() as usize)).collect();
+            if places.len() != cards.len() || at.iter().zip(cards).any(|(n, c)| n.is_none_or(|n| c.as_str() != Some(n.as_str()))) {
+                failures.push(format!("{name}: {what}'s targets {t} aren't the hand's cards at those places ({names:?})"));
+            }
+        };
+        for t in a["tarots"].as_array().into_iter().flatten().filter(|t| !t["targets"].is_null()) {
+            check_targets(t["name"].as_str().unwrap_or("?").to_string(), &t["targets"]);
+        }
+        for o in std::iter::once(&a["best_play"]).chain(a["best_play"]["alternatives"].as_array().into_iter().flatten()).filter(|o| !o["use_targets"].is_null()) {
+            check_targets(format!("use {}", o["use_first"]), &o["use_targets"]);
+        }
         let bp = &a["best_play"];
         // whether the best move uses card `c`: a label ("9♠"), or "#n", the nth card from the left
         // of your hand as it sits (a face-down card, or one of two alike: by its place, through

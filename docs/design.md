@@ -958,6 +958,10 @@ the same retriggered ×Mult.
   is shown no more than 1% better than the leader saved 6% of all its rounds (18% on the slowest
   state, still minutes) and moved 6 of 134 picks, 4 leaning worse (not shown by 2 standard
   errors): too little saved for that lean, so the rounds stay.
+- **Done 2026-11-15:** a tarot's cards named (gap 31): every tarot or spectral valued on the hand
+  on screen reports the cards its value was worked out on, by their places and as the hand shows
+  them, and Best play's "use X first" names them ("Use The Empress on 6♥ 3♥", "Use Death: 6♦
+  becomes 2♠ [steel]"); reporting only, no pick moved. What's left is gap 2's.
 - **Next:** a free hand banked before the
   hand that wins (gap 34); Ceremonial Dagger's value (gap 8); the blind odds shown and the
   outlook chained as Best play's blinds ahead are (gap 28).
@@ -3102,6 +3106,27 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    option and say "use Death: 7♣ becomes 4♦ [steel]" in Best play, text and JSON. Raised in
    play 2026-10-12 (Anaglyph Deck, Ante 2 The Head: Best play said Death first, Tarots said
    7♣ → Steel 4♦).
+   Done 2026-11-15 (reporting only: no value or pick moves): every tarot or spectral that goes on
+   cards and is valued on the hand on screen (one you hold in a blind, an open Arcana or Spectral
+   pack's) reports the cards its value was worked out on, the target race's pick itself
+   (`TarotValue::targets`: their places in your hand and their labels as the hand shows them,
+   debuffs marked; Death's in its order). It has none when not using it is kept (D8: no set worth
+   more, as the note says); one only the open pack offers takes its best set even on a tie (used at
+   once if picked, gone if not). Best play's "use X first" carries the same set (`use_targets`):
+   "Use The Empress on 6♥ 3♥, then discard …", "Use Death: 6♦ becomes 2♠ [steel], then …" (the
+   tooltip says to put the copied card to the right: the game copies the rightmost, card.lua
+   `Card:use_consumeable`). One valued on hands you'd hold (a shop's, a pack that deals no hand) is
+   marked `targets_later`: its cards are chosen in the next blind's hand, where it is valued again.
+   What's left is gap 2's: a held tarot's own cards say using it on them beats never using it, not
+   that now beats later in the blind, and Best play's round value doesn't count the deck a use
+   leaves (a destroying use isn't in the round at all), so "use X first" shows only when the use
+   helps the blind being played. In 74 of 130 blind states of the owner's holding such a tarot (13
+   runs, 2026-11-15, quick pass) its own value named cards; Best play said to use one first in 26
+   (queue card "A tarot whose target wins this blind is used").
+   Not fixed, as small: a card in hand is matched to the deck by `Card::same_kind`, which ignores a
+   perma bonus (Hiker), so with two cards alike but for that bonus in hand the named place can be
+   the other twin's (their values differ by the bonus only; none of the 130 blind states above
+   holds a perma bonus in hand).
 32. **An open pack's "skip" wins ties, even when skipping keeps nothing.** A pick from a pack
    already paid for and "skip the pack" are ranked on the same measure (`rank_options`), and a
    planet for a side hand moves By Ante 8 by less than the noise can show (~1%), so every pick

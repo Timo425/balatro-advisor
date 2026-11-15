@@ -127,6 +127,9 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
                 Some(sim::Use { name: center.name.clone(), key: c.key.clone(), levels, planet: true, ..Default::default() })
             })
             .collect();
+        // a consumable used first: the cards its value chose (`TarotValue::targets`, whose use
+        // this is: `uses` above); a planet goes on none
+        let targets_of = |name: &str| tarots.iter().find(|t| t.name == name && t.use_effect.is_some()).and_then(|t| t.targets.clone());
         let to_opt = |m: &sim::Move, st: &RoundStart, board: &Board, (p, mean, spare, cash, planets, grown): (f64, f64, f64, f64, f64, f64), use_first: Option<String>| {
             let full = move_hand(st, board);
             let hand = &full[..];
@@ -174,7 +177,7 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
             let cards: Vec<String> = idx.iter().map(|&i| label(i)).collect();
             // cards a consumable added aren't in your hand yet: no position
             let indices = idx.iter().filter(|&&i| i < hand_order.len()).map(|&i| hand_order[i]).collect();
-            PlayOption { spare_hands: spare, round_money: cash, action: action.into(), cards, indices, dig, hand: name, score, score_range: range, sure, p_win: p, mean_total: mean, use_first, planets, grown, tie: false, blind, then: None, arrange: arrange.0, arrange_indices: arrange.1 }
+            PlayOption { spare_hands: spare, round_money: cash, action: action.into(), cards, indices, dig, hand: name, score, score_range: range, sure, p_win: p, mean_total: mean, use_targets: use_first.as_ref().and_then(|n| targets_of(n)), use_first, planets, grown, tie: false, blind, then: None, arrange: arrange.0, arrange_indices: arrange.1 }
         };
         // Exact ties are broken by the cards themselves as you see them (`tie_key`), so neither
         // the order your hand is sorted in nor what a face-down card is changes the advice
@@ -430,7 +433,7 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
                 tips.extend(ctx.specs.iter().find(|x| x.in_progress()).and_then(|s| s.start.hidden.as_deref()).and_then(sim::Hidden::fell_back_note));
             }
             let tip = (!tips.is_empty()).then(|| tips.join(". "));
-            Some(PlayAdvice { reference, reference_gap, judged, worth_drawing: worth_drawing.clone(), grows: grows.clone(), counts_ahead, grown: best.grown, then: best.then.clone(), ties: opts.iter().filter(|o| o.tie).count(), planets: Some(best.planets), use_first: best.use_first, spare_hands: Some(best.spare_hands), round_money: Some(best.round_money), action: best.action, cards: best.cards, arrange: best.arrange, arrange_indices: best.arrange_indices, dig: best.dig, indices: best.indices, hand: best.hand, score: best.score, score_range: best.score_range, blind: best.blind, p_win: Some(best.p_win), alternatives: opts, tip })
+            Some(PlayAdvice { reference, reference_gap, judged, worth_drawing: worth_drawing.clone(), grows: grows.clone(), counts_ahead, grown: best.grown, then: best.then.clone(), ties: opts.iter().filter(|o| o.tie).count(), planets: Some(best.planets), use_first: best.use_first, use_targets: best.use_targets, spare_hands: Some(best.spare_hands), round_money: Some(best.round_money), action: best.action, cards: best.cards, arrange: best.arrange, arrange_indices: best.arrange_indices, dig: best.dig, indices: best.indices, hand: best.hand, score: best.score, score_range: best.score_range, blind: best.blind, p_win: Some(best.p_win), alternatives: opts, tip })
         }
         None => {
             // your hand as the round has it (a face-down card its stand-in), and what's known of
@@ -489,6 +492,7 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
             let (order, arrange, arrange_indices) = if blind { (cards.clone(), vec![], vec![]) } else { (order, arrange, arrange_indices) };
             PlayAdvice {
             use_first: None,
+            use_targets: None,
             reference: vec![],
             reference_gap: None,
             judged: vec![],
