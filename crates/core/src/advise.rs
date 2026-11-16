@@ -1524,10 +1524,13 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
     let base_reach = base_odds.get(key_round).zip(ctx.specs.get(key_round)).map_or(0.0, |(o, sp)| o.1.mean / sp.start.target.max(1.0));
     let flow_now = lr.project(&|_| true, run.dollars).flow;
     let (levels_per_ante, planet_levels) = lr.levels_for(run.dollars + flow_now, flow_now);
+    let (finds_now, slots_now) = lr.your_finds();
+    let line_now = lr.line;
     let planet_levels = planet_levels.round() as i64;
     let long_note = format!(
-        "Your board projected {antes_left:.1} antes ahead: growing jokers grown (those that grow from shop events, Red Card and Flash Card, by one pack skip and one reroll an ante, plus 1 per pack's or reroll's price above the interest line, at most 5 an ante, all on the one that grows most per dollar; those a round changes as the simulated player's rounds at this ante's blind sizes leave them), fading ones faded, perishables that run out and jokers those rounds use up dropped, {} +{planet_levels} levels (about {levels_per_ante:.1} per ante with your money), empty slots filled with stand-in jokers (×1.5, +60 Chips or +15 Mult, in proportion to how often your shop pool offers each type). Each option is compared with a typical find (×1.25) in its slot, on whole simulated rounds, with the money it leaves you: its price, what selling a joker gives back or a money card gives (spent once: ~$4 a pack skip or a reroll at its cost when a joker grows from them (Red Card, Flash Card), else ~$12 a level of your main hand, and ~$4 a planet for Constellation; money counts for less the more you have (the next dollar is worth about half at $20); interest lost or gained over the next ante included), and $9 less money held every ante per rental; the jokers add the money a round won pays on the board held against your board, and yours against it without the jokers that pay money, each on the same rounds of this ante's plain blinds won by both (scoring, discards, the round's end, hands left; counted past $0.5 an ante and 2 standard errors), to the money held every ante, with what they pay besides a round's play (Rocket's raises at the bosses ahead, Egg's sell value, To the Moon's interest). Your sellable jokers are let go by then where that leaves no less: replaced by a typical find in their place, or sold outright (no find: the sale counted once, its slot left empty to Ante 8, a Negative's gone with it; not modelled: the copy a charged Invisible Joker makes as it's sold, its slot counted as any other's), whichever leaves more, their money (income, rent) gone with them; selling one now is an option of its own (its rounds without it, its sale, the run with it let go, and the round's rent and money it would be held for when the projection lets it go anyway; its ×1.00 is keeping it), and a sellable option counts at least as a typical find less its price net of what selling it gives back; eternal ones stay, however weak. ×1.00 = as good as a typical find.",
-        top_hand.map_or("your main hand", |h| h.name())
+        "Your board projected {antes_left:.1} antes ahead: growing jokers grown (those that grow from shop events, Red Card and Flash Card, by one pack skip and one reroll an ante, plus 1 per pack's or reroll's price above the interest line, at most 5 an ante, all on the one that grows most per dollar; those a round changes as the simulated player's rounds at this ante's blind sizes leave them), fading ones faded, perishables that run out and jokers those rounds use up dropped, {} +{planet_levels} levels (about {levels_per_ante:.1} per ante with your money), empty slots filled with stand-in jokers (×1.5, +60 Chips or +15 Mult, in proportion to how often your shop pool offers each type) as far as the money pays for them at ${:.1} each (a typical find's price; money for part of one gives that part of its effect, a slot with no money for it stays empty; heuristic), ante by ante: the money you hold up to the interest line (${line_now:.0}, past which interest stops growing; a debt paid back first; what's above it buys planets, rerolls and packs), and each round the jokers' money less rent, this ante's blind reward, the interest on what's left and what a round pays besides the jokers that pay money (hands and discards left, the cards' money), less the planets that money buys first, each find bought once the money's there (on your board it pays for {finds_now:.1} of the {slots_now:.0} empty slots left beside the one an option takes). Each option is compared with a typical find (×1.25) in its slot, on whole simulated rounds, with the money it leaves you: its price, what selling a joker gives back or a money card gives (spent once: ~$4 a pack skip or a reroll at its cost when a joker grows from them (Red Card, Flash Card), else ~$12 a level of your main hand, and ~$4 a planet for Constellation; money counts for less the more you have (the next dollar is worth about half at $20); interest lost or gained over the next ante included), and $9 less money held every ante per rental; the jokers add the money a round won pays on the board held against your board, and yours against it without the jokers that pay money, each on the same rounds of this ante's plain blinds won by both (scoring, discards, the round's end, hands left; counted past $0.5 an ante and 2 standard errors), to the money held every ante, with what they pay besides a round's play (Rocket's raises at the bosses ahead, Egg's sell value, To the Moon's interest). Your sellable jokers are let go by then where that leaves no less: replaced by a typical find in their place, or sold outright (no find: the sale counted once, its slot left empty to Ante 8, a Negative's gone with it; not modelled: the copy a charged Invisible Joker makes as it's sold, its slot counted as any other's), whichever leaves more, their money (income, rent) gone with them; selling one now is an option of its own (its rounds without it, its sale, the run with it let go, and the round's rent and money it would be held for when the projection lets it go anyway; its ×1.00 is keeping it), and a sellable option counts at least as a typical find less its price net of what selling it gives back; eternal ones stay, however weak. ×1.00 = as good as a typical find.",
+        top_hand.map_or("your main hand", |h| h.name()),
+        lr.find_price()
     );
     // which of your jokers it lets go here, and what selling one does that isn't modelled
     let let_go: Vec<String> = (0..ctx.base.jokers.len())
@@ -7453,6 +7456,38 @@ mod tests {
             with_long_run(&r, |lr| lr.l0)
         };
         assert!(l0(Some(Edition::Negative)) < l0(None) * 0.99, "{} {}", l0(Some(Edition::Negative)), l0(None));
+    }
+
+    #[test]
+    fn the_long_runs_finds_are_bought_with_the_money_left_after_rent_and_debt() {
+        // Two empty slots besides the one an option is compared in, $12 of blind rewards an
+        // ante: with no rent and no debt the money buys a find for each; three rentals' rent
+        // ($27 an ante) outruns what an ante pays, and a $300 debt is more than the run pays
+        // back by Ante 8, so either leaves them empty (gap 16: rent past what planets take
+        // costs finds; a board in debt buys nothing). The typical find in the option's slot is
+        // the benchmark, there either way.
+        let mix = [HandShare { hand: "Pair".into(), share: 1.0, played: 1.0, mean: 1.0 }];
+        let mut r = shop_run(&[("j_joker", None, None)], &[]);
+        r.joker_slots = 4;
+        r.dollars = 0.0;
+        let finds = |dollars: f64, rent: f64| {
+            let mut r = r.clone();
+            r.dollars = dollars;
+            with_long_run_mix(&r, &mix, |lr| lr.fill_long(lr.project_rent(&|_| true, dollars, rent), None, 0.0).jokers.iter().filter(|j| j.key == "stand-in").count())
+        };
+        assert_eq!(finds(0.0, 0.0), 3);
+        // one rental's rent takes the planets first: the finds stay
+        assert_eq!(finds(0.0, value::RENT_PER_ANTE), 3);
+        assert_eq!(finds(0.0, 3.0 * value::RENT_PER_ANTE), 1);
+        assert_eq!(finds(-300.0, 0.0), 1);
+        // an economy voucher's money buys planets, as its price costs them (`once`), not the
+        // finds: the board in debt still buys none with $400 of it
+        let mut poor = r.clone();
+        poor.dollars = -300.0;
+        let voucher = with_long_run_mix(&poor, &mix, |lr| {
+            lr.board_with(&value::Gain { held: 400.0, ..Default::default() }).jokers.iter().filter(|j| j.key == "stand-in").count()
+        });
+        assert_eq!(voucher, 1);
     }
 
     #[test]

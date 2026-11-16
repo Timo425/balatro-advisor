@@ -44,6 +44,15 @@ pub fn sell_value(cost: i64, rental: bool) -> i64 {
 pub(super) const RENTAL_STAKE: u8 = 8;
 pub(super) const RENTAL_SHARE: f64 = 0.3;
 
+/// Your main hand's planet levels an ante (`LongRun::levels_per_ante`, the register's "Planet
+/// levels from money held"): this many as a base, one more for each `LEVEL_ABOVE_LINE` of money
+/// held above the interest line and for each `LEVEL_BELOW_LINE` an ante of the jokers' money
+/// less rent below it, at most `LEVELS_MAX`
+pub(super) const BASE_LEVELS: f64 = 0.5;
+pub(super) const LEVEL_ABOVE_LINE: f64 = 20.0;
+pub(super) const LEVEL_BELOW_LINE: f64 = 18.0;
+pub(super) const LEVELS_MAX: f64 = 2.0;
+
 /// The cheapest booster pack ($4: game.lua P_CENTERS, a normal pack): what money pays to open,
 /// or skip, one.
 pub(super) const PACK_PRICE: f64 = 4.0;
@@ -195,6 +204,8 @@ pub(super) struct LongRun<'a> {
     money: Mutex<std::collections::HashMap<String, std::sync::Arc<Vec<Option<f64>>>>>,
     /// What a round you play pays on your board as it is (`round_money_now`), measured once
     round_money: OnceLock<f64>,
+    /// What a round pays your board besides its jokers' money (`round_base`), measured once
+    round_base: OnceLock<([f64; 3], f64)>,
 }
 
 /// A typical find's price: the jokers the shops could offer (`pool`; every joker the game has
@@ -459,6 +470,9 @@ pub(super) fn add_levels(l: crate::engine::Level, n: f64) -> crate::engine::Leve
 pub(super) struct Projected {
     board: Board,
     dollars: f64,
+    /// The money held it was projected from (before an ante's `flow`; without an economy
+    /// voucher's, `board_with`): what pays for the finds first (`finds_bought`)
+    held: f64,
     /// Money per ante from the jokers (`income`) minus rent (in `dollars`), and your main hand's level
     /// before the projection's levels: `fill_long` decides what the spare money buys
     pub(super) flow: f64,
@@ -588,6 +602,7 @@ impl<'a> LongRun<'a> {
             money_rounds: super::plain_rounds_of(ctx),
             money: Mutex::new(Default::default()),
             round_money: OnceLock::new(),
+            round_base: OnceLock::new(),
         };
         {
             let before = lr.long_score(&lr.fill_long(lr.project(&|_| true, run.dollars), None, 0.0));
@@ -754,12 +769,12 @@ impl<'a> LongRun<'a> {
     pub fn levels_per_ante(&self, dollars: f64, flow: f64, to_levels: f64) -> f64 {
         let line = self.line;
         let below = if flow < 0.0 { -(-flow).min((line - dollars).max(0.0)) } else { flow.min((line - (dollars - flow)).max(0.0)) };
-        (0.5 + to_levels.max(0.0) / 20.0 + below / 18.0).clamp(0.0, 2.0)
+        (BASE_LEVELS + to_levels.max(0.0) / LEVEL_ABOVE_LINE + below / LEVEL_BELOW_LINE).clamp(0.0, LEVELS_MAX)
     }
 
     /// The spare money levels can use before they top out (`levels_per_ante`'s cap of 2)
     fn levels_cap(&self, dollars: f64, flow: f64) -> f64 {
-        ((2.0 - self.levels_per_ante(dollars, flow, 0.0)) * 20.0).max(0.0)
+        ((LEVELS_MAX - self.levels_per_ante(dollars, flow, 0.0)) * LEVEL_ABOVE_LINE).max(0.0)
     }
 
     /// The money your jokers pay every ante on the board projected with the jokers `keep`s
@@ -897,8 +912,15 @@ impl<'a> LongRun<'a> {
     /// discards, Gold cards held at its end: `end_round` pays them before the cash-out) earns
     /// no interest here, as `sim::RoundResult::money` holds it with the cash-out's (gap 17).
     pub fn cashed_out(&self, held: f64, rent: f64, reward: f64) -> f64 {
+        self.cash_out(held, rent, reward, self.round_money_now())
+    }
+
+    /// A round's end from `held`: its `rent` off, then the cash-out: the blind's `reward`, the
+    /// interest on what's left (a debt pays none) and `round`, what the round pays besides
+    /// (`cashed_out`, and the finds' walk, `finds_bought`)
+    fn cash_out(&self, held: f64, rent: f64, reward: f64, round: f64) -> f64 {
         let m = held - rent;
-        m + reward + interest(m, self.run.interest_amount, self.run.interest_cap) as f64 + self.round_money_now()
+        m + reward + interest(m, self.run.interest_amount, self.run.interest_cap) as f64 + round
     }
 
     /// What an ante of rounds you play brings from `held` with nothing spent: `cashed_out` for
@@ -911,9 +933,79 @@ impl<'a> LongRun<'a> {
         (0..3).fold(held, |m, k| self.cashed_out(m, rent, blinds.get(k).map_or(mean, |b| b.reward as f64))) - held
     }
 
-    /// Stand-ins for the jokers you'd find over the run: empty slots get alternating ×1.5,
-    /// +60 Chips and +15 Mult jokers, and an option is compared against a ×1.25 "typical
-    /// find" in its slot. An assumption, labelled as one.
+    /// What each round of an ante pays your board besides its jokers' money, the money that
+    /// pays for the finds (`finds_bought`) with the jokers' (`income`, less rent:
+    /// `Projected::flow`): this ante's three blinds' rewards (state_events.lua
+    /// `evaluate_round`; one not listed at their mean) and what a round pays your board without
+    /// the jokers the engine pays money for (`engine::PAYS_MONEY`: their money is the jokers'
+    /// income), on the rounds it wins (`money_board` as it is: hands and discards left, the
+    /// cards' money). The interest is the walk's, on the money it has then. Measured once;
+    /// nothing `money_board` calls may call it.
+    fn round_base(&self) -> ([f64; 3], f64) {
+        *self.round_base.get_or_init(|| {
+            let jokers = &self.money_rounds.0.jokers;
+            let unpaid = |i: usize| !crate::engine::PAYS_MONEY.contains(&jokers[i].key.as_str());
+            let blinds = &self.run.blinds;
+            let mean = blinds.iter().map(|b| b.reward as f64).sum::<f64>() / blinds.len().max(1) as f64;
+            let rewards = [0, 1, 2].map(|k| blinds.get(k).map_or(mean, |b| b.reward as f64));
+            (rewards, won_mean(&self.money_board(&unpaid, None, (0, 0, 0), true)))
+        })
+    }
+
+    /// How many of the `want` finds the projection's empty slots take the money pays for by
+    /// Ante 8 (fractional: what's left at the end pays for a part of the next; whole finds are
+    /// bought at an ante's end, so rarely a little more money, a find bought sooner, leaves less
+    /// interest and a little less by the end), at a typical find's price (`find_price`), on one
+    /// walk ante by ante in the cash-out's order (`cash_out`): from the money held up to the
+    /// interest line (a debt first paid back; what's above it is the spare money the levels and
+    /// events take every ante, `fill_split`; an economy voucher's money isn't, for now:
+    /// `board_with`), each round the jokers' money less rent (`flow`), then this ante's blind's
+    /// reward, the interest on what's left and what a round pays besides (`round_base`); at
+    /// each ante's end the planets that money buys
+    /// first (`levels_per_ante` with none of the money above the line, at `LEVEL_BELOW_LINE` a
+    /// level, at the money held an ante on, `held` + `flow`, as there), then the finds it pays for,
+    /// bought then (the money they take earns no more interest). So rent takes the planets
+    /// first, then the interest and the finds. A heuristic, in the register.
+    pub(super) fn finds_bought(&self, held: f64, flow: f64, want: f64) -> f64 {
+        if want <= 0.0 {
+            return 0.0;
+        }
+        if self.find_price <= 0.0 {
+            return want;
+        }
+        let levels = LEVEL_BELOW_LINE * self.levels_per_ante(held + flow, flow, 0.0);
+        let (rewards, round) = self.round_base();
+        let (mut m, mut bought, mut left) = (held.min(self.line), 0.0, self.antes_left);
+        while left > 1e-9 && bought < want {
+            // (the last ante a part of one: its share of what an ante brings)
+            let share = left.min(1.0);
+            let end = rewards.iter().fold(m, |m, &r| self.cash_out(m, -flow / 3.0, r, round)) - levels;
+            m += share * (end - m);
+            let n = (m / self.find_price).floor().clamp(0.0, want - bought);
+            bought += n;
+            m -= n * self.find_price;
+            left -= share;
+        }
+        (bought + (m / self.find_price).clamp(0.0, 1.0)).min(want)
+    }
+
+    /// The finds the money pays for on your board as it is (`finds_bought`), of the empty slots
+    /// it has besides the one an option is compared in: (paid for, slots)
+    pub fn your_finds(&self) -> (f64, f64) {
+        let p = self.project(&|_| true, self.run.dollars);
+        let want = (p.joker_slots - p.empty - p.jokers.len() as i64 - 1).max(0) as f64;
+        (self.finds_bought(p.held, p.flow, want), want)
+    }
+
+    /// A typical find's price (`find_price`): what the projection pays for each find
+    pub(super) fn find_price(&self) -> f64 {
+        self.find_price
+    }
+
+    /// Stand-ins for the jokers you'd find over the run: empty slots get ×1.5, +60 Chips and
+    /// +15 Mult jokers (`fill_types`) as far as the money pays for them (`finds_bought`), and an
+    /// option is compared against a ×1.25 "typical find" in its slot. An assumption, labelled
+    /// as one.
     pub fn stand_in(&self, x: f64, m: f64, chips: f64) -> Joker {
         let mut j = Joker::from_key("j_joker", self.data).expect("j_joker in data");
         j.mult = 0.0;
@@ -980,12 +1072,13 @@ impl<'a> LongRun<'a> {
         let once = self.once(sales);
         let rent = self.owned_rent(keep) + extra_rent;
         let flow = self.income(keep, added, more) - rent;
+        let held = dollars;
         let dollars = dollars + flow;
         let top_base = self.top_hand.map(|top| b.levels[top as usize]);
         if let (Some(top), Some(l)) = (self.top_hand, top_base) {
             b.levels[top as usize] = self.top_level(l, dollars, flow, (dollars - self.line).max(0.0));
         }
-        Projected { board: b, dollars, flow, top_base, once, sales, empty }
+        Projected { board: b, dollars, flow, held, top_base, once, sales, empty }
     }
 
     /// What one more Mult, ×Mult and Chip on joker `i` (the numbers `Joker::lasting` counts,
@@ -1143,13 +1236,14 @@ impl<'a> LongRun<'a> {
     /// `fill_long` with the split forced (`Some(true)`: events first) or chosen (`None`)
     fn fill_split(&self, p: Projected, option: Option<Joker>, once: f64, events_first: Option<bool>) -> Board {
         let grower_option = option.as_ref().filter(|j| RunEvent::ALL.iter().any(|&ev| j.mult_from(ev) != 0.0 || j.xmult_from(ev) != 0.0)).cloned();
-        let Projected { board: mut b, dollars, flow, top_base, once: sold, empty, .. } = p;
+        let Projected { board: mut b, dollars, flow, held, top_base, once: sold, empty, .. } = p;
         let once = once + sold;
         // (a Negative option brings its slot: card.lua `Card:add_to_deck`, the joker limit +1)
         if option.as_ref().is_some_and(|j| j.edition == Some(crate::model::Edition::Negative)) {
             b.joker_slots += 1;
         }
         b.jokers.push(option.unwrap_or_else(|| self.stand_in(1.25, 0.0, 0.0)));
+        let finds = self.finds_bought(held, flow, (b.joker_slots - empty - b.jokers.len() as i64).max(0) as f64);
         if event_price(self.run, RunEvent::Reroll).is_some() && b.changes_with(RunEvent::Reroll) {
             b.after(RunEvent::Reroll, self.antes_left);
         }
@@ -1178,24 +1272,30 @@ impl<'a> LongRun<'a> {
                 };
                 let first = match events_first {
                     Some(c) => c,
-                    None => self.spare_to_events(&b, grower_option, &mut || (self.fill_slots(levels_first(), empty), self.fill_slots(events_first_board(), empty))),
+                    None => self.spare_to_events(&b, grower_option, &mut || (self.fill_slots(levels_first(), empty, finds), self.fill_slots(events_first_board(), empty, finds))),
                 };
                 b = if first { events_first_board() } else { levels_first() };
             }
         }
-        self.fill_slots(b, empty)
+        self.fill_slots(b, empty, finds)
     }
 
     /// Empty slots filled with stand-ins (the jokers you'd find over the run), but `empty` of
-    /// them left empty (`Projected::empty`); the jokers then as you'd arrange them by then
-    /// (`Ctx::arranged`: the option, the finds and the stand-ins each where it scores most, gap 26)
-    fn fill_slots(&self, mut b: Board, empty: i64) -> Board {
+    /// them left empty (`Projected::empty`), and only `finds` of them (`finds_bought`: what the
+    /// money pays for; the last a part of one, its effect scaled, the rest left empty); the
+    /// jokers then as you'd arrange them by then (`Ctx::arranged`: the option, the finds and the
+    /// stand-ins each where it scores most, gap 26)
+    fn fill_slots(&self, mut b: Board, empty: i64, finds: f64) -> Board {
         let mut k = 0;
         while (b.jokers.len() as i64) < b.joker_slots - empty {
+            let part = (finds - k as f64).min(1.0);
+            if part <= 0.0 {
+                break;
+            }
             b.jokers.push(match self.fill_types.get(k).copied().unwrap_or(0) {
-                0 => self.stand_in(1.5, 0.0, 0.0),
-                1 => self.stand_in(1.0, 0.0, 60.0),
-                _ => self.stand_in(1.0, 15.0, 0.0),
+                0 => self.stand_in(1.0 + 0.5 * part, 0.0, 0.0),
+                1 => self.stand_in(1.0, 0.0, 60.0 * part),
+                _ => self.stand_in(1.0, 15.0 * part, 0.0),
             });
             k += 1;
         }
@@ -1422,7 +1522,11 @@ impl<'a> LongRun<'a> {
     /// Your projected board with `g` added (what it adds to a round, `Gain::round`, and its
     /// consumable slots are in the round it's played in: `value`)
     pub fn board_with(&self, g: &Gain) -> Board {
-        let p = self.project_as(&|_| true, self.run.dollars + g.held, 0.0, g.joker.as_ref().map(|(i, j)| (*i, j)), None, g.round());
+        let mut p = self.project_as(&|_| true, self.run.dollars + g.held, 0.0, g.joker.as_ref().map(|(i, j)| (*i, j)), None, g.round());
+        // (an economy voucher's money every ante comes as money held, which would start the
+        // finds' walk richer once while its price stays out of it, `once`: kept out until money
+        // once and every ante go through one budget, gap 16)
+        p.held = self.run.dollars;
         let mut b = self.fill_long(p, None, self.once(g.money));
         if g.all_levels != 0 {
             for l in b.levels.iter_mut() {
