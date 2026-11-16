@@ -193,6 +193,8 @@ pub(super) struct LongRun<'a> {
     money_rounds: (Board, Vec<RoundStart>),
     /// A board's money round by round on them (`money_board`), by the board
     money: Mutex<std::collections::HashMap<String, std::sync::Arc<Vec<Option<f64>>>>>,
+    /// What a round you play pays on your board as it is (`round_money_now`), measured once
+    round_money: OnceLock<f64>,
 }
 
 /// A typical find's price: the jokers the shops could offer (`pool`; every joker the game has
@@ -585,6 +587,7 @@ impl<'a> LongRun<'a> {
             spare_choice: Mutex::new(Default::default()),
             money_rounds: super::plain_rounds_of(ctx),
             money: Mutex::new(Default::default()),
+            round_money: OnceLock::new(),
         };
         {
             let before = lr.long_score(&lr.fill_long(lr.project(&|_| true, run.dollars), None, 0.0));
@@ -874,9 +877,38 @@ impl<'a> LongRun<'a> {
 
     /// What a round you play pays on your board besides its reward and interest: its money on
     /// the rounds won (`money_board` as it is) and the sell value it adds
-    /// (`Joker::sell_value_a_round`)
+    /// (`Joker::sell_value_a_round`: Egg, counted as money as `payout_besides` counts it, so the
+    /// money's walk spends it before it's sold). Measured once, by whichever caller comes first
+    /// while the others wait: nothing `money_board` calls may call it (the wait would be on
+    /// itself).
     pub fn round_money_now(&self) -> f64 {
-        won_mean(&self.money_board(&|_| true, None, (0, 0, 0), true)) + self.ctx.base.jokers.iter().map(Joker::sell_value_a_round).sum::<f64>()
+        *self.round_money.get_or_init(|| won_mean(&self.money_board(&|_| true, None, (0, 0, 0), true)) + self.ctx.base.jokers.iter().map(Joker::sell_value_a_round).sum::<f64>())
+    }
+
+    /// The money you hold after a round you play, from `held` before its end: its `rent` off
+    /// (card.lua `Card:calculate_rental`, at the round's end in state_events.lua `end_round`,
+    /// before the cash-out), then the cash-out (`evaluate_round`): the blind's `reward`, the
+    /// interest on what's left (a debt pays none) and what the round pays for how it's played
+    /// on your board as it is (`round_money_now`: hands and discards left, the cards' and the
+    /// jokers' money, at this ante's plain blinds' rate, a boss's rule not counted). The one
+    /// measure of the money a round brings before the shop after it: the money's walk
+    /// (`advise::money_value_with`), skip-or-play's play side and an ante's money
+    /// (`ante_money`). Not as the game: what the round pays while it's played (scoring,
+    /// discards, Gold cards held at its end: `end_round` pays them before the cash-out) earns
+    /// no interest here, as `sim::RoundResult::money` holds it with the cash-out's (gap 17).
+    pub fn cashed_out(&self, held: f64, rent: f64, reward: f64) -> f64 {
+        let m = held - rent;
+        m + reward + interest(m, self.run.interest_amount, self.run.interest_cap) as f64 + self.round_money_now()
+    }
+
+    /// What an ante of rounds you play brings from `held` with nothing spent: `cashed_out` for
+    /// its three blinds in turn (the interest on what's saved by then), your rentals' `rent` off
+    /// each round, at the rewards of this ante's blinds whatever their state (an ante's income,
+    /// not what's left of this one; one not listed at their mean)
+    pub fn ante_money(&self, held: f64, rent: f64) -> f64 {
+        let blinds = &self.run.blinds;
+        let mean = blinds.iter().map(|b| b.reward as f64).sum::<f64>() / blinds.len().max(1) as f64;
+        (0..3).fold(held, |m, k| self.cashed_out(m, rent, blinds.get(k).map_or(mean, |b| b.reward as f64))) - held
     }
 
     /// Stand-ins for the jokers you'd find over the run: empty slots get alternating ×1.5,
@@ -1728,8 +1760,11 @@ impl<'a> Spending<'a> {
         if let Some(v) = self.rerolls.lock().unwrap().get(&k) {
             return *v;
         }
-        // (no rent: the long run this factor scales already takes it from the money, `project_as`)
-        let v = money_value_with(self.lr.ctx, self.pool, &Kept::Weighted(&|c: &Candidate| c.long_mult.unwrap_or(1.0)), 1.0, k as f64 * 5.0, Shops::after(self.shops), Start::BOARD);
+        // (each round's cash-out and your rent, as every walk; but from the money past the line
+        // + $30 alone, so its interest is that money's, not the cap's you'd earn on all you hold:
+        // gap 36 (a). The long run this factor scales counts the money too, as levels: gap 17's
+        // two models of what money buys)
+        let v = money_value_with(self.lr, self.pool, &Kept::Weighted(&|c: &Candidate| c.long_mult.unwrap_or(1.0)), 1.0, k as f64 * 5.0, Shops::after(self.shops), Start::board(super::board_rent(self.lr.run)));
         self.rerolls.lock().unwrap().insert(k, v);
         v
     }
