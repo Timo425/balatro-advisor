@@ -95,6 +95,9 @@ fn replayed_states_give_the_expected_advice() {
                     // how many cards the best move plays or discards
                     "best_size" => Value::from(bp["cards"].as_array().map_or(0, Vec::len)),
                     "top_option" => a["options"][0]["label"].clone(),
+                    // the blind on offer's skip-or-play verdict ("play", "skip", "close" or "not
+                    // modelled"; null when no blind shows one)
+                    "skip_verdict" => a["blinds"].as_array().and_then(|b| b.iter().find(|b| !b["skip"].is_null())).map_or(Value::Null, |b| b["skip"]["verdict"].clone()),
                     // the hand that carries most of your points ("Hands that score your points")
                     "top_hand" => a["hand_mix"][0]["hand"].clone(),
                     // cards the best move must not use (play or discard)

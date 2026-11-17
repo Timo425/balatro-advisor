@@ -15,7 +15,8 @@
 //! - Shop, pack and blind choices: by agreement only, never by a cost (nothing judges a shop
 //!   choice yet, D12's limits): the shop ranking's top option or one shown tied with it
 //!   (`advise::ShopOption::tied`), a lower one, or a choice the ranking doesn't list; skip or
-//!   play against `advise::SkipCompare::verdict` ("close" is a tie).
+//!   play against `advise::SkipCompare::verdict` ("close" is a tie; "not modelled", a tag the
+//!   advice doesn't value, is no verdict, neither agreed with nor gone against).
 //! - The jokers' order: by agreement with the order advice (`advise::OrderAdvice`, the quick
 //!   pass's), on the jokers whose order can change a score.
 //!
@@ -54,6 +55,8 @@ pub enum Grade {
     NotAnOption,
     /// Skip or play: the comparison called it close
     Close,
+    /// Skip or play: no verdict (the tag's effect isn't valued: "not modelled")
+    NoVerdict,
     /// Skip or play: the other way from the comparison
     Other,
     /// The jokers put in another order than the order advice's (`gain`: what the advice's
@@ -126,6 +129,7 @@ impl Grade {
             Grade::Below { place, of } => format!("ranked #{place} of {of}, below the top's tie band"),
             Grade::NotAnOption => "not among the ranking's options".into(),
             Grade::Close => "skip or play called close".into(),
+            Grade::NoVerdict => "skip or play gave no verdict (the tag isn't valued: not modelled)".into(),
             Grade::Other => "the other way from skip or play's call".into(),
             Grade::OrderOther { gain } if *gain == 0.0 => "another order, where the advice kept the order as it was".into(),
             Grade::OrderOther { gain } => format!("another order than the advice's (its order +{:.1}% on a typical best hand over the one before)", 100.0 * gain),
@@ -249,6 +253,7 @@ pub fn grade(run: &save::RunState, choice: &Choice, data: &GameData, judge_round
             let mine = if matches!(choice, Choice::SkipBlind { .. }) { "skip" } else { "play" };
             let grade = match skip.verdict.as_str() {
                 "close" => Grade::Close,
+                "not modelled" => Grade::NoVerdict,
                 v if v == mine => Grade::Same,
                 _ => Grade::Other,
             };

@@ -151,8 +151,7 @@ selling, skipping.
 
 The bot bench (`tools/botrun.py`, through BalatroBot in the real game on the bot's own profile)
 plays whole runs with the advisor choosing. It isn't a check for changes to the advice: a run
-measures the advisor only where the bot follows it, and the bot doesn't follow a skip whose tag
-the advice doesn't value, a shop tarot that goes on cards or The Emperor (it would hold them:
+measures the advisor only where the bot follows it, and the bot doesn't follow a shop tarot that goes on cards or The Emperor (it would hold them:
 a held one is used only when Best play says "use X first", gap 2) (it follows skip-or-play since
 2026-10-31, vouchers and the tarots and spectrals that go on no card since 2026-11-02, and since
 2026-11-15 Arcana and Spectral packs, their picks on the cards the advice names (gap 31), "use X
@@ -365,7 +364,7 @@ vs actual blind results and every shop seen).
 | Growth in rounds (the jokers a round changes) measured on 16 runs of rounds (`GROWTH_CHAINS`), 3 an ante to Ante 8, at this ante's plain blind sizes in turn (×1, ×1.5, ×2 the base: no boss's rule or size), from your board as it is, by the plain player (it plays to win, not to grow them), then yours again (growth and whether they last) by the player playing to the round's goals as Best play's are made (a second pass since 2026-10-17, on the same deals: `LongRun::round_goals`, a dollar without what money held buys; their worths from a projection that keeps them however they project, linear without the floor at losing them, used up as their numbers at none; one pass, not iterated to a fixed point); a shop joker's by the plain player (the same joker owned and in the shop can project apart); the second pass costs 0.07-1.7 s an analysis with such jokers (2026-10-17, most at late antes); a joker used up in at least half the runs is gone; a difference now carried whole (resets not priced); a lost round doesn't end a run, a save is spent in it (the Mr. Bones that saved is gone for the rounds after) | `value.rs` `Growths`, `GROWTH_CHAINS`, `LongRun::played_for`; `advise.rs` `growths_for`, `played_for`, `growth_rounds`; `sim.rs` `grown_over`, `JokerGrowth::numbers` | how the run's rounds grow them | more runs; the save's own counters (`unused_discards`, rounds played) against the runs' |
 | Madness horizon 1 ante | `value.rs` `long_of` | it eats your jokers | — |
 | Spending: level cap reached at the interest line + $30; packs $4 (`PACK_PRICE`), 2 a shop, each further one ×0.8; typical pack by shop weights (game.lua 4/4/1.2/0.6/4), Standard counted as 0 | `value.rs` `Spending` | money past the cap buys rerolls and packs | logged packs opened and picks |
-| The money's walk: 2000 walks, the most rerolls a shop (up to 8, `WALK_REROLLS`) chosen on half of them and valued on the other half (`WALKS`); a find in a free slot or, the slots full, in place of the joker of yours (not Eternal or Negative, the one the option buys among them) or the one found before whose loss costs least, whichever leaves more; the jokers kept, and the board an option leaves, as score gains added (each joker's multiplier less 1; one of yours replaced loses 1 − 1/its multiplier), read off your board's scores in that round as a lognormal with the spread of its p10 and p90 (at least 0.05 in log terms), placed along the scores at its simulated chance (at none or a sure pass no nearer the target than half a round in its count and its median allow, `Scores`); each joker's and each option's multiplier the one its own simulated chance gives there, under 3 wins its mean against yours but no more than 3 wins' (`Scores::ratio_for`); never under the best one's own simulated gain; By Ante 8, reach and next-ante strength values the best, each further buy ×0.6, a joker of yours replaced losing its whole gain | `advise.rs` `money_value_with`, `Kept`, `Scores`, `Start` | what money buys in the shops ahead; joker gains don't add up as chances | **measured** against the same money played on (`shop_playon.rs` `money_finds`, the judge's leaving with up to 8 rerolls a shop, "spend8", on the 25 shops in `tests/fixtures/private/money_finds_states.txt`, 2026-10-27, when the walk paid a round $1 of a hand's money, as the judge still does: gap 17): this boss 0.018 high (mean absolute error 0.023), the next ante's boss 0.021 high (0.046), against the old sum's 0.036 high (0.044) and 0.062 low (0.128); the gains multiplied stack small finds on a hopeless board into a near-sure pass (gap 17) |
+| The money's walk: 2000 walks, the policy chosen on half of them and valued on the other half (`WALKS`): first the bar a find must clear to be bought, what it adds for each dollar of its price as a share of what a shop's joker adds per dollar on average (each rarity at the shop's odds, `RARITY_ODDS`; each joker on its own beside the board the walk starts from), none, as much or twice (`BUY_BARS`), each tried at the fewest rerolls; then the most rerolls a shop under that bar (up to 8, `WALK_REROLLS`), not the two together (a budget; since 2026-11-16, gap 39: buying whatever adds anything let a shop more lower the walk, the weak find there leaving too little for a better one later); a find in a free slot or, the slots full, in place of the joker of yours (not Eternal or Negative, the one the option buys among them) or the one found before whose loss costs least, whichever leaves more; the jokers kept, and the board an option leaves, as score gains added (each joker's multiplier less 1; one of yours replaced loses 1 − 1/its multiplier), read off your board's scores in that round as a lognormal with the spread of its p10 and p90 (at least 0.05 in log terms), placed along the scores at its simulated chance (at none or a sure pass no nearer the target than half a round in its count and its median allow, `Scores`); each joker's and each option's multiplier the one its own simulated chance gives there, under 3 wins its mean against yours but no more than 3 wins' (`Scores::ratio_for`); never under the best one's own simulated gain; By Ante 8, reach and next-ante strength values the best, each further buy ×0.6, a joker of yours replaced losing its whole gain | `advise.rs` `money_value_with`, `Kept`, `Scores`, `Start` | what money buys in the shops ahead; joker gains don't add up as chances | **measured** against the same money played on (`shop_playon.rs` `money_finds`, the judge's leaving with up to 8 rerolls a shop, "spend8", on the 25 shops in `tests/fixtures/private/money_finds_states.txt`, 2026-10-27, when the walk paid a round $1 of a hand's money, as the judge still does: gap 17; and bought whatever added anything, as the judge does: the bar since is above none about 1 time in 8 on three bot states, counted on a first version that also walked one shop for the Big Blind, not re-measured): this boss 0.018 high (mean absolute error 0.023), the next ante's boss 0.021 high (0.046), against the old sum's 0.036 high (0.044) and 0.062 low (0.128); the gains multiplied stack small finds on a hopeless board into a near-sure pass (gap 17) |
 | A dollar in Best play: what +$10 does, taken as linear | `play.rs` `dollar_gain` | money won this round | — |
 | Comparison: at most 1,600 rounds an option, "clearly worse" at 95% (paired; where a round can be lost outright, as in Best play, with one round in its favour worth the largest round value counted as if it had happened: what a parting round not yet seen could make up, about 3 × the largest round value / n with no spread, the rule of three as for a tie; a graded measure, a deck's score ratio, as it is), "equal" within 1% of the leader's value | `compare.rs` `MAX`, `EQUAL` | when a difference is real enough to act on | the cap measured 2026-11-14 (gap 1): Best play's rounds past 512 are 10% of its race's rounds on the owner's states; stopping its near-ties sooner saved 6% of the rounds, and the picks that moved leaned worse (not shown by 2 standard errors) |
 | Best play's search budget: first batch 16 rounds (batches double); at most 48 undecided moves after 16 and 32 rounds, 24 after 64, 12 after 128, 8 after that, and with many moves at least half of them for each doubling instead (`compare::halving`: an 8-card hand's 436 moves, 218 after 16 rounds, 109 after 32, 55 after 64; since 2026-10-11, before a first batch of 32 rounds cut to 48: below), kept by how little the rounds show them worse than the leader (Noise stage; until 2026-10-05 by value, which on few rounds kept a steady money edge over a move a rare lost round would separate), on exact ties by value, then how close lost rounds came to the target (a first cut at 16 rounds, to a few moves by value, ranked moves on money before a rare lost round could show: the safest discards fell out; the cut at 16 rounds now keeps half, by the bound that counts the unseen round) | `advise.rs` `SEARCH_FIRST`, `SEARCH_BUDGET`; the halving factor 2 (`compare::halving`) | cost vs. coverage (2026-10-11: the rounds raced on 101 of the owner's states +13%, Antes 4–6 +20–31%, mostly near-hopeless rounds that before stopped on a false "equal"; a round no move can win races to the cap, 2.2–3.1× the rounds on three fixtures made unwinnable, 1,710 moves with a Cryptid 54.7k → 117.8k) | `search_against_reference` (2026-10-03, seeds 42-44, the 6 fixtures in a blind; a pick passes when gap − 2·se ≤ 1%; 2026-10-11, 11 fixtures: every pick passes) and the history check: see known gap "search misses" |
@@ -397,7 +396,7 @@ vs actual blind results and every shop seen).
 | Deck changes (tarots, pack cards): 300 rounds against your deck (split between outcomes for random effects; 100 for a tarot no option takes as its own value: `TarotBudget`); a board without a chips joker (`CHIP_JOKERS` list) gets a +60 Chips find | `value.rs` `deck_stats`, `TAROT_ROUNDS` | deck changes are small; a chips gap closes by Ante 8 | — |
 | Vouchers: Overstock half a reroll a shop, Reroll Surplus $2 a shop, Clearance 25% of ~$8, Hone one buy an ante, a voucher shows 1 in 16, Planet Merchant 1 in 12 on your main hand; one that changes your consumable slots (Crystal Ball) or what a round starts with (Grabber, Wasteful, Paint Brush: hands, discards, hand size) by what it changes in the run (`plan::apply_voucher`, card.lua `Card:apply_to_run`), through `Gain::consumable_slots` / `hand_size` / `hands` / `discards` with its price (`voucher_gain`; a slot's only by its Blue Seal planets: room to hold more tarots and planets isn't modelled, and says so; a hand's money left at cash-out isn't, and says so); this round's odds with it from the same change, the blind's rules on top (`Board::at_blind_set`: The Needle, The Water) | `advise.rs` economy and voucher values | what each voucher saves | logged shops |
 | Tags: Meteor's main-hand planet 5 in 12, best 1 of the pick 2; Investment not discounted for arriving later; a Mega Buffoon pack's second pick $2.50 (shop and tag); Emperor the average² of the tarots valued (not the spectrals: it makes Tarots; in a blind's quick pass only those held, at least ×1.00). Any pack can be skipped once while a pick is left: a one-pick pack is worth at least the skip, a Mega pack's second pick at least the skip (`pack_value`); a skipped blind's growth (Throwback) counted by Ante 8 and for this ante's boss and the next ante's (the skip side's board after `Board::after`), the jokers the shops ahead may show measured on your board as it is (their lift on top understated); a tag paying $ per hand played or per discard left unused this run (Handy, Garbage: the tag's config rate) as money now, from the save's counts (`GAME.hands_played`, `GAME.unused_discards`, paid when the tag is given: tag.lua `Tag:apply_to_run`) | `advise.rs` skip-or-play, packs, tarots, `pack_value` | — | logged tags and packs |
-| Skip-or-play "close": within 3% | `advise.rs` skip-or-play | noise | (should become `compare.rs`) |
+| Skip-or-play "close": within 3%; the next ante's boss counted at least three wins in its rounds on both sides (`three_wins(next_rounds)`, the shop ranking's floor in `shop_measure`, since 2026-11-17), so a next ante hopeless both ways leaves this ante to decide; a tag not valued gives no verdict ("not modelled") | `advise.rs` skip-or-play | noise | (should become `compare.rs`) |
 | Shop ranking: an option is above another by a finding when its rank is higher by more than 2 standard errors of their difference (`SHOP_ERRORS`, as `compare.rs` asks of Best play's moves; `clearly_better`). The error has two parts, added in squares. What the rounds show: the simulated rounds and the walks through the shops ahead each rank rests on, paired round by round and walk by walk (`compare::Noise`, `compare::over`; gap 7 says how and what isn't in it), each chance's part by the rank's slope on it, measured over two standard errors of the chance below it and above it, the walk rerun at both ends (`slope_at`: 2 more walks an option and ante; a standard error at least one round's worth). What no round shows, as a margin (half of it the standard error): 3% of the higher rank (`SHOP_TIE`, the band's old width, not sized to what it stands for) for every pair, standing for two kinds of thing. Luck no round of the ranking carries: the long run's own (0.3% of the rank by seed at the median, 1.1% at the 75th percentile, 2-3% for one option in ten, 54 shops on 3 seeds at 4910659: the margin covers the first two, not the tail), a pack's or a reroll's cards not seen yet. And worth left out, which no number of rounds would show: a tarot's or a voucher's estimate, an effect not modelled, what the long run leaves out of a joker's worth later (its money past the planet-level cap, gap 36 (a); a copy it would make, gap 33), which a sale gives up for money and a slot. 1% for options simulated throughout made sales of jokers that still do something findings at +2.8% (fixture shop_mail_in_sold_rich), which no luck explains: the left-out worth was in it too. The order is anchored on the status quo (leaving the shop, skipping an open pack: D8): the options found better than it (`ShopOption::beats_keep`, which the bot buys on), then it with what it isn't clearly better than, then the rest; within each, ties (shown: `ShopOption::tied`, ≈ in the page) are the best by value and every option not clearly worse than it, then the best of the rest, and so on, ordered by value (two planets by the easier hand first), then the score reached; in its own tie the status quo goes where what it keeps puts it (D8): leaving first (the money it keeps is spent in the shops ahead); skipping a pack above the shop's buys and a held consumable's use (it keeps what they spend) and below the pack's picks worth more by value, since 2026-11-14 (gap 32: the pack's cards are gone once it closes and its price is paid, so against a pick the skip keeps nothing, also against one that sells a joker to make room, both boards valued (a sale alone can wait for a later shop: leaving wins that tie), and the best estimate leads, as a race's leader does, unless the pick leaves less money (Wraith), which it keeps; a joker that grows from the skip, Red Card, is in the skip's own value; a pick valued exactly as the skip, a tarot with no target worth it or a card not valued, isn't worth more and stays below); under 20% this round, score reach decides (no ties shown; then the tier, then value, the status quo's as any option's); a win chance told from none at 3 wins in its rounds (`three_wins`: with none, up to 3 in n can't be ruled out, the rule of three; with 1 or 2 more): next-ante survival counted at least that (its rounds: a third of the simulations, at least 20, `spec_rounds`; a hopeless next ante is then the same factor for every option, and a lucky round doesn't zero the others; a cut at 1% for every option did, shop_gros_michel_for_mail_in 2026-10-05), and a joker the shops or packs ahead may show adds to a survival or expected-buy estimate only from 3 wins in its own rounds (`measured_p`: 100 at the next ante, 20 for a screened joker) | `advise.rs` `rank_options`, `clearly_better`, `slope_at`, `SHOP_ERRORS`, `SHOP_TIE`, `TROUBLE`; `advise/compare.rs` `Noise`, `over` | noise and hopeless rounds | the 3% margin's luck: its own error read as the rounds' is (the long run's rounds paired too, a pack's cards, a reroll's); its left-out worth only by closing those gaps (33, 36 (a), the tarot and voucher estimates), each estimate then carrying what it still leaves out (gap 7) |
 | A joker that saves a lost round in the shop ranking (Mr. Bones): on the board each option leaves, the analysis's simulation count of chained runs (`sim::chained_through`: each save played on without the copy that made it) through every blind still to come this ante (a round in progress first), then the next ante's Small and Big Blind at their plain sizes (×1, ×1.5 its base) and its plain boss; each round with what the joker sold or bought adds to it; of the runs that lose a round on score, the share the saves get through, this ante and the next ante among the runs alive after this one (one group of runs each, nothing told from fewer than 3 lost), applied to the option's own losses (`p + (1 − p)·share`, on its survivals with the money walk's finds, and on this round's chance for the trouble line: `ShopOption::p_with_save`; labelled heuristic in the note; measured on the shared runs; its own luck isn't in the ranking's error, gap 7); the board an option leaves read from its kind (yours, a sale's, a joker bought's: a tarot that makes or destroys jokers, Ankh, Hex, Judgement, keeps yours, as in gap 17's walk) | `advise.rs` `save_lift`, `SAVE_DRAWS` | a save spent once on the rounds ahead, beside what money finds | the save played on in the shop judge (`tests/shop_playon.rs` counts score only) |
 | Joker pool: every joker the shops could offer screened on 60 rounds (`screen_sims`) and 100 typical hands (`SCREEN_DEALS`); the best 12 (`rescue_top`) simulated on the full count, best by `rank_value`: win chance gained in this ante's hardest round ×10, plus the best change in a later round's reach (lost or gained; at most +1) ×5, plus the typical hand's gain (at most +5) ×0.1. A later round's reach lost counts in full. With no slot free, the joker it replaces: the next row | `advise.rs` `Options`, `rank_value` | the pool's simulation budget, and a ranking that weighs this ante against the next | the shop ranking's measure (`rank_options`: survive × next-ante survival × long run), as the joker it replaces is chosen |
@@ -1027,6 +1026,20 @@ the same retriggered ×Mult.
   An economy voucher's money every ante stays out of the finds for now (gap 16): on 9 of the
   bot's shops with one on offer each is within 0.01 of before, no first pick moved. Timing +2% in a blind, +4% in a shop (load 19.5 from other chats: base and change both over
   this PC's budget, not called over).
+- **Done 2026-11-17, partly:** skip-or-play on a poor board (gap 39). The money's walk buys a
+  find only when it adds a bar per dollar of its price (`BUY_BARS`, chosen with the rerolls),
+  so a shop more no longer spends the money on a weak find before a better one; a tag
+  skip-or-play doesn't value gives no verdict ("not modelled": 238 of the owner's 451 blind
+  selects with a choice; the bot already played those); the next ante's boss is floored at
+  three wins in its rounds, as the shop ranking floors it (it moved no verdict measured). On
+  60 of the owner's blind selects no verdict on a valued tag moved; on the card's six bot
+  states the advice says skip on two where it said five. On the 47 fixtures 14 verdicts
+  became not modelled and five shop rankings reorder below their top (a sale of Wrathful Joker
+  no longer beats keeping it); no top option or Best play pick moved. Timing +2% in a
+  blind and in a shop, +5% on three blind selects (quiet PC, inside the budget). Left (gap
+  39): the walk still higher with a shop fewer on two fixtures, the Big Blind between, a
+  Double Tag's copies, and whether a broke rental board's Small Blind skip is wrong (the
+  owner's call, and runs').
 - **Next:** a free hand banked before the
   hand that wins (gap 34); Ceremonial Dagger's value (gap 8); the blind odds shown and the
   outlook chained as Best play's blinds ahead are (gap 28).
@@ -1457,7 +1470,7 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    - *The long run's own luck isn't in the error* (By Ante 8's rounds, the growth chains): by
      seed 0.3% of the rank at the median and 2-3% for one option in ten, inside the margin. Nor
      the pool's screen (each pool joker's chance from 20 to 60 rounds, which the walks' gains
-     rest on), nor which reroll cap a walk's first half chose, nor a save's share (Mr. Bones).
+     rest on), nor which buy bar and reroll cap a walk's first half chose, nor a save's share (Mr. Bones).
    - *The jokers' order search's ties (gap 26) reach every rank a little more*: the same board
      listed in two orders ranks every option 0.12% apart against leaving (test
      an_arranged_analysis_names_your_jokers_where_they_sit, 1e-3 → 2.5e-3), since each rank is
@@ -1647,10 +1660,11 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    skip-or-play is shown in the shop for the next blind, with the money you have now. Still
    left: the money that run's end makes worthless, which matters most near Ante 8; and in the
    shop, skip-or-play takes the money you have now, not what each shop option would leave you
-   (the shop ranking doesn't weigh skipping the next blind). And when the next ante's boss is
-   at 0% on both sides, both products are 0 and the verdict is "close" whatever this ante
-   shows (seen in the shop fixtures: skip 90% against play 88% this ante, $22 from Handy); the
-   shop ranking floors that factor with three wins (`rank_options`), skip-or-play doesn't.
+   (the shop ranking doesn't weigh skipping the next blind). When the next ante's boss was
+   at 0% on both sides, both products were 0 and the verdict "close" whatever this ante showed
+   (seen in the shop fixtures: skip 90% against play 88% this ante, $22 from Handy); the shop
+   ranking floors that factor with three wins (`rank_options`), and since 2026-11-17
+   skip-or-play does too (gap 39), so this ante decides there.
 14. **You can't keep a joker out of the sell choices.** Every choice that makes room (a shop
    joker replacing one, a pack's joker, the rescue list, skip-or-play's Buffoon pack) may sell
    any joker that isn't eternal; a joker you're finishing for a reason the advice doesn't
@@ -2557,16 +2571,22 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
 21. **Of the tags you hold only the Juggle Tag is read, and a tag's effect on a later blind is
    valued only in one case.** Skip-or-play values a Juggle Tag (+3 hand size, tag.lua
    `round_start_bonus`: the next round played) only when skipping the Big blind; on a Small
-   blind skip it's "not valued". Since 2026-10-27 the Juggle Tags you hold give the next round
-   played their hand size (`RoundStart::juggle`, set in `Board::at_blind_set`): the next blind's
-   row, and the boss on skip-or-play's skip side of a Big Blind (whatever tag the skip takes; a
-   Juggle Tag taken adds its own). Not read: a save in the moment between selecting a blind and
+   blind skip it's not valued (since 2026-11-17 no verdict: "not modelled", gap 39). Since
+   2026-10-27 the Juggle Tags you hold give the next round played their hand size
+   (`RoundStart::juggle`, set in `Board::at_blind_set`): the next blind's row, and the boss on
+   skip-or-play's skip side of a Big Blind (whatever tag the skip takes; a Juggle Tag taken adds
+   its own). Not read: a save in the moment between selecting a blind and
    its first cards drawn gives them to the blind after it. The other tags you hold (`save` reads them:
    `RunState::tags`) aren't used: a
-   Double Tag copies the next tag taken (tag.lua), so with 7 Double Tags a Juggle Tag skip is
-   8 Juggles (+24 hand size for the next round, with Steel cards held a large ×Mult), valued
-   as one or none. The general fix: a tag's effect as a `Gain` for the round it acts on
+   Double Tag copies the next tag taken (tag.lua `Tag:apply_to_run`, 'tag_add'), so with 7
+   Double Tags a Juggle Tag skip is 8 Juggles (+24 hand size for the next round, with Steel
+   cards held a large ×Mult), valued as one; since 2026-11-17 skip-or-play names the copy on a
+   valued tag as not modelled (playing keeps the Doubles for a later tag). The general fix: a tag's effect as a `Gain` for the round it acts on
    (through the one measure, gap 16), and held Double Tags counted on the tag a skip takes.
+   Since 2026-11-17 a skip whose tag skip-or-play doesn't value gives no verdict (gap 39; the
+   bot plays). The edition tags and the Coupon, Orbital and Top-up Tags are queued; the D6,
+   Voucher, Boss and Standard Tags aren't: the owner never skipped for them in 451 saved blind
+   selects with a choice (offered 18, 19, 30 and 10 times).
    The tags that change a shop act in events (tag.lua `Tag:yep`). Entering a shop saves after
    those of the Rare, Uncommon, D6, Voucher and Coupon Tags (game.lua `Game:update_shop`; an
    edition tag on an ordinary card acts after it, read by `apply_pending_edition_tags`), but a reroll saves before the new row's Rare, Uncommon
@@ -3558,45 +3578,100 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    every joker is unlocked; on the bot's profile 35 weren't (13 of the 20 rares) until the
    owner unlocked all on 2026-10-23. The fix: the pool read with the profile's unlocks, as the
    parity tier already reads the profile for the game's own pools.
-39. **Skip-or-play's verdicts on a poor board rest on the money's walk, not on what a player
-   weighs.** Found 2026-10-31 by the bot following skip-or-play (3127f3e, BAVANG01-03, Anaglyph
-   Deck, Gold Stake): on BAVANG01 (Photograph rental and eternal, Wrathful Joker, $1-7) it skipped
-   both blinds of Antes 2 and 3. What decided it was each side's chance through the shops ahead
-   (`survive_with`, `next_with`: the money's walk): the skip side, one shop fewer and the round's
-   rent unpaid, came out higher (the next ante's boss 0.081 against 0.155 at Ante 2 Small, 0.18
-   against 0.24 at Ante 2 Big; on BAVANG03 0.66 against 0.72 at Ante 3 Small, for a Standard Tag
-   the advice doesn't value). Not explained yet. The walk drew its shops by their index
-   (`money_value_with`), so the two sides were walked on different shops; since 2026-11-15 the
-   skip side's shops are drawn as the play side's at the same point (`Shops::dropped`, as `left`
-   does for leaving a shop). On fixture `shop_blueprint_sold_unarranged` (BAVANG23 a4-r6:
-   Fibonacci rental, $10, a Small Blind paying nothing, where the money's walk paying a round's
-   measured money had put the skip side at 0.213 against play's 0.203) that leaves the skip side
-   at 0.209, still above play with as much money ($10 against $10.08) and a shop fewer: the
-   pairing isn't the whole cause (suspect, not shown: the walk's greedy buy at play's extra
-   shop, which leaves less for the finds after it). The round's measured money widened the
-   lead on a rent-poor board: on `shop_third_rental_into_debt` (BAVANG06 a2-r3, $4, Gros Michel
-   and Smiley Face both rentals, $6 rent a round, a Small Blind paying nothing) the skip side's
-   next-ante chance went 0.400 → 0.681 while play's went 0.330 → 0.340 (the verdict stays skip).
-   A reading of the money, not traced walk by walk: playing leaves about $0 after the rent, so
-   its shops ahead stay below a joker's price; skipping keeps the $4 and the rent, and with the
-   rounds' money after the next blind it reaches one: the walk's chance
-   steps at a joker's price (gap 7's step-shaped estimate), and the money skipping saves is the
-   rent the owner calls a backwards reason to skip. The long run didn't
-   decide: from Red Stake the Small blind pays nothing (game.lua `no_blind_reward.Small`), so on
-   a board paying $3 rent playing it nets $0 or less, and a loss is floored at no change
-   (`add_levels`, value.rs): ×1.000. Also: the blinds between the one chosen and the boss count
-   their money in the walk on both sides and their chance on neither, so the shop playing buys
-   before the next blind isn't credited (Best play counts the Big Blind as played, `ctx.ahead`;
-   skip-or-play doesn't); a tag the advice doesn't value still gets a skip or play verdict on
-   what skipping costs alone (unmodelled shown as a verdict); the tags held aren't read (gap 21:
-   the Rare Tag taken, doubled by Anaglyph's Double Tag); near-zero sides are decided by noise
-   (0.000 against 0.003; the "close" margin is 3% relative). Whether skipping cost the run isn't
-   shown: the play-every-blind series on the same seeds (2bd251f, older code) ended BAVANG01 at
-   Ante 2 in 2 of 3 runs and BAVANG02 at Ante 2 in 3 of 3, where skipping reached Ante 3 on both;
-   and the skipping run left two free Rare jokers in its Ante 3 shop, read at full price (the
-   save is written before a Rare or Uncommon Tag makes its joker free, tag.lua
-   `store_joker_create`; queued). The bot follows these verdicts (`tools/botrun.py`), so its runs
-   show them, as the live page does.
+39. **Skip-or-play on a poor board: the money's walk and the blind it doesn't count (partly done
+   2026-11-17: the walk's greedy buy, the next ante's floor, an unvalued tag's verdict; left:
+   the walk still higher with a shop fewer on two fixtures, the Big Blind between, a Double
+   Tag's copies).** Found 2026-10-31 by the bot following skip-or-play (3127f3e, BAVANG01-03,
+   Anaglyph Deck, Gold Stake): on BAVANG01 (Photograph rental and eternal, Wrathful Joker, $1-7)
+   it skipped both blinds of Antes 2 and 3, the skip side's chance through the shops ahead (the
+   money's walk: `survive_with`, `next_with`) coming out higher with a shop fewer (the next
+   ante's boss 0.081 against 0.155 at Ante 2 Small). Since 2026-11-15 the skip side's shops are
+   the play side's at the same point (`Shops::dropped`). Traced walk by walk (2026-11-16):
+   - The walk bought any joker that added anything the money paid for, so playing's extra shop
+     could spend the money on a weak find and leave too little for a better one after it
+     (`a_weak_find_leaves_the_money_for_a_better_one`: 1.26 against 1.45 with that rule). Since
+     2026-11-16 a find must add a bar per dollar of its price, chosen with the rerolls
+     (`BUY_BARS`, the register's money's walk); on three of the card's states the bar chosen was
+     above none in 22 of the 183 times the walk ran (counted on a first version that also walked
+     one shop for the Big Blind between). It isn't the whole cause: on
+     `shop_blueprint_sold_unarranged` (BAVANG23 a4-r6, Fibonacci rental, $10, a Small Blind
+     paying nothing) the skip side's next ante is still 0.209 against play's 0.203 with as much
+     money ($10 against $10.08) and a shop fewer, and on `shop_keep_unfaded_ramen` 0.082 against
+     0.077, both the same before and after the bar: leaving the extra shop isn't among the
+     policies tried (the bars are tried at the fewest rerolls), not traced further.
+   - The game's money, not a bend: from Red Stake the Small Blind's own reward is nothing
+     (game.lua `no_blind_reward.Small`, zeroed in blind.lua `Blind:set_blind`), though its round
+     still pays $1 a hand left and the interest (state_events.lua `G.FUNCS.evaluate_round`), and
+     a played round's end charges the rent (card.lua `Card:calculate_rental`), which a skip
+     never reaches. So skipping a Small Blind saves money only where the hands left and the
+     interest come to less than the rent, as on these $1-7 boards, where playing's extra shop
+     has little to spend; the cost counted is that shop's finds at the boss. The owner calls
+     the rent a backwards reason to skip: a weak board skipping is "running into losing".
+     Counting the Big Blind between doesn't settle it: the version that counted it (tried,
+     below) kept every skip lead on the card's states at about the same ratios (Rare Tag
+     0.187 / 0.332, Meteor Tag 0.281 / 0.431: one shop with $1-2 buys little), and the only
+     runs on these seeds (the play-every-blind series, below) died earlier playing. Whether
+     such a skip is wrong is the owner's call on what the advice should value, and runs'.
+   - A tag the advice doesn't value got a verdict on what skipping costs alone: since 2026-11-17
+     "not modelled" (no verdict; the bot plays; the overrides report grades the owner's choice
+     there as no verdict). That is 238 of the owner's 451 saved blind selects with a choice
+     (53%: a Juggle Tag valued only on a Big Blind). A next ante's boss neither side gets
+     through decided the verdict by noise (0.000 against 0.003): it now counts at least three
+     wins in its rounds both ways, as the shop ranking counts it (gap 13), so this ante
+     decides; a this ante neither side gets through is still decided by its numbers (the shop
+     ranking's "in trouble" rule isn't used here). The floor moved no verdict on the states
+     measured (the snapshot, the owner's 60 below, the card's six): on BAVANG01 Ante 3 Small,
+     where noise gave skip, this ante gives skip too (0.095 against 0.183: playing carries the
+     Small's risk; the Juggle Tag there is now not modelled). Double Tags held are named on the
+     tag ("would copy it: not modelled").
+   On the card's states, base → now (play against skip, the three factors multiplied):
+   BAVANG01 Ante 2 Small, Rare Tag, $1: skip (0.134 / 0.255) → skip (0.196 / 0.348), the free
+   Rare joker and the game's money; Ante 2 Big, Garbage Tag: skip (0.167 / 0.174) → close
+   (0.226 / 0.229); Ante 3 Small, Juggle Tag (+3 hand size for the Big Blind, not valued): skip
+   → not modelled. BAVANG03 Ante 2 Small, Meteor Tag, $2, The Needle ahead: skip (0.197 /
+   0.335) → skip (0.303 / 0.448), two planet levels for a one-hand boss; Ante 3 Big, Charm Tag:
+   play (0.666 / 0.628) → close (0.666 / 0.650); Ante 3 Small, Standard Tag: skip → not
+   modelled. Skip-or-play now says skip on two of the six where it said skip on five; the bot,
+   which already played a tag the advice doesn't value (`tools/botrun.py` `blind_select`,
+   since af03237), skipped three and now two (the Garbage Tag is close). These are the page's
+   300 rounds; the bot plays at 100, where the floor is 3 wins in 33.
+   On 60 of the owner's blind selects (25 skips), base → now: each of the 33 whose tag is
+   valued keeps the base's verdict (28 play or skip, 22 of them the owner's choice; 5 close),
+   so the walk's bar and the floor moved none of the owner's; the 27 whose tag isn't valued get
+   none now (at the base 20 play, 2 skip, 5 close, the owner's choice in 14; the owner skipped
+   11 of them). `skip_or_play_next_ante_hopeless_plays` pins a next ante hopeless both ways
+   (the owner's A2LFYPWG Ante 5 Big, Skip Tag: the next ante 0.000 both ways, this ante 20%
+   against 0.3%: play, as the owner did); the base said play there too (the next ante 0.00016
+   against 0.00014, the products 3.3e-5 against 4.7e-7), so no fixture shows the floor
+   deciding.
+   Fixtures (the `skip_verdict` key): `skip_or_play_unvalued_tag` (BAVANG03 Ante 3 Small,
+   Standard Tag: not modelled, skip at the base); `skip_or_play_weak_board_plays` (the owner's
+   GA74B7U3 Ante 3 Big, Investment Tag, $25: play) and `skip_or_play_money_tag_skips` (P4NKP4S7
+   Ante 4 Small, Handy Tag: skip), which pin verdicts the base already gave and the owner chose;
+   `skip_or_play_next_ante_hopeless_plays` (a hopeless next ante, above; the base gave it too).
+   Left: the walk higher with a shop fewer on the two fixtures above (leaving a shop as one of
+   the policies, on the same walks, as `Shops::left` compares leaving the shop you're in); the
+   blind between the one chosen and the boss (the Big Blind when the Small is on offer) counts
+   its money in the walk on both sides and its chance on neither, so the shop playing buys
+   before it isn't credited. Tried 2026-11-17 and taken out: the boss's lift from one shop's
+   walk read as a multiplier on the Big's scores, a second reading of what `value::Ahead`
+   measures on chained runs (the "One source of truth" pattern), with the money of the one-shop
+   and the all-shops walks counted twice on the play side; on the owner's sample it moved four
+   of the 33 valued verdicts, two toward their choice (one with both sides under 1%) and two
+   away (one to close), and in the shop it credited playing with
+   the shop you're in, which comes before the Big Blind either way (queued: through `Ahead`,
+   both sides, from a blind select or the shop). Also: one measure with the shop ranking
+   (`shop_measure`'s long run with the next ante's strength, its trouble rule, ties by
+   `compare::Noise` rather than the 3% margin): until then the design's top, "The same measure
+   ranks shop options, skip-or-play and the best play", isn't true of skip-or-play, which
+   multiplies the long run in where the shop ranking takes √(long × next-ante strength) (queued
+   with the Big Blind); a tag not valued: a skip that wins without it would win with it (every
+   tag but the Boss Tag only adds), so such a skip could stand (the same card); a Double Tag's
+   copies of the tag taken and the
+   Doubles playing keeps for a later tag (gap 21, queued); and whether skipping wins or costs runs isn't
+   shown (the play-every-blind series on the same seeds, 2bd251f, older code, died earlier:
+   BAVANG01 at Ante 2 in 2 of 3 runs). The bot follows these verdicts (`tools/botrun.py`), so
+   its runs show them, as the live page does.
 40. **Money held is worth less to the advice than to the owner.**
    Found 2026-10-30 (the bot bench paragraph in the valuation stage; queue card "Money held on
    boards without rentals"): the bot's rental-free boards hold less than the owner's at the first

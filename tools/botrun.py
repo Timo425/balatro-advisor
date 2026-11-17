@@ -846,16 +846,17 @@ def open_pack(sims, log):
 # Tags whose value in skip-or-play is a pick the bot doesn't make yet (none since 2026-11-15:
 # Charm's and Ethereal's packs, valued as their best pick with its targets, advise.rs's
 # skip-or-play block, are opened and picked from as `open_pack` follows them). A tag the advisor
-# doesn't value at all (`valued` false) isn't followed either: its skip is a verdict on what
-# skipping costs alone, so unmodelled, and the bot plays.
+# doesn't value at all (`valued` false) gets no verdict ("not modelled", since 2026-11-17), so
+# the bot plays.
 TAGS_NOT_FOLLOWED = {}
 
 
 def blind_select(args, log, skips, a=None):
     """Skips the blind on deck when the advisor's skip-or-play says skip (the blind's `skip`:
-    `verdict` skip, play or close within 3%), else selects it; "close" plays. A skip whose tag is
-    valued as a pick the bot can't make (`TAGS_NOT_FOLLOWED`) or not valued at all plays instead,
-    counted in `not_followed`, as does a blind whose analysis failed. `a` is an analysis of this
+    `verdict` skip, play, close within 3%, or "not modelled" for a tag it doesn't value), else
+    selects it; "close" and "not modelled" play. A skip whose tag is valued as a pick the bot
+    can't make (`TAGS_NOT_FOLLOWED`) plays instead, counted in `not_followed`, as does a blind
+    whose analysis failed. `a` is an analysis of this
     screen already made (the Ante 2 check's)."""
     if a is None:
         try:
@@ -878,7 +879,10 @@ def blind_select(args, log, skips, a=None):
         rpc("select")
         return
     s, tag = b["skip"], b.get("skip_tag") or {}
-    pv, sv = s["play_survive"] * s["play_next"] * s["play_long"], s["skip_survive"] * s["skip_next"] * s["skip_long"]
+    # what the verdict compares (the next ante counted at least three wins in its rounds); an
+    # advisor older than 2026-11-17 doesn't give it: the plain products
+    pv = s.get("play_value", s["play_survive"] * s["play_next"] * s["play_long"])
+    sv = s.get("skip_value", s["skip_survive"] * s["skip_next"] * s["skip_long"])
     log.append(f"blind a{gs.get('ante_num')} {b.get('slot')} {tag.get('name')}: {s['verdict']} · play {s['play_survive']:.2f}"
                f"×{s['play_next']:.2f}×{s['play_long']:.3f}={pv:.3f} skip {s['skip_survive']:.2f}×{s['skip_next']:.2f}"
                f"×{s['skip_long']:.3f}={sv:.3f} · {s['tag']}")

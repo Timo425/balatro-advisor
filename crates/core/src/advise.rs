@@ -671,7 +671,14 @@ pub struct SkipCompare {
     pub skip_survive: f64,
     pub skip_next: f64,
     pub skip_long: f64,
-    /// "play", "skip" or "close"
+    /// What the verdict compares: play_survive × play_next × play_long, the next ante's
+    /// chance counted at least three wins in its rounds (as the shop ranking counts it)
+    pub play_value: f64,
+    /// The same for the skip side
+    pub skip_value: f64,
+    /// "play", "skip", "close" (within 3%, the next ante's boss counted at least three wins in
+    /// its rounds, as the shop ranking counts it), or "not modelled" (the tag's effect isn't
+    /// valued: no verdict, the numbers show only what skipping costs)
     pub verdict: String,
     /// What the tag was counted as
     pub tag: String,
@@ -2605,6 +2612,14 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
             Some(g) => format!("{what} · {g}; this ante's boss and the next ante's on the grown board, the jokers ahead measured on your board as it is: their lift on top understated"),
             None => what,
         };
+        // A Double Tag you hold copies the next tag taken (tag.lua `Tag:apply_to_run`, 'tag_add'):
+        // the skip's copies and the later tag playing keeps them for aren't valued (gap 21)
+        let doubles = run.tags.iter().filter(|t| *t == "tag_double").count();
+        let what = if doubles > 0 && valued {
+            format!("{what} · your {doubles} Double Tag{} would copy it: not modelled (playing keeps {} for a later tag)", if doubles > 1 { "s" } else { "" }, if doubles > 1 { "them" } else { "it" })
+        } else {
+            what
+        };
         let skip_survive = survive_with(run.dollars + held + money, after_skip(k.saturating_sub(1)), boss_p);
         let skip_long = long * gain_long(&Gain::money(held + money).with_event(RunEvent::SkipBlind, 1.0));
         // The next ante's boss: the board's chance there plus the shops before it (one fewer
@@ -2624,9 +2639,24 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
             }
             None => (1.0, 1.0),
         };
-        let (pv, sv) = (play_survive * play_next * play_long, skip_survive * skip_next * skip_long);
-        let verdict = if (pv - sv).abs() <= 0.03 * pv.max(sv) { "close" } else if sv > pv { "skip" } else { "play" };
-        blind_views[bi].skip = Some(SkipCompare { play_survive, play_next, play_long, skip_survive, skip_next, skip_long, verdict: verdict.into(), tag: what, valued, grows });
+        // The next ante's boss counted at least the chance told from none in its rounds, as the
+        // shop ranking counts it (`shop_measure`'s floor): a next ante hopeless both ways is the
+        // same factor on both sides, so this ante decides, and a lucky round or two doesn't
+        let next_floor = three_wins(next_rounds(&ctx));
+        let (play_value, skip_value) = (play_survive * play_next.max(next_floor) * play_long, skip_survive * skip_next.max(next_floor) * skip_long);
+        let (pv, sv) = (play_value, skip_value);
+        // A tag whose effect isn't valued leaves no verdict (only what skipping costs is in the
+        // numbers)
+        let verdict = if !valued {
+            "not modelled"
+        } else if (pv - sv).abs() <= 0.03 * pv.max(sv) {
+            "close"
+        } else if sv > pv {
+            "skip"
+        } else {
+            "play"
+        };
+        blind_views[bi].skip = Some(SkipCompare { play_survive, play_next, play_long, skip_survive, skip_next, skip_long, play_value, skip_value, verdict: verdict.into(), tag: what, valued, grows });
     }
     let outlook = if quick_blind { None } else { archetype_outlook(&ctx, run, data, &pool_entries, &hand_mix) };
 
@@ -2648,6 +2678,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
 
     let tips = order_tips(run, data, &tarots);
     let grows = best_play.as_ref().is_some_and(|b| !b.grows.is_empty());
+    let skips = blind_views.iter().any(|b| b.skip.is_some());
     let counts_ahead = best_play.as_ref().is_some_and(|b| b.counts_ahead);
     Analysis {
         schema_version: 1,
@@ -2679,6 +2710,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
         caveats: run.snapshot.caveats.clone(),
         heuristics: HEURISTICS
         .into_iter()
+        .chain(skips.then_some(SKIP_NOTE))
         .chain(grows.then_some(
             "Best play counts what the round's hands and discards leave the jokers that grow or fade in a round, by what one more Mult, ×Mult or Chip adds by Ante 8 (measured on a step of +2 Mult, +×0.25 or +10 Chips, taken as linear; a fall never costs more than losing the joker; several jokers' factors multiplied, heuristic) and, in this ante, by what they do to the chance of getting through the blinds still ahead (see the note on those); the simulated player aims for it in how it finishes the round (the winning play worth most, or playing on for growth on a few simulated futures) and, with no win on the table, in a play that grows them more while it keeps pace and scores as much over the hands left as its own pick (weighed on 16 simulated futures), not in its digs or discards, and what they do to your cards (Vampire's enhancements, Glass breaking) isn't counted. The blind odds shown still play your jokers as they are now.",
         ))
@@ -2712,10 +2744,13 @@ const HEURISTICS: [&str; 8] = [
         "Outside a blind every board is valued with its jokers as you'd arrange them (yours, the one each option leaves, and every board projected to Ante 8); where a joker you buy goes is the order advice once you have it. The order: the one worth most on 64 fixed deals of this run's round (each deal's play chosen in the order as they sit, its rolls' floor and ceiling averaged), times the hands the blind's start gives it (a Blueprint copying Burglar); every order of the jokers whose place can change a score up to 6 of them, swaps of two past that; kept as they sit below a 0.5% gain; Ceremonial Dagger and the joker to its right held where they sit, its eat not modelled (heuristic: not the discards a copy takes or its money at the round's end). In a blind, your board and the options are scored as the jokers sit; the boards projected to Ante 8 are still arranged.",
         "Scaling jokers keep their current value in the blinds ahead. By Ante 8, the ones a round changes grow or fade as the simulated player's rounds at this ante's plain blind sizes leave them (yours by a player that plays to the round's goals, their worths from a projection that keeps them; a shop joker's by a player that plays only to win); the rest by a table.",
         "Blue Seal planets by Ante 8 assume a consumable held at round end in a measured share of rounds (one run).",
-        "The shop ranking counts what each option's money left buys in the shops ahead: the money spent shop by shop on 2000 simulated walks (rerolls and the jokers they show, bought in the shop they show in while the money lasts, into a free slot or in place of the joker whose loss costs least, yours sold for it; the most rerolls a shop chosen on half the walks, at most 8: a budget), starting from the board the option leaves; several jokers' score gains added (most jokers' Chips and Mult add), read off your board's score spread in that round as a lognormal (heuristic); an option with no simulated chance at the next ante's boss read the same way from its score there. Rent comes off at each round's end: your rentals', one the option buys, a Buffoon pack's picks as often as the stake makes them rentals. Each round then pays its blind's reward, the interest and what a round pays on your board as it is (hands and discards left, the cards' and jokers' money, measured on this ante's plain blinds), the same for every option: a money joker bought or sold doesn't change it, nor does a boss's rule (not modelled). Planets, packs and tarots the money could buy aren't counted, nor the stickers of the jokers the walk finds (not modelled).",
+        "The shop ranking counts what each option's money left buys in the shops ahead: the money spent shop by shop on 2000 simulated walks (rerolls and the jokers they show, a joker bought in the shop it shows in when the money pays for it and it adds enough for its price, into a free slot or in place of the joker whose loss costs least, yours sold for it; enough is a bar per dollar of its price, none, what a shop's joker adds per dollar on average or twice that, chosen on half the walks, then the most rerolls a shop under it, at most 8: budgets, heuristic), starting from the board the option leaves; several jokers' score gains added (most jokers' Chips and Mult add), read off your board's score spread in that round as a lognormal (heuristic); an option with no simulated chance at the next ante's boss read the same way from its score there. Rent comes off at each round's end: your rentals', one the option buys, a Buffoon pack's picks as often as the stake makes them rentals. Each round then pays its blind's reward, the interest and what a round pays on your board as it is (hands and discards left, the cards' and jokers' money, measured on this ante's plain blinds), the same for every option: a money joker bought or sold doesn't change it, nor does a boss's rule (not modelled). Planets, packs and tarots the money could buy aren't counted, nor the stickers of the jokers the walk finds (not modelled).",
         "With your joker slots full, the joker a shop or pool joker replaces is chosen by the shop ranking's measure: the chance through this ante's hardest round × the next ante's boss × the geometric mean of the long run with that sale (its income and growth by Ante 8) and the strength at the next ante, with Mr. Bones' save counted at the two bosses it plays (the shop ranking counts it through every round ahead: on chained runs, the share of lost rounds a save rescues applied to each option's survival, a heuristic); the swaps (outside a blind each on the board it leaves as you'd arrange it; in a blind, the freed slot and the right end) raced on the same simulated rounds (to the full count), those it can't tell apart reported as ties; when no swap gets through 20% this round, the score reached decides and no ties are shown, as in the shop ranking (heuristic budget: at most 6 swaps after 32 rounds, 4 after 64, 3 after 128; a sale's places that play the first 32 rounds the same count as one). A Negative joker is never the one sold to make room (its slot goes with it), nor a charged Invisible Joker (it copies another joker into the row as it's sold). What a sale does that isn't modelled is said on the option (a joker that acts when sold: Diet Cola, a charged Invisible Joker; Campfire's growth from it). A joker's money is the money a round won pays on the board with it against without it, on the same rounds of this ante's plain blinds (scoring, discards, the round's end, hands left); a joker whose money that doesn't reach (Gift Card, Credit Card, Matador's boss payout) is said \"not modelled\" on an option that sells it. The pool's quick screen tries only the joker whose removal leaves most by the same measure. A perished joker is the one sold.",
         "Shop options are told apart by the simulation's own noise: one is listed above another, or above keeping your money, only when it's ahead by more than 2 standard errors of their difference on the simulated rounds and shops both rest on, with 3% of the rank counted in for what no round shows (the By Ante 8 projection's own luck, a pack's or a reroll's cards, an estimate, an effect left out). Closer than that is a tie (≈), keeping your money first; skipping an open pack goes after the pack's picks worth more that leave no less money (its cards are gone once it closes).",
 ];
+
+/// Said with a skip-or-play comparison (`SkipCompare`)
+const SKIP_NOTE: &str = "Skip or play compares the chance to get through this ante (playing, the blind you choose and the boss; the shops before the boss counted, one fewer if you skip; a Big Blind between the one you choose and the boss: its chance isn't counted, its reward and the shop after it are: not modelled) × the next ante's boss × By Ante 8. The next ante's boss counts at least a chance told from none (3 wins in its rounds, as in the shop ranking), so a next ante hopeless both ways leaves this ante to decide. Close: within 3% (heuristic). A tag whose effect isn't valued gives no verdict (not modelled), nor does the comparison count the copies a Double Tag you hold would make (not modelled).";
 
 /// Said with a shop's first ranking (`FirstSink`)
 const FIRST_RANKING_NOTE: &str = "A first ranking, shown while the rest is worked out: the jokers, planets and vouchers on offer, the planets you hold, your jokers' sales and leaving (with a pack open, its joker and planet picks and skipping it), each with the numbers the full analysis gives it, ranked among themselves. Not in it yet: the reroll, the packs, tarots and a pack's playing cards (they wait on what is worked out after it: every joker's and tarot's By Ante 8 value, the planets not on offer, a pack's playing cards' own rounds), and an option that leaves you more money than the planet-level cap (what money past it buys reads those values). None is made with more money than that cap, or with a pack open when none of its picks is in it. The full analysis replaces it.";
@@ -5805,9 +5840,22 @@ impl Shops {
 /// The most rerolls a shop the money's walk tries (`money_value_with`): a budget, in the register
 const WALK_REROLLS: usize = 8;
 
-/// The walks the money is spent on (`money_value_with`): the reroll cap is chosen on the first
-/// half and its value read on the second, so the choice's own luck isn't counted
+/// The walks the money is spent on (`money_value_with`): the policy (the buy bar and the reroll
+/// cap) is chosen on the first half and its value read on the second, so the choice's own luck
+/// isn't counted
 const WALKS: usize = 2000;
+
+/// The bars a joker the money's walk finds must clear to be bought (`money_value_with`): what it
+/// adds for each dollar of its price, as a share of what a shop's joker adds per dollar on
+/// average; each tried at the fewest rerolls on half the walks, the best kept while the rerolls
+/// are chosen under it (a budget: bars and caps aren't tried together). None buys whatever adds anything
+/// (a player who spends while the money lasts); the higher ones keep the money for a better find
+/// later (`a_weak_find_leaves_the_money_for_a_better_one`). A budget, in the register
+const BUY_BARS: [f64; 3] = [0.0, 1.0, 2.0];
+
+/// The odds of each rarity among a shop's jokers (index 1..=3, as `money_value_with`'s `draw`
+/// rolls them: common_events.lua `get_current_pool`'s 0.7 and 0.95 thresholds)
+const RARITY_ODDS: [f64; 4] = [0.0, 0.7, 0.25, 0.05];
 
 /// `money_value` for a given number of shops ahead (and whether you're in one now): the money
 /// spent shop by shop as a player buys it, on `WALKS` walks through the shops. In the shop you're
@@ -5820,19 +5868,22 @@ const WALKS: usize = 2000;
 /// rerolls (common_events.lua `calculate_reroll_cost`: one free for each Chaos the Clown, the
 /// shop you're in only while its price shows it unused, then each paid one $1 more, from the
 /// shop's price). In each shop the jokers are looked at best first, and one is bought when the
-/// money pays for it and it adds to what's kept so far (`Kept`): in a free slot, else in place of
+/// money pays for it and it adds to what's kept so far (`Kept`) at least the bar for each dollar
+/// of its price (`BUY_BARS`; its full price, a joker of yours sold for it not netted off, which
+/// holds a swap to more than its outlay): in a free slot, else in place of
 /// the one whose loss costs least, a joker of yours the start lets go (`Start::owned`: sold for
-/// it) or one found before (at least one slot); never one from a shop already left. The rerolls a shop are the policy: the most of them (up to `WALK_REROLLS`, while the
-/// money pays) chosen on half the walks, valued on the other half, so nothing is chosen with
-/// hindsight of a walk's own cards; `forced` rerolls in the shop you're in are taken whatever
-/// the policy. Each shop's cards are drawn by the walk, the shop and the reroll, the same for
-/// every amount and every cap, so two are compared on the same shops.
+/// it) or one found before (at least one slot); never one from a shop already left. The bar
+/// and the rerolls a shop are the policy: the bar first, then the most rerolls under it (up to
+/// `WALK_REROLLS`, while the money pays), each chosen on half the walks and valued on the other
+/// half, so nothing is chosen with hindsight of a walk's own cards; `forced` rerolls in the shop
+/// you're in are taken whatever the policy. Each shop's cards are drawn by the walk, the shop
+/// and the reroll, the same for every amount, bar and cap, so two are compared on the same shops.
 fn money_value_with(lr: &value::LongRun, pool: &[Candidate], kept_as: &Kept, now: f64, money: f64, shops: Shops, from: Start) -> f64 {
     money_value_walks(lr, pool, kept_as, now, money, shops, from, None)
 }
 
 /// `money_value_with`, and into `gains` each walk's gain over `now` (the walks the value is
-/// read on, under the reroll cap chosen: the value is `now` plus their mean), for what the
+/// read on, under the policy chosen: the value is `now` plus their mean), for what the
 /// value owes to the luck of the shops it walked (`compare::Noise`)
 #[allow(clippy::too_many_arguments)]
 fn money_value_walks(lr: &value::LongRun, pool: &[Candidate], kept_as: &Kept, now: f64, money: f64, shops: Shops, from: Start, mut gains: Option<&mut Vec<f64>>) -> f64 {
@@ -5896,12 +5947,39 @@ fn money_value_walks(lr: &value::LongRun, pool: &[Candidate], kept_as: &Kept, no
     let owned: Vec<KeptJoker> = from.owned.iter().map(|o| kept_as.owned(o.0)).collect();
     let share: f64 = from.owned.iter().map(|o| 1.0 - 1.0 / o.0.max(1e-9)).sum();
     let base = kept_as.together(&owned, from.ratio, share, &mut order);
-    // (each cap's total on the walks it's chosen on, on the walks it's valued on)
+    // What a joker a shop shows adds per dollar of its price, on average over what the shops
+    // show (each rarity at the odds `draw` rolls it, its jokers alike; each joker on its own
+    // beside the board the walk starts from): the unit of the bar a buy must clear (`BUY_BARS`)
+    let per_dollar = {
+        let (mut added, mut price) = (0.0, 0.0);
+        for (list, odds) in by_rarity.iter().zip(RARITY_ODDS) {
+            if list.is_empty() {
+                continue;
+            }
+            let n = list.len() as f64;
+            for &(gain, x, cost, _) in list {
+                trial.clear();
+                trial.extend_from_slice(&owned);
+                trial.push((gain, x, false));
+                added += odds * (kept_as.together(&trial, from.ratio, share, &mut order) - base).max(0.0) / n;
+                price += odds * cost / n;
+            }
+        }
+        if price > 0.0 { added / price } else { 0.0 }
+    };
+    // (each policy's total on the walks it's chosen on, on the walks it's valued on)
     let mut best: Option<(f64, f64)> = None;
     // (a cap under the rerolls forced here would stop at them, not at the cap)
     let least = if in_shop { forced.saturating_sub(free_here) } else { 0 };
     let mut tried: Vec<f64> = vec![];
-    for rerolls in least..=WALK_REROLLS.max(least) {
+    // The policy: first the bar, each tried at the fewest rerolls; then the rerolls, more of them
+    // under the bar chosen while a walk stopped at the cap before (a budget: the bars and the
+    // caps aren't tried together)
+    let (mut step, mut bar_at, mut rerolls) = (0, 0, least);
+    // (whether a walk stopped at the fewest rerolls, under each bar)
+    let mut capped_at = [false; BUY_BARS.len()];
+    loop {
+        let bar = BUY_BARS[if step < BUY_BARS.len() { step } else { bar_at }];
         let mut totals = [0.0; 2];
         tried.clear();
         let mut capped = false;
@@ -5949,7 +6027,8 @@ fn money_value_walks(lr: &value::LongRun, pool: &[Candidate], kept_as: &Kept, no
                                 pick = Some((i, v));
                             }
                         }
-                        if let Some((i, _)) = pick {
+                        // (worth its price: it adds at least the bar for each dollar it costs)
+                        if let Some((i, _)) = pick.filter(|p| p.1 - have >= bar * per_dollar * cost) {
                             m -= cost;
                             if let Some(i) = i {
                                 kept.swap_remove(i);
@@ -5969,7 +6048,9 @@ fn money_value_walks(lr: &value::LongRun, pool: &[Candidate], kept_as: &Kept, no
                     }
                     let must = if here { forced } else { 0 };
                     if done >= (rerolls + free).max(must) {
-                        capped |= rerolls + free >= must;
+                        // (read on the walks the policy is chosen on: a higher cap can't change
+                        // their total once none of them stopped here)
+                        capped |= walk % 2 == 0 && rerolls + free >= must;
                         break;
                     }
                     m -= cost;
@@ -5984,13 +6065,29 @@ fn money_value_walks(lr: &value::LongRun, pool: &[Candidate], kept_as: &Kept, no
             }
         }
         if best.is_none_or(|b| totals[0] > b.0) {
+            if step < BUY_BARS.len() {
+                bar_at = step;
+            }
             best = Some((totals[0], totals[1]));
             if let Some(g) = gains.as_deref_mut() {
                 std::mem::swap(g, &mut tried);
             }
         }
         // a higher cap changes nothing once no walk stopped at this one
-        if !capped {
+        if step < BUY_BARS.len() {
+            capped_at[step] = capped;
+            step += 1;
+            if step < BUY_BARS.len() {
+                continue;
+            }
+            if !capped_at[bar_at] {
+                break;
+            }
+        } else if !capped {
+            break;
+        }
+        rerolls += 1;
+        if rerolls > WALK_REROLLS.max(least) {
             break;
         }
     }
@@ -7644,6 +7741,39 @@ mod tests {
             let skip = walk(Shops { dropped: 1, ..Shops::after(1) });
             assert!(play.1.iter().any(|&g| g > 0.0) && play.1.iter().any(|&g| g != play.1[0]), "{}", play.0);
             assert!(play == skip, "{} {}", play.0, skip.0);
+        });
+    }
+
+    #[test]
+    fn a_weak_find_leaves_the_money_for_a_better_one() {
+        // A shop more with $4 before the Big Blind, where only a weak $3 find is in reach, and
+        // after it the same shops with the same money: a player can leave a shop, so the walk with
+        // it finds no less (`BUY_BARS`). Fails if every walk buys whatever adds anything: the weak
+        // find there leaves $3 short of the strong $11 one after the Big Blind
+        let mut r = shop_run(&[("j_joker", None, None)], &[]);
+        r.dollars = 4.0;
+        r.base_reroll_cost = 99;
+        let blind = |slot: &str, state: &str, reward: i64| crate::save::BlindSlot { slot: slot.into(), key: String::new(), name: slot.into(), state: state.into(), target: 300.0, reward, skip_tag: None };
+        // (the Small Blind the one played: the first shop after it, its money in the $4, the
+        // second after the Big Blind's $4)
+        r.blinds = vec![blind("Small", "Current", 3), blind("Big", "Upcoming", 4), blind("Boss", "Upcoming", 5)];
+        let c = |m: f64, cost: i64| Candidate {
+            key: String::new(), name: String::new(), rarity: String::new(), cost, edition: None, action: "add".into(),
+            p_win: vec![], p_win_delta: vec![], reach: vec![], reach_delta: vec![], score_gain: 0.0, missing_gold: false,
+            rarity_n: 1, precise: false, sims: 0, rounds: vec![], per_shop: None, roles: vec![], note: None, desc: None, growth: None, long_mult: Some(m), sell_index: None, sell_tied: vec![],
+        };
+        let long = |c: &Candidate| c.long_mult.unwrap_or(1.0);
+        let kept = Kept::Weighted(&long);
+        with_long_run(&r, |lr| {
+            // (the strong one in reach after the Big Blind's cash-out only with the $4 kept)
+            let after = 4.0 + 4.0 + lr.round_money_now();
+            let strong = after.floor() as i64;
+            assert!(4.0 - 3.0 + 4.0 + lr.round_money_now() < strong as f64, "${strong}");
+            let pool = [c(1.01, 3), c(2.0, strong)];
+            let with = money_value_with(lr, &pool, &kept, 1.0, 4.0, Shops { prepaid: 1, ..Shops::after(2) }, Start::BOARD);
+            let without = money_value_with(lr, &pool, &kept, 1.0, 4.0, Shops { dropped: 1, ..Shops::after(1) }, Start::BOARD);
+            assert!(without > 1.1, "the strong find bought: {without}");
+            assert!(with >= without - 0.005, "a shop more: {with} against {without}");
         });
     }
 

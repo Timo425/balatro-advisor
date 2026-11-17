@@ -755,13 +755,14 @@ fn overrides(json: bool, run: Option<&str>, runs: usize, only: Option<&str>, lim
         if !shop.is_empty() {
             let c = |f: fn(&Grade) -> bool| shop.iter().filter(|g| f(&g.grade)).count();
             println!(
-                "  Shop, packs, skip or play, joker order: {} · the advice's {} · shown tied with it {} · ranked below {} · not an option {} · skip or play: close {}, the other way {} · another joker order {} ({:.0} s a state)",
+                "  Shop, packs, skip or play, joker order: {} · the advice's {} · shown tied with it {} · ranked below {} · not an option {} · skip or play: close {}, no verdict {}, the other way {} · another joker order {} ({:.0} s a state)",
                 shop.len(),
                 c(|g| matches!(g, Grade::Top | Grade::Same)),
                 c(|g| matches!(g, Grade::TiedTop { .. })),
                 c(|g| matches!(g, Grade::Below { .. })),
                 c(|g| matches!(g, Grade::NotAnOption)),
                 c(|g| matches!(g, Grade::Close)),
+                c(|g| matches!(g, Grade::NoVerdict)),
                 c(|g| matches!(g, Grade::Other)),
                 c(|g| matches!(g, Grade::OrderOther { .. })),
                 shop.iter().map(|g| g.secs).sum::<f64>() / shop.len() as f64
