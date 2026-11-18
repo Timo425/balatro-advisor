@@ -1,0 +1,61 @@
+# The 55 shops gap 7's shop-ranking cards are measured on (docs/design.md gap 7): 54 picked
+# 2026-11-13 across the owner's history and the bot's runs (every ante, rentals, debt, full
+# slots), and A2LFYPWG's Ante 5 shop (2026-11-17, a sale that guts the Big Blind). Paths under
+# ~/.local/share/balatro-advisor/ (the saved history and the bot's shops, never in the repo;
+# the history is pruned after 90 days). Run each with `balatro-advisor analyze --file <path>
+# --seed N --json`, before and after, and compare the options by label.
+history/GA74B7U3/1792436084211-a1-r1-Shop.jkr
+history/A4JZ9VFI/1791827321566-a1-r1-Shop.jkr
+history/BAKEXS26/1791569742191-a1-r2-Shop.jkr
+history/BLZMQ7NJ/1791744104387-a1-r2-Shop.jkr
+history/9UNV6SQ3/1791536666173-a2-r3-Shop.jkr
+history/2BTAA2XK/1791713231672-a2-r3-Shop.jkr
+history/BAKEXS26/1791569771055-a2-r3-Shop.jkr
+history/CFWUUN7H/1792510637934-a2-r4-Shop.jkr
+history/S1XKN84L/1791573140760-a2-r3-Shop.jkr
+history/N2ELPHBR/1791560806373-a2-r5-Shop.jkr
+history/FIPKWV7K/1791563116749-a2-r5-Shop.jkr
+history/Q84UC3NR/1792084385811-a3-r6-Shop.jkr
+history/F67C37FV/1792496715098-a3-r7-Shop.jkr
+history/2BTAA2XK/1791713552337-a3-r7-Shop.jkr
+history/I6XKKH65/1791734656816-a3-r6-Shop.jkr
+history/3L1TV9BZ/1791827586505-a3-r5-Shop.jkr
+history/35K1TYBU/1792163413749-a3-r4-Shop.jkr
+history/RB51DNGQ/1792185113483-a3-r6-Shop.jkr
+history/QBJCMCRM/1791826985691-a4-r10-Shop.jkr
+history/F67C37FV/1792496910624-a4-r9-Shop.jkr
+history/LK1JWUX3/1792349260395-a4-r7-Shop.jkr
+history/N2ELPHBR/1791561383881-a4-r12-Shop.jkr
+history/35K1TYBU/1792163558752-a4-r7-Shop.jkr
+history/BLZMQ7NJ/1791744748562-a4-r10-Shop.jkr
+history/1RVL49LQ/1791731368891-a5-r11-Shop.jkr
+history/GA74B7U3/1792436835718-a5-r12-Shop.jkr
+history/F67C37FV/1792497013176-a5-r11-Shop.jkr
+history/Q84UC3NR/1792087483596-a5-r12-Shop.jkr
+history/MXW8ATQD/1791572787979-a5-r11-Shop.jkr
+history/FIPKWV7K/1791566717293-a6-r17-Shop.jkr
+history/P4NKP4S7/1792440129632-a6-r14-Shop.jkr
+history/M9T2ND47/1792509869906-a6-r13-Shop.jkr
+history/7JR7ZTZ6/1791824761144-a6-r17-Shop.jkr
+history/A7LD1T91/1792430514335-a7-r18-Shop.jkr
+history/545MMUWQ/1792334764051-a7-r18-Shop.jkr
+history/LK1JWUX3/1792353850229-a8-r18-Shop.jkr
+bot/shops/BAVANG13-3/a2-r3-004-shop.jkr
+bot/shops/BAVANG19-4/a2-r5-013-shop.jkr
+bot/shops/BAVANG07-5/a2-r4-011-shop.jkr
+bot/shops/BAVANG10-5/a2-r4-012-shop.jkr
+bot/shops/BAVANG18-4/a2-r4-014-shop.jkr
+bot/shops/BAVANG04-3/a3-r6-012-shop.jkr
+bot/shops/BAVANG22-4/a3-r6-026-shop.jkr
+bot/shops/BAVANG16-6/a3-r4-017-shop.jkr
+bot/shops/BAVANG24-8/a3-r5-017-shop.jkr
+bot/shops/BAVANG10-4/a3-r6-017-shop.jkr
+bot/shops/BAVANG06-2/a4-r9-012-shop.jkr
+bot/shops/BAVANG12-5/a4-r11-025-shop.jkr
+bot/shops/BAVANG24-2/a4-r9-016-shop.jkr
+bot/shops/BAVANG09-2/a4-r10-020-shop.jkr
+bot/shops/BAVANG07-3/a4-r10-025-shop.jkr
+bot/shops/BAVANG09-2/a5-r12-026-shop.jkr
+bot/shops/BAVANG13-7/a5-r14-051-shop.jkr
+bot/shops/BAVANG15-4/a5-r12-053-shop.jkr
+history/A2LFYPWG/1792432511724-a5-r11-Shop.jkr

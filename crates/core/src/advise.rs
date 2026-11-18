@@ -162,6 +162,10 @@ pub struct Candidate {
     /// Those simulated rounds, for each round of `p_win` (`sim::Stats::rounds`)
     #[serde(skip)]
     pub rounds: Vec<Option<SampledRounds>>,
+    /// Its chance at this ante's blinds before its hardest round and their rounds (`Ctx::before`;
+    /// on the full count only: the shop's offers, `evaluate_candidate`'s full pass)
+    #[serde(skip)]
+    pub before: Vec<(f64, Option<SampledRounds>)>,
     /// Chance a given shop shows it (all card slots, before rerolls).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub per_shop: Option<f64>,
@@ -450,10 +454,12 @@ pub struct ShopOption {
     /// Money it gives back (money tarots), counted in `money_after`.
     #[serde(default)]
     pub money_gain: f64,
-    /// Chance to get through this ante with the shops still to come before its hardest
-    /// round: what the money it leaves buys there (rerolls and the jokers they show, shop by
-    /// shop), from the board it leaves. Used for ranking; the shown win chance stays your board
-    /// as it is.
+    /// Chance to get through this ante: its blinds before its hardest round on the board it
+    /// leaves where that's simulated, else your board's or read off its scores against yours
+    /// (`OptionRounds::before`), then that round with the shops still to come before it:
+    /// what the money it leaves buys there (rerolls and the jokers they show, shop by shop),
+    /// from the board it leaves. Used for ranking; the shown win chance stays your board as it
+    /// is.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub survive: Option<f64>,
     /// The same for the next ante's boss: from the option's own win chance there (simulated for
@@ -535,12 +541,20 @@ pub struct VsKeep {
 /// The simulated rounds a shop option's own chances come from (`sim::Stats::rounds`), for the
 /// ranking's noise: the board it leaves at this ante's hardest round (`now`) and at the next
 /// ante's boss (`next`, with your board's rounds on the same count where that isn't the main
-/// simulation's, `next_base`); none where the option leaves your board's rounds as they are
+/// simulation's, `next_base`); none where the option leaves your board's rounds as they are.
+/// And its chance at each of this ante's blinds before the hardest (`Ctx::before`, in order)
+/// with those rounds, where its board is simulated there; empty, your board's chances and
+/// rounds there where it changes none of those rounds (`before_yours`, and leaving, a reroll
+/// or a money card), else read off its scores against yours (a pack, a tarot)
 #[derive(Debug, Clone, Default)]
 pub struct OptionRounds {
     pub now: Option<SampledRounds>,
     pub next: Option<SampledRounds>,
     pub next_base: Option<SampledRounds>,
+    pub before: Vec<(f64, Option<SampledRounds>)>,
+    /// It plays this ante's blinds before the hardest round as your board does (a voucher that
+    /// changes none of them, a boss reroll)
+    pub before_yours: bool,
 }
 
 type SampledRounds = std::sync::Arc<Vec<sim::Sampled>>;
@@ -921,6 +935,11 @@ struct Ctx<'a> {
     /// In a blind, the blinds still ahead in this ante, in order (the Big Blind's, if it's still
     /// to come, then the boss's): what the board a round leaves gets through (`value::Ahead`)
     ahead: Vec<Spec>,
+    /// In the shop and its packs (where options are ranked), this ante's blinds still to play
+    /// before its hardest round (`specs`' last before the horizon), in order: the shop ranking's
+    /// survival through this ante reads each (`Ctx::before_odds`). With the index in `specs` of
+    /// the one simulated there too (the next blind), so its rounds are those.
+    before: Vec<(Spec, Option<usize>)>,
     fresh_deck: Vec<Card>,
     opts: Options,
     /// Outside a blind: every board an option leaves is valued on its jokers as you'd arrange
@@ -968,6 +987,20 @@ impl Ctx<'_> {
 
     fn odds_one(&self, b: &Board, spec: &Spec, sims: usize) -> (f64, Stats) {
         sim::round_odds(b, &spec.start, sims, self.opts.seed)
+    }
+
+    /// `b`'s chance at each of this ante's blinds before its hardest round (`before`), with what
+    /// `added` and `removed` jokers change in a round: the one `specs` holds from `odds` (`b`'s
+    /// there, `Ctx::odds`; simulated where `odds` doesn't hold it), the others simulated on the
+    /// same seed, so round i of every blind is dealt alike for every board (`sim::round_odds`)
+    fn before_odds(&self, b: &Board, added: &[&Joker], removed: &[&Joker], odds: &[(f64, Stats)], sims: usize) -> Vec<(f64, Stats)> {
+        self.before
+            .iter()
+            .map(|(spec, at)| match at.and_then(|i| odds.get(i)) {
+                Some(o) => o.clone(),
+                None => sim::round_odds(b, &apply_mods(&spec.start, added, removed), spec_rounds(spec, sims), self.opts.seed),
+            })
+            .collect()
     }
 
     fn typical(&self, b: &Board, added: &[&Joker], removed: &[&Joker]) -> Stats {
@@ -1246,10 +1279,23 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
         });
     }
     let ahead: Vec<Spec> = if specs.iter().any(|s| s.in_progress()) { upcoming.iter().map(|bl| blind_spec(bl)).collect() } else { vec![] };
-    let ctx = Ctx { run, data, base, specs, ahead, fresh_deck, opts: opts.clone(), removal_rank: Default::default(), arrange: run.blind_in_play().is_none(), orders: Default::default() };
+    // This ante's blinds before its hardest round, in the shop and its packs: the ones `specs`
+    // holds (the next blind), then the rest still to come (a Big Blind behind the Small)
+    let before: Vec<(Spec, Option<usize>)> = if run.screen == crate::save::Screen::Shop || run.screen.in_pack() {
+        let key_round = specs.iter().rposition(|s| !s.horizon).unwrap_or(0);
+        let held: Vec<(Spec, Option<usize>)> = specs[..key_round].iter().enumerate().filter(|(_, s)| !s.horizon).map(|(i, s)| (s.clone(), Some(i))).collect();
+        let rest: Vec<(Spec, Option<usize>)> = upcoming.iter().filter(|bl| bl.slot != "Boss" && !held.iter().any(|(s, _)| s.blind_key == bl.key)).map(|bl| (blind_spec(bl), None)).collect();
+        held.into_iter().chain(rest).collect()
+    } else {
+        vec![]
+    };
+    let ctx = Ctx { run, data, base, specs, ahead, before, fresh_deck, opts: opts.clone(), removal_rank: Default::default(), arrange: run.blind_in_play().is_none(), orders: Default::default() };
 
     lap("setup");
     let base_odds = ctx.odds(&ctx.base, &[], &[], opts.sims);
+    // (your board at this ante's blinds before its hardest round, in the shop: every option the
+    // ranking doesn't simulate there gets these)
+    let base_before = ctx.before_odds(&ctx.base, &[], &[], &base_odds, opts.sims);
     let base_typical = ctx.typical(&ctx.base, &[], &[]);
     let rounds: Vec<Round> = ctx
         .specs
@@ -1278,13 +1324,15 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
         let removed = [&ctx.base.jokers[i]];
         let t = ctx.typical(&b, &[], &removed);
         let o = ctx.odds(&b, &[], &removed, opts.sims);
-        (t, o)
+        // (this ante's blinds before its hardest round: a sale's, for the shop ranking)
+        let before = ctx.before_odds(&b, &[], &removed, &o, opts.sims);
+        (t, o, before)
     });
     let jokers: Vec<JokerReport> = (0..n)
         .map(|i| {
             let j = &ctx.base.jokers[i];
             let sj = &run.jokers[i];
-            let (t, o) = &contrib[i];
+            let (t, o, _) = &contrib[i];
             let share = if base_typical.mean > 0.0 { 1.0 - t.mean / base_typical.mean } else { 0.0 };
             JokerReport {
                 key: j.key.clone(),
@@ -1369,7 +1417,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
     let key_round = ctx.specs.iter().rposition(|s| !s.horizon).unwrap_or(0);
     if !quick_blind {
         let find = lr.stand_in(1.25, 0.0, 0.0);
-        let trouble = !contrib.iter().any(|(_, o)| o.get(key_round).is_some_and(|x| x.1.p_saved >= TROUBLE));
+        let trouble = !contrib.iter().any(|(_, o, _)| o.get(key_round).is_some_and(|x| x.1.p_saved >= TROUBLE));
         let ranks = par_map(&idx, |&i| {
             if run.jokers[i].eternal || !ctx.base.sale_frees_slot(i) {
                 return f64::MIN;
@@ -1949,7 +1997,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
                     extra_money.insert(label.clone(), -money);
                 }
                 options.push(ShopOption {
-                rounds: OptionRounds { now: st.rounds.clone(), next: hz.and_then(|h| contrib[i].1.get(h)).and_then(|o| o.1.rounds.clone()), next_base: None },
+                rounds: OptionRounds { now: st.rounds.clone(), next: hz.and_then(|h| contrib[i].1.get(h)).and_then(|o| o.1.rounds.clone()), next_base: None, before: contrib[i].2.iter().map(|(p, st)| (*p, st.rounds.clone())).collect(), before_yours: false },
                     sell_index: Some(i),
                     sell_key: Some(sj.key.clone()),
                     key: Some(sj.key.clone()),
@@ -2046,6 +2094,49 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
         // How far each option's survival moves with the simulated chance it starts from, this ante
         // and the next (`slope_at`), and the share of its lost rounds a save rescues there
         // (`save_lift`): what its rank owes to its rounds' luck (`compare::Noise`, below)
+        // Each option's chance through this ante's blinds before its hardest round (`Ctx::before`):
+        // its own at each where its board is simulated there (`OptionRounds::before`: a joker,
+        // a sale, a planet, a card, a voucher that changes a round), your board's where it keeps
+        // your board (leaving, a reroll's chain, a money card, a voucher that changes none of
+        // those rounds, a boss reroll), else read off its scores against yours (a pack, a tarot:
+        // what they'd find or change isn't simulated there, heuristic), with those rounds; the ranking's survival is that times the walk through
+        // its hardest round, which lifts that round alone (heuristic: the shops before a blind
+        // before it find nothing there)
+        // (each blind's chance, the rounds it's read on and its slope on their mean: 1 for its own
+        // rounds or yours as they are, else how far your scores' reading moves with your chance)
+        let before_scores: Vec<Scores> = ctx.before.iter().zip(&base_before).map(|((sp, _), (p, st))| Scores::from_odds(usize::MAX, *p, st, sp.start.target)).collect();
+        let key_scores = Scores::of(&ctx, key_round, &base_odds);
+        let key_p = base_odds.get(key_round).map_or(0.0, |o| o.0);
+        let before_of = |o: &ShopOption| -> Vec<(f64, Option<SampledRounds>, f64)> {
+            if !o.rounds.before.is_empty() {
+                return o.rounds.before.iter().map(|(p, r)| (*p, r.clone(), 1.0)).collect();
+            }
+            // your board as it is: keeping your money, a reroll's chain and a money card's money
+            // are the walk's (as at the next ante); a voucher that changes none of those rounds
+            // or a boss reroll plays them as you do
+            if o.rounds.before_yours || matches!(o.kind.as_str(), "leave" | "skip") || Stay::of(o) == Stay::Reroll || money_only(o) {
+                return base_before.iter().map(|(p, st)| (*p, st.rounds.clone(), 1.0)).collect();
+            }
+            // read off its scores against yours on your board's scores at each (`Scores`): its
+            // reach at this ante's hardest round over yours; else, where your board gets through
+            // that round `BEFORE_READ_FLOOR` of the time or more, the multiplier its chance there
+            // gives on your scores there (`Scores::ratio_for`), and below that its own strength at
+            // the next ante's boss (near none its chance is a step in that round's tail); none
+            // known, yours
+            let x = o.reach.filter(|_| base_reach > 0.0).map(|r| r / base_reach).unwrap_or_else(|| {
+                if key_p >= BEFORE_READ_FLOOR { key_scores.ratio_for(o.p_win, ctx.opts.sims, None) } else { o.next_strength.unwrap_or(1.0) }
+            });
+            // (as your chance there moved by what its scores move the reading: one as strong as
+            // yours reads your chance itself, also where the reading places it by the rule of
+            // three, at none or a sure pass)
+            before_scores
+                .iter()
+                .zip(&base_before)
+                .map(|(sc, (p, st))| ((p + sc.chance(x) - sc.chance(1.0)).clamp(0.0, 1.0), st.rounds.clone(), 1.0 + sc.chance_slopes(x).0 - sc.chance_slopes(1.0).0))
+                .collect()
+        };
+        let befores: Vec<Vec<(f64, Option<SampledRounds>, f64)>> = options.iter().map(before_of).collect();
+        let through: Vec<f64> = befores.iter().map(|b| b.iter().map(|x| x.0).product()).collect();
         let mut slopes: Vec<[(f64, f64); 2]> = vec![[(1.0, 1.0); 2]; options.len()];
         // (each walk's gain in each option's survival, this ante and the next: the luck of the
         // shops ahead, the same shops for every option)
@@ -2070,7 +2161,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
                 let o = &options[k];
                 let stay = Stay::of(o);
                 let on_board = stay == Stay::Reroll || money_only(o);
-                let survive = |p: f64, mut gains: Option<&mut Vec<f64>>| {
+                let walk = |p: f64, mut gains: Option<&mut Vec<f64>>| {
                     if on_board {
                         let from = Start { owned: &yours, ..Start::board(board_rent) };
                         survival_with(&lr, pool_entries, &kept, p, if stay == Stay::Reroll { run.dollars } else { o.money_after }, false, stay, from, gains)
@@ -2085,6 +2176,8 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
                         with.max(p)
                     }
                 };
+                // (through the blinds before it too)
+                let survive = |p: f64, gains: Option<&mut Vec<f64>>| through[k] * walk(p, gains);
                 let p = if on_board { p_now } else { o.p_win };
                 let mut gains = vec![];
                 let at = survive(p, Some(&mut gains));
@@ -2255,7 +2348,17 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
                 {
                     let on = (1.0 - save_now) / survive;
                     noise.add(ROUNDS, (on * slope_now.0, on * slope_now.1), won(r));
-                    noise.add(SHOP_WALKS, (on, on), walks[k][0].iter().copied());
+                    noise.add(SHOP_WALKS, (on * through[k], on * through[k]), walks[k][0].iter().copied());
+                    // the blinds before it, a factor each of the survival before a save's
+                    // rescue (`s`: the rescue lifts it to s + (1 − s)·save), on their rounds (round
+                    // i of every blind dealt alike, one set with this ante's hardest)
+                    let s = if save_now < 1.0 { ((survive - save_now) / (1.0 - save_now)).max(0.0) } else { 0.0 };
+                    for (p, r, on_rounds) in befores[k].iter() {
+                        if let Some(r) = r.as_ref().filter(|_| *p > 0.0) {
+                            let at = on * s / p * on_rounds;
+                            noise.add(ROUNDS, (at, at), won(r));
+                        }
+                    }
                 }
                 if let (Some(next), Some(base), Some(scores)) = (o.survive_next, base_next.as_ref(), next_scores.as_ref()) {
                     // (under the chance told from none, the next ante is the same factor for all)
@@ -2744,8 +2847,8 @@ const HEURISTICS: [&str; 8] = [
         "Outside a blind every board is valued with its jokers as you'd arrange them (yours, the one each option leaves, and every board projected to Ante 8); where a joker you buy goes is the order advice once you have it. The order: the one worth most on 64 fixed deals of this run's round (each deal's play chosen in the order as they sit, its rolls' floor and ceiling averaged), times the hands the blind's start gives it (a Blueprint copying Burglar); every order of the jokers whose place can change a score up to 6 of them, swaps of two past that; kept as they sit below a 0.5% gain; Ceremonial Dagger and the joker to its right held where they sit, its eat not modelled (heuristic: not the discards a copy takes or its money at the round's end). In a blind, your board and the options are scored as the jokers sit; the boards projected to Ante 8 are still arranged.",
         "Scaling jokers keep their current value in the blinds ahead. By Ante 8, the ones a round changes grow or fade as the simulated player's rounds at this ante's plain blind sizes leave them (yours by a player that plays to the round's goals, their worths from a projection that keeps them; a shop joker's by a player that plays only to win); the rest by a table.",
         "Blue Seal planets by Ante 8 assume a consumable held at round end in a measured share of rounds (one run).",
-        "The shop ranking counts what each option's money left buys in the shops ahead: the money spent shop by shop on 2000 simulated walks (rerolls and the jokers they show, a joker bought in the shop it shows in when the money pays for it and it adds enough for its price, into a free slot or in place of the joker whose loss costs least, yours sold for it; enough is a bar per dollar of its price, none, what a shop's joker adds per dollar on average or twice that, chosen on half the walks, then the most rerolls a shop under it, at most 8: budgets, heuristic), starting from the board the option leaves; several jokers' score gains added (most jokers' Chips and Mult add), read off your board's score spread in that round as a lognormal (heuristic); an option with no simulated chance at the next ante's boss read the same way from its score there. Rent comes off at each round's end: your rentals', one the option buys, a Buffoon pack's picks as often as the stake makes them rentals. Each round then pays its blind's reward, the interest and what a round pays on your board as it is (hands and discards left, the cards' and jokers' money, measured on this ante's plain blinds), the same for every option: a money joker bought or sold doesn't change it, nor does a boss's rule (not modelled). Planets, packs and tarots the money could buy aren't counted, nor the stickers of the jokers the walk finds (not modelled).",
-        "With your joker slots full, the joker a shop or pool joker replaces is chosen by the shop ranking's measure: the chance through this ante's hardest round × the next ante's boss × the geometric mean of the long run with that sale (its income and growth by Ante 8) and the strength at the next ante, with Mr. Bones' save counted at the two bosses it plays (the shop ranking counts it through every round ahead: on chained runs, the share of lost rounds a save rescues applied to each option's survival, a heuristic); the swaps (outside a blind each on the board it leaves as you'd arrange it; in a blind, the freed slot and the right end) raced on the same simulated rounds (to the full count), those it can't tell apart reported as ties; when no swap gets through 20% this round, the score reached decides and no ties are shown, as in the shop ranking (heuristic budget: at most 6 swaps after 32 rounds, 4 after 64, 3 after 128; a sale's places that play the first 32 rounds the same count as one). A Negative joker is never the one sold to make room (its slot goes with it), nor a charged Invisible Joker (it copies another joker into the row as it's sold). What a sale does that isn't modelled is said on the option (a joker that acts when sold: Diet Cola, a charged Invisible Joker; Campfire's growth from it). A joker's money is the money a round won pays on the board with it against without it, on the same rounds of this ante's plain blinds (scoring, discards, the round's end, hands left); a joker whose money that doesn't reach (Gift Card, Credit Card, Matador's boss payout) is said \"not modelled\" on an option that sells it. The pool's quick screen tries only the joker whose removal leaves most by the same measure. A perished joker is the one sold.",
+        "The shop ranking counts what each option's money left buys in the shops ahead: the money spent shop by shop on 2000 simulated walks (rerolls and the jokers they show, a joker bought in the shop it shows in when the money pays for it and it adds enough for its price, into a free slot or in place of the joker whose loss costs least, yours sold for it; enough is a bar per dollar of its price, none, what a shop's joker adds per dollar on average or twice that, chosen on half the walks, then the most rerolls a shop under it, at most 8: budgets, heuristic), starting from the board the option leaves; several jokers' score gains added (most jokers' Chips and Mult add), read off your board's score spread in that round as a lognormal (heuristic); an option with no simulated chance at the next ante's boss read the same way from its score there. Rent comes off at each round's end: your rentals', one the option buys, a Buffoon pack's picks as often as the stake makes them rentals. Each round then pays its blind's reward, the interest and what a round pays on your board as it is (hands and discards left, the cards' and jokers' money, measured on this ante's plain blinds), the same for every option: a money joker bought or sold doesn't change it, nor does a boss's rule (not modelled). Planets, packs and tarots the money could buy aren't counted, nor the stickers of the jokers the walk finds (not modelled). The walk lifts this ante's hardest round only: its blinds before that one count each option's own chance there (simulated on the board a joker, a sale, a planet, a playing card or a voucher that changes one of those rounds leaves, a Celestial Pack's the planet each set of its cards picks; your board's for leaving, a reroll, a money card, a voucher that changes none of them or a boss reroll; another pack's or a tarot's read off its scores against yours on your board's scores at each blind, from its reach at the hardest round where it has one (a Buffoon Pack, Judgement), else its chance at the hardest round where yours there is 10% or more, else its strength at the next ante's boss: heuristic), each played from the board as it stands and the chances multiplied, not chained as Best play's blinds ahead are (heuristic), with nothing the shops before them find (heuristic: a Big Blind behind the Small isn't lifted by the shop after the Small).",
+        "With your joker slots full, the joker a shop or pool joker replaces is chosen by the shop ranking's measure: the chance through this ante (for a joker on offer every blind still ahead before its hardest round, then that round; for one the shops ahead may show, that round alone) × the next ante's boss × the geometric mean of the long run with that sale (its income and growth by Ante 8) and the strength at the next ante, with Mr. Bones' save counted at the rounds it plays, a save spent on a blind before the hardest round gone for the rounds after it (the shop ranking counts it through every round ahead: on chained runs, the share of lost rounds a save rescues applied to each option's survival, a heuristic); the swaps (outside a blind each on the board it leaves as you'd arrange it; in a blind, the freed slot and the right end) raced on the same simulated rounds (to the full count), those it can't tell apart reported as ties; when no swap gets through 20% this round, the score reached decides and no ties are shown, as in the shop ranking (heuristic budget: at most 6 swaps after 32 rounds, 4 after 64, 3 after 128; a sale's places that play the first 32 rounds the same count as one). A Negative joker is never the one sold to make room (its slot goes with it), nor a charged Invisible Joker (it copies another joker into the row as it's sold). What a sale does that isn't modelled is said on the option (a joker that acts when sold: Diet Cola, a charged Invisible Joker; Campfire's growth from it). A joker's money is the money a round won pays on the board with it against without it, on the same rounds of this ante's plain blinds (scoring, discards, the round's end, hands left); a joker whose money that doesn't reach (Gift Card, Credit Card, Matador's boss payout) is said \"not modelled\" on an option that sells it. The pool's quick screen tries only the joker whose removal leaves most by the same measure. A perished joker is the one sold.",
         "Shop options are told apart by the simulation's own noise: one is listed above another, or above keeping your money, only when it's ahead by more than 2 standard errors of their difference on the simulated rounds and shops both rest on, with 3% of the rank counted in for what no round shows (the By Ante 8 projection's own luck, a pack's or a reroll's cards, an estimate, an effect left out). Closer than that is a tie (≈), keeping your money first; skipping an open pack goes after the pack's picks worth more that leave no less money (its cards are gone once it closes).",
 ];
 
@@ -2869,9 +2972,9 @@ pub fn shop_pool(run: &RunState, data: &GameData) -> Vec<String> {
 }
 
 /// The sets of simulated rounds a shop option's rank rests on (`compare::Noise`): this ante's
-/// simulated rounds (this ante's hardest round and the next ante's boss in one set: round i of
-/// both is dealt from the same seed, `sim::round_odds`, so what a lucky deal does to both adds
-/// up round by round), and the walks through the shops ahead its money is spent on
+/// simulated rounds (this ante's blinds before its hardest round, that round and the next
+/// ante's boss in one set: round i of each is dealt from the same seed, `sim::round_odds`, so
+/// what a lucky deal does to all of them adds up round by round), and the walks through the shops ahead its money is spent on
 /// (`money_value_with`)
 const ROUNDS: u8 = 0;
 const SHOP_WALKS: u8 = 1;
@@ -2898,8 +3001,9 @@ fn option_value(o: &ShopOption, next_floor: f64) -> f64 {
     shop_measure(o.survive.unwrap_or(o.p_win), o.survive_next.unwrap_or(1.0), next_floor, o.long_mult.unwrap_or(1.0), o.next_strength.unwrap_or(1.0))
 }
 
-/// The shop ranking's measure (`rank_options`): the chance through this ante's hardest round,
-/// times the next ante's boss (at least `floor`, the chance told from none: `three_wins`), times
+/// The shop ranking's measure (`rank_options`): the chance through this ante (`survive`: every
+/// blind still ahead before its hardest round, `Ctx::before`, then that round), times the next
+/// ante's boss (at least `floor`, the chance told from none: `three_wins`), times
 /// the geometric mean of the long run and the strength at the next ante. The joker a buy
 /// replaces is chosen on it too (`SwapRound::value`, `swap_measure`): one measure, one place.
 fn shop_measure(survive: f64, next: f64, floor: f64, long: f64, strength: f64) -> f64 {
@@ -2951,11 +3055,16 @@ fn save_lift(ctx: &Ctx, b: &Board, added: &[&Joker], removed: &[&Joker]) -> (f64
     (share(0, k), share(k, n))
 }
 
-/// One round of a swap's race (`evaluate_candidate`): this ante's hardest round, the next
-/// ante's boss and the strength there, each on draws of its own (so the measure on a round
-/// averages to the shop ranking's product of chances), with the swap's long run
+/// One round of a swap's race (`evaluate_candidate`): this ante's blinds before its hardest
+/// round, that round, the next ante's boss and the strength there, each on draws of its own (so
+/// the measure on a round averages to the shop ranking's product of chances), with the swap's
+/// long run
 #[derive(Clone, PartialEq)]
 struct SwapRound {
+    /// Got through every one of this ante's blinds before its hardest round (`Ctx::before`), on
+    /// score or saved by Mr. Bones while a save is left (each save spent there gone for the
+    /// rounds after it)
+    before: bool,
     /// Got through this ante's hardest round: on score (`won`), or saved by Mr. Bones
     won: bool,
     saved: bool,
@@ -2973,7 +3082,7 @@ struct SwapRound {
 impl SwapRound {
     /// `shop_measure` on this round
     fn value(&self, floor: f64) -> f64 {
-        shop_measure((self.won || self.saved) as u8 as f64, self.next as u8 as f64, floor, self.long, self.strength)
+        shop_measure((self.before && (self.won || self.saved)) as u8 as f64, self.next as u8 as f64, floor, self.long, self.strength)
     }
 }
 
@@ -2982,6 +3091,10 @@ impl SwapRound {
 /// `rank_options` does
 const NEXT_DRAWS: u64 = 0x6e65_7874_616e_7465;
 const STRENGTH_DRAWS: u64 = 0x7374_7265_6e67_7468;
+/// The salt of the draws this ante's blinds before its hardest round are raced on (blind i of
+/// `Ctx::before`, from 0, on the seed XOR this salt × (i + 1)), apart from that round's and
+/// each other's
+const BEFORE_DRAWS: u64 = 0x6265_666f_7265_626c;
 /// The race between the swaps of a joker with no slot free (`compare::race`): rounds in the
 /// first batch (a sale's places that play them the same are one swap), and the budget's table
 /// (with many swaps, half of them for each doubling of the rounds instead: `compare::halving`);
@@ -2993,7 +3106,9 @@ const SWAP_BUDGET: &[(usize, usize)] = &[(32, 6), (64, 4), (128, 3)];
 /// `ctx.specs`, the strength at its mean) and its long run: what giving up a joker leaves
 /// (`Ctx::removal_rank`). In trouble (`trouble`), the score reached this round, as in the race.
 /// `saves`: the lost rounds the board's jokers can save (`Board::round_saves`): with more than
-/// one, a save spent this round leaves another for the next ante's boss.
+/// one, a save spent this round leaves another for the next ante's boss. This ante's blinds
+/// before its hardest round aren't read: its users (the pool's screen, the outlook) are about
+/// jokers the shops ahead may show, mostly bought after them, as the pool's race does.
 fn swap_measure(ctx: &Ctx, odds: &[(f64, Stats)], base_odds: &[(f64, Stats)], long: f64, trouble: bool, saves: usize) -> f64 {
     let key_round = ctx.specs.iter().rposition(|s| !s.horizon).unwrap_or(0);
     let Some(&(won, ref st)) = odds.get(key_round) else { return 0.0 };
@@ -3108,6 +3223,7 @@ fn evaluate_candidate(lr: &value::LongRun, j: Joker, cost: i64, rental: bool, ba
         precise: sims >= ctx.opts.sims,
         sims,
         rounds: odds.iter().map(|(_, st)| st.rounds.clone()).collect(),
+        before: vec![],
         per_shop: None,
         roles: roles(&j),
         note: joker_note(&j.key),
@@ -3119,7 +3235,12 @@ fn evaluate_candidate(lr: &value::LongRun, j: Joker, cost: i64, rental: bool, ba
     };
     let simulate = |(label, b, removed, t, (slot, _)): &Pick, n: usize| {
         let r: Vec<&Joker> = removed.iter().collect();
-        let mut c = candidate(label.clone(), *slot, t, ctx.odds(b, &[&j], &r, n));
+        let odds = ctx.odds(b, &[&j], &r, n);
+        // (this ante's blinds before its hardest round, for the shop ranking: the shop's offers,
+        // on the full count)
+        let before = if full && n >= ctx.opts.sims { ctx.before_odds(b, &[&j], &r, &odds, n) } else { vec![] };
+        let mut c = candidate(label.clone(), *slot, t, odds);
+        c.before = before.into_iter().map(|(p, st)| (p, st.rounds)).collect();
         for note in slot.map(|i| sale_unmodelled(ctx, i)).unwrap_or_default() {
             c.note = Some(c.note.take().map_or(note.clone(), |n| format!("{n} · {note}")));
         }
@@ -3157,15 +3278,23 @@ fn evaluate_candidate(lr: &value::LongRun, j: Joker, cost: i64, rental: bool, ba
         let now = sim::round_results(b, &apply_mods(&spec.start, &[&j], &r), range.clone(), ctx.opts.seed);
         let next = |salt: u64| hz.map(|h| sim::round_results(b, &apply_mods(&ctx.specs[h].start, &[&j], &r), range.clone(), ctx.opts.seed ^ salt));
         let (next, strength) = (next(NEXT_DRAWS), next(STRENGTH_DRAWS));
+        // (this ante's blinds before its hardest round, each on draws of its own: for a joker on
+        // offer, `full`, as its option reads them; one the shops ahead may show is mostly bought
+        // after them)
+        let before: Vec<Vec<sim::RoundResult>> = if full { ctx.before.iter().enumerate().map(|(i, (sp, _))| sim::round_results(b, &apply_mods(&sp.start, &[&j], &r), range.clone(), ctx.opts.seed ^ BEFORE_DRAWS.wrapping_mul(i as u64 + 1))).collect() } else { vec![] };
         now.iter()
             .enumerate()
             .map(|(k, x)| {
                 let n = next.as_ref().map(|v| &v[k]);
+                // (a save spent on a round leaves one for a later round only with another copy:
+                // the saves left after the blinds before this round, and after this round)
+                let lost = before.iter().filter(|v| !v[k].won).count();
+                let left = b.round_saves().saturating_sub(lost);
                 SwapRound {
+                    before: lost == 0 || (before.iter().all(|v| v[k].won || v[k].saved) && lost <= b.round_saves()),
                     won: x.won,
-                    saved: x.saved,
-                    // (a save spent this round leaves one for the next only with another copy)
-                    next: n.is_none_or(|n| n.won || (n.saved && (x.won || b.round_saves() > 1))),
+                    saved: x.saved && left > 0,
+                    next: n.is_none_or(|n| n.won || (n.saved && left > (!x.won) as usize)),
                     strength: strength.as_ref().map_or(1.0, |v| v[k].total / next_mean),
                     reach: x.total / spec.start.target.max(1.0),
                     long,
@@ -3504,7 +3633,9 @@ fn shop_options(
         grow_constellation(&mut b);
         let (p, st) = ctx.odds_one(&b, spec, ctx.opts.sims);
         let next = ctx.specs.iter().find(|x| x.horizon).map(|h| ctx.odds_one(&b, h, (ctx.opts.sims / 2).max(60)).1);
-        (p, st.mean / spec.start.target.max(1.0), next.as_ref().map(|n| n.mean), OptionRounds { now: st.rounds, next: next.and_then(|n| n.rounds), next_base: None })
+        // (this ante's blinds before its hardest round, for the ranking's survival)
+        let before = ctx.before_odds(&b, &[], &[], &[], ctx.opts.sims).into_iter().map(|(p, st)| (p, st.rounds)).collect();
+        (p, st.mean / spec.start.target.max(1.0), next.as_ref().map(|n| n.mean), OptionRounds { now: st.rounds, next: next.and_then(|n| n.rounds), next_base: None, before, before_yours: false })
     });
     let next_base = ctx.specs.iter().find(|x| x.horizon).map(|h| ctx.odds_one(&ctx.base, h, (ctx.opts.sims / 2).max(60)).1);
     // (a planet's rounds: its board's, and yours at the next ante's boss on the same count)
@@ -3548,11 +3679,17 @@ fn shop_options(
             let k = extra.min(n);
             let (mut sum, mut count): (f64, f64) = (0.0, 0.0);
             let mut best_counts = vec![0usize; n];
+            // (its chance at each of this ante's blinds before the hardest round: the planet each
+            // set picks there, simulated, `planet_rounds`)
+            let mut before_sum = vec![0.0f64; ctx.before.len()];
             let mut idx: Vec<usize> = (0..k).collect();
             loop {
                 let bi = *idx.iter().max_by(|&&a, &&b| planet_p[a].total_cmp(&planet_p[b])).unwrap();
                 sum += planet_p[bi].max(now);
                 best_counts[bi] += 1;
+                for (s, x) in before_sum.iter_mut().zip(&planet_rounds[bi].before) {
+                    *s += x.0;
+                }
                 count += 1.0;
                 // next combination
                 let mut i = k;
@@ -3568,7 +3705,10 @@ fn shop_options(
                 }
             }
             let top = (0..n).max_by_key(|&i| best_counts[i]).unwrap_or(0);
-            out.push(ShopOption { tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, p_with_save: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None,
+            // (on the rounds of the planet it picks most often there: a stand-in for the mix,
+            // dealt as every board's are)
+            let before = before_sum.iter().enumerate().map(|(j, s)| (s / count.max(1.0), planet_rounds[top].before.get(j).and_then(|x| x.1.clone()))).collect();
+            out.push(ShopOption { tied: false, rounds: OptionRounds { before, ..Default::default() }, noise: Default::default(), vs_keep: None, beats_keep: None, p_with_save: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None,
                 money_after: 0.0,
                 interest_now: 0,
                 interest_after: 0,
@@ -3623,6 +3763,8 @@ fn shop_options(
     if let Some(shop) = &run.shop {
         for v in shop.vouchers.iter().filter(|v| matches!(v.key.as_str(), "v_directors_cut" | "v_retcon")) {
             let mut o = boss_reroll_option(ctx, run, data, spec, now);
+            // (it changes the boss alone: this ante's blinds before it are yours)
+            o.rounds.before_yours = true;
             o.label = v.name.clone();
             o.key = Some(v.key.clone());
             o.cost = v.cost;
@@ -3635,11 +3777,24 @@ fn shop_options(
             // The Water's no discards), simulated only when the round it's played with changes
             let mut after = run.clone();
             crate::plan::apply_voucher(&mut after, &v.key, data);
-            let mut sp = spec.clone();
-            sp.start.hand_size += after.hand_size - run.hand_size;
-            sp.start.hands += after.round_hands - run.round_hands;
-            sp.start.discards += after.round_discards - run.round_discards;
-            let sim = sp.start.hand_size != spec.start.hand_size || sp.start.hands_on(&ctx.base) != spec.start.hands_on(&ctx.base);
+            let with_voucher = |spec: &Spec| {
+                let mut sp = spec.clone();
+                sp.start.hand_size += after.hand_size - run.hand_size;
+                sp.start.hands += after.round_hands - run.round_hands;
+                sp.start.discards += after.round_discards - run.round_discards;
+                sp
+            };
+            // (whether it changes a round as that blind sets it)
+            let changes = |spec: &Spec| {
+                let sp = with_voucher(spec);
+                sp.start.hand_size != spec.start.hand_size || sp.start.hands_on(&ctx.base) != spec.start.hands_on(&ctx.base)
+            };
+            let sp = with_voucher(spec);
+            let sim = changes(spec);
+            // (this ante's blinds before its hardest round, for the ranking's survival: played
+            // with it where it changes any of them, so a hand more counts at the Big Blind before
+            // The Needle; else yours)
+            let sim_before = ctx.before.iter().any(|(b, _)| changes(b));
             let note: String = match v.key.as_str() {
                 "v_grabber" | "v_nacho_tong" => "+1 hand every round".into(),
                 "v_wasteful" | "v_recyclomancy" => "+1 discard every round".into(),
@@ -3660,8 +3815,9 @@ fn shop_options(
                 "v_telescope" => "Celestial packs always contain your most played hand's planet".into(),
                 _ => "not valued".into(),
             };
-            let p = if sim { ctx.odds_one(&ctx.base, &sp, ctx.opts.sims).0 } else { now };
-            out.push(ShopOption { tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, p_with_save: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None, label: v.name.clone(), kind: "voucher".into(), cost: v.cost, p_win: p, note, money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: Some(v.key.clone()), desc: None });
+            let (p, now_rounds) = if sim { let (p, st) = ctx.odds_one(&ctx.base, &sp, ctx.opts.sims); (p, st.rounds) } else { (now, None) };
+            let before = if sim_before { ctx.before.iter().map(|(b, _)| ctx.odds_one(&ctx.base, &with_voucher(b), ctx.opts.sims)).map(|(p, st)| (p, st.rounds)).collect() } else { vec![] };
+            out.push(ShopOption { tied: false, rounds: OptionRounds { now: now_rounds, before, before_yours: !sim_before, ..Default::default() }, noise: Default::default(), vs_keep: None, beats_keep: None, p_with_save: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None, label: v.name.clone(), kind: "voucher".into(), cost: v.cost, p_win: p, note, money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: Some(v.key.clone()), desc: None });
         }
     }
     // Tarots: applied to the deck the way a player sensibly would, then the round re-simulated.
@@ -3753,11 +3909,16 @@ fn shop_options(
     // Playing cards in an open Standard pack: the round re-simulated with the card in your deck.
     for c in run.open_pack.iter().filter(|_| !first) {
         let Some(card) = c.card else { continue };
-        let mut sp = fresh_round(spec, run, &ctx.fresh_deck);
-        sp.start.deck.push(card);
-        let (p, st) = ctx.odds_one(&ctx.base, &sp, ctx.opts.sims);
+        let with_card = |spec: &Spec| {
+            let mut sp = fresh_round(spec, run, &ctx.fresh_deck);
+            sp.start.deck.push(card);
+            ctx.odds_one(&ctx.base, &sp, ctx.opts.sims)
+        };
+        let (p, st) = with_card(spec);
+        // (this ante's blinds before its hardest round, for the ranking's survival)
+        let before = ctx.before.iter().map(|(b, _)| with_card(b)).map(|(p, st)| (p, st.rounds)).collect();
         out.push(ShopOption {
-            tied: false, rounds: OptionRounds { now: st.rounds, ..Default::default() }, noise: Default::default(), vs_keep: None, beats_keep: None, p_with_save: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None,
+            tied: false, rounds: OptionRounds { now: st.rounds, before, ..Default::default() }, noise: Default::default(), vs_keep: None, beats_keep: None, p_with_save: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None,
             reach: None,
             label: format!("pick {}", card.label()),
             kind: "card".into(),
@@ -3802,7 +3963,7 @@ fn shop_options(
         }).filter(|s| !s.is_empty());
         let note = [stickers, Some(action).filter(|a| !a.is_empty()), c.note.clone(), later].into_iter().flatten().collect::<Vec<_>>().join(" · ");
         let from_pack = run.open_pack.iter().any(|p| p.key == c.key);
-        out.push(ShopOption { tied: false, rounds: OptionRounds { now: c.rounds.get(round).cloned().flatten(), next: ctx.specs.iter().position(|x| x.horizon).and_then(|h| c.rounds.get(h).cloned().flatten()), next_base: None }, noise: Default::default(), vs_keep: None, beats_keep: None, p_with_save: None, rank: None, survive: None, survive_next: None, flex: None, reach: None,
+        out.push(ShopOption { tied: false, rounds: OptionRounds { now: c.rounds.get(round).cloned().flatten(), next: ctx.specs.iter().position(|x| x.horizon).and_then(|h| c.rounds.get(h).cloned().flatten()), next_base: None, before: c.before.clone(), before_yours: false }, noise: Default::default(), vs_keep: None, beats_keep: None, p_with_save: None, rank: None, survive: None, survive_next: None, flex: None, reach: None,
             sell_index: c.sell_index,
             sell_key: c.sell_index.and_then(|i| run.jokers.get(i)).map(|j| j.key.clone()),
             label: {
@@ -4152,6 +4313,18 @@ const SHOP_TIE: f64 = 0.03;
 /// The standard errors a shop option must be ahead by (`clearly_better`), as `compare.rs`
 /// asks of Best play's moves
 const SHOP_ERRORS: f64 = 2.0;
+
+/// Your board's chance at this ante's hardest round from which an option not simulated before
+/// it (a pack, a tarot) is read at the blinds before it from its chance there; below it, from
+/// its strength at the next ante's boss. Measured (2026-11-17, seed 42, the 20 of gap 7's 55
+/// shops with a blind before the boss under 97%) on the 60 jokers' and planets' chances at those
+/// blinds, which are simulated: read from the chance at the hardest round, off by 0.025 on
+/// average where that round is 10% or more but 0.090 below it (up to 0.77 at none, a step in its
+/// tail); from the next ante's strength 0.048 where it's 10% or more, 0.036 below; so the two
+/// joined at any cut from 5% to 50% are off by 0.031-0.032 (the reach at the hardest round,
+/// which only a Buffoon Pack and Judgement have of the packs and tarots, 0.030; your board's own
+/// chance 0.099)
+const BEFORE_READ_FLOOR: f64 = 0.1;
 
 /// The shop ranking's noise, for whatever acts on it (the bot): an option is above another by
 /// a finding when it's ahead by more than `standard_errors` of their difference, `tie` counted
@@ -5581,21 +5754,27 @@ impl Scores {
     fn of(ctx: &Ctx, i: usize, base: &[(f64, Stats)]) -> Scores {
         let none = Scores { round: i, mean: f64::INFINITY, sure: true, at: (f64::INFINITY, 1.0) };
         let Some(((p, st), spec)) = base.get(i).zip(ctx.specs.get(i)) else { return none };
-        if st.p50 <= 0.0 || st.mean <= 0.0 || spec.start.target <= 0.0 {
-            return none;
+        Scores::from_odds(i, *p, st, spec.start.target)
+    }
+
+    /// The same from your board's chance `p` and scores `st` in a round of `target` (a blind
+    /// `specs` doesn't hold, `Ctx::before`: `round` then names none of `specs`)
+    fn from_odds(i: usize, p: f64, st: &Stats, target: f64) -> Scores {
+        if st.p50 <= 0.0 || st.mean <= 0.0 || target <= 0.0 {
+            return Scores { round: i, mean: f64::INFINITY, sure: true, at: (f64::INFINITY, 1.0) };
         }
         let spread = ((st.p90.max(1.0).ln() - st.p10.max(1.0).ln()) / (2.0 * 1.281_551_6)).max(0.05);
         let half = 0.5 / st.n.max(1) as f64;
-        let fit = (spec.start.target / st.p50).ln();
+        let fit = (target / st.p50).ln();
         let to = |q: f64| spread * normal_quantile_above(q);
-        let gap = if *p <= 0.0 {
+        let gap = if p <= 0.0 {
             fit.max(to(half))
-        } else if *p >= 1.0 {
+        } else if p >= 1.0 {
             fit.min(to(1.0 - half))
         } else {
-            to(*p)
+            to(p)
         };
-        Scores { round: i, mean: st.mean, sure: *p <= 0.0 || *p >= 1.0, at: (gap, spread) }
+        Scores { round: i, mean: st.mean, sure: p <= 0.0 || p >= 1.0, at: (gap, spread) }
     }
 
     /// The chance with every score of your board's ×`x`
@@ -6440,7 +6619,7 @@ mod tests {
         let data = GameData::bundled();
         let mut fresh_deck = r.full_deck();
         fresh_deck.sort_by_key(Card::order_key);
-        let ctx = Ctx { run: &r, removal_rank: Default::default(), arrange: false, orders: Default::default(), data, base: Board::from_run(&r, data), specs: vec![], ahead: vec![], fresh_deck, opts: quick() };
+        let ctx = Ctx { run: &r, removal_rank: Default::default(), arrange: false, orders: Default::default(), data, base: Board::from_run(&r, data), specs: vec![], ahead: vec![], before: vec![], fresh_deck, opts: quick() };
         let fresh = RoundStart { hand: vec![], deck: ctx.fresh_deck.clone(), hand_size: r.hand_size, hands: r.round_hands, discards: r.round_discards, scored: 0.0, target: 1.0, fresh: true, ..Default::default() };
         let no_burglar = without(&ctx.base, 0);
         assert_eq!(fresh.hands_on(&ctx.base), (7, 0));
@@ -6559,7 +6738,7 @@ mod tests {
         let data = GameData::bundled();
         let mut fresh_deck = r.full_deck();
         fresh_deck.sort_by_key(Card::order_key);
-        let ctx = Ctx { run: &r, removal_rank: Default::default(), arrange: false, orders: Default::default(), data, base: Board::from_run(&r, data), specs: vec![], ahead: vec![], fresh_deck, opts: quick() };
+        let ctx = Ctx { run: &r, removal_rank: Default::default(), arrange: false, orders: Default::default(), data, base: Board::from_run(&r, data), specs: vec![], ahead: vec![], before: vec![], fresh_deck, opts: quick() };
         let set = |b: &Board, key: &str| {
             let start = blind_from_start(key, 1.0, &r, &ctx.fresh_deck);
             assert_eq!((start.hands, start.discards), (4, 3), "{key}: the run's round_resets");
@@ -6584,7 +6763,7 @@ mod tests {
         let data = GameData::bundled();
         let mut fresh_deck = r.full_deck();
         fresh_deck.sort_by_key(Card::order_key);
-        let ctx = Ctx { run: &r, removal_rank: Default::default(), arrange: false, orders: Default::default(), data, base: Board::from_run(&r, data), specs: vec![], ahead: vec![], fresh_deck: fresh_deck.clone(), opts: quick() };
+        let ctx = Ctx { run: &r, removal_rank: Default::default(), arrange: false, orders: Default::default(), data, base: Board::from_run(&r, data), specs: vec![], ahead: vec![], before: vec![], fresh_deck: fresh_deck.clone(), opts: quick() };
         let mut played = ctx.base.clone();
         played.levels[crate::engine::HandType::Pair as usize].played_this_round = 3;
         assert_eq!(ctx.typical(&played, &[], &[]).mean, ctx.typical(&ctx.base, &[], &[]).mean);
@@ -6757,7 +6936,7 @@ mod tests {
         assert_eq!(action, "replace Joker");
         let r = shop_run(&[("j_joker", None, None), ("j_joker", Some(Edition::Holo), None)], &[]);
         let data = GameData::bundled();
-        let ctx = Ctx { run: &r, removal_rank: Default::default(), arrange: true, orders: Default::default(), data, base: Board::from_run(&r, data), specs: vec![], ahead: vec![], fresh_deck: fresh_deck_of(&r), opts: quick() };
+        let ctx = Ctx { run: &r, removal_rank: Default::default(), arrange: true, orders: Default::default(), data, base: Board::from_run(&r, data), specs: vec![], ahead: vec![], before: vec![], fresh_deck: fresh_deck_of(&r), opts: quick() };
         let b = ctx.placed(with_joker(&without(&ctx.base, 0), Joker::from_key("j_cavendish", data).unwrap(), 0));
         assert_eq!(b.jokers.iter().map(|j| j.key.as_str()).collect::<Vec<_>>(), vec!["j_joker", "j_cavendish"]);
         // in a blind, as it was put
@@ -6936,7 +7115,7 @@ mod tests {
         let mut fresh_deck = r.full_deck();
         fresh_deck.sort_by_key(Card::order_key);
         let start = blind_from_start("bl_big", 1e15, &r, &fresh_deck);
-        let probe = Ctx { run: &r, removal_rank: Default::default(), arrange: false, orders: Default::default(), data, base: Board::from_run(&r, data), specs: vec![], ahead: vec![], fresh_deck: fresh_deck.clone(), opts: quick() };
+        let probe = Ctx { run: &r, removal_rank: Default::default(), arrange: false, orders: Default::default(), data, base: Board::from_run(&r, data), specs: vec![], ahead: vec![], before: vec![], fresh_deck: fresh_deck.clone(), opts: quick() };
         let spec = Spec { label: "Boss".into(), blind_key: "bl_big".into(), blind_name: "Boss".into(), start, horizon: false };
         let bought = with_joker(&without(&probe.base, 2), Joker::from_key("j_jolly", data).unwrap(), 2);
         let target = probe.odds_one(&bought, &spec, 120).1.mean;
@@ -7088,7 +7267,7 @@ mod tests {
         let c = |r: u8, m: f64| Candidate {
             key: String::new(), name: String::new(), rarity: String::new(), cost: 4, edition: None, action: "add".into(),
             p_win: vec![], p_win_delta: vec![], reach: vec![], reach_delta: vec![], score_gain: 0.0, missing_gold: false,
-            rarity_n: r, precise: false, sims: 0, rounds: vec![], per_shop: None, roles: vec![], note: None, desc: None, growth: None, long_mult: Some(m), sell_index: None, sell_tied: vec![],
+            rarity_n: r, precise: false, sims: 0, rounds: vec![], before: vec![], per_shop: None, roles: vec![], note: None, desc: None, growth: None, long_mult: Some(m), sell_index: None, sell_tied: vec![],
         };
         let mut rng = crate::engine::Rng::new(1);
         let weak = long_draw(&[c(1, 0.5), c(2, 0.7), c(3, 0.9)], 2, 1.0, 1.0, &mut rng);
@@ -7142,7 +7321,7 @@ mod tests {
         let data = GameData::bundled();
         let mut fresh_deck = run.full_deck();
         fresh_deck.sort_by_key(Card::order_key);
-        let ctx = Ctx { run, removal_rank: Default::default(), arrange: false, orders: Default::default(), data, base: Board::from_run(run, data), specs: vec![], ahead: vec![], fresh_deck, opts: quick() };
+        let ctx = Ctx { run, removal_rank: Default::default(), arrange: false, orders: Default::default(), data, base: Board::from_run(run, data), specs: vec![], ahead: vec![], before: vec![], fresh_deck, opts: quick() };
         let growths = growths.unwrap_or_else(|| growths_for(&ctx, &[]));
         let lr = value::LongRun::new(&ctx, mix, &growths, &[], [0; 4]);
         f(&lr)
@@ -7164,7 +7343,7 @@ mod tests {
             let start = blind_from_start("bl_big", target, &r, &fresh_deck);
             Spec { label: "Next: Big".into(), blind_key: "bl_big".into(), blind_name: "Big Blind".into(), start, horizon: false }
         };
-        let mut ctx = Ctx { run: &r, removal_rank: Default::default(), arrange: false, orders: Default::default(), data, base, specs: vec![], ahead: vec![], fresh_deck: fresh_deck.clone(), opts: Options { sims: 120, ..quick() } };
+        let mut ctx = Ctx { run: &r, removal_rank: Default::default(), arrange: false, orders: Default::default(), data, base, specs: vec![], ahead: vec![], before: vec![], fresh_deck: fresh_deck.clone(), opts: Options { sims: 120, ..quick() } };
         // the board's whole rounds (a target no round reaches): past most of them
         let (_, all) = ctx.odds_one(&ctx.base, &spec(1e15), 120);
         let target = all.p90 * 1.5;
@@ -7194,7 +7373,7 @@ mod tests {
             let start = blind_from_start(key, target, &r, &fresh_deck);
             Spec { label: key.into(), blind_key: key.into(), blind_name: key.into(), start, horizon: false }
         };
-        let mut ctx = Ctx { run: &r, removal_rank: Default::default(), arrange: false, orders: Default::default(), data, base, specs: vec![], ahead: vec![], fresh_deck: fresh_deck.clone(), opts: Options { sims: 120, ..quick() } };
+        let mut ctx = Ctx { run: &r, removal_rank: Default::default(), arrange: false, orders: Default::default(), data, base, specs: vec![], ahead: vec![], before: vec![], fresh_deck: fresh_deck.clone(), opts: Options { sims: 120, ..quick() } };
         let (_, all) = ctx.odds_one(&ctx.base, &spec("bl_big", 1e15), 120);
         ctx.ahead = vec![spec("bl_big", all.p10 * 0.9), spec("bl_big", all.p90 * 1.5)];
         let find = |ctx: &Ctx, lifts: [f64; 2]| {
@@ -7290,7 +7469,7 @@ mod tests {
             let start = blind_from_start(key, target, &r, &fresh_deck);
             Spec { label: key.into(), blind_key: key.into(), blind_name: key.into(), start, horizon: false }
         };
-        let mut ctx = Ctx { run: &r, removal_rank: Default::default(), arrange: false, orders: Default::default(), data, base, specs: vec![], ahead: vec![], fresh_deck: fresh_deck.clone(), opts: Options { sims: 300, ..quick() } };
+        let mut ctx = Ctx { run: &r, removal_rank: Default::default(), arrange: false, orders: Default::default(), data, base, specs: vec![], ahead: vec![], before: vec![], fresh_deck: fresh_deck.clone(), opts: Options { sims: 300, ..quick() } };
         let (_, all) = ctx.odds_one(&ctx.base, &spec("bl_big", 1e15), 120);
         ctx.ahead = vec![spec("bl_big", all.p90 * 1.5)];
         let dollar = |ctx: &Ctx, lifts: [f64; 2], more: f64| {
@@ -7692,7 +7871,7 @@ mod tests {
         let c = |r: u8, m: f64, cost: i64| Candidate {
             key: String::new(), name: String::new(), rarity: String::new(), cost, edition: None, action: "add".into(),
             p_win: vec![], p_win_delta: vec![], reach: vec![], reach_delta: vec![], score_gain: 0.0, missing_gold: false,
-            rarity_n: r, precise: false, sims: 0, rounds: vec![], per_shop: None, roles: vec![], note: None, desc: None, growth: None, long_mult: Some(m), sell_index: None, sell_tied: vec![],
+            rarity_n: r, precise: false, sims: 0, rounds: vec![], before: vec![], per_shop: None, roles: vec![], note: None, desc: None, growth: None, long_mult: Some(m), sell_index: None, sell_tied: vec![],
         };
         let pool = [c(1, 1.2, 4), c(1, 1.5, 6), c(2, 1.8, 7), c(3, 2.5, 8)];
         let long = |c: &Candidate| c.long_mult.unwrap_or(1.0);
@@ -7727,7 +7906,7 @@ mod tests {
         let c = |r: u8, m: f64, cost: i64| Candidate {
             key: String::new(), name: String::new(), rarity: String::new(), cost, edition: None, action: "add".into(),
             p_win: vec![], p_win_delta: vec![], reach: vec![], reach_delta: vec![], score_gain: 0.0, missing_gold: false,
-            rarity_n: r, precise: false, sims: 0, rounds: vec![], per_shop: None, roles: vec![], note: None, desc: None, growth: None, long_mult: Some(m), sell_index: None, sell_tied: vec![],
+            rarity_n: r, precise: false, sims: 0, rounds: vec![], before: vec![], per_shop: None, roles: vec![], note: None, desc: None, growth: None, long_mult: Some(m), sell_index: None, sell_tied: vec![],
         };
         let pool = [c(1, 1.2, 4), c(1, 1.5, 6), c(2, 1.8, 7), c(3, 2.5, 8)];
         let long = |c: &Candidate| c.long_mult.unwrap_or(1.0);
@@ -7760,7 +7939,7 @@ mod tests {
         let c = |m: f64, cost: i64| Candidate {
             key: String::new(), name: String::new(), rarity: String::new(), cost, edition: None, action: "add".into(),
             p_win: vec![], p_win_delta: vec![], reach: vec![], reach_delta: vec![], score_gain: 0.0, missing_gold: false,
-            rarity_n: 1, precise: false, sims: 0, rounds: vec![], per_shop: None, roles: vec![], note: None, desc: None, growth: None, long_mult: Some(m), sell_index: None, sell_tied: vec![],
+            rarity_n: 1, precise: false, sims: 0, rounds: vec![], before: vec![], per_shop: None, roles: vec![], note: None, desc: None, growth: None, long_mult: Some(m), sell_index: None, sell_tied: vec![],
         };
         let long = |c: &Candidate| c.long_mult.unwrap_or(1.0);
         let kept = Kept::Weighted(&long);
@@ -7793,7 +7972,7 @@ mod tests {
         let find = |cost: i64| Candidate {
             key: String::new(), name: String::new(), rarity: String::new(), cost, edition: None, action: "add".into(),
             p_win: vec![], p_win_delta: vec![], reach: vec![], reach_delta: vec![], score_gain: 0.0, missing_gold: false,
-            rarity_n: 1, precise: false, sims: 0, rounds: vec![], per_shop: None, roles: vec![], note: None, desc: None, growth: None, long_mult: Some(1.5), sell_index: None, sell_tied: vec![],
+            rarity_n: 1, precise: false, sims: 0, rounds: vec![], before: vec![], per_shop: None, roles: vec![], note: None, desc: None, growth: None, long_mult: Some(1.5), sell_index: None, sell_tied: vec![],
         };
         let long = |c: &Candidate| c.long_mult.unwrap_or(1.0);
         with_long_run(&r, |lr| {
