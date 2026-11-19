@@ -1075,7 +1075,8 @@ the same retriggered ×Mult.
   counted none outside trouble before (register "The joker a buy replaces": on two fixtures the joker a
   find replaces, or its place, moved). Fixtures: no Best play pick or skip verdict moved. On the 22 blind selects of the antes the owner's trouble shops were
   in (8 with a verdict both ways), one verdict moved: RB51DNGQ's Ante 4 Big Blind, skip → play (the boss at the floor either
-  way, playing leaves the next ante 54% against 33%; the owner played it). On the owner's 5
+  way, playing leaves the next ante 54% against 33%; the owner played it); on the 21 the bot
+  reached right after its trouble shops, none of the 9 with a verdict both ways moved. On the owner's 5
   trouble shops (300 simulations) the first option moved in 4: leaving at Ante 2 with $6, nothing
   found better (the owner bought nothing), and a joker or pack instead of a reroll in 3 (Even
   Steven, Grabber, a Mega Arcana Pack); in the fifth the reroll stays first, now found better,
