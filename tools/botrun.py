@@ -65,7 +65,8 @@ verdict on the advice. As of 2026-10-24 the bot:
   select its card": use.lua selects cards only for a consumable with `max_highlighted`), a pack
   pick that goes on cards whose value names none ("no cards named"), a skip whose tag is not
   valued at all (Foil, Double, Juggle on a Small blind…), and a blind whose analysis failed: it
-  plays. Skip-or-play
+  plays (an analysis past `ANALYSIS_TIMEOUT_S`, 300 s, counts as failed there; anywhere else it
+  ends the run, logged as "errors", as a 20-card hand at The Mark did, 2026-11-19). Skip-or-play
   doesn't read the tags held (gap 21). Vouchers move the money a run holds: compare runs on
   either side of 2026-11-02 knowing it.
   Counted in `not_followed` (all but the held tarot: holding it is Best play's own call), as is a
@@ -253,6 +254,14 @@ def keep_state(screen):
     return path
 
 
+ANALYSIS_TIMEOUT_S = 300
+
+
+class AnalysisTimeout(RuntimeError):
+    """An analysis ran past `ANALYSIS_TIMEOUT_S`: a failed analysis (a blind select plays on),
+    and inside a blind the run ends, logged, rather than retrying the same slow analysis."""
+
+
 def analyze(sims, quick=False, keep=None):
     global ANALYSIS_S
     saved = rpc("save", path=WIN_STATE)
@@ -265,10 +274,15 @@ def analyze(sims, quick=False, keep=None):
     if VERBOSE and v:
         print(f"  (pack state {v})")
     t = time.monotonic()
-    out = subprocess.run(
-        ["balatro-advisor", "analyze", "--file", str(STATE), "--sims", str(sims), "--seed", str(ADVISOR_SEED)] + (["--quick"] if quick else []),
-        capture_output=True, text=True, timeout=300,
-    )
+    try:
+        out = subprocess.run(
+            ["balatro-advisor", "analyze", "--file", str(STATE), "--sims", str(sims), "--seed", str(ADVISOR_SEED)] + (["--quick"] if quick else []),
+            capture_output=True, text=True, timeout=ANALYSIS_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        ANALYSIS_S += time.monotonic() - t
+        keep_state("error")
+        raise AnalysisTimeout(f"analysis timed out after {ANALYSIS_TIMEOUT_S} s") from None
     ANALYSIS_S += time.monotonic() - t
     if out.returncode != 0:
         # (the state it failed on, for a fixture: kept whatever the screen)
@@ -1361,6 +1375,8 @@ def one_run(args, n, seed=None):
                 time.sleep(0.5)
         except (RpcError, RuntimeError) as e:
             log.append(f"error in {st}: {e}")
+            if isinstance(e, AnalysisTimeout):
+                break
             time.sleep(1)
             if sum(1 for l in log if l.startswith("error")) > 20:
                 break
