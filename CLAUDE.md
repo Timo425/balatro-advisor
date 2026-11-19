@@ -27,8 +27,8 @@ task serves that; judge its effort by it, and its cost in the advice's time by w
      over many seeds. Two runs of one seed (old and new code, or the bot and the owner) compare
      choice by choice only where they stand on the same screen: at their first different choice,
      and later where the screens match again (the shop's draws restart each ante, common_events.lua
-     `get_current_pool`) but only on the same board and money. How far each got doesn't say which
-     played better.
+     `get_current_pool`) but only on the same board and money. How far one pair got doesn't say
+     which played better; how far many got does.
 
   A card that wants runs names what it needs the bot to do: the bot must act on the advice the
   card changes (a run's `not_followed` says what it couldn't). Where the bot doesn't yet, the card
