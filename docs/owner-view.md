@@ -84,7 +84,8 @@ said. `tools/status.py` reads the ratings below; CLAUDE.md says when to read thi
   thats hardly an indicator in a single game"; on bosses: "a better player than me or the bot
   could already anticipate earlier which of the ante 8 blinds they actually have chance to beat
   and play these odds and prepare accordingly". Whether that comparison becomes a regular way to
-  find gaps: "i dont know - proababky too early still?".
+  find gaps: "i dont know - proababky too early still?"; "the comparison seems like an useful
+  method".
 
 ## Each gap's impact
 
