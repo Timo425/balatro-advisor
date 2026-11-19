@@ -636,7 +636,7 @@ impl TarotValue {
     /// The deck change it makes, by Ante 8 (`LongRun::decks_value`): its deck, or its outcomes'
     /// decks (a random effect, or one on a face-down card: one for each of what it could be),
     /// with the round change that comes with it (`round`); `None` when it changes no deck.
-    /// `money`: one-off money that comes with it (already through `once`).
+    /// `money`: one-off money that comes with it (dollars: `LongRun::fill_long`).
     fn deck_long(&self, lr: &value::LongRun, money: f64, rounds: usize) -> Option<f64> {
         match (&self.decks[..], &self.deck) {
             ([], None) => None,
@@ -1530,10 +1530,12 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
         }
     }
     // A perishable that runs out before Ante 8 is gone by then (the joker sold for it was
-    // still picked by the measure above, its long run with it). Gros Michel leaves something: if it breaks (1 in 6
+    // still picked by the measure above, its long run with it): it's held until it runs out,
+    // its price, rent and sale paid, then a typical find takes its slot (`held_for`). Gros
+    // Michel leaves something: if it breaks (1 in 6
     // at the end of each round, card.lua) Cavendish joins the shop pool, and it can take the
     // slot Gros Michel leaves.
-    for c in shop.iter_mut() {
+    for (c, (j, _, rental, sells)) in shop.iter_mut().zip(&offers) {
         let Some(r) = offer_stickers(run, &c.key).and_then(|x| x.perishable).filter(|&r| (r as f64) < 3.0 * antes_left) else {
             continue;
         };
@@ -1550,7 +1552,11 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
                 let note = format!("if it breaks ({:.0}% in its {r} rounds), Cavendish (×3 Mult) joins the shop pool: {:.0}% you'd see it by Ante 8 (no rerolls counted), ×{m:.2} by Ante 8 with it", p_break * 100.0, p_seen * 100.0);
                 (p_break * p_seen * (m - 1.0).max(0.0), note)
             });
-        c.long_mult = Some(1.0 + unlock.as_ref().map_or(0.0, |u| u.0));
+        // (held until it runs out, its rent paid, then a typical find in its slot: `held_for`,
+        // with the joker it replaces sold as `long_mult` has it)
+        let sell = if full && j.edition != Some(Edition::Negative) { c.sell_index } else { None };
+        let held = lr.held_for(c.cost, *sells, *rental, &c.key, sell, r as f64);
+        c.long_mult = Some(held * (1.0 + unlock.as_ref().map_or(0.0, |u| u.0)));
         if let Some((_, note)) = unlock {
             c.note = Some(c.note.take().map_or(note.clone(), |n| format!("{n} · {note}")));
         }
@@ -1579,7 +1585,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
     let line_now = lr.line;
     let planet_levels = planet_levels.round() as i64;
     let long_note = format!(
-        "Your board projected {antes_left:.1} antes ahead: growing jokers grown (those that grow from shop events, Red Card and Flash Card, by one pack skip and one reroll an ante, plus 1 per pack's or reroll's price above the interest line, at most 5 an ante, all on the one that grows most per dollar; those a round changes as the simulated player's rounds at this ante's blind sizes leave them), fading ones faded, perishables that run out and jokers those rounds use up dropped, {} +{planet_levels} levels (about {levels_per_ante:.1} per ante with your money), empty slots filled with stand-in jokers (×1.5, +60 Chips or +15 Mult, in proportion to how often your shop pool offers each type) as far as the money pays for them at ${:.1} each (a typical find's price; money for part of one gives that part of its effect, a slot with no money for it stays empty; heuristic), ante by ante: the money you hold up to the interest line (${line_now:.0}, past which interest stops growing; a debt paid back first; what's above it buys planets, rerolls and packs), and each round the jokers' money less rent, this ante's blind reward, the interest on what's left and what a round pays besides the jokers that pay money (hands and discards left, the cards' money), less the planets that money buys first, each find bought once the money's there (on your board it pays for {finds_now:.1} of the {slots_now:.0} empty slots left beside the one an option takes). Each option is compared with a typical find (×1.25) in its slot, on whole simulated rounds, with the money it leaves you: its price, what selling a joker gives back or a money card gives (spent once: ~$4 a pack skip or a reroll at its cost when a joker grows from them (Red Card, Flash Card), else ~$12 a level of your main hand, and ~$4 a planet for Constellation; money counts for less the more you have (the next dollar is worth about half at $20); interest lost or gained over the next ante included), and $9 less money held every ante per rental; the jokers add the money a round won pays on the board held against your board, and yours against it without the jokers that pay money, each on the same rounds of this ante's plain blinds won by both (scoring, discards, the round's end, hands left; counted past $0.5 an ante and 2 standard errors), to the money held every ante, with what they pay besides a round's play (Rocket's raises at the bosses ahead, Egg's sell value, To the Moon's interest). Your sellable jokers are let go by then where that leaves no less: replaced by a typical find in their place, or sold outright (no find: the sale counted once, its slot left empty to Ante 8, a Negative's gone with it; not modelled: the copy a charged Invisible Joker makes as it's sold, its slot counted as any other's), whichever leaves more, their money (income, rent) gone with them; selling one now is an option of its own (its rounds without it, its sale, the run with it let go, and the round's rent and money it would be held for when the projection lets it go anyway; its ×1.00 is keeping it), and a sellable option counts at least as a typical find less its price net of what selling it gives back; eternal ones stay, however weak. ×1.00 = as good as a typical find.",
+        "Your board projected {antes_left:.1} antes ahead: growing jokers grown (those that grow from shop events, Red Card and Flash Card, by one pack skip and one reroll an ante, plus 1 per pack's or reroll's price above the interest line, at most 5 an ante, all on the one that grows most per dollar; those a round changes as the simulated player's rounds at this ante's blind sizes leave them), fading ones faded, perishables that run out and jokers those rounds use up dropped, {} +{planet_levels} levels (about {levels_per_ante:.1} per ante with your money), empty slots filled with stand-in jokers (×1.5, +60 Chips or +15 Mult, in proportion to how often your shop pool offers each type) as far as the money pays for them at ${:.1} each (a typical find's price; money for part of one gives that part of its effect, a slot with no money for it stays empty; heuristic), ante by ante: the money you hold up to the interest line (${line_now:.0}, past which interest stops growing; a debt paid back first; what's above it buys planets, rerolls and packs), and each round the jokers' money less rent, this ante's blind reward, the interest on what's left and what a round pays besides the jokers that pay money (hands and discards left, the cards' money), each find bought once the money's there: the typical find an option is compared with in its slot, then the empty slots, then the finds put in place of jokers let go (on your board it pays for {finds_now:.1} of the {slots_now:.0} empty slots left beside the one an option takes), then the planets from what's left; what the walk leaves at the end, more or less than on your board, buys or costs planets for that hand (~$12 a level; heuristic). Each option is compared with a typical find (×1.25) in its slot, on whole simulated rounds, with the money it leaves you: its price, what selling a joker gives back or a money card gives (up to the interest line it's in the money held, on the same walk, with its interest; above it spent once: ~$4 a pack skip or a reroll at its cost when a joker grows from them (Red Card, Flash Card), else ~$12 a level of your main hand, and ~$4 a planet for Constellation; money counts for less the more you have (the next dollar is worth about half at $20)), and $9 less money held every ante per rental; the jokers add the money a round won pays on the board held against your board, and yours against it without the jokers that pay money, each on the same rounds of this ante's plain blinds won by both (scoring, discards, the round's end, hands left; counted past $0.5 an ante and 2 standard errors), to the money held every ante, with what they pay besides a round's play (Rocket's raises at the bosses ahead, Egg's sell value, To the Moon's interest). Your sellable jokers are let go by then where that leaves no less: replaced by a typical find in their place, or sold outright (no find: the sale counted once, its slot left empty to Ante 8, a Negative's gone with it; not modelled: the copy a charged Invisible Joker makes as it's sold, its slot counted as any other's), whichever leaves more, their money (income, rent) gone with them; selling one now is an option of its own (its rounds without it, its sale, the run with it let go, and the round's rent and money it would be held for when the projection lets it go anyway; its ×1.00 is keeping it), and a sellable option is never valued below its fallback plan: holding it an ante (a perishable until it runs out), then selling it for a typical find in its slot bought on that walk, counting its price, its rent and money while held (not what it scores then) and its sale; that plan itself comes out below ×1.00 where those cost more than they pay; eternal ones stay, however weak. ×1.00 = as good as a typical find in its slot, as far as your money pays for one.",
         top_hand.map_or("your main hand", |h| h.name()),
         lr.find_price()
     );
@@ -1695,7 +1701,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
             // Every deck change through one valuation: its score, what its cards earn, and the
             // planets of any Blue Seal cards it adds (`TarotValue::deck_long`; Immolate's $20 comes
             // with its deck change)
-            if let Some(v) = t.deck_long(&lr, if t.spectral { lr.once(t.money_gain) } else { 0.0 }, rounds) {
+            if let Some(v) = t.deck_long(&lr, if t.spectral { t.money_gain } else { 0.0 }, rounds) {
                 v
             } else if t.money_gain > 0.0 {
                 lr.value(&Gain::money(t.money_gain))
@@ -7650,12 +7656,14 @@ mod tests {
         // once both buy pack skips, in either order; the jokers' order never decides it, and
         // the same money doesn't also reroll. (No main hand here: the spare money can only go
         // to events.)
-        // (both at +20 already, so both stay on the projected board)
+        // (both at +20 already and eternal, so both stay on the projected board)
         let grown = |owned: &[(&str, Option<Edition>, Option<i64>)], reroll: i64| {
             let mut r = shop_run(owned, &[]);
             r.base_reroll_cost = reroll;
             for j in r.jokers.iter_mut() {
                 j.ability["mult"] = 20.into();
+                // (eternal: the projection's let-go choice is another test's)
+                j.eternal = true;
             }
             with_long_run(&r, |lr| (lr.board_with(&Gain::default()), lr.board_with(&Gain::money(20.0))))
         };
@@ -7685,7 +7693,10 @@ mod tests {
         r.dollars = 100.0;
         let mix = [HandShare { hand: "Pair".into(), share: 1.0, played: 1.0, mean: 1.0 }];
         let (rich, poor) = with_long_run_mix(&r, &mix, |lr| (lr.board_with(&Gain::default()), lr.board_with(&Gain::money(-100.0))));
-        assert_eq!(mults(&poor, "j_red_card"), vec![30.0]);
+        // (all but a sliver: the part of the price above the interest line is spent once at your
+        // money now, `spendable`, the part below it on the money's walk)
+        let poor_red = mults(&poor, "j_red_card")[0];
+        assert!((30.0..30.1).contains(&poor_red), "{poor_red}");
         let pair = |b: &Board| b.levels[crate::engine::HandType::Pair as usize];
         assert!(mults(&rich, "j_red_card")[0] > 30.0 || pair(&poor).mult < pair(&rich).mult, "{:?} {:?}", pair(&poor), pair(&rich));
     }
@@ -7730,7 +7741,8 @@ mod tests {
     fn the_projection_sells_a_negative_rental_worth_less_than_its_rent() {
         // A Negative rental can't be replaced by a find (its slot goes with it): kept, it costs
         // $9 an ante to Ante 8. Judged by the run's value, the projection sells 8 Ball outright
-        // (it scores nothing) and keeps the Joker (+4 Mult is worth its rent there).
+        // (it scores nothing) and keeps Cavendish (×3 Mult is worth its rent there; the Joker's
+        // +4 Mult isn't since the rent costs main-hand levels its money would have bought).
         let mix = [HandShare { hand: "Pair".into(), share: 1.0, played: 1.0, mean: 1.0 }];
         let let_go = |key: &str| {
             let mut r = shop_run(&[(key, Some(Edition::Negative), None), ("j_joker", None, None)], &[]);
@@ -7739,7 +7751,43 @@ mod tests {
             with_long_run_mix(&r, &mix, |lr| lr.is_let_go(0))
         };
         assert!(let_go("j_8_ball"));
-        assert!(!let_go("j_joker"));
+        assert!(!let_go("j_cavendish"));
+    }
+
+    #[test]
+    fn the_sell_later_floor_pays_the_rent_while_held() {
+        // A sellable joker counts at least as a typical find bought once it's been held and
+        // sold (`floor_for`, `held_for`): a rental's rent while held comes off the money that
+        // buys that find and the planets, so the floor is below a typical find's ×1.00 on a
+        // poor board, below the same joker's without rent, and lower the longer it's held
+        let mix = [HandShare { hand: "Pair".into(), share: 1.0, played: 1.0, mean: 1.0 }];
+        let mut r = shop_run(&[("j_joker", None, None)], &[]);
+        r.dollars = 5.0;
+        let (rental, plain, longer) = with_long_run_mix(&r, &mix, |lr| (lr.floor_for(1, 0, true, "j_8_ball", None), lr.floor_for(1, 0, false, "j_8_ball", None), lr.held_for(1, 0, true, "j_8_ball", None, 6.0)));
+        assert!(rental < 1.0, "{rental}");
+        assert!(rental < plain, "{rental} {plain}");
+        assert!(longer < rental, "{longer} {rental}");
+    }
+
+    #[test]
+    fn what_the_walk_leaves_counts_against_your_boards_leftover() {
+        // The money's walk ends at most at the interest line; what it leaves more or less than
+        // on your board as it is buys or costs main-hand planets (`left_base`), so the leftover
+        // lifts no board's levels by itself, and one-off money below the line moves them both ways
+        let mix = [HandShare { hand: "Pair".into(), share: 1.0, played: 1.0, mean: 1.0 }];
+        let mut r = shop_run(&[("j_joker", None, None)], &[]);
+        r.jokers[0].eternal = true;
+        r.dollars = 15.0;
+        let pair = crate::engine::HandType::Pair as usize;
+        let (projected, filled, more, less, none) = with_long_run_mix(&r, &mix, |lr| {
+            let p = lr.project(&|_| true, r.dollars);
+            let projected = p.levels[pair].mult;
+            let filled = lr.fill_long(p, None, 0.0).levels[pair].mult;
+            (projected, filled, lr.value(&value::Gain::money(6.0)), lr.value(&value::Gain::money(-6.0)), lr.value(&value::Gain::default()))
+        });
+        assert_eq!(projected, filled);
+        assert!((none - 1.0).abs() < 1e-9, "{none}");
+        assert!(more > 1.0 && less < 1.0, "{more} {less}");
     }
 
     #[test]
@@ -7784,17 +7832,19 @@ mod tests {
         let mut r = shop_run(&[("j_joker", None, None)], &[]);
         r.joker_slots = 4;
         r.dollars = 0.0;
+        // (kept: whether the projection replaces it is another test's)
+        r.jokers[0].eternal = true;
         let finds = |dollars: f64, rent: f64| {
             let mut r = r.clone();
             r.dollars = dollars;
             with_long_run_mix(&r, &mix, |lr| lr.fill_long(lr.project_rent(&|_| true, dollars, rent), None, 0.0).jokers.iter().filter(|j| j.key == "stand-in").count())
         };
         assert_eq!(finds(0.0, 0.0), 3);
-        // one rental's rent takes the planets first: the finds stay
+        // one rental's rent: the money still pays for the finds (bought first), the planets pay it
         assert_eq!(finds(0.0, value::RENT_PER_ANTE), 3);
         assert_eq!(finds(0.0, 3.0 * value::RENT_PER_ANTE), 1);
         assert_eq!(finds(-300.0, 0.0), 1);
-        // an economy voucher's money buys planets, as its price costs them (`once`), not the
+        // an economy voucher's money buys planets, as its price costs them, not the
         // finds: the board in debt still buys none with $400 of it
         let mut poor = r.clone();
         poor.dollars = -300.0;
@@ -7865,7 +7915,7 @@ mod tests {
     #[test]
     fn selling_a_joker_the_run_lets_go_anyway_is_worth_only_the_round_it_saves() {
         // Two Negative 8 Balls score nothing and the projection sells both by Ante 8 (their
-        // sales in its money, one `once` on the sum): selling one now leads to the same run, so
+        // sales in its money, one split of the sum): selling one now leads to the same run, so
         // it's worth ×1 exactly, $23 held (an interest step at $25 the two sales cross together)
         let mix = [HandShare { hand: "Pair".into(), share: 1.0, played: 1.0, mean: 1.0 }];
         let mut r = shop_run(&[("j_8_ball", Some(Edition::Negative), None), ("j_8_ball", Some(Edition::Negative), None), ("j_joker", None, None)], &[]);
