@@ -23,9 +23,11 @@ task serves that; judge its effort by it, and its cost in the advice's time by w
   3. What does it do over whole runs? Many bot runs: wins, antes, money by ante. Only when the
      levels above can't show the card's effect (an advice change whose effect lies past the next
      ante's boss, where the snapshot tools stop), on the seeds where it shows, sized to what the
-     card expects to move. Never "25 seeds before and after" by habit. Runs measure an effect;
-     they can't compare old and new decision by decision, since one different buy early makes
-     the rest another game.
+     card expects to move. Never "25 seeds before and after" by habit. Runs measure an effect
+     over many seeds. Two runs of one seed (old and new code, or the bot and the owner) compare
+     only up to their first different choice, made on the same screen: after it the draws differ
+     and the rest is another game, so neither how far each got nor its later choices side by side
+     say which played better.
 
   A card that wants runs names what it needs the bot to do: the bot must act on the advice the
   card changes (a run's `not_followed` says what it couldn't). Where the bot doesn't yet, the card
