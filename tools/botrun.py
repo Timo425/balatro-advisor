@@ -533,15 +533,15 @@ def worth(o, a):
     pack"). Worth taking: ranked above that and clear of it by more than the ranking's noise
     (the advisor's `beats_keep` on each option; from an older build, which has none, each
     option's `rank` above keeping the money's by more than `tie` of the top's, the advisor's
-    `shop_tie`). When
-    the round is in trouble the ranking goes by the score reached (`trouble`), and ranked above
-    keeping the money is enough.
+    `shop_tie`). The same test however hopeless the round: the advisor's ranking has no other
+    rule there since 2026-11-19 (advise.rs `rank_options`). An older build's `shop_tie.trouble`
+    (it ordered by the score reached when no option got through 20%) is read as that build meant
+    it, for the saved moments `tools/botcheck.py` replays: ranked above keeping the money is
+    enough.
 
     Neither is a rule of the bot's own: `beats_keep` is the advisor's own test (advise.rs
     `clearly_better`: the option against keeping the money on the simulated rounds and shops
-    both rest on, the register's "Shop ranking" entry in docs/design.md), and in trouble the
-    advisor says its ties don't apply (advise.rs `ShopTie`), so its ranking is followed as it
-    stands. What the bot
+    both rest on, the register's "Shop ranking" entry in docs/design.md). What the bot
     decides by hand is only which side of a tie to fall on: keeping the money. Both belong to
     the advisor's ranking already; nothing here to move there."""
     options, noise = a.get("options", []), a.get("shop_tie")
@@ -620,13 +620,14 @@ def shop(sims, log):
 
 def log_shop(a, gs, log):
     """One line per shop analysis: the money, the jokers and their stickers, and every option
-    as ranked (its `rank`, `*` where `worth` takes it), so where the money went can be read back."""
+    as ranked (its `rank` to three significant digits, so the small ranks of a round lost whatever
+    you pick still read apart; `*` where `worth` takes it), so where the money went can be read back."""
     noise = a.get("shop_tie") or {}
     js = ", ".join(j["name"] + "".join(f" ({s})" for s in ("rental", "eternal", "debuff") if j.get(s)) for j in a.get("jokers", []))
-    opts = " | ".join(f"{'*' if worth(o, a) else ''}{o['kind']} {o['label']} ${o['cost']} r{o.get('rank') or 0:.3f}"
+    opts = " | ".join(f"{'*' if worth(o, a) else ''}{o['kind']} {o['label']} ${o['cost']} r{o.get('rank') or 0:.3g}"
                       f"{' (unaffordable)' if o.get('unaffordable') else ''}" for o in a.get("options", []))
     log.append(f"shop a{gs.get('ante_num')} r{gs.get('round_num')} ${gs['money']} tie {noise.get('tie')} "
-               f"trouble {noise.get('trouble')} · jokers {js or '-'} · {opts}")
+               f"· jokers {js or '-'} · {opts}")
 
 
 def arrange_jokers(a, log):
@@ -807,7 +808,7 @@ def open_pack(sims, log):
         if gs["state"] != "SMODS_BOOSTER_OPENED":
             return
         a = analyze(sims, keep="pack")
-        log.append(f"pack screen ${gs['money']} · " + " | ".join(f"{o['kind']} {o['label']} r{o.get('rank') or 0:.3f}" for o in a.get("options", [])))
+        log.append(f"pack screen ${gs['money']} · " + " | ".join(f"{o['kind']} {o['label']} r{o.get('rank') or 0:.3g}" for o in a.get("options", [])))
         if VERBOSE:
             print(f"  pack screen {a.get('screen')} · " + " | ".join(f"{o['kind']} {o['label']} {o.get('key')}" for o in a.get("options", [])))
         took, why_not = None, None

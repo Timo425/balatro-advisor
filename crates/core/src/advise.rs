@@ -458,8 +458,9 @@ pub struct ShopOption {
     /// leaves where that's simulated, else your board's or read off its scores against yours
     /// (`OptionRounds::before`), then that round with the shops still to come before it:
     /// what the money it leaves buys there (rerolls and the jokers they show, shop by shop),
-    /// from the board it leaves. Used for ranking; the shown win chance stays your board as it
-    /// is.
+    /// from the board it leaves. Each of those rounds' chances read no lower than the chance told
+    /// from none in its rounds (`three_wins`), as the ranking reads it. Used for ranking; the
+    /// shown win chance stays your board as it is.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub survive: Option<f64>,
     /// The same for the next ante's boss: from the option's own win chance there (simulated for
@@ -506,11 +507,6 @@ pub struct ShopOption {
     /// money first), not a finding
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub tied: bool,
-    /// This round's chance with the share of this ante's lost rounds a save rescues applied to
-    /// it, where the option's board has a joker that saves (`save_lift`): what decides whether
-    /// the ranking is in trouble
-    #[serde(skip)]
-    pub p_with_save: Option<f64>,
     /// The simulated rounds its own chances come from, and what they say of its rank's error
     /// (`rank_options`: options are told apart on them)
     #[serde(skip)]
@@ -685,13 +681,14 @@ pub struct SkipCompare {
     pub skip_survive: f64,
     pub skip_next: f64,
     pub skip_long: f64,
-    /// What the verdict compares: play_survive × play_next × play_long, the next ante's
-    /// chance counted at least three wins in its rounds (as the shop ranking counts it)
+    /// What the verdict compares: play_survive × play_next × play_long, this ante's chance and
+    /// the next ante's each counted at least three wins in its rounds (as the shop ranking counts
+    /// them)
     pub play_value: f64,
     /// The same for the skip side
     pub skip_value: f64,
-    /// "play", "skip", "close" (within 3%, the next ante's boss counted at least three wins in
-    /// its rounds, as the shop ranking counts it), or "not modelled" (the tag's effect isn't
+    /// "play", "skip", "close" (within 3%, this ante and the next ante's boss each counted at
+    /// least three wins in its rounds, as the shop ranking counts them), or "not modelled" (the tag's effect isn't
     /// valued: no verdict, the numbers show only what skipping costs)
     pub verdict: String,
     /// What the tag was counted as
@@ -1410,19 +1407,18 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
     // What giving up each of your jokers leaves, by the shop ranking's measure (`swap_measure`):
     // its rounds simulated without it (as a pool joker's are with it: what a joker does outside
     // a hand, Burglar's hands, Drunkard's discard, Mr. Bones' save, shows there) and a typical
-    // find in its place by Ante 8, its sale counted; in trouble (no removal leaves 20% this
-    // round, `TROUBLE`), the score reached. A joker that can't make room (eternal; one whose sale
+    // find in its place by Ante 8, its sale counted (a lost round counted at the chance told from
+    // none, as the race counts it). A joker that can't make room (eternal; one whose sale
     // frees no slot: `Board::sale_frees_slot`) ranks last. The pool's screen tries only the joker whose removal leaves
     // most; the outlook gives up the same.
     let key_round = ctx.specs.iter().rposition(|s| !s.horizon).unwrap_or(0);
     if !quick_blind {
         let find = lr.stand_in(1.25, 0.0, 0.0);
-        let trouble = !contrib.iter().any(|(_, o, _)| o.get(key_round).is_some_and(|x| x.1.p_saved >= TROUBLE));
         let ranks = par_map(&idx, |&i| {
             if run.jokers[i].eternal || !ctx.base.sale_frees_slot(i) {
                 return f64::MIN;
             }
-            swap_measure(&ctx, &contrib[i].1, &base_odds, lr.long_of(&find, Some(i), 0, false) / l0, trouble, without(&ctx.base, i).round_saves())
+            swap_measure(&ctx, &contrib[i].1, &base_odds, lr.long_of(&find, Some(i), 0, false) / l0, without(&ctx.base, i).round_saves())
         });
         let _ = ctx.removal_rank.set(ranks);
     }
@@ -1946,7 +1942,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
         }
         let now_p = base_odds.get(key_round).map_or(0.0, |o| o.0);
         let keep_money = |label: &str, kind: &str, note: String, long: f64| ShopOption {
-        tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, p_with_save: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None,
+        tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None,
             reach: None,
             label: label.into(),
             kind: kind.into(),
@@ -2136,7 +2132,11 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
                 .collect()
         };
         let befores: Vec<Vec<(f64, Option<SampledRounds>, f64)>> = options.iter().map(before_of).collect();
-        let through: Vec<f64> = befores.iter().map(|b| b.iter().map(|x| x.0).product()).collect();
+        // (each blind's chance read no lower than the chance told from none in its rounds,
+        // `three_wins`, as the hardest round's below: a chance under 3 wins can't be told from none,
+        // so a round lost whatever you pick is the same factor for every option)
+        let now_floor = three_wins(now_rounds(&ctx));
+        let through: Vec<f64> = befores.iter().map(|b| b.iter().map(|x| x.0.max(now_floor)).product()).collect();
         let mut slopes: Vec<[(f64, f64); 2]> = vec![[(1.0, 1.0); 2]; options.len()];
         // (each walk's gain in each option's survival, this ante and the next: the luck of the
         // shops ahead, the same shops for every option)
@@ -2176,8 +2176,17 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
                         with.max(p)
                     }
                 };
-                // (through the blinds before it too)
-                let survive = |p: f64, gains: Option<&mut Vec<f64>>| through[k] * walk(p, gains);
+                // (through the blinds before it too; the hardest round's chance with the walk read
+                // no lower than the chance told from none, as each blind's: its slope too, and under
+                // it the walks' luck moves nothing)
+                let survive = |p: f64, gains: Option<&mut Vec<f64>>| {
+                    let mut g = gains;
+                    let w = walk(p, g.as_deref_mut());
+                    if let Some(g) = g.filter(|_| w < now_floor) {
+                        g.clear();
+                    }
+                    through[k] * w.max(now_floor)
+                };
                 let p = if on_board { p_now } else { o.p_win };
                 let mut gains = vec![];
                 let at = survive(p, Some(&mut gains));
@@ -2307,7 +2316,6 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
                     let (now, next) = lifts[&key(o)];
                     *sv = (now, next);
                     let rescued = |p: f64, r: f64| (p + (1.0 - p) * r).clamp(0.0, 1.0);
-                    o.p_with_save = Some(rescued(o.p_win, now));
                     let (Some(s), Some(n)) = (o.survive, o.survive_next) else { continue };
                     o.survive = Some(rescued(s, now));
                     o.survive_next = Some(rescued(n, next));
@@ -2343,6 +2351,10 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
                 let mut noise = compare::Noise::default();
                 let won = |r: &SampledRounds| r.iter().map(|x| x.won as u8 as f64).collect::<Vec<_>>().into_iter();
                 let survive = o.survive.unwrap_or(o.p_win);
+                // (each round's chance in it is read no lower than the chance told from none: the
+                // hardest round's luck by the slope of the floored survival, none downward at the
+                // floor, its walks' luck cleared there, and a blind before it under that line adds
+                // none of its rounds' luck, as the next ante's below)
                 if let Some(r) = o.rounds.now.as_ref().or(base_now.as_ref())
                     && survive > 0.0
                 {
@@ -2354,7 +2366,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
                     // i of every blind dealt alike, one set with this ante's hardest)
                     let s = if save_now < 1.0 { ((survive - save_now) / (1.0 - save_now)).max(0.0) } else { 0.0 };
                     for (p, r, on_rounds) in befores[k].iter() {
-                        if let Some(r) = r.as_ref().filter(|_| *p > 0.0) {
+                        if let Some(r) = r.as_ref().filter(|_| *p >= now_floor && *p > 0.0) {
                             let at = on * s / p * on_rounds;
                             noise.add(ROUNDS, (at, at), won(r));
                         }
@@ -2435,7 +2447,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
                 later.push(l);
             }
         }
-        rank_options(&mut options, base_reach, next_rounds(&ctx));
+        rank_options(&mut options, base_reach, now_rounds(&ctx), next_rounds(&ctx));
         // with a pack open, one that holds none of its picks (an Arcana, Spectral or Standard
         // pack) answers nothing on screen: none is made
         let answers = !run.screen.in_pack() || options.iter().any(|o| o.label.starts_with("pick "));
@@ -2456,7 +2468,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
                 shop: shop.clone(),
                 rescue: rescue.clone(),
                 blinds: blind_views.clone(),
-                shop_tie: (!options.is_empty()).then(|| shop_tie(&options)),
+                shop_tie: (!options.is_empty()).then(shop_tie),
                 options,
                 options_round: key_round,
                 tarots: vec![],
@@ -2531,7 +2543,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
             }
         }
     }
-    rank_options(&mut options, base_reach, next_rounds(&ctx));
+    rank_options(&mut options, base_reach, now_rounds(&ctx), next_rounds(&ctx));
     lap("ranking");
     // Skip or play the blind you're choosing now; in the shop (no pack open), the next blind
     // still to come, whose tag is known from the ante's start: what you spend there and whether
@@ -2570,7 +2582,8 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
         let seal_planets = seal_planets_a_round(round_now(run), blue, run.full_deck().len(), free);
         // (the round's rent, then its cash-out: `LongRun::cashed_out`)
         let gain = lr.cashed_out(run.dollars + held, rent_now, bv.reward as f64) - run.dollars;
-        let play_survive = p_blind * survive_with(run.dollars + gain, after_play(k), p_boss);
+        let play_boss = survive_with(run.dollars + gain, after_play(k), p_boss);
+        let play_survive = p_blind * play_boss;
         let mut play_long = money_long(gain);
         if seal_planets > 0.0 {
             let main: Vec<(crate::engine::HandType, f64)> = top_hand.map(|t| vec![(t, seal_planets)]).unwrap_or_default();
@@ -2742,11 +2755,14 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
             }
             None => (1.0, 1.0),
         };
-        // The next ante's boss counted at least the chance told from none in its rounds, as the
-        // shop ranking counts it (`shop_measure`'s floor): a next ante hopeless both ways is the
-        // same factor on both sides, so this ante decides, and a lucky round or two doesn't
-        let next_floor = three_wins(next_rounds(&ctx));
-        let (play_value, skip_value) = (play_survive * play_next.max(next_floor) * play_long, skip_survive * skip_next.max(next_floor) * skip_long);
+        // This ante and the next ante's boss each counted at least the chance told from none in
+        // its rounds, as the shop ranking counts them (`option_value`): a round hopeless both ways
+        // is the same factor on both sides, so the rest decides (what skipping gives and costs
+        // later), and a lucky round or two doesn't
+        // (this ante round by round: playing, the blind on offer and the boss; skipping, the boss)
+        let (now_floor, next_floor) = (three_wins(now_rounds(&ctx)), three_wins(next_rounds(&ctx)));
+        let play_now = p_blind.max(now_floor) * play_boss.max(now_floor);
+        let (play_value, skip_value) = (play_now * play_next.max(next_floor) * play_long, skip_survive.max(now_floor) * skip_next.max(next_floor) * skip_long);
         let (pv, sv) = (play_value, skip_value);
         // A tag whose effect isn't valued leaves no verdict (only what skipping costs is in the
         // numbers)
@@ -2799,7 +2815,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
         shop,
         rescue,
         blinds: blind_views,
-        shop_tie: (!options.is_empty()).then(|| shop_tie(&options)),
+        shop_tie: (!options.is_empty()).then(shop_tie),
         options,
         options_round: key_round,
         tarots,
@@ -2848,12 +2864,12 @@ const HEURISTICS: [&str; 8] = [
         "Scaling jokers keep their current value in the blinds ahead. By Ante 8, the ones a round changes grow or fade as the simulated player's rounds at this ante's plain blind sizes leave them (yours by a player that plays to the round's goals, their worths from a projection that keeps them; a shop joker's by a player that plays only to win); the rest by a table.",
         "Blue Seal planets by Ante 8 assume a consumable held at round end in a measured share of rounds (one run).",
         "The shop ranking counts what each option's money left buys in the shops ahead: the money spent shop by shop on 2000 simulated walks (rerolls and the jokers they show, a joker bought in the shop it shows in when the money pays for it and it adds enough for its price, into a free slot or in place of the joker whose loss costs least, yours sold for it; enough is a bar per dollar of its price, none, what a shop's joker adds per dollar on average or twice that, chosen on half the walks, then the most rerolls a shop under it, at most 8: budgets, heuristic), starting from the board the option leaves; several jokers' score gains added (most jokers' Chips and Mult add), read off your board's score spread in that round as a lognormal (heuristic); an option with no simulated chance at the next ante's boss read the same way from its score there. Rent comes off at each round's end: your rentals', one the option buys, a Buffoon pack's picks as often as the stake makes them rentals. Each round then pays its blind's reward, the interest and what a round pays on your board as it is (hands and discards left, the cards' and jokers' money, measured on this ante's plain blinds), the same for every option: a money joker bought or sold doesn't change it, nor does a boss's rule (not modelled). Planets, packs and tarots the money could buy aren't counted, nor the stickers of the jokers the walk finds (not modelled). The walk lifts this ante's hardest round only: its blinds before that one count each option's own chance there (simulated on the board a joker, a sale, a planet, a playing card or a voucher that changes one of those rounds leaves, a Celestial Pack's the planet each set of its cards picks; your board's for leaving, a reroll, a money card, a voucher that changes none of them or a boss reroll; another pack's or a tarot's read off its scores against yours on your board's scores at each blind, from its reach at the hardest round where it has one (a Buffoon Pack, Judgement), else its chance at the hardest round where yours there is 10% or more, else its strength at the next ante's boss: heuristic), each played from the board as it stands and the chances multiplied, not chained as Best play's blinds ahead are (heuristic), with nothing the shops before them find (heuristic: a Big Blind behind the Small isn't lifted by the shop after the Small).",
-        "With your joker slots full, the joker a shop or pool joker replaces is chosen by the shop ranking's measure: the chance through this ante (for a joker on offer every blind still ahead before its hardest round, then that round; for one the shops ahead may show, that round alone) × the next ante's boss × the geometric mean of the long run with that sale (its income and growth by Ante 8) and the strength at the next ante, with Mr. Bones' save counted at the rounds it plays, a save spent on a blind before the hardest round gone for the rounds after it (the shop ranking counts it through every round ahead: on chained runs, the share of lost rounds a save rescues applied to each option's survival, a heuristic); the swaps (outside a blind each on the board it leaves as you'd arrange it; in a blind, the freed slot and the right end) raced on the same simulated rounds (to the full count), those it can't tell apart reported as ties; when no swap gets through 20% this round, the score reached decides and no ties are shown, as in the shop ranking (heuristic budget: at most 6 swaps after 32 rounds, 4 after 64, 3 after 128; a sale's places that play the first 32 rounds the same count as one). A Negative joker is never the one sold to make room (its slot goes with it), nor a charged Invisible Joker (it copies another joker into the row as it's sold). What a sale does that isn't modelled is said on the option (a joker that acts when sold: Diet Cola, a charged Invisible Joker; Campfire's growth from it). A joker's money is the money a round won pays on the board with it against without it, on the same rounds of this ante's plain blinds (scoring, discards, the round's end, hands left); a joker whose money that doesn't reach (Gift Card, Credit Card, Matador's boss payout) is said \"not modelled\" on an option that sells it. The pool's quick screen tries only the joker whose removal leaves most by the same measure. A perished joker is the one sold.",
-        "Shop options are told apart by the simulation's own noise: one is listed above another, or above keeping your money, only when it's ahead by more than 2 standard errors of their difference on the simulated rounds and shops both rest on, with 3% of the rank counted in for what no round shows (the By Ante 8 projection's own luck, a pack's or a reroll's cards, an estimate, an effect left out). Closer than that is a tie (≈), keeping your money first; skipping an open pack goes after the pack's picks worth more that leave no less money (its cards are gone once it closes).",
+        "With your joker slots full, the joker a shop or pool joker replaces is chosen by the shop ranking's measure: the chance through this ante (for a joker on offer every blind still ahead before its hardest round, then that round; for one the shops ahead may show, that round alone) × the next ante's boss × the geometric mean of the long run with that sale (its income and growth by Ante 8) and the strength at the next ante, with Mr. Bones' save counted at the rounds it plays, a save spent on a blind before the hardest round gone for the rounds after it (the shop ranking counts it through every round ahead: on chained runs, the share of lost rounds a save rescues applied to each option's survival, a heuristic); the swaps (outside a blind each on the board it leaves as you'd arrange it; in a blind, the freed slot and the right end) raced on the same simulated rounds (to the full count), those it can't tell apart reported as ties; a round lost counts at the chance told from none (3 wins in its rounds, as in the shop ranking), so where no swap gets through, what each sale leaves you decides, its money included (heuristic budget: at most 6 swaps after 32 rounds, 4 after 64, 3 after 128; a sale's places that play the first 32 rounds the same count as one). A Negative joker is never the one sold to make room (its slot goes with it), nor a charged Invisible Joker (it copies another joker into the row as it's sold). What a sale does that isn't modelled is said on the option (a joker that acts when sold: Diet Cola, a charged Invisible Joker; Campfire's growth from it). A joker's money is the money a round won pays on the board with it against without it, on the same rounds of this ante's plain blinds (scoring, discards, the round's end, hands left); a joker whose money that doesn't reach (Gift Card, Credit Card, Matador's boss payout) is said \"not modelled\" on an option that sells it. The pool's quick screen tries only the joker whose removal leaves most by the same measure. A perished joker is the one sold.",
+        "Shop options are told apart by the simulation's own noise: one is listed above another, or above keeping your money, only when it's ahead by more than 2 standard errors of their difference on the simulated rounds and shops both rest on, with 3% of the rank counted in for what no round shows (the By Ante 8 projection's own luck, a pack's or a reroll's cards, an estimate, an effect left out). Closer than that is a tie (≈), keeping your money first; skipping an open pack goes after the pack's picks worth more that leave no less money (its cards are gone once it closes). A round's chance under 3 wins in its rounds counts as that much for every option (it can't be told from none), so where a round is lost whatever you pick, what each option leaves you ranks them, the money it spends included.",
 ];
 
 /// Said with a skip-or-play comparison (`SkipCompare`)
-const SKIP_NOTE: &str = "Skip or play compares the chance to get through this ante (playing, the blind you choose and the boss; the shops before the boss counted, one fewer if you skip; a Big Blind between the one you choose and the boss: its chance isn't counted, its reward and the shop after it are: not modelled) × the next ante's boss × By Ante 8. The next ante's boss counts at least a chance told from none (3 wins in its rounds, as in the shop ranking), so a next ante hopeless both ways leaves this ante to decide. Close: within 3% (heuristic). A tag whose effect isn't valued gives no verdict (not modelled), nor does the comparison count the copies a Double Tag you hold would make (not modelled).";
+const SKIP_NOTE: &str = "Skip or play compares the chance to get through this ante (playing, the blind you choose and the boss; the shops before the boss counted, one fewer if you skip; a Big Blind between the one you choose and the boss: its chance isn't counted, its reward and the shop after it are: not modelled) × the next ante's boss × By Ante 8. Each round's chance (the blind you choose and the boss, and the next ante's boss) counts at least a chance told from none (3 wins in its rounds, as in the shop ranking), so a round hopeless both ways leaves the rest to decide. Close: within 3% (heuristic). A tag whose effect isn't valued gives no verdict (not modelled), nor does the comparison count the copies a Double Tag you hold would make (not modelled).";
 
 /// Said with a shop's first ranking (`FirstSink`)
 const FIRST_RANKING_NOTE: &str = "A first ranking, shown while the rest is worked out: the jokers, planets and vouchers on offer, the planets you hold, your jokers' sales and leaving (with a pack open, its joker and planet picks and skipping it), each with the numbers the full analysis gives it, ranked among themselves. Not in it yet: the reroll, the packs, tarots and a pack's playing cards (they wait on what is worked out after it: every joker's and tarot's By Ante 8 value, the planets not on offer, a pack's playing cards' own rounds), and an option that leaves you more money than the planet-level cap (what money past it buys reads those values). None is made with more money than that cap, or with a pack open when none of its picks is in it. The full analysis replaces it.";
@@ -2996,13 +3012,18 @@ fn slope_at(f: impl Fn(f64) -> f64, at: f64, x: f64, n: usize) -> (f64, f64) {
     (if lo < x { ((at - f(lo)) / d).max(0.0) } else { 0.0 }, if hi > x { ((f(hi) - at) / d).max(0.0) } else { 0.0 })
 }
 
-/// A shop option's rank: `shop_measure` on its survivals, long run and strength
-fn option_value(o: &ShopOption, next_floor: f64) -> f64 {
-    shop_measure(o.survive.unwrap_or(o.p_win), o.survive_next.unwrap_or(1.0), next_floor, o.long_mult.unwrap_or(1.0), o.next_strength.unwrap_or(1.0))
+/// A shop option's rank: `shop_measure` on its survivals, long run and strength. Each round's
+/// chance this ante is read no lower than the chance told from none (`three_wins`), as the next
+/// ante's is (`next_floor`): `survive` round by round where it's worked out, else this round's
+/// chance (`now_floor`)
+fn option_value(o: &ShopOption, now_floor: f64, next_floor: f64) -> f64 {
+    shop_measure(o.survive.unwrap_or(o.p_win.max(now_floor)), o.survive_next.unwrap_or(1.0), next_floor, o.long_mult.unwrap_or(1.0), o.next_strength.unwrap_or(1.0))
 }
 
 /// The shop ranking's measure (`rank_options`): the chance through this ante (`survive`: every
-/// blind still ahead before its hardest round, `Ctx::before`, then that round), times the next
+/// blind still ahead before its hardest round, `Ctx::before`, then that round, each read no lower
+/// than the chance told from none by the caller, who knows the rounds: `option_value`'s survival
+/// round by round, `SwapRound::value` a round at a time), times the next
 /// ante's boss (at least `floor`, the chance told from none: `three_wins`), times
 /// the geometric mean of the long run and the strength at the next ante. The joker a buy
 /// replaces is chosen on it too (`SwapRound::value`, `swap_measure`): one measure, one place.
@@ -3080,9 +3101,14 @@ struct SwapRound {
 }
 
 impl SwapRound {
-    /// `shop_measure` on this round
-    fn value(&self, floor: f64) -> f64 {
-        shop_measure((self.before && (self.won || self.saved)) as u8 as f64, self.next as u8 as f64, floor, self.long, self.strength)
+    /// `shop_measure` on this round: the blinds before this ante's hardest round (as one: a loss
+    /// at any of them counted once, where `option_value` floors each, docs/design.md gap 7) and
+    /// that round each lost counted at the chance told from none in their rounds (`now_floor`),
+    /// as the next ante's boss is (`floor`), so on the mean `p + (1 − p)·floor`, a little above
+    /// the shop ranking's `max(p, floor)`
+    fn value(&self, now_floor: f64, floor: f64) -> f64 {
+        let at = |through: bool| if through { 1.0 } else { now_floor };
+        shop_measure(at(self.before) * at(self.won || self.saved), self.next as u8 as f64, floor, self.long, self.strength)
     }
 }
 
@@ -3104,24 +3130,22 @@ const SWAP_BUDGET: &[(usize, usize)] = &[(32, 6), (64, 4), (128, 3)];
 
 /// `SwapRound::value` in expectation, from a board's simulated odds (`odds`, one per round of
 /// `ctx.specs`, the strength at its mean) and its long run: what giving up a joker leaves
-/// (`Ctx::removal_rank`). In trouble (`trouble`), the score reached this round, as in the race.
+/// (`Ctx::removal_rank`), a round lost counted at the chance told from none, as in the race.
 /// `saves`: the lost rounds the board's jokers can save (`Board::round_saves`): with more than
 /// one, a save spent this round leaves another for the next ante's boss. This ante's blinds
 /// before its hardest round aren't read: its users (the pool's screen, the outlook) are about
 /// jokers the shops ahead may show, mostly bought after them, as the pool's race does.
-fn swap_measure(ctx: &Ctx, odds: &[(f64, Stats)], base_odds: &[(f64, Stats)], long: f64, trouble: bool, saves: usize) -> f64 {
+fn swap_measure(ctx: &Ctx, odds: &[(f64, Stats)], base_odds: &[(f64, Stats)], long: f64, saves: usize) -> f64 {
     let key_round = ctx.specs.iter().rposition(|s| !s.horizon).unwrap_or(0);
     let Some(&(won, ref st)) = odds.get(key_round) else { return 0.0 };
-    if trouble {
-        return st.mean / ctx.specs[key_round].start.target.max(1.0);
-    }
     let saved = (st.p_saved - won).max(0.0);
+    let lost = (1.0 - won - saved).max(0.0);
     let floor = three_wins(next_rounds(ctx));
     // (the next ante's chance with Mr. Bones' save, without it, the strength there)
     let (with_save, without, strength) = ctx.specs.iter().position(|x| x.horizon).and_then(|h| Some((odds.get(h)?, base_odds.get(h)?))).map_or((1.0, 1.0, 1.0), |((pn, sn), (_, bn))| (sn.p_saved, *pn, sn.mean / bn.mean.max(1e-9)));
     let m = |next: f64| shop_measure(1.0, next, floor, long, strength);
     let through = |p: f64| p * m(1.0) + (1.0 - p) * m(0.0);
-    won * through(with_save) + saved * through(if saves > 1 { with_save } else { without })
+    won * through(with_save) + saved * through(if saves > 1 { with_save } else { without }) + lost * three_wins(now_rounds(ctx)) * through(without)
 }
 
 /// Adds `j` if there's room, otherwise in place of the joker whose swap the shop ranking's
@@ -3316,20 +3340,17 @@ fn evaluate_candidate(lr: &value::LongRun, j: Joker, cost: i64, rental: bool, ba
     };
     // equal values: the leftmost joker sold first, then the order the swaps were tried in
     let tie_order = |x: usize, y: usize| picks[y].4 .0.cmp(&picks[x].4 .0).then(y.cmp(&x));
-    // in trouble (no swap gets through this round 20% of the first batch, Mr. Bones' save
-    // counted: `TROUBLE`), the score reached there decides and no ties are shown, as the shop
-    // ranking orders its options then; the measure orders what it can't
-    let through = |v: &[SwapRound]| v.iter().filter(|s| s.won || s.saved).count() as f64 / v.len().max(1) as f64;
-    let trouble = !first.iter().any(|v| through(v) >= TROUBLE);
-    let (value, secondary) = (|s: &SwapRound| s.value(floor), |s: &SwapRound| s.reach);
-    let race = if trouble {
-        compare::race(picks.len(), SWAP_FIRST, sims.max(SWAP_FIRST), compare::halving(SWAP_BUDGET, SWAP_FIRST, picks.len()), sample, secondary, value, tie_order, false)
-    } else {
-        compare::race(picks.len(), SWAP_FIRST, sims.max(SWAP_FIRST), compare::halving(SWAP_BUDGET, SWAP_FIRST, picks.len()), sample, value, secondary, tie_order, true)
-    };
+    // the measure decides however hopeless the round (a lost round counts at the chance told
+    // from none, `SwapRound::value`: then what each sale leaves you, its money included, does),
+    // the score reached what it leaves equal, as the shop ranking (since 2026-11-19: until then,
+    // under 20% this round for every swap, the score reached came first and sold a joker that
+    // scores nothing, a money joker, before any other)
+    let now_floor = three_wins(sims);
+    let (value, secondary) = (|s: &SwapRound| s.value(now_floor, floor), |s: &SwapRound| s.reach);
+    let race = compare::race(picks.len(), SWAP_FIRST, sims.max(SWAP_FIRST), compare::halving(SWAP_BUDGET, SWAP_FIRST, picks.len()), sample, value, secondary, tie_order, true);
     let lead = &picks[race.leader];
     let mut c = simulate(lead, sims);
-    let mut tied: Vec<usize> = (0..picks.len()).filter(|&p| !trouble && (race.tied[p] || race.undecided[p])).filter_map(|p| picks[p].4 .0).filter(|&i| Some(i) != lead.4 .0).collect();
+    let mut tied: Vec<usize> = (0..picks.len()).filter(|&p| race.tied[p] || race.undecided[p]).filter_map(|p| picks[p].4 .0).filter(|&i| Some(i) != lead.4 .0).collect();
     tied.sort_unstable();
     tied.dedup();
     if !tied.is_empty() {
@@ -3652,17 +3673,17 @@ fn shop_options(
     let shop_cards = run.shop.as_ref().map(|s| s.other_cards.clone()).unwrap_or_default();
     for c in shop_cards.iter().filter(|c| c.set == "Planet") {
         if let Some(p) = p_of(&c.key) {
-            out.push(ShopOption { tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, p_with_save: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None, label: c.name.clone(), kind: "planet".into(), cost: c.cost, money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: Some(c.key.clone()), desc: None, p_win: p, note: format!("levels up {}", data.center(&c.key).and_then(|x| x.config.get("hand_type")).and_then(|v| v.as_str()).unwrap_or("")) });
+            out.push(ShopOption { tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None, label: c.name.clone(), kind: "planet".into(), cost: c.cost, money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: Some(c.key.clone()), desc: None, p_win: p, note: format!("levels up {}", data.center(&c.key).and_then(|x| x.config.get("hand_type")).and_then(|v| v.as_str()).unwrap_or("")) });
         }
     }
     for c in run.open_pack.iter().filter(|c| c.set == "Planet") {
         if let Some(p) = p_of(&c.key) {
-            out.push(ShopOption { tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, p_with_save: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None, label: format!("pick {}", c.name), kind: "planet".into(), cost: 0, p_win: p, note: format!("levels up {}", data.center(&c.key).and_then(|x| x.config.get("hand_type")).and_then(|v| v.as_str()).unwrap_or("")), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: Some(c.key.clone()), desc: None });
+            out.push(ShopOption { tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None, label: format!("pick {}", c.name), kind: "planet".into(), cost: 0, p_win: p, note: format!("levels up {}", data.center(&c.key).and_then(|x| x.config.get("hand_type")).and_then(|v| v.as_str()).unwrap_or("")), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: Some(c.key.clone()), desc: None });
         }
     }
     for c in run.consumables.iter().filter(|c| c.set == "Planet") {
         if let Some(p) = p_of(&c.key) {
-            out.push(ShopOption { tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, p_with_save: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None, label: format!("{} (you have it)", c.name), kind: "planet".into(), cost: 0, p_win: p, note: "use it before the blind".into(), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: Some(c.key.clone()), desc: None });
+            out.push(ShopOption { tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None, label: format!("{} (you have it)", c.name), kind: "planet".into(), cost: 0, p_win: p, note: "use it before the blind".into(), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: Some(c.key.clone()), desc: None });
         }
     }
 
@@ -3708,7 +3729,7 @@ fn shop_options(
             // (on the rounds of the planet it picks most often there: a stand-in for the mix,
             // dealt as every board's are)
             let before = before_sum.iter().enumerate().map(|(j, s)| (s / count.max(1.0), planet_rounds[top].before.get(j).and_then(|x| x.1.clone()))).collect();
-            out.push(ShopOption { tied: false, rounds: OptionRounds { before, ..Default::default() }, noise: Default::default(), vs_keep: None, beats_keep: None, p_with_save: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None,
+            out.push(ShopOption { tied: false, rounds: OptionRounds { before, ..Default::default() }, noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None,
                 money_after: 0.0,
                 interest_now: 0,
                 interest_after: 0,
@@ -3726,7 +3747,7 @@ fn shop_options(
         } else if pk.key.starts_with("p_buffoon") {
             // Jokers picked from a pack are free: no budget limit on what's inside.
             let e = expected_best(ctx, pool, round, now, extra, 1.0, f64::INFINITY, per_rarity, &mut rng);
-            out.push(ShopOption { tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, p_with_save: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None, label: pk.name.clone(), kind: "pack".into(), cost: pk.cost, p_win: e, note: format!("{extra} jokers{pick_note}"), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: Some(pk.key.clone()), desc: None });
+            out.push(ShopOption { tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None, label: pk.name.clone(), kind: "pack".into(), cost: pk.cost, p_win: e, note: format!("{extra} jokers{pick_note}"), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: Some(pk.key.clone()), desc: None });
         }
     }
 
@@ -3742,7 +3763,7 @@ fn shop_options(
             }
             let budget = run.dollars - spent as f64;
             let e = expected_best(ctx, pool, round, now, slots * k, joker_share, budget, per_rarity, &mut rng);
-            out.push(ShopOption { tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, p_with_save: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None,
+            out.push(ShopOption { tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None,
                 money_after: 0.0,
                 interest_now: 0,
                 interest_after: 0,
@@ -3817,7 +3838,7 @@ fn shop_options(
             };
             let (p, now_rounds) = if sim { let (p, st) = ctx.odds_one(&ctx.base, &sp, ctx.opts.sims); (p, st.rounds) } else { (now, None) };
             let before = if sim_before { ctx.before.iter().map(|(b, _)| ctx.odds_one(&ctx.base, &with_voucher(b), ctx.opts.sims)).map(|(p, st)| (p, st.rounds)).collect() } else { vec![] };
-            out.push(ShopOption { tied: false, rounds: OptionRounds { now: now_rounds, before, before_yours: !sim_before, ..Default::default() }, noise: Default::default(), vs_keep: None, beats_keep: None, p_with_save: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None, label: v.name.clone(), kind: "voucher".into(), cost: v.cost, p_win: p, note, money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: Some(v.key.clone()), desc: None });
+            out.push(ShopOption { tied: false, rounds: OptionRounds { now: now_rounds, before, before_yours: !sim_before, ..Default::default() }, noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None, label: v.name.clone(), kind: "voucher".into(), cost: v.cost, p_win: p, note, money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: Some(v.key.clone()), desc: None });
         }
     }
     // Tarots: applied to the deck the way a player sensibly would, then the round re-simulated.
@@ -3845,17 +3866,17 @@ fn shop_options(
     let shop_cards = run.shop.as_ref().map(|s| s.other_cards.clone()).unwrap_or_default();
     for c in shop_cards.iter().filter(|c| c.set == "Tarot" || c.set == "Spectral") {
         if let Some(t) = tarot_p(&c.key) {
-            out.push(ShopOption { tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, p_with_save: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None, label: c.name.clone(), kind: "tarot".into(), cost: c.cost, p_win: t.p_win, note: t.note.clone(), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: t.money_gain, long_mult: None, key: Some(c.key.clone()), desc: None });
+            out.push(ShopOption { tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None, label: c.name.clone(), kind: "tarot".into(), cost: c.cost, p_win: t.p_win, note: t.note.clone(), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: t.money_gain, long_mult: None, key: Some(c.key.clone()), desc: None });
         }
     }
     for c in run.open_pack.iter().filter(|c| c.set == "Tarot" || c.set == "Spectral") {
         if let Some(t) = tarot_p(&c.key) {
-            out.push(ShopOption { tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, p_with_save: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None, label: format!("pick {}", c.name), kind: "tarot".into(), cost: 0, p_win: t.p_win, note: format!("{} · next ante reach {:.0}% → {:.0}%", t.note, t.reach_now * 100.0, t.reach * 100.0), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: t.money_gain, long_mult: None, key: Some(c.key.clone()), desc: None });
+            out.push(ShopOption { tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None, label: format!("pick {}", c.name), kind: "tarot".into(), cost: 0, p_win: t.p_win, note: format!("{} · next ante reach {:.0}% → {:.0}%", t.note, t.reach_now * 100.0, t.reach * 100.0), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: t.money_gain, long_mult: None, key: Some(c.key.clone()), desc: None });
         }
     }
     for c in run.consumables.iter().filter(|c| c.set == "Tarot" || c.set == "Spectral") {
         if let Some(t) = tarot_p(&c.key) {
-            out.push(ShopOption { tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, p_with_save: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None, label: format!("{} (you have it)", c.name), kind: "tarot".into(), cost: 0, p_win: t.p_win, note: format!("{} · use it during a blind", t.note), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: t.money_gain, long_mult: None, key: Some(c.key.clone()), desc: None });
+            out.push(ShopOption { tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None, label: format!("{} (you have it)", c.name), kind: "tarot".into(), cost: 0, p_win: t.p_win, note: format!("{} · use it during a blind", t.note), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: t.money_gain, long_mult: None, key: Some(c.key.clone()), desc: None });
         }
     }
     for pk in run.shop.as_ref().map(|s| s.boosters.clone()).unwrap_or_default().iter().filter(|p| p.key.starts_with("p_spectral")) {
@@ -3865,7 +3886,7 @@ fn shop_options(
         let vals: Vec<f64> = spectrals.iter().map(|t| t.p_win.max(now)).collect();
         let (avg, top) = best_of_subsets(&vals, extra);
         out.push(ShopOption {
-            tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, p_with_save: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None,
+            tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None,
             reach: None,
             label: pk.name.clone(),
             kind: "pack".into(),
@@ -3889,7 +3910,7 @@ fn shop_options(
         let arcana: Vec<&TarotValue> = tarots.iter().filter(|t| !t.spectral).collect();
         let vals: Vec<f64> = arcana.iter().map(|t| t.p_win.max(now)).collect();
         let (avg, top) = best_of_subsets(&vals, extra);
-        out.push(ShopOption { tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, p_with_save: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None,
+        out.push(ShopOption { tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None,
             label: pk.name.clone(),
             kind: "pack".into(),
             cost: pk.cost,
@@ -3918,7 +3939,7 @@ fn shop_options(
         // (this ante's blinds before its hardest round, for the ranking's survival)
         let before = ctx.before.iter().map(|(b, _)| with_card(b)).map(|(p, st)| (p, st.rounds)).collect();
         out.push(ShopOption {
-            tied: false, rounds: OptionRounds { now: st.rounds, before, ..Default::default() }, noise: Default::default(), vs_keep: None, beats_keep: None, p_with_save: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None,
+            tied: false, rounds: OptionRounds { now: st.rounds, before, ..Default::default() }, noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None,
             reach: None,
             label: format!("pick {}", card.label()),
             kind: "card".into(),
@@ -3963,7 +3984,7 @@ fn shop_options(
         }).filter(|s| !s.is_empty());
         let note = [stickers, Some(action).filter(|a| !a.is_empty()), c.note.clone(), later].into_iter().flatten().collect::<Vec<_>>().join(" · ");
         let from_pack = run.open_pack.iter().any(|p| p.key == c.key);
-        out.push(ShopOption { tied: false, rounds: OptionRounds { now: c.rounds.get(round).cloned().flatten(), next: ctx.specs.iter().position(|x| x.horizon).and_then(|h| c.rounds.get(h).cloned().flatten()), next_base: None, before: c.before.clone(), before_yours: false }, noise: Default::default(), vs_keep: None, beats_keep: None, p_with_save: None, rank: None, survive: None, survive_next: None, flex: None, reach: None,
+        out.push(ShopOption { tied: false, rounds: OptionRounds { now: c.rounds.get(round).cloned().flatten(), next: ctx.specs.iter().position(|x| x.horizon).and_then(|h| c.rounds.get(h).cloned().flatten()), next_base: None, before: c.before.clone(), before_yours: false }, noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, survive: None, survive_next: None, flex: None, reach: None,
             sell_index: c.sell_index,
             sell_key: c.sell_index.and_then(|i| run.jokers.get(i)).map(|j| j.key.clone()),
             label: {
@@ -4037,7 +4058,7 @@ fn shop_options(
         o.interest_after = interest(o.money_after, run.interest_amount, run.interest_cap);
     }
     // (no skip among them: the open pack's is added with the other ways of keeping your money)
-    rank_options(&mut out, base_reach, next_rounds(ctx));
+    rank_options(&mut out, base_reach, now_rounds(ctx), next_rounds(ctx));
     (out, tarots)
 }
 
@@ -4236,7 +4257,7 @@ fn long_draw(pool: &[Candidate], cards: usize, joker_share: f64, floor: f64, rng
 /// Rerolling costs $10, counted in the money after when it's worth doing.
 fn boss_reroll_option(ctx: &Ctx, run: &RunState, data: &GameData, spec: &Spec, now: f64) -> ShopOption {
     let mut o = ShopOption {
-        tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, p_with_save: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None,
+        tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None,
         reach: None,
         label: String::new(),
         kind: "voucher".into(),
@@ -4329,22 +4350,15 @@ const BEFORE_READ_FLOOR: f64 = 0.1;
 /// The shop ranking's noise, for whatever acts on it (the bot): an option is above another by
 /// a finding when it's ahead by more than `standard_errors` of their difference, `tie` counted
 /// in as the margin for what no round shows (`clearly_better`). What tells an option from
-/// keeping your money is each option's `beats_keep`. `trouble`: no option's chance this round
-/// reaches 20%, so the score reached orders them and the ties don't apply
+/// keeping your money is each option's `beats_keep`.
 #[derive(Debug, Clone, Copy, Serialize, PartialEq)]
 pub struct ShopTie {
     pub tie: f64,
     pub standard_errors: f64,
-    pub trouble: bool,
 }
 
-/// Below this chance this round, the round is in trouble: the score reached orders the shop's
-/// options (`rank_options`) and the joker a buy replaces (`evaluate_candidate`), not the
-/// chances (the register's "Shop ranking")
-const TROUBLE: f64 = 0.2;
-
-fn shop_tie(out: &[ShopOption]) -> ShopTie {
-    ShopTie { tie: SHOP_TIE, standard_errors: SHOP_ERRORS, trouble: out.iter().map(|o| o.p_with_save.unwrap_or(o.p_win)).fold(0.0, f64::max) < TROUBLE }
+fn shop_tie() -> ShopTie {
+    ShopTie { tie: SHOP_TIE, standard_errors: SHOP_ERRORS }
 }
 
 /// Whether shop option `a`'s rank is above `b`'s by a finding: by more than two standard
@@ -4375,19 +4389,21 @@ fn clearly_better(a: &ShopOption, b: &ShopOption) -> bool {
 /// when not making it keeps nothing for later): leaving first; skipping a pack above the shop's
 /// buys, what you hold and a pick that leaves less money (it keeps the money and the consumable
 /// they spend), and below the pack's picks worth more by value (it keeps nothing against them:
-/// the best estimate leads, as a race's leader does). With no real chance at all (under 20%),
-/// the score reached comes first.
-fn rank_options(out: &mut [ShopOption], base_reach: f64, next_rounds: usize) {
-    let trouble = shop_tie(out).trouble;
-    // A chance at the next ante's boss under 3 wins in its rounds (`next_rounds`) can't be
-    // told from none (`three_wins`), so every option counts at least that: a next ante that's
-    // hopeless whatever you pick is the same factor for all and drops out of the ranking
-    // (next-ante strength still counts), and a lucky round or two doesn't zero the rest
-    let next_floor = three_wins(next_rounds);
+/// the best estimate leads, as a race's leader does). A chance this ante or at the next ante's
+/// boss that can't be told from none counts as that much for every option, so a round lost
+/// whatever you pick still ranks them by what they leave you: the money they spend counts as in
+/// any shop (the score reached is the last tie-break, as everywhere).
+fn rank_options(out: &mut [ShopOption], base_reach: f64, now_rounds: usize, next_rounds: usize) {
+    // A chance under 3 wins in its rounds (`now_rounds` this ante, `next_rounds` at the next
+    // ante's boss) can't be told from none (`three_wins`), so every option counts at least that:
+    // a round that's hopeless whatever you pick is the same factor for all and drops out of the
+    // ranking (what each option leaves you still counts: its money, the long run, the next
+    // ante's strength), and a lucky round or two doesn't zero the rest
+    let (now_floor, next_floor) = (three_wins(now_rounds), three_wins(next_rounds));
     // The long run as the average (geometric) of the next ante and Ante 8: a card bought now
     // helps in every blind from here, money only once it's spent on something.
     for o in out.iter_mut() {
-        o.rank = Some(option_value(o, next_floor));
+        o.rank = Some(option_value(o, now_floor, next_floor));
     }
     let value = |o: &ShopOption| o.rank.unwrap_or(0.0);
     // The status quo every option is told from: leaving the shop, or skipping the open pack
@@ -4437,8 +4453,7 @@ fn rank_options(out: &mut [ShopOption], base_reach: f64, next_rounds: usize) {
         }
     }
     // Each option's place in the status quo's tie, first to last (D8: a choice that can't be
-    // told from the status quo is made only when not making it keeps nothing for later; out of
-    // trouble, where ties are shown). Leaving the shop first: the money it keeps is spent in the
+    // told from the status quo is made only when not making it keeps nothing for later). Leaving the shop first: the money it keeps is spent in the
     // shops ahead, a later chance no option holds. Skipping an open pack keeps the money a shop's
     // buy spends and the consumable a held one's use spends, so it stays above them; but the
     // pack's cards are gone once it closes and its price is paid, so against a pick it keeps
@@ -4476,17 +4491,16 @@ fn rank_options(out: &mut [ShopOption], base_reach: f64, next_rounds: usize) {
         let by_value = value(b).total_cmp(&value(a));
         // (a tie is what the rounds can't tell apart: the value is still the best estimate, and
         // the score reached settles only what it leaves equal)
-        let first = if trouble { by_reach.then(by_tier).then(by_value) } else { by_tier.then(by_keep).then(by_flex).then(by_value).then(by_reach) };
+        let first = by_tier.then(by_keep).then(by_flex).then(by_value).then(by_reach);
         // (then by label and the joker sold, so the order options are listed in changes nothing)
         first.then(b.p_win.total_cmp(&a.p_win)).then(a.label.cmp(&b.label)).then(a.sell_index.cmp(&b.sell_index))
     });
     let sorted: Vec<ShopOption> = order.iter().map(|&i| out[i].clone()).collect();
     out.clone_from_slice(&sorted);
     // Shown as ties: an option in the same tie as the one above it that the one above isn't
-    // clearly better than. Not when the round is in trouble: the score reached orders them
-    // then, and the ties come second
+    // clearly better than
     for i in 0..out.len() {
-        out[i].tied = !trouble && i > 0 && tiers[order[i]] == tiers[order[i - 1]] && !clearly_better(&out[i - 1], &out[i]);
+        out[i].tied = i > 0 && tiers[order[i]] == tiers[order[i - 1]] && !clearly_better(&out[i - 1], &out[i]);
     }
 }
 
@@ -5668,6 +5682,12 @@ fn money_value(lr: &value::LongRun, pool: &[Candidate], kept: &Kept, now: f64, m
 /// (at least 20), its chances are only compared
 fn spec_rounds(spec: &Spec, sims: usize) -> usize {
     if spec.horizon { (sims / 3).max(20) } else { sims }
+}
+
+/// The rounds your board's chance at this ante's hardest round is simulated on (the shop
+/// ranking's survival rests on them)
+fn now_rounds(ctx: &Ctx) -> usize {
+    ctx.specs.iter().rfind(|x| !x.horizon).map_or(ctx.opts.sims, |sp| spec_rounds(sp, ctx.opts.sims))
 }
 
 /// The rounds your board's chance at the next ante's boss is simulated on
@@ -7130,33 +7150,50 @@ mod tests {
     #[test]
     fn options_rank_by_surviving_times_the_long_run() {
         let opt = |label: &str, p: f64, long: Option<f64>| ShopOption {
-            tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, p_with_save: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None,
+            tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None,
             reach: None, label: label.into(), kind: "tarot".into(), cost: 0, p_win: p, note: String::new(), money_after: 0.0,
             interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: long, key: None, desc: None,
         };
         // safe round: the long run decides (0.79 × 1.75 beats 0.92 × 0.99)
         let mut v = vec![opt("pack", 0.92, Some(0.99)), opt("immolate", 0.79, Some(1.75))];
-        rank_options(&mut v, 0.5, 300);
+        rank_options(&mut v, 0.5, 300, 300);
         assert_eq!(v[0].label, "immolate");
         // a round at real risk: the win chance decides (0.9 × 1.0 beats 0.3 × 1.5)
         let mut v = vec![opt("greedy", 0.3, Some(1.5)), opt("safe", 0.9, None)];
-        rank_options(&mut v, 0.5, 300);
+        rank_options(&mut v, 0.5, 300, 300);
         assert_eq!(v[0].label, "safe");
         // within noise: 0.984 × 1.09 vs 0.993 × 1.00 isn't a tie, but 0.99 vs 0.985 is
         let mut v = vec![opt("noise", 0.993, None), opt("keeper", 0.984, Some(1.09))];
-        rank_options(&mut v, 0.5, 300);
+        rank_options(&mut v, 0.5, 300, 300);
         assert_eq!(v[0].label, "keeper");
         assert!(!v[1].tied);
         // within 3% (`SHOP_TIE`: these carry no rounds): a tie, keeping your money first, and
         // shown as one
         let mut v = vec![opt("tarot", 0.90, None), ShopOption { kind: "leave".into(), ..opt("next round", 0.89, None) }, opt("pack", 0.80, None)];
-        rank_options(&mut v, 0.5, 300);
+        rank_options(&mut v, 0.5, 300, 300);
         let shown: Vec<(&str, bool)> = v.iter().map(|o| (o.label.as_str(), o.tied)).collect();
         assert_eq!(shown, [("next round", false), ("tarot", true), ("pack", false)]);
-        // in trouble the score reached orders them, and no ties are shown
+        // a round at low odds is ranked as any: ties shown
+        let leave = |p: f64| ShopOption { kind: "leave".into(), ..opt("next round", p, None) };
         let mut v = vec![opt("a", 0.10, None), opt("b", 0.099, None)];
-        rank_options(&mut v, 0.5, 300);
-        assert!(v.iter().all(|o| !o.tied));
+        rank_options(&mut v, 0.5, 300, 300);
+        assert!(v[1].tied);
+        // a round lost whatever you pick (under 3 wins in its 300 rounds): what each option
+        // leaves you ranks them, not the score it reaches; a reroll that only gets closer and
+        // costs money in the long run stays below keeping your money
+        let reroll = ShopOption { kind: "reroll".into(), reach: Some(0.45), ..opt("reroll", 0.0, Some(0.9)) };
+        let mut v = vec![reroll.clone(), leave(0.0), ShopOption { reach: Some(0.4), ..opt("long run", 0.005, Some(1.2)) }];
+        rank_options(&mut v, 0.38, 300, 300);
+        let labels: Vec<&str> = v.iter().map(|o| o.label.as_str()).collect();
+        assert_eq!(labels, ["long run", "next round", "reroll"]);
+        assert!(v[0].beats_keep == Some(true) && v[2].beats_keep == Some(false), "{:?}", v.iter().map(|o| o.beats_keep).collect::<Vec<_>>());
+        // (clearly below keeping your money, not in its tie: without the floor both are none)
+        assert!(!v[2].tied);
+        // one that lifts the chance clear of none still leads for it, whatever it costs, though
+        // it gets less close to the score than the reroll
+        let mut v = vec![leave(0.0), ShopOption { reach: Some(0.3), ..opt("rescue", 0.12, Some(0.9)) }, reroll];
+        rank_options(&mut v, 0.38, 300, 300);
+        assert_eq!(v[0].label, "rescue");
         // the next ante's boss out of reach (100 rounds): one option winning 2 there (no more
         // than chance) doesn't rank the rest by tie-breaks, keeping your money first
         let next = |label: &str, kind: &str, p: f64, next: f64, long: f64| ShopOption { kind: kind.into(), survive_next: Some(next), ..opt(label, p, Some(long)) };
@@ -7165,12 +7202,12 @@ mod tests {
             next("golden", "joker", 0.987, 0.0, 1.0),
             next("gros michel", "joker", 0.987, 0.02, 1.12),
         ];
-        rank_options(&mut v, 0.5, 100);
+        rank_options(&mut v, 0.5, 300, 100);
         let labels: Vec<&str> = v.iter().map(|o| o.label.as_str()).collect();
         assert_eq!(labels, ["gros michel", "golden", "next round"]);
         // above that (6 of 100) it counts, and the rest still rank by this ante and the long run
         v[0].survive_next = Some(0.06);
-        rank_options(&mut v, 0.5, 100);
+        rank_options(&mut v, 0.5, 300, 100);
         let labels: Vec<&str> = v.iter().map(|o| o.label.as_str()).collect();
         assert_eq!(labels, ["gros michel", "golden", "next round"]);
         // hopeless for every option: the same order as without the factor
@@ -7178,7 +7215,7 @@ mod tests {
             o.survive_next = Some(0.01);
         }
         v.push(next("long shot", "joker", 0.95, 0.0, 1.3));
-        rank_options(&mut v, 0.5, 100);
+        rank_options(&mut v, 0.5, 300, 100);
         let labels: Vec<&str> = v.iter().map(|o| o.label.as_str()).collect();
         assert_eq!(labels, ["long shot", "gros michel", "golden", "next round"]);
     }
@@ -7187,7 +7224,7 @@ mod tests {
     fn an_open_packs_skip_gives_way_in_its_tie_to_a_pick_worth_more() {
         // (gap 32) These carry no rounds, so within 3% (`SHOP_TIE`) is a tie
         let opt = |label: &str, kind: &str, p: f64| ShopOption {
-            tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, p_with_save: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None,
+            tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None,
             reach: None, label: label.into(), kind: kind.into(), cost: 0, p_win: p, note: String::new(), money_after: 0.0,
             interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: Some(1.0), key: None, desc: None,
         };
@@ -7197,19 +7234,19 @@ mod tests {
         // it closes: it keeps nothing against them), the one found better above them, the one
         // clearly worse below; Saturn, below it by value, stays below it
         let mut v = vec![opt("skip the pack", "skip", 0.90), opt("pick Mercury", "planet", 0.905), opt("pick Saturn", "planet", 0.895), opt("pick Earth", "planet", 0.80), opt("pick Pluto", "planet", 0.99)];
-        rank_options(&mut v, 0.5, 300);
+        rank_options(&mut v, 0.5, 300, 300);
         assert_eq!(shown(&v), [s("pick Pluto", false), s("pick Mercury", false), s("skip the pack", true), s("pick Saturn", true), s("pick Earth", false)]);
         assert!(v.iter().filter(|o| o.kind != "skip").all(|o| o.beats_keep == Some(o.label == "pick Pluto")), "still each told from skipping");
         // the skip ahead of every pick by value leads (D8: the best estimate is taken when the
         // status quo keeps nothing), as a skip that grows Red Card does, its growth in its value
         let mut v = vec![opt("skip the pack", "skip", 0.90), opt("pick Mars", "planet", 0.899)];
-        rank_options(&mut v, 0.5, 300);
+        rank_options(&mut v, 0.5, 300, 300);
         assert_eq!(shown(&v), [s("skip the pack", false), s("pick Mars", true)]);
         // a shop's buy it can't be told from stays below the skip even when worth more by value
         // (it spends the money skipping keeps), and so does a pick valued exactly as it, which
         // changes nothing the ranking sees (a tarot with no target worth it)
         let mut v = vec![opt("skip the pack", "skip", 0.90), opt("pick The Devil", "tarot", 0.90), opt("pick Mercury", "planet", 0.905), opt("Joker", "joker", 0.91)];
-        rank_options(&mut v, 0.5, 300);
+        rank_options(&mut v, 0.5, 300, 300);
         assert_eq!(shown(&v), [s("pick Mercury", false), s("skip the pack", true), s("Joker", true), s("pick The Devil", true)]);
         // a pick that sells one of yours to make room goes above it too (both boards are valued,
         // and only the pick is gone); one that leaves less money (Wraith) spends what it keeps
@@ -7217,15 +7254,16 @@ mod tests {
         v[1].sell_index = Some(0);
         v[0].money_after = 10.0;
         v[1].money_after = 12.0;
-        rank_options(&mut v, 0.5, 300);
+        rank_options(&mut v, 0.5, 300, 300);
         assert_eq!(shown(&v), [s("pick Red Card", false), s("skip the pack", true), s("pick Wraith", true)]);
-        // in trouble (no tie shown) the score reached, then value, decide, as before
+        // at low odds the same: the pick worth more above the skip in its tie, the one worth less
+        // below it, ties shown
         let mut v = vec![opt("skip the pack", "skip", 0.10), opt("pick Mars", "planet", 0.101), opt("pick Venus", "planet", 0.099)];
-        rank_options(&mut v, 0.5, 300);
-        assert_eq!(shown(&v), [s("pick Mars", false), s("skip the pack", false), s("pick Venus", false)]);
+        rank_options(&mut v, 0.5, 300, 300);
+        assert_eq!(shown(&v), [s("pick Mars", false), s("skip the pack", true), s("pick Venus", true)]);
         // leaving the shop still leads its tie (D8: it keeps the money for the shops ahead)
         let mut v = vec![opt("pick Mars", "planet", 0.901), opt("next round", "leave", 0.90)];
-        rank_options(&mut v, 0.5, 300);
+        rank_options(&mut v, 0.5, 300, 300);
         assert_eq!(shown(&v), [s("next round", false), s("pick Mars", true)]);
     }
 
@@ -7846,17 +7884,17 @@ mod tests {
         // Within the ranking's noise, keeping the joker (leaving) goes first (D8: leaving keeps
         // the joker to sell at a later shop)
         let opt = |label: &str, kind: &str, long: f64, reach: Option<f64>| ShopOption {
-            tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, p_with_save: None, rank: None, sell_index: None, sell_key: None, survive: Some(0.9), survive_next: None, next_p: None, next_strength: None, flex: None, reach,
+            tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: Some(0.9), survive_next: None, next_p: None, next_strength: None, flex: None, reach,
             label: label.into(), kind: kind.into(), cost: 0, p_win: 0.9, note: String::new(), money_after: 0.0,
             interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: Some(long), key: None, desc: None,
         };
         let mut v = vec![opt("sell Joker", "sell", 1.005, Some(0.6)), opt("next round", "leave", 1.0, Some(0.6))];
-        rank_options(&mut v, 0.6, 300);
+        rank_options(&mut v, 0.6, 300, 300);
         assert_eq!(v[0].label, "next round");
         assert!(v[1].tied);
         // clearly better, it goes first
         let mut v = vec![opt("sell Joker", "sell", 1.2, Some(0.6)), opt("next round", "leave", 1.0, Some(0.6))];
-        rank_options(&mut v, 0.6, 300);
+        rank_options(&mut v, 0.6, 300, 300);
         assert_eq!(v[0].label, "sell Joker");
     }
 
@@ -8011,7 +8049,7 @@ mod tests {
         // Each option's rank with what it owes to its simulated rounds' luck (`compare::Noise`):
         // `luck` is each round's part as a share of the rank, the same rounds for every option
         let opt = |label: &str, kind: &str, long: f64, luck: &[f64]| ShopOption {
-            tied: false, rounds: Default::default(), noise: compare::Noise { parts: vec![(ROUNDS, luck.iter().map(|&x| [x, x]).collect())] }, vs_keep: None, beats_keep: None, p_with_save: None, rank: None, sell_index: None, sell_key: None, survive: Some(0.9), survive_next: None, next_p: None, next_strength: None, flex: None, reach: Some(0.6),
+            tied: false, rounds: Default::default(), noise: compare::Noise { parts: vec![(ROUNDS, luck.iter().map(|&x| [x, x]).collect())] }, vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: Some(0.9), survive_next: None, next_p: None, next_strength: None, flex: None, reach: Some(0.6),
             label: label.into(), kind: kind.into(), cost: 0, p_win: 0.9, note: String::new(), money_after: 0.0,
             interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: Some(long), key: None, desc: None,
         };
@@ -8023,24 +8061,24 @@ mod tests {
         // round shows (3%), though each rank's own error is 2%. Fails if the two aren't paired
         // round by round (their difference's error would be near 3% of the rank, two of them 6%)
         let mut v = vec![opt("next round", "leave", 1.0, &yours), opt("sell Joker", "sell", 1.08, &yours)];
-        rank_options(&mut v, 0.6, 300);
+        rank_options(&mut v, 0.6, 300, 300);
         assert_eq!((v[0].label.as_str(), v[0].beats_keep, v[1].tied), ("sell Joker", Some(true), false), "{:?}", v[0].vs_keep);
         // under the margin, it's a tie and leaving goes first (D8)
         let mut v = vec![opt("next round", "leave", 1.0, &yours), opt("sell Joker", "sell", 1.04, &yours)];
-        rank_options(&mut v, 0.6, 300);
+        rank_options(&mut v, 0.6, 300, 300);
         assert_eq!((v[0].label.as_str(), v[1].beats_keep, v[1].tied), ("next round", Some(false), true));
         // a joker 5% ahead on rounds of its own (it wins some yours lose and loses others: the
         // difference's error about 3% of the rank): not a finding, leaving first; the old 3% band
         // took it. The same gap on rounds that differ little is one
         let other: Vec<f64> = (0..100).map(|i| if i % 4 < 2 { 0.002 } else { -0.002 }).collect();
         let mut v = vec![opt("next round", "leave", 1.0, &yours), opt("Joker", "joker", 1.10, &other)];
-        rank_options(&mut v, 0.6, 300);
+        rank_options(&mut v, 0.6, 300, 300);
         let VsKeep { gap, error_down: error, .. } = v[1].vs_keep.unwrap();
         assert!(gap > 0.04 && error > 0.025, "{gap} {error}");
         assert_eq!((v[0].label.as_str(), v[1].beats_keep, v[1].tied), ("next round", Some(false), true));
         let near: Vec<f64> = yours.iter().enumerate().map(|(i, x)| if i < 4 { -x } else { *x }).collect();
         let mut v = vec![opt("next round", "leave", 1.0, &yours), opt("Joker", "joker", 1.10, &near)];
-        rank_options(&mut v, 0.6, 300);
+        rank_options(&mut v, 0.6, 300, 300);
         assert_eq!((v[0].label.as_str(), v[0].beats_keep), ("Joker", Some(true)), "{:?}", v[0].vs_keep);
         // nothing is listed above keeping your money that isn't found better than it: a pack
         // under it in value whose own luck is wide (so the joker leading the list can't be told
@@ -8048,17 +8086,17 @@ mod tests {
         // the top down alone (the pack would share the joker's tie, above leaving)
         let wide: Vec<f64> = (0..100).map(|i| if i % 4 < 2 { 0.004 } else { -0.004 }).collect();
         let mut v = vec![opt("Arcana Pack", "pack", 0.98, &wide), opt("Joker", "joker", 1.10, &yours), opt("next round", "leave", 1.0, &yours)];
-        assert!(!clearly_better(&{ let mut j = v[1].clone(); j.rank = Some(option_value(&j, 0.03)); j }, &{ let mut p = v[0].clone(); p.rank = Some(option_value(&p, 0.03)); p }));
-        rank_options(&mut v, 0.6, 300);
+        assert!(!clearly_better(&{ let mut j = v[1].clone(); j.rank = Some(option_value(&j, 0.01, 0.03)); j }, &{ let mut p = v[0].clone(); p.rank = Some(option_value(&p, 0.01, 0.03)); p }));
+        rank_options(&mut v, 0.6, 300, 300);
         assert_eq!(v.iter().map(|o| (o.label.as_str(), o.tied)).collect::<Vec<_>>(), [("Joker", false), ("next round", false), ("Arcana Pack", true)]);
         // what is found better than keeping your money, then keeping it, then the rest: the
         // sale isn't shown tied with leaving, the pack just above leaving in value is
         let mut v = vec![opt("Buffoon Pack", "pack", 1.05, &yours), opt("next round", "leave", 1.0, &yours), opt("sell Joker", "sell", 1.08, &yours)];
-        rank_options(&mut v, 0.6, 300);
+        rank_options(&mut v, 0.6, 300, 300);
         assert_eq!(v.iter().map(|o| (o.label.as_str(), o.tied)).collect::<Vec<_>>(), [("sell Joker", false), ("next round", false), ("Buffoon Pack", true)]);
         // the order they're listed in changes nothing
         let mut w = vec![opt("sell Joker", "sell", 1.08, &yours), opt("next round", "leave", 1.0, &yours), opt("Buffoon Pack", "pack", 1.05, &yours)];
-        rank_options(&mut w, 0.6, 300);
+        rank_options(&mut w, 0.6, 300, 300);
         assert_eq!(v.iter().map(|o| &o.label).collect::<Vec<_>>(), w.iter().map(|o| &o.label).collect::<Vec<_>>());
     }
 
