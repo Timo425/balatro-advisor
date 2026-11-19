@@ -1844,7 +1844,13 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    `next_boards`), though the jokers the shops ahead may show are still measured on your board
    as it is (their lift on top of a grown board understated, and said in the tag text); and
    skip-or-play is shown in the shop for the next blind, with the money you have now. Still
-   left: the money that run's end makes worthless, which matters most near Ante 8; and in the
+   left: the money that run's end makes worthless, which matters most near Ante 8; at the win
+   ante itself the shop ranking (`shop_measure`) and skip-or-play still multiply by the next
+   ante's boss and its strength, both after the win (the long run there spans the half ante
+   left, `antes_left`); on the bot's 17 Ante 8 shop screens on the owner's seeds (2026-11-19,
+   9bf6ea6 and 3328b3a) leaving those two out moves 1 top pick, at this ante's floor by 0.02
+   points (carded with the next ante's boss: "The next ante's boss read as the game draws it…",
+   the queue); and in the
    shop, skip-or-play takes the money you have now, not what each shop option would leave you
    (the shop ranking doesn't weigh skipping the next blind). When the next ante's boss was
    at 0% on both sides, both products were 0 and the verdict "close" whatever this ante showed
