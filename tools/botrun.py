@@ -92,7 +92,10 @@ verdict on the advice. As of 2026-10-24 the bot:
   patched 2026-10-31), or a shop entered with a Rare Tag is saved before the tag makes its
   joker free (tag.lua `Tag:yep`) and the advisor reads the joker at full price; botrun also
   waits on it at each blind select (`settled`, since 2026-11-03), where a skip tag's next pack
-  may still be on its way.
+  may still be on its way; and its `rearrange` allowed at the blind select and the round's end
+  as the game allows a drag there (rearrange.lua, rearrange.lua.bak; upstream's dev branch does
+  the same, coder/balatrobot#207; patched 2026-11-19), or the jokers' order after a pick from a
+  pack a skip tag opened fails and the run ends in errors (A7LD1T91, Ante 5).
 - the game's restart between runs (Linux, through Steam) waits for Steam to be logged on, and,
   when Steam holds the launch on a prompt (a failed Cloud sync, as after a suspend while it was
   still offline, 2026-11-02; a conflict; a shader update), says which and waits up to an hour,
