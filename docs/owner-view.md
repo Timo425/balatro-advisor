@@ -57,6 +57,9 @@ said. `tools/status.py` reads the ratings below; CLAUDE.md says when to read thi
   make the shop reasonably smoother instead of 'redo everything from the beginning all the way
   to the very end on every click'", asking whether that would "just add more total runtime in
   the end".
+- **2026-11-19** On waiting for the page's advice: "i wait sometimes and obviously the better the
+  advisor is the more i would respect it, but of course waiting a long time all the time would
+  suck too".
 
 ## The state, in the owner's words
 
@@ -75,6 +78,13 @@ said. `tools/status.py` reads the ratings below; CLAUDE.md says when to read thi
   probably desperate enough to need all these AND they all are chips anyway so dont scale that
   much"; it "doesnt seem to have any strategy on mind when it comes to building joker set and
   economy properly".
+- **2026-11-19** On the bot against their own runs of three of their seeds, side by side: "i mean
+  "clearly better" is a stretch, its not like i knew that one path lead to scary face and other
+  to stuntman (vastly superior)"; "over multiple games it probably does say who plays better, but
+  thats hardly an indicator in a single game"; on bosses: "a better player than me or the bot
+  could already anticipate earlier which of the ante 8 blinds they actually have chance to beat
+  and play these odds and prepare accordingly". Whether that comparison becomes a regular way to
+  find gaps: "i dont know - proababky too early still?".
 
 ## Each gap's impact
 
