@@ -691,7 +691,10 @@ goal, the balance of speed and strength, and the queue stacked on one task's sub
   none on top for being new. This replaces "moves up on the owner's word" above; the owner can
   still change the order by saying so.
 - A card has a time box (CLAUDE.md, "A card has a time box"): a line at about four hours, the
-  leftovers parked; at about eight the rest goes back as the card. Six task chats on the main
+  leftovers parked; at about eight the rest goes back as the card. (Amended 2026-11-20: the hours
+  count the work, not the clock, each check at its length on a quiet PC: the owner uses the PC
+  alongside, and the box is there to keep a card a manageable piece, not to hurry it; the owner,
+  2026-11-20, `docs/owner-view.md`.) Six task chats on the main
   PC (2026-11-04..07, all face-down work) took 3.4-8.3 hours each, nearly all of it waiting on
   the checks before and after.
 - The checks may run on just the states a change can reach (done 2026-11-14: D12's amendment of

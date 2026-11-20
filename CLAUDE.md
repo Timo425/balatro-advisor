@@ -76,12 +76,15 @@ task serves that; judge its effort by it, and its cost in the advice's time by w
   judge that can't see the change, an engine step not modelled), don't iterate on a proof that
   can't see it: tell the owner in one line, queue the prerequisite ahead of the rest, commit only
   what's proven (the rest named in its gap) and move on.
-- **A card has a time box.** At about four hours on one card (the checks' waits counted), say in
-  one line what is proven, what is left and how long that takes. Go on only when what is left is
-  the card's main effect; edge cases, ties and reads wrong in the safe direction become the gap's
-  parked card (the queue's "Placing a card") and the proven part is committed. At about eight
-  hours, commit what's proven, put the rest back as the card with what was learned, tell the owner
-  in one line why it ran long, and take the next card (D21).
+- **A card has a time box**, to keep a card a manageable piece, not a deadline: the owner uses the
+  PC alongside, and a card that takes long on a busy PC is fine. It counts the work, not the clock:
+  a check at the length it takes on a quiet PC (this file's figures), however long a busy one makes
+  it. At about four hours of that on one card, say in one line what is proven, what is left and how
+  long that takes. Go on only when what is left is the card's main effect; edge cases, ties and
+  reads wrong in the safe direction become the gap's parked card (the queue's "Placing a card") and
+  the proven part is committed. At about eight hours, commit what's proven, put the rest back as the
+  card with what was learned, tell the owner in one line why it ran long, and take the next card
+  (D21).
 
 ## Working on the owner's PC
 
@@ -98,8 +101,9 @@ task serves that; judge its effort by it, and its cost in the advice's time by w
   a time per PC across all chats, under `nice -n 19`. When load is high, check your own jobs first
   (a launcher in `ps` doesn't mean the owner is playing).
 - **Split runs over ~50 minutes** into parts (`BAV_ONLY`, `BAV_SEEDS`): the prompt cache lasts an
-  hour. **Ask before any run that holds the game or the PC for over an hour**, saying how long and
-  why a shorter check (above: "Test a card by what it changes") won't answer the card (D19).
+  hour by the clock, so on a busy PC size a part by how long the last one took. **Ask before any run
+  that holds the game or the PC for over an hour**, saying how long and why a shorter check (above:
+  "Test a card by what it changes") won't answer the card (D19).
 - **After code changes**, your own or pulled, `cargo install --path crates/cli` (the owner restarts
   `ui`): the installed `balatro-advisor` is whatever was last installed on this machine. The bot plays
   only on Profile 3, never the owner's Profile 1.

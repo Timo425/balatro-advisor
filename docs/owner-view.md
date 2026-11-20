@@ -86,6 +86,11 @@ said. `tools/status.py` reads the ratings below; CLAUDE.md says when to read thi
   and play these odds and prepare accordingly". Whether that comparison becomes a regular way to
   find gaps: "i dont know - proababky too early still?"; "the comparison seems like an useful
   method".
+- **2026-11-20** On the card's time box counting the checks' waits on a loaded PC: "thats my normal
+  means of operation, have you do your thing all day while i may or may not be doing something
+  else with the pc which causes load, and its fine if you take long. the task times are not really
+  about wall clock time but just doing them in manageable pieces"; a way to take the load into
+  account, "but not turn this into its own math".
 
 ## Each gap's impact
 
