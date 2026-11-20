@@ -2241,8 +2241,8 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    your board's levels), so an option whose own money reaches the cap can add levels past it,
    and income past the line that `top_level` spends can show again as saved; a walk that buys
    the levels `top_level` counts, each ante at their rates, leaves no leftover to reference.
-17. **The money's finds add every joker's gain, count a full board's swaps in two units, and the
-   judge can't play tarots.** Since 2026-10-26 what an option's money left buys
+17. **The money's finds add every joker's gain and count a full board's swaps in two units.**
+   Since 2026-10-26 what an option's money left buys
    (`survival_with`, `money_value_with`) is the money spent shop by shop as a player buys, on
    2000 walks: in the shop you're in only its rerolls (its cards are the options), then before
    each shop after a blind the rent of the rentals on the board the option leaves (since
@@ -2297,7 +2297,9 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    `balatro-advisor --json analyze --file <state>` (`options[0].label`); each moved pick turned
    into a judge option (a shop joker `joker:<key>[:<edition>]`, a sale `sell:<key>`, `reroll`, a
    Buffoon pack `pack:<2 or 4>:<price>[:2]`, a Celestial pack `celestial:<3 or 5>:<price>`, a
-   planet `planet:<hand>:<price>`; leaving is the zero every option is played against) and
+   planet `planet:<hand>:<price>`, since 2026-11-20 a tarot or spectral `tarot:<key>:<price>`, an
+   Arcana or Spectral pack `arcana:` / `spectral:<cards>:<price>:<picks>`, Seed Money or Money
+   Tree `voucher:<key>:<price>`; leaving is the zero every option is played against) and
    played by `shop_playon` (`BAV_PLAYON`), the mean of its two policies' "both bosses" lines; a
    move better or worse where the difference is over two standard errors. Top picks on the 144
    shops against the commit before (51dbc73, the judge playing each option against leaving on
@@ -2306,8 +2308,32 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    moved, 28 judged: 1 clearly better (a reroll → a Celestial Pack, +0.05 ± 0.02), none clearly
    worse, 27 within two standard errors, summing +0.11 (17 up, 11 down; the largest down within
    their noise: Chaos the Clown (Foil) → a Buffoon Pack −0.10 ± 0.08, a reroll → a Jumbo
-   Celestial Pack −0.09 ± 0.11; Mime stays the pick above); 17 can't be judged, most a reroll →
-   an Arcana or Spectral pack, the rest tarots, Seed Money and planets over an Arcana Pack.
+   Celestial Pack −0.09 ± 0.11; Mime stays the pick above); 17 couldn't be judged then, most a
+   reroll → an Arcana or Spectral pack, the rest tarots, Seed Money and planets over an Arcana
+   Pack. Since 2026-11-20 the judge plays them: a tarot or spectral used at once as the advice
+   values it (`TarotValue`: its deck or decks, hand size, `money_gain`; the game-effect ones from
+   card.lua), an Arcana or Spectral pack's cards drawn from the game's pool and its pick the one
+   the advice values most by Ante 8 (none above ×1.00: the skip; the advice's own skip is
+   `SkipPack`'s worth, above 1 with Red Card, and it counts no Mega pack's second pick, which the
+   judge plays), Seed Money's interest cap. A deck change checked against `whatif` with the cards
+   changed (1RVL49LQ a4-r8, The Chariot's Steel 6♠: The Head 0.988 and the next ante's boss
+   0.028 on the judge's deck, 0.993 and 0.015 in `whatif`, within its noise). All 17 judged (12
+   trials a policy, not the 24 above: 2 h 13 min, and 1 h for 3 packs rerun once a second deck
+   change was left unused instead of failing the option), against the same commit: none clearly
+   better, 1 worse, 16 within two standard errors (each option's error the mean of its two
+   policies', which share their draws), summing +0.02 (9 up, 7 down, 1 even; the largest up a
+   reroll → an Arcana Pack +0.08 ± 0.12 and → Judgement +0.08 ± 0.05). Inconclusive about the
+   tarot valuation: the errors are 0.01-0.13 a move, and the judge stops at the next ante's boss
+   while the advice values a deck change, a pack's pick and Seed Money by Ante 8. The worse, at
+   $104 (P4NKP4S7 a4-r10, a $4 Spectral Pack −0.12 ± 0.06 against a reroll, 2.05 errors), is
+   mostly the judge's frame: every option but the money's is played as itself and then leaving
+   the shop (a reroll as one reroll and one buy), so the pack's branch never rerolls there, as
+   a player with $104 does after opening it; whether the pack is valued too high against the
+   reroll the judge can't say. 12 of the 17 moves are a reroll against a pack or a tarot, which
+   that frame leans on wherever the money buys both. Since 2026-11-19 every branch's rounds are
+   dealt from the advice's sorted deck in one fixed order (before, the save's draw pile, so a
+   deck change wasn't paired between branches): the 28 verdicts above came from the judge before
+   that, the 17 from the judge after it.
    Tried on the same shops and not kept: the walk alone with finds added to each option's own
    chance (13 judged, −0.18: a pack's or reroll's own next-ante chance wasn't counted); the walk
    with the earlier fix but not the option's board (23 judged, −0.17); the option's board with a
@@ -2343,8 +2369,11 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    +Mult jokers within their term, not for ×Mult ones or Chips against Mult (multiplied, they
    read high); multiplied they lean high (gains are neither); a narrow-spread board needing
    every score ×2 or more still leans high (8I93CDBG a3-r6: +0.72 against +0.24 played on, by a
-   judge then without Chaos the Clown); the judge plays no tarots or tarot packs (most unjudged
-   moves are rerolls → Arcana or Spectral packs); the walk's own chances still read the screen
+   judge then without Chaos the Clown); the judge plays an option and then leaves the shop, so
+   with much money a cheap pack or tarot loses to a reroll a player would also take (above), it
+   stops at the next ante's boss, short of most of a deck change's or Seed Money's worth, and it
+   doesn't count a tarot held for a better moment or a second deck change on one that destroyed
+   or added cards (left unused): queued, "What's left of gap 17"; the walk's own chances still read the screen
    (60 rounds, the next ante's boss on 20); a sale's or a buy's score ratio carries the
    contribution pass's noise (a test near-tie moved within the tie margin: gap 7); a round's
    money is your board's as it is for every option, not that of the board the option leaves (a
