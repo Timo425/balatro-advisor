@@ -154,7 +154,7 @@ def owner(args):
     rows.sort(key=lambda r: r["start"])
     newest = max(r["end"] for r in rows)
     print(f"{len(rows)} runs, {day(rows[0]['start'])} .. {day(newest)}; newest saved state {day(newest)}{stale(days=age_days(newest), commits=commits_since(newest), args=args)}"
-          f" (a copy pulled from another machine is as new as its last pull; the history keeps the newest runs, up to 500 MB / 90 days)")
+          f" (a copy pulled from another machine is as new as its last pull; the history keeps the newest runs, up to 500 MB)")
     print(f"advisor versions: the runs span {commits_since(rows[0]['start']) or '?'} commits since the first, "
           f"{commits_since(newest) or 0} of them after the newest state: they judge the advisor as it was then")
     if not shutil.which("balatro-advisor"):

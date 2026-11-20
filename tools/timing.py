@@ -23,7 +23,7 @@ failed or ran out of time on every run of a build; 2 a listed state isn't on thi
 itself: the change says what the time buys (CLAUDE.md step 4).
 
 The states are the owner's saved history (`BAV_HISTORY`, else
-`~/.local/share/balatro-advisor/history`), which the live page prunes after 90 days: each is
+`~/.local/share/balatro-advisor/history`), which the live page prunes past 500 MB: each is
 copied once to `timing-states/` beside the history, which nothing prunes, and read from there.
 A heavy job: one at a time per PC.
 """

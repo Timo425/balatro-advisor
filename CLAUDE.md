@@ -128,7 +128,7 @@ by a claim in `advisor-active/` is that claim's until it's done. A cloud session
 
 Local data in `~/.local/share/balatro-advisor/` (from the live page): `calibration.jsonl` (predicted
 vs actual blinds, every shop: evidence for replacing a register entry), `timings.jsonl`, and
-`history/<seed>/<ms>-a<ante>-r<round>-<screen>.jkr` (every state analysed, up to 500 MB / 90 days):
+`history/<seed>/<ms>-a<ante>-r<round>-<screen>.jkr` (every state analysed, the newest runs up to 500 MB):
 capture reported advice from there (`state --file <jkr> --json`; `analyze --file <jkr>` replays it).
 
 **"What if I…" questions:** use `balatro-advisor whatif` (not scratch programs): a named plan

@@ -359,15 +359,15 @@ fn stoppable(
 }
 
 /// How much `keep_history` keeps: the newest runs up to this many bytes in all (a run is a
-/// few MB; a run restarted on Ante 1 a few KB, so restarts don't push real runs out), none
-/// whose newest state is older than this many days (notes on a run can come weeks later)
+/// few MB; a run restarted on Ante 1 a few KB, so restarts don't push real runs out), however
+/// old: the history is the advice's evidence (the history check, fixtures, the timing set), so
+/// a break from playing deletes none of it (an age limit would have, at the first state after it)
 const HISTORY_BYTES: u64 = 500 << 20;
-const HISTORY_DAYS: u64 = 90;
 
 /// A copy of every state the page analyses (`history/<seed>/`, next to the calibration log,
 /// never in the repo), named by time, ante, round and screen, so a moment can be found again
 /// and replayed as a fixture after the game has moved on. The newest runs (by their newest
-/// state) are kept up to `HISTORY_BYTES` and `HISTORY_DAYS`; older ones are deleted. Returns the
+/// state) are kept up to `HISTORY_BYTES`; older ones are deleted. Returns the
 /// copy's path.
 fn keep_history(save: &std::path::Path, r: &save::RunState) -> Option<PathBuf> {
     let dir = balatro_advisor::calibration::default_dir()?.join("history");
@@ -393,12 +393,11 @@ fn keep_history(save: &std::path::Path, r: &save::RunState) -> Option<PathBuf> {
         })
         .collect();
     runs.sort_by_key(|r| std::cmp::Reverse(r.0));
-    let too_old = SystemTime::now() - Duration::from_secs(HISTORY_DAYS * 24 * 3600);
     let mut total = 0;
-    for (newest, size, run) in runs {
+    for (_, size, run) in runs {
         total += size;
         // the run just written is always kept
-        if run != run_dir && (total > HISTORY_BYTES || newest.is_none_or(|t| t < too_old)) {
+        if run != run_dir && total > HISTORY_BYTES {
             let _ = std::fs::remove_dir_all(run);
         }
     }
