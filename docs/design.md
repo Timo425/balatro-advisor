@@ -2241,6 +2241,40 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    your board's levels), so an option whose own money reaches the cap can add levels past it,
    and income past the line that `top_level` spends can show again as saved; a walk that buys
    the levels `top_level` counts, each ante at their rates, leaves no leftover to reference.
+   Measured 2026-11-20 on the bot's saved games (bd53fb5): of the 182 non-eternal rentals the bot
+   held, 74 stayed 4 rounds or more and 96 were still on its board at the run's end (a median of
+   4 rounds), longer than the ante the sell-later floor assumes (`held_for`); but the floor isn't
+   what puts them first. On the 127 shops where it bought one, the floor's ×1.00 put 9 of the 65
+   rentals ranked first there; the rest were first on the next ante's strength (`shop_measure`'s
+   `strength`), and (a)-(f) could reach at most 5 of the 38 distinct shops with a rental first
+   ((a) and (d), each only by cutting its long value by 30% or more; (e) none). (i)-(iii) were
+   then tried as local fixes in `fill_split` and not committed. First, with the spare difference
+   added to the one-off money above the line, the end debt linear and the room from this board's
+   own levels: 3 fixture decisions moved (`psychic_kings_zero_score`'s tie leader a King play;
+   `shop_gluttonous_spent_below_interest` leaving listed first, Gluttonous Joker 1.028 → 1.022
+   against 0.986, its lead no longer a finding; `shop_burglar_mail_in` two options at 0.977
+   swapped); the history check, full, moved 10 of 134 picks (8 ties, 2 unclear leaning better,
+   none worse); on 99 of the 127 rental shops 5 top picks moved, on 2 shops: a $2 Ante 1 shop on
+   4 seeds (BAVANG09), leaving → a Buffoon Pack (1.030 → 1.035 against 1.000), and a $3 board
+   (BAVANG11-3 a2-r5), selling Scary Face → leaving (1.09 → 1.05); the options' long values moved
+   by a median of 0.000, 19 of 580 by more than 0.05. On the 3 shops checked with (i) left out,
+   read (i) moved all of it, and the wrong way for this gap: the spare difference, summed over
+   the antes, was read once on `spendable` from the line down; read each ante from that ante's
+   money instead (never below the line), it moved about as far on the 2 shops tried, the reroll
+   the other way. Both readings make money past the line cheaper than `levels_per_ante`'s $20 a
+   level, the rate the projection itself spends it at every ante (`top_level`), so rent and
+   prices below the line cost less and sales gain less: Mad Joker, a $1 rental at $7 (BAVANG11-2
+   a2-r4), ×0.61 → ×0.69 (summed) → ×0.75 (each ante), rank 0.795 → 0.881 against leaving's
+   0.887; a reroll there ×0.89 → ×0.88 → ×1.01; selling Half Joker at $8 (BAVANG07 a3-r8) ×1.18 →
+   ×1.09 → ×1.10. The linear read of the spare difference is the one that agrees with the levels;
+   (i)'s fix is the other half of "or": the option's price above the line at the walk's rate, or
+   `spendable` and `levels_per_ante` made one curve (which of the two rates is right: not
+   measured). (ii) moved nothing where it was written for: the eternal Jolly Joker rental at −$23
+   (BAVANG06 a4-r9, a lost board: every option's rank 0) stays ×1.33, since the planets a debt
+   costs stop at the main hand's level 1, and on boards in debt for good that floor is reached
+   (the other 8 debt boards still at ×1.00 not tried); a debt is paid by selling jokers, which
+   needs (d). (iii) is sound but moved none of the states tried. What is left is the queue's
+   parked card "What's left of gap 16".
 17. **The money's finds add every joker's gain and count a full board's swaps in two units.**
    Since 2026-10-26 what an option's money left buys
    (`survival_with`, `money_value_with`) is the money spent shop by shop as a player buys, on
