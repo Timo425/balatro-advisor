@@ -91,6 +91,10 @@ said. `tools/status.py` reads the ratings below; CLAUDE.md says when to read thi
   else with the pc which causes load, and its fine if you take long. the task times are not really
   about wall clock time but just doing them in manageable pieces"; a way to take the load into
   account, "but not turn this into its own math".
+- **2026-11-20** On asking before a run over an hour: "i dont get that ask rule, i dont play
+  balatro when working on this ,whats the point? balatro with an advisor running would completely
+  destroy your times anyway"; "there are not overnight runs, the pc is too noisy"; to dropping the
+  ask for a one-line notice: "yes".
 
 ## Each gap's impact
 

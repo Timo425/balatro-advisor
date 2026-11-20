@@ -101,9 +101,10 @@ task serves that; judge its effort by it, and its cost in the advice's time by w
   a time per PC across all chats, under `nice -n 19`. When load is high, check your own jobs first
   (a launcher in `ps` doesn't mean the owner is playing).
 - **Split runs over ~50 minutes** into parts (`BAV_ONLY`, `BAV_SEEDS`): the prompt cache lasts an
-  hour by the clock, so on a busy PC size a part by how long the last one took. **Ask before any run
-  that holds the game or the PC for over an hour**, saying how long and why a shorter check (above:
-  "Test a card by what it changes") won't answer the card (D19).
+  hour by the clock, so on a busy PC size a part by how long the last one took. **Before a run over
+  an hour**, say in one line how long it takes and why a shorter check (above: "Test a card by what
+  it changes") won't answer the card, then start it: the owner doesn't play Balatro while chats work
+  here (D19).
 - **After code changes**, your own or pulled, `cargo install --path crates/cli` (the owner restarts
   `ui`): the installed `balatro-advisor` is whatever was last installed on this machine. The bot plays
   only on Profile 3, never the owner's Profile 1.
@@ -188,7 +189,7 @@ decides or values things follows these steps, in order:
      rule `bl_<its key>`, `boss` only code about the blind being played; a joker by its key,
      `hand:N` a big hand, `BAV_ONLY=a,b` states by name. A rare kind runs over the whole history
      with `BAV_SAMPLE=0`; a reach of the slowest states can take hours (97 face-down hands in a
-     blind, 3 h 23 min a side on the Windows laptop, 2026-11-09): past an hour, ask first.
+     blind, 3 h 23 min a side on the Windows laptop, 2026-11-09): past an hour, say so first.
      On the full sample (350 saved states, 15-30 min a side) when every state's analysis runs
      through the change (how the valuation, the engine, the simulated player or the search work
      for every board, not for one kind of card or blind). Every fourth check runs in full too,

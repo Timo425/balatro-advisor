@@ -583,6 +583,14 @@ in the morning, a run left holding the game).
 
 Approved by the owner 2026-10-31 ("no overnight runs is a dumb rule get rid of it").
 
+**Amended 2026-11-20.** The ask itself goes: before a run over an hour a chat says in one line how
+long it takes and why a shorter check won't answer the card, then starts it. Why: the ask
+protected the owner's PC and game, and the owner doesn't play Balatro while chats work on the main
+PC (an advisor running alongside would spoil the timings anyway), nor runs anything overnight there
+(too noisy); what's left of it is the reason a shorter check won't do, which D20 already asks
+for. Revisit if a long run gets in the owner's way. Approved by the owner 2026-11-20 ("yes", to
+dropping the ask).
+
 ## D20. A card is tested by what it changes, at the level its question needs; bot runs only where earlier levels can't show the effect (accepted, amended 2026-11-10)
 
 **What.** Three levels of test, each for its own question (CLAUDE.md, "Test a card by what it
