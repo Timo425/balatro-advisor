@@ -42,7 +42,7 @@ STAGES = ("valuation", "simulated player", "moves tried", "noise", "engine", "to
 
 
 def git(*args):
-    out = subprocess.run(["git", "-C", str(REPO), *args], capture_output=True, text=True)
+    out = subprocess.run(["git", "-C", str(REPO), *args], capture_output=True, text=True, encoding="utf-8", errors="replace")
     return out.stdout.strip() if out.returncode == 0 else ""
 
 
@@ -114,7 +114,7 @@ def run_state(path):
     """The advisor's reading of one saved state, or None (no advisor installed, or it can't read it)."""
     if not shutil.which("balatro-advisor"):
         return None
-    out = subprocess.run(["balatro-advisor", "state", "--file", str(path), "--json"], capture_output=True, text=True)
+    out = subprocess.run(["balatro-advisor", "state", "--file", str(path), "--json"], capture_output=True, text=True, encoding="utf-8", errors="replace")
     try:
         return json.loads(out.stdout)
     except ValueError:
