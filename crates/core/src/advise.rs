@@ -1402,7 +1402,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
     lap("growth played for");
     // By Ante 8: every board projected to then, valued in one measure (see `value`). Built before
     // the jokers on offer are, so the joker one replaces is chosen by it (`evaluate_candidate`)
-    let lr = value::LongRun::new(&ctx, &hand_mix, &growths, &pool, per_rarity);
+    let lr = value::LongRun::new(&ctx, &hand_mix, &growths, &pool, per_rarity, None);
     let (antes_left, top_hand, l0, full) = (lr.antes_left, lr.top_hand, lr.l0, lr.full);
     // What giving up each of your jokers leaves, by the shop ranking's measure (`swap_measure`):
     // its rounds simulated without it (as a pool joker's are with it: what a joker does outside
@@ -1514,7 +1514,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
     // it replaces sold (`evaluate_candidate`) while your slots are still full by Ante 8 (a
     // perishable that runs out makes room), at least what it's worth to sell it later for a
     // typical find (`floor_for`: `sells`, what it sells for), unless it's eternal
-    let long_mult = |c: &Candidate, j: &Joker, rental: bool, eternal: bool, sells: i64| -> Option<f64> {
+    let long_mult = |lr: &value::LongRun, c: &Candidate, j: &Joker, rental: bool, eternal: bool, sells: i64| -> Option<f64> {
         let negative = j.edition == Some(Edition::Negative);
         let sell = if full && !negative { c.sell_index } else { None };
         if full && sell.is_none() && !negative {
@@ -1523,44 +1523,52 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
         let v = lr.ratio(lr.long_of(j, sell, c.cost, rental), sell);
         Some(if eternal { v } else { v.max(lr.floor_for(c.cost, sells, rental, &c.key, sell)) })
     };
-    for (c, (j, _, rental, sells)) in shop.iter_mut().zip(&offers) {
-        let eternal = offer_stickers(run, &c.key).is_some_and(|s| s.eternal);
-        if let Some(m) = long_mult(c, j, *rental, eternal, *sells) {
-            c.long_mult = Some(m);
+    // (on a long run: this one, and again where money past the cap is counted, below)
+    let offer_longs = |lr: &value::LongRun, shop: &mut [Candidate]| {
+        for (c, (j, _, rental, sells)) in shop.iter_mut().zip(&offers) {
+            let eternal = offer_stickers(run, &c.key).is_some_and(|s| s.eternal);
+            if let Some(m) = long_mult(lr, c, j, *rental, eternal, *sells) {
+                c.long_mult = Some(m);
+            }
         }
-    }
-    // A perishable that runs out before Ante 8 is gone by then (the joker sold for it was
-    // still picked by the measure above, its long run with it): it's held until it runs out,
-    // its price, rent and sale paid, then a typical find takes its slot (`held_for`). Gros
-    // Michel leaves something: if it breaks (1 in 6
-    // at the end of each round, card.lua) Cavendish joins the shop pool, and it can take the
-    // slot Gros Michel leaves.
-    for (c, (j, _, rental, sells)) in shop.iter_mut().zip(&offers) {
-        let Some(r) = offer_stickers(run, &c.key).and_then(|x| x.perishable).filter(|&r| (r as f64) < 3.0 * antes_left) else {
-            continue;
-        };
-        let unlock = (c.key == "j_gros_michel" && !run.pool_flags.iter().any(|f| f == "gros_michel_extinct"))
-            .then(|| Joker::from_key("j_cavendish", data))
-            .flatten()
-            .map(|cav| {
-                let p_break = 1.0 - (1.0 - (run.probability_normal / 6.0).min(1.0)).powi(r as i32);
-                let per_card = joker_share * 0.7 / (per_rarity[1] + 1) as f64;
-                let per_shop = 1.0 - (1.0 - per_card).powi(slots);
-                let p_seen = 1.0 - (1.0 - per_shop).powf((3.0 * antes_left - 1.0).max(0.0));
-                let sold = c.sell_index;
-                let m = lr.ratio(lr.long_of(&cav, sold, cost(data, "j_cavendish"), false), sold);
-                let note = format!("if it breaks ({:.0}% in its {r} rounds), Cavendish (×3 Mult) joins the shop pool: {:.0}% you'd see it by Ante 8 (no rerolls counted), ×{m:.2} by Ante 8 with it", p_break * 100.0, p_seen * 100.0);
-                (p_break * p_seen * (m - 1.0).max(0.0), note)
-            });
-        // (held until it runs out, its rent paid, then a typical find in its slot: `held_for`,
-        // with the joker it replaces sold as `long_mult` has it)
-        let sell = if full && j.edition != Some(Edition::Negative) { c.sell_index } else { None };
-        let held = lr.held_for(c.cost, *sells, *rental, &c.key, sell, r as f64);
-        c.long_mult = Some(held * (1.0 + unlock.as_ref().map_or(0.0, |u| u.0)));
-        if let Some((_, note)) = unlock {
-            c.note = Some(c.note.take().map_or(note.clone(), |n| format!("{n} · {note}")));
+        // A perishable that runs out before Ante 8 is gone by then (the joker sold for it was
+        // still picked by the measure above, its long run with it): it's held until it runs out,
+        // its price, rent and sale paid, then a typical find takes its slot (`held_for`). Gros
+        // Michel leaves something: if it breaks (1 in 6
+        // at the end of each round, card.lua) Cavendish joins the shop pool, and it can take the
+        // slot Gros Michel leaves.
+        for (c, (j, _, rental, sells)) in shop.iter_mut().zip(&offers) {
+            let Some(r) = offer_stickers(run, &c.key).and_then(|x| x.perishable).filter(|&r| (r as f64) < 3.0 * antes_left) else {
+                continue;
+            };
+            let unlock = (c.key == "j_gros_michel" && !run.pool_flags.iter().any(|f| f == "gros_michel_extinct"))
+                .then(|| Joker::from_key("j_cavendish", data))
+                .flatten()
+                .map(|cav| {
+                    let p_break = 1.0 - (1.0 - (run.probability_normal / 6.0).min(1.0)).powi(r as i32);
+                    let per_card = joker_share * 0.7 / (per_rarity[1] + 1) as f64;
+                    let per_shop = 1.0 - (1.0 - per_card).powi(slots);
+                    let p_seen = 1.0 - (1.0 - per_shop).powf((3.0 * antes_left - 1.0).max(0.0));
+                    let sold = c.sell_index;
+                    let m = lr.ratio(lr.long_of(&cav, sold, cost(data, "j_cavendish"), false), sold);
+                    let note = format!("if it breaks ({:.0}% in its {r} rounds), Cavendish (×3 Mult) joins the shop pool: {:.0}% you'd see it by Ante 8 (no rerolls counted), ×{m:.2} by Ante 8 with it", p_break * 100.0, p_seen * 100.0);
+                    (p_break * p_seen * (m - 1.0).max(0.0), note)
+                });
+            // (held until it runs out, its rent paid, then a typical find in its slot: `held_for`,
+            // with the joker it replaces sold as `long_mult` has it)
+            let sell = if full && j.edition != Some(Edition::Negative) { c.sell_index } else { None };
+            let held = lr.held_for(c.cost, *sells, *rental, &c.key, sell, r as f64);
+            c.long_mult = Some(held * (1.0 + unlock.as_ref().map_or(0.0, |u| u.0)));
+            // (written again on the long run the value is read on: one from an earlier pass
+            // dropped)
+            if let Some((_, note)) = unlock {
+                let mut parts: Vec<String> = c.note.take().map_or(vec![], |n| n.split(" · ").filter(|s| !s.starts_with("if it breaks (")).map(str::to_string).collect());
+                parts.push(note);
+                c.note = Some(parts.join(" · "));
+            }
         }
-    }
+    };
+    offer_longs(&lr, &mut shop);
     // Selling a joker that has no Gold sticker yet, on a Gold Stake run: say so (not weighed)
     if run.stake >= 8 {
         for c in shop.iter_mut() {
@@ -1571,38 +1579,61 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
         }
     }
     lap("offers by ante 8");
-    // Any booster pack can be skipped instead of picking from it (card.lua: every kind
-    // calls `skipping_booster`), so each pick is worth at least skipping it: ×1.00, or more
-    // with a joker that grows from it (`LongRun::event`)
-    let skip = lr.event(RunEvent::SkipPack);
-    let skip_note = if skip > 1.0 { format!(" · or skip it for {} (×{skip:.2} by Ante 8)", lr.event_note(RunEvent::SkipPack)) } else { String::new() };
     // the rent a round of your board
     let board_rent = board_rent(run);
     let base_reach = base_odds.get(key_round).zip(ctx.specs.get(key_round)).map_or(0.0, |(o, sp)| o.1.mean / sp.start.target.max(1.0));
-    let flow_now = lr.project(&|_| true, run.dollars).flow;
-    let (levels_per_ante, planet_levels) = lr.levels_for(run.dollars + flow_now, flow_now);
-    let (finds_now, slots_now) = lr.your_finds();
-    let line_now = lr.line;
-    let planet_levels = planet_levels.round() as i64;
-    let long_note = format!(
-        "Your board projected {antes_left:.1} antes ahead: growing jokers grown (those that grow from shop events, Red Card and Flash Card, by one pack skip and one reroll an ante, plus 1 per pack's or reroll's price above the interest line, at most 5 an ante, all on the one that grows most per dollar; those a round changes as the simulated player's rounds at this ante's blind sizes leave them), fading ones faded, perishables that run out and jokers those rounds use up dropped, {} +{planet_levels} levels (about {levels_per_ante:.1} per ante with your money), empty slots filled with stand-in jokers (×1.5, +60 Chips or +15 Mult, in proportion to how often your shop pool offers each type) as far as the money pays for them at ${:.1} each (a typical find's price; money for part of one gives that part of its effect, a slot with no money for it stays empty; heuristic), ante by ante: the money you hold up to the interest line (${line_now:.0}, past which interest stops growing; a debt paid back first; what's above it buys planets, rerolls and packs), and each round the jokers' money less rent, this ante's blind reward, the interest on what's left and what a round pays besides the jokers that pay money (hands and discards left, the cards' money), each find bought once the money's there: the typical find an option is compared with in its slot, then the empty slots, then the finds put in place of jokers let go (on your board it pays for {finds_now:.1} of the {slots_now:.0} empty slots left beside the one an option takes), then the planets from what's left; what the walk leaves at the end, more or less than on your board, buys or costs planets for that hand (~$12 a level; heuristic). Each option is compared with a typical find (×1.25) in its slot, on whole simulated rounds, with the money it leaves you: its price, what selling a joker gives back or a money card gives (up to the interest line it's in the money held, on the same walk, with its interest; above it spent once: ~$4 a pack skip or a reroll at its cost when a joker grows from them (Red Card, Flash Card), else ~$12 a level of your main hand, and ~$4 a planet for Constellation; money counts for less the more you have (the next dollar is worth about half at $20)), and $9 less money held every ante per rental; the jokers add the money a round won pays on the board held against your board, and yours against it without the jokers that pay money, each on the same rounds of this ante's plain blinds won by both (scoring, discards, the round's end, hands left; counted past $0.5 an ante and 2 standard errors), to the money held every ante, with what they pay besides a round's play (Rocket's raises at the bosses ahead, Egg's sell value, To the Moon's interest). Your sellable jokers are let go by then where that leaves no less: replaced by a typical find in their place, or sold outright (no find: the sale counted once, its slot left empty to Ante 8, a Negative's gone with it; not modelled: the copy a charged Invisible Joker makes as it's sold, its slot counted as any other's), whichever leaves more, their money (income, rent) gone with them; selling one now is an option of its own (its rounds without it, its sale, the run with it let go, and the round's rent and money it would be held for when the projection lets it go anyway; its ×1.00 is keeping it), and a sellable option is never valued below its fallback plan: holding it an ante (a perishable until it runs out), then selling it for a typical find in its slot bought on that walk, counting its price, its rent and money while held (not what it scores then) and its sale; that plan itself comes out below ×1.00 where those cost more than they pay; eternal ones stay, however weak. ×1.00 = as good as a typical find in its slot, as far as your money pays for one.",
-        top_hand.map_or("your main hand", |h| h.name()),
-        lr.find_price()
-    );
-    // which of your jokers it lets go here, and what selling one does that isn't modelled
-    let let_go: Vec<String> = (0..ctx.base.jokers.len())
-        .filter(|&i| lr.is_let_go(i))
-        .map(|i| {
-            let name = data.name(&ctx.base.jokers[i].key);
-            if lr.is_sold(i) {
-                let notes = sale_unmodelled(&ctx, i);
-                if notes.is_empty() { format!("{name} sold") } else { format!("{name} sold ({})", notes.join("; ")) }
-            } else {
-                format!("{name} replaced")
-            }
-        })
-        .collect();
-    let long_note = if let_go.is_empty() { long_note } else { format!("{long_note} Let go by then here: {}.", let_go.join(", ")) };
+    // What the long run counts, its numbers read on `lr` (the one the options are valued on)
+    let long_text = |lr: &value::LongRun| -> String {
+        let flow_now = lr.project(&|_| true, run.dollars).flow;
+        let (levels_per_ante, planet_levels) = lr.levels_for(run.dollars + flow_now, flow_now);
+        let (finds_now, slots_now) = lr.your_finds();
+        let line_now = lr.line;
+        let planet_levels = planet_levels.round() as i64;
+        format!(
+            "Your board projected {antes_left:.1} antes ahead: growing jokers grown (those that grow from shop events, Red Card and Flash Card, by one pack skip and one reroll an ante, plus 1 per pack's or reroll's price above the interest line, at most 5 an ante, all on the one that grows most per dollar; those a round changes as the simulated player's rounds at this ante's blind sizes leave them), fading ones faded, perishables that run out and jokers those rounds use up dropped, {} +{planet_levels} levels (about {levels_per_ante:.1} per ante with your money), empty slots filled with stand-in jokers (×1.5, +60 Chips or +15 Mult, in proportion to how often your shop pool offers each type) as far as the money pays for them at ${:.1} each (a typical find's price; money for part of one gives that part of its effect, a slot with no money for it stays empty; heuristic), ante by ante: the money you hold up to the interest line (${line_now:.0}, past which interest stops growing; a debt paid back first; what's above it buys planets, rerolls and packs), and each round the jokers' money less rent, this ante's blind reward, the interest on what's left and what a round pays besides the jokers that pay money (hands and discards left, the cards' money), each find bought once the money's there: the typical find an option is compared with in its slot, then the empty slots, then the finds put in place of jokers let go (on your board it pays for {finds_now:.1} of the {slots_now:.0} empty slots left beside the one an option takes), then the planets from what's left; what the walk leaves at the end, more or less than on your board, buys or costs planets for that hand (~$12 a level; heuristic). Each option is compared with a typical find (×1.25) in its slot, on whole simulated rounds, with the money it leaves you: its price, what selling a joker gives back or a money card gives (up to the interest line it's in the money held, on the same walk, with its interest; above it spent once: ~$4 a pack skip or a reroll at its cost when a joker grows from them (Red Card, Flash Card), else ~$12 a level of your main hand, and ~$4 a planet for Constellation; money counts for less the more you have (the next dollar is worth about half at $20)), and $9 less money held every ante per rental; the jokers add the money a round won pays on the board held against your board, and yours against it without the jokers that pay money, each on the same rounds of this ante's plain blinds won by both (scoring, discards, the round's end, hands left; counted past $0.5 an ante and 2 standard errors), to the money held every ante, with what they pay besides a round's play (Rocket's raises at the bosses ahead, Egg's sell value, To the Moon's interest). Your sellable jokers are let go by then where that leaves no less: replaced by a typical find in their place, or sold outright (no find: the sale counted once, its slot left empty to Ante 8, a Negative's gone with it; not modelled: the copy a charged Invisible Joker makes as it's sold, its slot counted as any other's), whichever leaves more, their money (income, rent) gone with them; selling one now is an option of its own (its rounds without it, its sale, the run with it let go, and the round's rent and money it would be held for when the projection lets it go anyway; its ×1.00 is keeping it), and a sellable option is never valued below its fallback plan: holding it an ante (a perishable until it runs out), then selling it for a typical find in its slot bought on that walk, counting its price, its rent and money while held (not what it scores then) and its sale; that plan itself comes out below ×1.00 where those cost more than they pay; eternal ones stay, however weak. ×1.00 = as good as a typical find in its slot, as far as your money pays for one.",
+            top_hand.map_or("your main hand", |h| h.name()),
+            lr.find_price()
+        )
+    };
+    // Whether money past the planet-level cap moves anything here: in a shop or an open pack, a
+    // board the long run projects (yours without a joker you could sell, with every joker kept or
+    // as it keeps or lets them go; with a joker on offer, with a voucher's round) holds a
+    // different amount past it every ante than yours, in whole dollars
+    // (`LongRun::past_reached`); then the long run is built again counting what it buys, below
+    let in_shop_or_pack = run.screen == crate::save::Screen::Shop || run.screen.in_pack();
+    let past_counted = in_shop_or_pack && {
+        let bought: Vec<(Joker, Option<usize>, bool)> = shop.iter().zip(&offers).map(|(c, (j, _, rental, _))| (j.clone(), if full && j.edition != Some(Edition::Negative) { c.sell_index } else { None }, *rental)).collect();
+        let rounds: Vec<(i64, i64, i64)> = run.shop.iter().flat_map(|s| &s.vouchers).filter_map(|v| {
+            let mut after = run.clone();
+            crate::plan::apply_voucher(&mut after, &v.key, data).then(|| voucher_gain(run, &after, v.cost)).flatten().map(|g| g.round()).filter(|m| *m != (0, 0, 0))
+        }).collect();
+        lr.past_reached(&bought, &rounds)
+    };
+    let past_cap_now = value::Spending::starts_at(&lr);
+    // which of your jokers the long run lets go here, and what selling one does that isn't
+    // modelled; what money past the cap buys, where it's counted (`past_counted`)
+    let long_note_on = |lr: &value::LongRun| -> String {
+        let let_go: Vec<String> = (0..ctx.base.jokers.len())
+            .filter(|&i| lr.is_let_go(i))
+            .map(|i| {
+                let name = data.name(&ctx.base.jokers[i].key);
+                if lr.is_sold(i) {
+                    let notes = sale_unmodelled(&ctx, i);
+                    if notes.is_empty() { format!("{name} sold") } else { format!("{name} sold ({})", notes.join("; ")) }
+                } else {
+                    format!("{name} replaced")
+                }
+            })
+            .collect();
+        let text = long_text(lr);
+        let note = if let_go.is_empty() { text } else { format!("{text} Let go by then here: {}.", let_go.join(", ")) };
+        if past_counted {
+            format!("{note} Past ${past_cap_now:.0} (the interest line + $30, where money buys no more planets), the money a joker pays or a rental's rent takes every ante to Ante 8 counts as the rerolls and packs it buys or costs, as money you hold there does (heuristic).")
+        } else {
+            note
+        }
+    };
+    let long_note = long_note_on(&lr);
     let shop_odds = ShopOdds {
         joker_share,
         slots: run.shop_rates.slots,
@@ -1619,8 +1650,11 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
     // value, every tarot's and every planet's are there. `first` keeps the options that read none
     // of those (`FIRST_KINDS`) and names the others (`Valued::later`); nothing else differs, so an
     // option of the first ranking has the numbers the full one gives it.
-    let valued = |first: bool, pool_entries: &[Candidate]| -> Valued {
-        let (mut options, mut tarots) = shop_options(&ctx, &lr, run, data, pool_entries, &base_odds, key_round, per_rarity, joker_share, &shop, first);
+    let valued = |first: bool, pool_entries: &[Candidate], lr: &value::LongRun| -> Valued {
+        // (on the long run given: this one, or the one that counts money past the cap, below)
+        let (l0, skip) = (lr.l0, lr.event(RunEvent::SkipPack));
+        let skip_note = if skip > 1.0 { format!(" · or skip it for {} (×{skip:.2} by Ante 8)", lr.event_note(RunEvent::SkipPack)) } else { String::new() };
+        let (mut options, mut tarots) = shop_options(&ctx, lr, run, data, pool_entries, &base_odds, key_round, per_rarity, joker_share, &shop, first);
         let mut later = vec![];
         // (the kinds the first ranking holds: kept here, so the rest isn't worked out twice, and
         // again at the end, over the options made below too)
@@ -1701,7 +1735,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
             // Every deck change through one valuation: its score, what its cards earn, and the
             // planets of any Blue Seal cards it adds (`TarotValue::deck_long`; Immolate's $20 comes
             // with its deck change)
-            if let Some(v) = t.deck_long(&lr, if t.spectral { t.money_gain } else { 0.0 }, rounds) {
+            if let Some(v) = t.deck_long(lr, if t.spectral { t.money_gain } else { 0.0 }, rounds) {
                 v
             } else if t.money_gain > 0.0 {
                 lr.value(&Gain::money(t.money_gain))
@@ -1803,7 +1837,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
             let mut hand = sample_hands(n, run.hand_size, 1, ctx.opts.seed, order).remove(0);
             hand.pop();
             hand.push(n);
-            let TargetRanking { sets: ranked, as_good, samples } = target_race(&lr, e, min, max, &d, &hand, Some(n))?;
+            let TargetRanking { sets: ranked, as_good, samples } = target_race(lr, e, min, max, &d, &hand, Some(n))?;
             let uses = |v: &[usize]| v.contains(&n);
             if !uses(&ranked[0]) || ranked[1..as_good].iter().any(|v| !uses(v)) {
                 return None;
@@ -2170,11 +2204,11 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
                 let walk = |p: f64, mut gains: Option<&mut Vec<f64>>| {
                     if on_board {
                         let from = Start { owned: &yours, ..Start::board(board_rent) };
-                        survival_with(&lr, pool_entries, &kept, p, if stay == Stay::Reroll { run.dollars } else { o.money_after }, false, stay, from, gains)
+                        survival_with(lr, pool_entries, &kept, p, if stay == Stay::Reroll { run.dollars } else { o.money_after }, false, stay, from, gains)
                     } else {
                         let ratio = scores.ratio_for(p, ctx.opts.sims, o.reach.filter(|_| base > 0.0).map(|r| r / base));
                         let mine = entries(o, &owned, ratio);
-                        let with = survival_with(&lr, pool_entries, &kept, p, o.money_after, false, stay, Start { ratio, slots: slots_of(o), owned: &mine, rent: rent_change(o) }, gains.as_deref_mut());
+                        let with = survival_with(lr, pool_entries, &kept, p, o.money_after, false, stay, Start { ratio, slots: slots_of(o), owned: &mine, rent: rent_change(o) }, gains.as_deref_mut());
                         // (held at its own chance, the walks move nothing)
                         if let Some(g) = gains.filter(|_| with < p) {
                             g.clear();
@@ -2224,11 +2258,11 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
                 let survive = |p: f64, mut gains: Option<&mut Vec<f64>>| {
                     if on_board {
                         let board = Start { owned: &yours, ..Start::board(board_rent) };
-                        survival_with(&lr, pool_entries, &kept, p, if stay == Stay::Reroll { run.dollars } else { o.money_after }, true, stay, board, gains)
+                        survival_with(lr, pool_entries, &kept, p, if stay == Stay::Reroll { run.dollars } else { o.money_after }, true, stay, board, gains)
                     } else {
                         let ratio = scores.ratio_for(p, n, Some(strength));
                         let mine = entries(o, &owned, ratio);
-                        let with = survival_with(&lr, pool_entries, &kept, p, o.money_after, true, stay, Start { ratio, slots: slots_of(o), owned: &mine, rent: rent_change(o) }, gains.as_deref_mut());
+                        let with = survival_with(lr, pool_entries, &kept, p, o.money_after, true, stay, Start { ratio, slots: slots_of(o), owned: &mine, rent: rent_change(o) }, gains.as_deref_mut());
                         if let Some(g) = gains.filter(|_| with < p) {
                             g.clear();
                         }
@@ -2261,7 +2295,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
                 // (with each walk's gain: the luck of the shops ahead in it, for the ranking's noise)
                 let finds = |money: f64, stay: Stay, slots: i64, owned: &[(f64, f64, f64)], rent: f64| {
                     let mut gains = vec![];
-                    (money_value_walks(&lr, pool_entries, &kept, 1.0, money, Stay::shops(run, true, stay), Start { ratio: 1.0, slots, owned, rent }, Some(&mut gains)), gains)
+                    (money_value_walks(lr, pool_entries, &kept, 1.0, money, Stay::shops(run, true, stay), Start { ratio: 1.0, slots, owned, rent }, Some(&mut gains)), gains)
                 };
                 found_kept = finds(run.dollars, Stay::Out, 0, &yours, board_rent);
                 let keep = found_kept.0.max(1e-9);
@@ -2438,8 +2472,11 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
     // cap (`Spending::factor` is the same for every amount up to it, so its ratio to keeping your
     // money is 1 exactly: nothing to apply)
     let cap = value::Spending::starts_at(&lr);
-    if let Some(sink) = opts.first.as_ref().filter(|_| (run.screen == crate::save::Screen::Shop || run.screen.in_pack()) && run.dollars <= cap) {
-        let Valued { mut options, extra_money, mut later, .. } = valued(true, &pool_entries);
+    // Nor where the long run counts what money past the cap buys (`past_counted`): it's built
+    // again once `Spending` is valued (below), and where that one keeps or lets go your jokers
+    // otherwise every option's number moves
+    if let Some(sink) = opts.first.as_ref().filter(|_| in_shop_or_pack && run.dollars <= cap && !past_counted) {
+        let Valued { mut options, extra_money, mut later, .. } = valued(true, &pool_entries, &lr);
         options.retain(|o| {
             let keep = o.money_after + extra_money.get(&o.label).copied().unwrap_or(0.0) <= cap;
             if !keep {
@@ -2522,28 +2559,92 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
     let long_mults: Vec<Option<f64>> = par_map(&pool_entries, |c| {
         let mut j = Joker::from_key(&c.key, data)?;
         j.edition = c.edition;
-        long_mult(c, &j, false, false, value::sell_value(c.cost, false))
+        long_mult(&lr, c, &j, false, false, value::sell_value(c.cost, false))
     });
     for (c, m) in pool_entries.iter_mut().zip(long_mults) {
         c.long_mult = m;
     }
     lap("by ante 8");
-    let Valued { mut options, mut tarots, tarot_long, extra_money, .. } = valued(false, &pool_entries);
+    let Valued { mut options, mut tarots, mut tarot_long, mut extra_money, .. } = valued(false, &pool_entries, &lr);
     // Money past the planet-level cap is worth the rerolls and packs it buys (`Spending`):
     // each option's money left (plus what an economy voucher earns by then) against keeping
     // your money.
     let spending = value::Spending::new(&lr, &pool_entries, &tarots, &tarot_long);
+    // What the money a board's jokers pay every ante past the cap buys is that too, and
+    // `Spending` is valued from the pool and the tarots after the long run they're valued in:
+    // where some board's money past the cap differs from yours (`past_counted`), the long run is
+    // built again counting it (`LongRun::past_cap`: a money joker's income there worth what it
+    // buys, a rental's rent there costing it, in the keep-or-let-go too), and the options whose
+    // board's money it moves are valued on it (`past_moves`: the jokers on offer and one picked
+    // from an open pack, your jokers' sales, a voucher that changes a round); where it keeps or
+    // lets go your jokers differently, every option is. Not again: the pool and what draws from
+    // it (the reroll, Buffoon packs, Judgement, Wraith, the tarot packs, The Fool and The
+    // Emperor that read them), the rescue list, the joker a buy replaces (raced on the first long
+    // run) and what `Spending` is valued from.
+    let past_lr = past_counted.then(|| value::LongRun::new(&ctx, &hand_mix, &growths, &pool, per_rarity, Some(spending.curve())));
+    if let Some(l2) = &past_lr {
+        if !l2.same_fates(&lr) {
+            let v = valued(false, &pool_entries, l2);
+            (options, tarots, tarot_long, extra_money) = (v.options, v.tarots, v.tarot_long, v.extra_money);
+        }
+        let mut again = shop.clone();
+        offer_longs(l2, &mut again);
+        let mut taken = vec![false; again.len()];
+        let sales: Vec<Option<f64>> = par_map(&options, |o| (o.kind == "sell").then(|| o.sell_index.and_then(|i| l2.sold_now(i))).flatten());
+        for (o, sale) in options.iter_mut().zip(sales) {
+            if !past_moves(o, run, data) {
+                continue;
+            }
+            match o.kind.as_str() {
+                "joker" => {
+                    // (as `shop_options` labels it: its name and edition, "pick" before one in a pack)
+                    let label = |c: &Candidate| format!("{}{}", c.name, c.edition.map_or(String::new(), |e| format!(" ({e:?})")));
+                    let k = (0..again.len()).find(|&k| !taken[k] && o.key.as_deref() == Some(again[k].key.as_str()) && o.sell_index == again[k].sell_index && o.label.trim_start_matches("pick ") == label(&again[k]));
+                    // (every joker option is one of the shop's candidates: a label made otherwise
+                    // would leave it on the first long run's number)
+                    debug_assert!(k.is_some(), "{}: no candidate matched", o.label);
+                    if let Some(k) = k {
+                        taken[k] = true;
+                        o.long_mult = again[k].long_mult;
+                        // (its text with it: a note written on the long run used, Cavendish's)
+                        if let (Some(old), Some(new)) = (&shop[k].note, &again[k].note) {
+                            o.note = o.note.replace(old.as_str(), new);
+                        }
+                    }
+                }
+                "sell" => o.long_mult = sale.or(o.long_mult),
+                _ => {
+                    if let Some(g) = o.key.as_deref().and_then(|key| {
+                        let mut after = run.clone();
+                        crate::plan::apply_voucher(&mut after, key, data).then(|| voucher_gain(run, &after, o.cost)).flatten()
+                    }) {
+                        o.long_mult = Some(l2.value(&g));
+                    }
+                }
+            }
+        }
+        shop = again;
+    }
+    let lr = past_lr.as_ref().unwrap_or(&lr);
+    // (the jokers let go by the long run the options are valued on)
+    let long_note = long_note_on(lr);
+    // Any booster pack can be skipped instead of picking from it (card.lua: every kind
+    // calls `skipping_booster`), so each pick is worth at least skipping it: ×1.00, or more
+    // with a joker that grows from it (`LongRun::event`; on the long run the options are
+    // valued on, for the skip verdict's tags below)
+    let skip = lr.event(RunEvent::SkipPack);
+    let skip_note = if skip > 1.0 { format!(" · or skip it for {} (×{skip:.2} by Ante 8)", lr.event_note(RunEvent::SkipPack)) } else { String::new() };
     {
-        let base = spending.factor(run.dollars).max(1e-9);
+        let base = spending.factor(lr, run.dollars).max(1e-9);
         // money tarots' own values too (The Hermit, Temperance): their money is held as well
         for t in tarots.iter_mut().filter(|t| t.money_gain > 0.0 && t.deck.is_none() && t.decks.is_empty()) {
             if let Some(l) = t.long_mult.as_mut() {
-                *l *= spending.factor(run.dollars + t.money_gain) / base;
+                *l *= spending.factor(lr, run.dollars + t.money_gain) / base;
             }
         }
         for o in options.iter_mut() {
             let m = o.money_after + extra_money.get(&o.label).copied().unwrap_or(0.0);
-            let f = spending.factor(m) / base;
+            let f = spending.factor(lr, m) / base;
             if (f - 1.0).abs() > 1e-6 {
                 o.long_mult = Some(o.long_mult.unwrap_or(1.0) * f);
             }
@@ -2565,11 +2666,11 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
         let (_, k) = shops_ahead(run, false);
         // (playing: the blind's money is in `gain`, so the shop after it adds none; skipping: no
         // shop after it, and it pays nothing)
-        let survive_with = |money: f64, shops: Shops, p0: f64| money_value_with(&lr, &pool_entries, &kept, p0, money, shops, Start::board(board_rent)).max(p0).min(1.0);
+        let survive_with = |money: f64, shops: Shops, p0: f64| money_value_with(lr, &pool_entries, &kept, p0, money, shops, Start::board(board_rent)).max(p0).min(1.0);
         let after_play = |after: usize| Shops { prepaid: 1, ..Shops::after(after) };
         let after_skip = |after: usize| Shops { dropped: 1, ..Shops::after(after) };
         // money spent once, and held (rerolls and packs), as for every option
-        let gain_long = |g: &Gain| lr.value(g) * spending.factor(run.dollars + g.money) / spending.factor(run.dollars).max(1e-9);
+        let gain_long = |g: &Gain| lr.value(g) * spending.factor(lr, run.dollars + g.money) / spending.factor(lr, run.dollars).max(1e-9);
         let money_long = |delta: f64| gain_long(&Gain::money(delta));
         // Money cards you hold (Immolate, Hermit…) get used either way: in the blind when you
         // play it, or inside the pack / before the boss when you skip.
@@ -2751,7 +2852,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
                 let p_next = base_odds.get(hz).map_or(0.0, |o| o.0);
                 let kept_next = Kept::Chances(Scores::of(&ctx, hz, &base_odds));
                 let shops_next = k + 3;
-                let next_with = |money: f64, shops: Shops, p0: f64| money_value_with(&lr, &pool_entries, &kept_next, p0, money, shops, Start::board(board_rent)).max(p0).min(1.0);
+                let next_with = |money: f64, shops: Shops, p0: f64| money_value_with(lr, &pool_entries, &kept_next, p0, money, shops, Start::board(board_rent)).max(p0).min(1.0);
                 let skip_p0 = if next_boards.is_empty() {
                     p_next
                 } else {
@@ -2794,11 +2895,11 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
             let kept = Kept::Chances(Scores::of(&ctx, key_round, &base_odds));
             // the boss's chance with `shops` shops before it (in a blind, all the shops before the
             // boss are `survival_with`'s, as many as the blinds ahead)
-            let with = |m: f64, shops: usize| money_value_with(&lr, &pool_entries, &kept, p_now, m, Shops::after(shops), Start::board(board_rent)).min(1.0);
+            let with = |m: f64, shops: usize| money_value_with(lr, &pool_entries, &kept, p_now, m, Shops::after(shops), Start::board(board_rent)).min(1.0);
             value::Ahead::new(&ctx, (!pool_entries.is_empty()).then_some((p_now, &with as &dyn Fn(f64, usize) -> f64)))
         })
         .flatten();
-    let best_play = play::best_play(&ctx, &lr, &spending, &tarots, &hand_order, ahead.as_ref());
+    let best_play = play::best_play(&ctx, lr, &spending, &tarots, &hand_order, ahead.as_ref());
     lap("best play");
 
     let tips = order_tips(run, data, &tarots);
@@ -3115,6 +3216,21 @@ impl SwapRound {
     fn value(&self, now_floor: f64, floor: f64) -> f64 {
         let at = |through: bool| if through { 1.0 } else { now_floor };
         shop_measure(at(self.before) * at(self.won || self.saved), self.next as u8 as f64, floor, self.long, self.strength)
+    }
+}
+
+/// Whether money past the planet-level cap moves an option's long run (`LongRun::past_cap`): it
+/// changes the money a round pays on the board it leaves: a joker bought or picked (its money, its
+/// rent), your joker sold, a voucher that changes a round's hands, discards or hand size
+/// (`voucher_gain`: a hand left pays at cash-out)
+fn past_moves(o: &ShopOption, run: &RunState, data: &GameData) -> bool {
+    match o.kind.as_str() {
+        "joker" | "sell" => true,
+        "voucher" => o.key.as_deref().is_some_and(|key| {
+            let mut after = run.clone();
+            crate::plan::apply_voucher(&mut after, key, data) && voucher_gain(run, &after, o.cost).is_some_and(|g| g.round() != (0, 0, 0))
+        }),
+        _ => false,
     }
 }
 
@@ -5275,7 +5391,7 @@ fn played_for(ctx: &Ctx, hand_mix: &[HandShare], growths: value::Growths, pool: 
         if again {
             break;
         }
-        let lr = value::LongRun::new(ctx, hand_mix, &played, pool, per_rarity);
+        let lr = value::LongRun::new(ctx, hand_mix, &played, pool, per_rarity, None);
         let let_go: Vec<u32> = ctx.base.jokers.iter().enumerate().filter(|(i, _)| lr.is_let_go(*i)).map(|(_, j)| j.id).collect();
         if !goals.jokers.iter().any(|w| let_go.contains(&w.id)) {
             break;
@@ -7367,7 +7483,7 @@ mod tests {
         fresh_deck.sort_by_key(Card::order_key);
         let ctx = Ctx { run, removal_rank: Default::default(), arrange: false, orders: Default::default(), data, base: Board::from_run(run, data), specs: vec![], ahead: vec![], before: vec![], fresh_deck, opts: quick() };
         let growths = growths.unwrap_or_else(|| growths_for(&ctx, &[]));
-        let lr = value::LongRun::new(&ctx, mix, &growths, &[], [0; 4]);
+        let lr = value::LongRun::new(&ctx, mix, &growths, &[], [0; 4], None);
         f(&lr)
     }
 
@@ -7895,6 +8011,30 @@ mod tests {
         let (charged, charged_note) = sold(&r);
         assert!(charged.is_some_and(|i| i != 0), "{charged:?}");
         assert!(charged_note.contains("what Invisible Joker does when sold"), "{charged_note}");
+    }
+
+    #[test]
+    fn money_past_the_cap_buys_what_money_held_there_buys() {
+        // $90 held, past the planet-level cap ($25 + $30): there a dollar more an ante buys no
+        // more levels, so without what money past the cap buys counted (`past_cap: None`) Golden
+        // Joker's $4 a round is worth nothing in the long run and a rental's rent costs nothing.
+        // Counted (`Spending`, here its packs alone: no pool), Golden Joker on offer is worth more, the
+        // same joker as a rental less, and your board as it is stays exactly ×1.00
+        let r = RunState { dollars: 90.0, ..shop_run(&[("j_joker", None, None)], &[]) };
+        let data = GameData::bundled();
+        let mut fresh_deck = r.full_deck();
+        fresh_deck.sort_by_key(Card::order_key);
+        let ctx = Ctx { run: &r, removal_rank: Default::default(), arrange: false, orders: Default::default(), data, base: Board::from_run(&r, data), specs: vec![], ahead: vec![], before: vec![], fresh_deck, opts: quick() };
+        let growths = growths_for(&ctx, &[]);
+        let mix = [HandShare { hand: "Pair".into(), share: 1.0, played: 1.0, mean: 1.0 }];
+        let plain = value::LongRun::new(&ctx, &mix, &growths, &[], [0; 4], None);
+        let curve = value::Spending::new(&plain, &[], &[], &[]).curve();
+        let past = value::LongRun::new(&ctx, &mix, &growths, &[], [0; 4], Some(curve));
+        let golden = Joker::from_key("j_golden", data).unwrap();
+        let of = |lr: &value::LongRun, rental: bool| lr.long_of(&golden, None, 6, rental) / lr.l0;
+        assert!((past.value(&Gain::default()) - 1.0).abs() < 1e-9, "{}", past.value(&Gain::default()));
+        assert!(of(&past, false) > of(&plain, false) * 1.002, "{} {}", of(&past, false), of(&plain, false));
+        assert!(of(&past, true) / of(&past, false) < of(&plain, true) / of(&plain, false) - 0.002, "{} {}", of(&past, true) / of(&past, false), of(&plain, true) / of(&plain, false));
     }
 
     #[test]

@@ -221,6 +221,19 @@ pub(super) struct LongRun<'a> {
     round_money: OnceLock<f64>,
     /// What a round pays your board besides its jokers' money (`round_base`), measured once
     round_base: OnceLock<([f64; 3], f64)>,
+    /// What money a board's jokers pay every ante past the planet-level cap buys (`past_cap`):
+    /// the shop ranking's `Spending`, valued on another long run of the same state (`None`: not
+    /// counted, outside a shop and its packs or where no board's money past the cap differs from
+    /// yours: `past_reached`), your board's projected money every ante past the cap (`past_of`)
+    /// and `Spending`'s factor there
+    past_cap: Option<Spending>,
+    past_flow: f64,
+    past_base: f64,
+    /// Whether, with every joker kept (as the keep-or-let-go weighs them), your board without
+    /// some joker you could sell holds a different amount past the cap every ante (`past_of`,
+    /// in whole dollars): set before the fates, for `past_reached`, so a money joker this long
+    /// run lets go still opens it
+    past_kept: bool,
 }
 
 /// A typical find's price: the jokers the shops could offer (`pool`; every joker the game has
@@ -533,18 +546,19 @@ impl std::ops::DerefMut for Projected {
 }
 
 impl<'a> LongRun<'a> {
-    pub fn new(ctx: &'a Ctx<'a>, hand_mix: &'a [HandShare], growths: &'a Growths, pool: &[String], per_rarity: [usize; 4]) -> LongRun<'a> {
-        Self::build(ctx, hand_mix, growths, pool, per_rarity, false)
+    pub fn new(ctx: &'a Ctx<'a>, hand_mix: &'a [HandShare], growths: &'a Growths, pool: &[String], per_rarity: [usize; 4], curve: Option<MoneyCurve>) -> LongRun<'a> {
+        Self::build(ctx, hand_mix, growths, pool, per_rarity, false, curve)
     }
 
     /// `new` with your jokers whose growth rounds measure (`engine::grows_in_rounds`) kept
     /// however they project, never let go (`fates`): what they'd be worth if kept and played for, the
     /// round's goals the growth runs are played to again (`advise.rs` `played_for`)
     pub fn played_for(ctx: &'a Ctx<'a>, hand_mix: &'a [HandShare], growths: &'a Growths, pool: &[String], per_rarity: [usize; 4]) -> LongRun<'a> {
-        Self::build(ctx, hand_mix, growths, pool, per_rarity, true)
+        Self::build(ctx, hand_mix, growths, pool, per_rarity, true, None)
     }
 
-    fn build(ctx: &'a Ctx<'a>, hand_mix: &'a [HandShare], growths: &'a Growths, pool: &[String], per_rarity: [usize; 4], keep_growers: bool) -> LongRun<'a> {
+    #[allow(clippy::too_many_arguments)]
+    fn build(ctx: &'a Ctx<'a>, hand_mix: &'a [HandShare], growths: &'a Growths, pool: &[String], per_rarity: [usize; 4], keep_growers: bool, curve: Option<MoneyCurve>) -> LongRun<'a> {
         let (run, data) = (ctx.run, ctx.data);
         let antes_left = antes_left(run);
         let top_hand = hand_mix.first().and_then(|h| crate::engine::HandType::from_name(&h.hand));
@@ -636,19 +650,30 @@ impl<'a> LongRun<'a> {
             money: Mutex::new(Default::default()),
             round_money: OnceLock::new(),
             round_base: OnceLock::new(),
+            past_cap: curve.map(|c| Spending::of(antes_left, c)),
+            past_flow: 0.0,
+            past_base: 1.0,
+            past_kept: false,
         };
         {
             let p = lr.project(&|_| true, run.dollars);
             lr.left_base = lr.base_walk(&p);
+            // (every joker kept until the keep-or-let-go is decided)
+            lr.set_past_base(&p);
             let before = lr.long_score(&lr.fill_long(p, None, 0.0));
             // Each joker you could sell kept, or let go where that leaves no less, by the run's
             // value: replaced by a typical find (not a Negative: its slot goes with it) or sold
             // outright, whichever leaves more (`let_go_score`: the money recomputed on the board
             // without it, its income and rent gone with it)
-            let choice: Vec<(Fate, Option<Fate>)> = par_map(&(0..run.jokers.len()).collect::<Vec<_>>(), |&i| {
+            // (and whether the board without it holds a different amount past the cap every ante
+            // than yours, all kept: `past_kept`; one skipped here can't move it, or, a grower
+            // kept for `played_for`, isn't read there)
+            let choice: Vec<(Fate, Option<Fate>, bool)> = par_map(&(0..run.jokers.len()).collect::<Vec<_>>(), |&i| {
                 if run.jokers[i].eternal || !lr.lasts(i) || (keep_growers && crate::engine::grows_in_rounds(&ctx.base.jokers[i].key)) {
-                    return (Fate::Kept, None);
+                    return (Fate::Kept, None, false);
                 }
+                // (the board `let_go_score` measures for its sale)
+                let moved = lr.past_moved(&lr.project(&|k| k != i, run.dollars));
                 // (sold either way: its sale counted in both, a find's price on top for a find)
                 let sold = (lr.let_go_score(i, Fate::Sold, lr.let_go_money(i)), Fate::Sold);
                 let replaced = (!lr.negative(i)).then(|| {
@@ -664,13 +689,15 @@ impl<'a> LongRun<'a> {
                     Some(r) if r.0 >= sold.0 => r,
                     _ => sold,
                 };
-                (if score >= before { way } else { Fate::Kept }, Some(way))
+                (if score >= before { way } else { Fate::Kept }, Some(way), moved)
             });
+            lr.past_kept = choice.iter().any(|c| c.2);
             let _ = lr.fates.set(choice.iter().map(|c| c.0).collect());
             lr.let_go = choice.into_iter().map(|c| c.1).collect();
         }
         let p = lr.project(&|_| true, run.dollars);
         lr.left_base = lr.base_walk(&p);
+        lr.set_past_base(&p);
         let yours = lr.fill_long(p, None, 0.0);
         let (_, s) = yours.at_blind_set(&lr.long_spec_for(&yours, (0, 0, 0)).start);
         let _ = lr.round.set((s.hand_size, s.hands, s.discards));
@@ -681,12 +708,21 @@ impl<'a> LongRun<'a> {
         lr.full = lasting >= ctx.base.joker_slots - gone_slots;
         lr.sell_base = if lr.full {
             par_map(&(0..run.jokers.len()).collect::<Vec<_>>(), |&i| {
-                (!run.jokers[i].eternal && ctx.base.sale_frees_slot(i) && lr.lasts(i)).then(|| lr.long_score(&lr.fill_long(lr.project(&|k| k != i, run.dollars), None, run.jokers[i].sell_value as f64)))
+                (!run.jokers[i].eternal && ctx.base.sale_frees_slot(i) && lr.lasts(i)).then(|| {
+                    let p = lr.project(&|k| k != i, run.dollars);
+                    let past = lr.past_cap(&p);
+                    lr.long_score(&lr.fill_long(p, None, run.jokers[i].sell_value as f64)) * past
+                })
             })
         } else {
             vec![]
         };
         lr
+    }
+
+    /// Whether this long run keeps or lets go each of your jokers as `other` does (`fates`)
+    pub fn same_fates(&self, other: &LongRun) -> bool {
+        self.fates.get() == other.fates.get()
     }
 
     /// Whether your joker `i` is still on your board by Ante 8: not a perishable that runs out
@@ -744,7 +780,8 @@ impl<'a> LongRun<'a> {
             _ if !self.negative(i) => p.empty += 1,
             _ => {}
         }
-        self.long_score(&self.fill_long(p, None, 0.0))
+        let past = self.past_cap(&p);
+        self.long_score(&self.fill_long(p, None, 0.0)) * past
     }
 
     /// Your joker `i` sold now, as a ratio of your board's projected score (`l0`): let go its
@@ -764,7 +801,8 @@ impl<'a> LongRun<'a> {
             None if !self.lasts(i) => {
                 let mut p = self.project(&|k| k != i, self.run.dollars);
                 p.sales += self.run.jokers[i].sell_value as f64 + flow;
-                self.long_score(&self.fill_long(p, None, 0.0))
+                let past = self.past_cap(&p);
+                self.long_score(&self.fill_long(p, None, 0.0)) * past
             }
             None => return None,
         };
@@ -1541,8 +1579,10 @@ impl<'a> LongRun<'a> {
         let rent = if rental { RENT_PER_ROUND * rounds } else { 0.0 };
         let back = sold.map_or(0, |i| run.jokers[i].sell_value) as f64;
         let earns = Joker::from_key(key, data).map_or(0.0, |j| rounds * self.added_money(&|k| Some(k) != sold, &j, (rounds / 3.0).min(self.antes_left)));
-        let held = self.fill_long(self.project(&|k| Some(k) != sold, run.dollars), None, earns - ((cost - sells) as f64) - rent + back);
-        self.ratio(self.long_score(&held), sold)
+        let p = self.project(&|k| Some(k) != sold, run.dollars);
+        let past = self.past_cap(&p);
+        let held = self.fill_long(p, None, earns - ((cost - sells) as f64) - rent + back);
+        self.ratio(self.long_score(&held) * past, sold)
     }
 
     /// What a joker that changes a card you pick each round (`consumable::round_card_effect`;
@@ -1645,8 +1685,10 @@ impl<'a> LongRun<'a> {
         let horizon = if j.key == "j_madness" { 1.0 } else { self.antes_left };
         // used up by Ante 8 (`Growths`): its slot is filled like any empty one
         let g = self.growths.pool_after(j, self.growths.rounds).unwrap_or_else(|| Some(grow_antes(j, horizon).map_or_else(|| j.clone(), |g| g.0)));
-        let b = self.fill_long(self.project_as(&|k| Some(k) != sell, run.dollars, rent, None, Some(j), (0, 0, 0)), g, back - cost as f64);
-        self.round_effect_long(b, &j.key)
+        let p = self.project_as(&|k| Some(k) != sell, run.dollars, rent, None, Some(j), (0, 0, 0));
+        let past = self.past_cap(&p);
+        let b = self.fill_long(p, g, back - cost as f64);
+        self.round_effect_long(b, &j.key) * past
     }
 
     /// Planets used on a board: whole levels and the rest as a share of a level's chips and
@@ -1664,11 +1706,17 @@ impl<'a> LongRun<'a> {
     /// Your projected board with `g` added (what it adds to a round, `Gain::round`, and its
     /// consumable slots are in the round it's played in: `value`)
     pub fn board_with(&self, g: &Gain) -> Board {
+        self.board_and_past(g).0
+    }
+
+    /// `board_with`, and what its jokers' money past the cap buys (`past_cap`)
+    fn board_and_past(&self, g: &Gain) -> (Board, f64) {
         let mut p = self.project_as(&|_| true, self.run.dollars + g.held, 0.0, g.joker.as_ref().map(|(i, j)| (*i, j)), None, g.round());
         // (an economy voucher's money every ante comes as money held, which would start the
         // finds' walk richer once, not every ante: kept out until it goes in as money every
         // ante, `flow`, gap 16)
         p.held = self.run.dollars;
+        let past = self.past_cap(&p);
         let mut b = self.fill_long(p, None, g.money);
         if g.all_levels != 0 {
             for l in b.levels.iter_mut() {
@@ -1681,12 +1729,69 @@ impl<'a> LongRun<'a> {
                 b.after(ev, n);
             }
         }
-        b
+        (b, past)
     }
 
     /// What `g` makes your run worth by Ante 8, as a ratio of your board as it is
     pub fn value(&self, g: &Gain) -> f64 {
-        self.long_score_more(&self.board_with(g), g.round(), g.consumable_slots) / self.l0
+        let (b, past) = self.board_and_past(g);
+        self.long_score_more(&b, g.round(), g.consumable_slots) * past / self.l0
+    }
+
+    /// The money a projected board's jokers pay every ante past the planet-level cap
+    /// (`Spending::starts_at`): its flow (`Projected::flow`: the jokers' money less rent; not an
+    /// economy voucher's, which the shop ranking counts as money held, `advise.rs`
+    /// `extra_money`) on top of the money you hold, the part of it past the cap. Money held there
+    /// buys no more levels (`levels_per_ante`'s cap), so that part buys only what `Spending`
+    /// buys. Read as the projection reads its levels: on the money you hold now (not the money an
+    /// option leaves: the shop ranking's `Spending` factor counts an option's own money past the
+    /// cap, once), the same every ante.
+    fn past_of(&self, p: &Projected) -> f64 {
+        let (held, cap) = (self.run.dollars, Spending::starts_at(self));
+        (held + p.flow - cap).max(0.0) - (held - cap).max(0.0)
+    }
+
+    /// What the money a projected board's jokers pay every ante past the planet-level cap buys
+    /// against your board's (`past_of`, through the shop ranking's rerolls and packs,
+    /// `Spending::factor_with`: paid before each shop of the rerolls' walk), as a factor on its
+    /// projected score: a money joker's income there is worth what it buys, a rental's rent there
+    /// costs it. Exactly 1 on your board, and where no first pass built it (`past_cap: None`).
+    fn past_cap(&self, p: &Projected) -> f64 {
+        let Some(s) = &self.past_cap else { return 1.0 };
+        s.factor_with(self, self.run.dollars, self.past_of(p), self.past_flow) / self.past_base
+    }
+
+    /// Your projected board `p` as what `past_cap` is measured against: its money past the cap
+    /// every ante and `Spending`'s factor there
+    fn set_past_base(&mut self, p: &Projected) {
+        self.past_flow = self.past_of(p);
+        if let Some(s) = &self.past_cap {
+            self.past_base = s.factor_with(self, self.run.dollars, self.past_flow, self.past_flow).max(1e-9);
+        }
+    }
+
+    /// Whether `p` holds a different amount past the cap every ante than your board as
+    /// `set_past_base` last measured it, in whole dollars (`past_kept`)
+    fn past_moved(&self, p: &Projected) -> bool {
+        (self.past_of(p) - self.past_flow).round() != 0.0
+    }
+
+    /// Whether money past the planet-level cap moves anything here (`past_cap`): some board this
+    /// long run projects holds a different amount past it every ante than your board does
+    /// (`past_of`, in whole dollars): yours without each joker you could sell, with every joker
+    /// kept (`past_kept`) or as this long run keeps or lets them go, yours with each of `offers` (a joker,
+    /// the joker of yours it replaces, whether it's a rental) or each round of `rounds` (a
+    /// voucher's hands, discards and hand size). Where none does, every option's factor is 1.
+    pub fn past_reached(&self, offers: &[(Joker, Option<usize>, bool)], rounds: &[(i64, i64, i64)]) -> bool {
+        let d = self.run.dollars;
+        let all = |_: usize| true;
+        let yours = self.past_of(&self.project(&all, d));
+        // (in whole dollars an ante, as `Spending::factor_with` reads it: less moves no factor)
+        let differs = |p: Projected| (self.past_of(&p) - yours).round() != 0.0;
+        self.past_kept
+            || (0..self.run.jokers.len()).filter(|&i| !self.run.jokers[i].eternal).any(|i| differs(self.project(&|k| k != i, d)))
+            || offers.iter().any(|(j, sell, rental)| differs(self.project_as(&|k| Some(k) != *sell, d, if *rental { RENT_PER_ANTE } else { 0.0 }, None, Some(j), (0, 0, 0))))
+            || rounds.iter().any(|&m| differs(self.project_as(&all, d, 0.0, None, None, m)))
     }
 
     /// One `ev` by Ante 8 (`value`); exactly ×1.00 when it changes nothing on your board
@@ -1983,36 +2088,62 @@ impl<'a> LongRun<'a> {
 /// a shop) by a typical pack's best pick, each further pack worth ×0.8 of the one before (a
 /// heuristic). The typical pack: Arcana, Celestial, Buffoon, Spectral and Standard by their
 /// shop weights (game.lua P_CENTERS: 4, 4, 1.2, 0.6, 4; Standard counted as nothing).
-pub(super) struct Spending<'a> {
-    lr: &'a LongRun<'a>,
-    pool: &'a [Candidate],
-    pack_gain: f64,
+/// Money held past the cap and money a board's jokers pay every ante past it (`factor_with`:
+/// before each shop, as the walk takes a round's cash-out) are one budget. What it's built from
+/// (`MoneyCurve`) can be carried to another long run of the same state: the projection's own
+/// (`LongRun::past_cap`), built before the pool it's valued from.
+pub(super) struct Spending {
+    curve: MoneyCurve,
     shops: usize,
-    rerolls: Mutex<std::collections::HashMap<i64, f64>>,
+    /// The rerolls' walk, by the money held past the cap and the money more every ante past it
+    /// (in $5 and $1 steps)
+    rerolls: Mutex<std::collections::HashMap<(i64, i64), f64>>,
 }
 
-impl<'a> Spending<'a> {
-    pub fn new(lr: &'a LongRun<'a>, pool: &'a [Candidate], tarots: &[TarotValue], tarot_long: &[f64]) -> Spending<'a> {
+/// What `Spending` values money past the cap from: the joker pool with each joker's By Ante 8
+/// (what rerolls find) and a typical pack's best pick
+#[derive(Debug, Clone)]
+pub(crate) struct MoneyCurve {
+    pool: Vec<Candidate>,
+    pack_gain: f64,
+}
+
+impl Spending {
+    pub fn new(lr: &LongRun, pool: &[Candidate], tarots: &[TarotValue], tarot_long: &[f64]) -> Spending {
         let gain = |vals: Vec<f64>, k: usize| if vals.is_empty() { 0.0 } else { (best_of_subsets(&vals, k).0 - 1.0).max(0.0) };
         let arcana = gain(tarot_long.iter().zip(tarots).filter(|(_, t)| !t.spectral).map(|(v, _)| v.max(1.0)).collect(), 3);
         let spectral = gain(tarot_long.iter().zip(tarots).filter(|(_, t)| t.spectral).map(|(v, _)| v.max(1.0)).collect(), 2);
         let celestial = gain(HandType::ALL.iter().map(|&h| lr.planet(h).max(1.0)).collect(), 3);
         let buffoon = gain(pool.iter().map(|c| c.long_mult.unwrap_or(1.0).max(1.0)).collect(), 2);
         let pack_gain = (4.0 * arcana + 4.0 * celestial + 1.2 * buffoon + 0.6 * spectral) / (4.0 + 4.0 + 4.0 + 1.2 + 0.6);
-        Spending { lr, pool, pack_gain, shops: (3.0 * lr.antes_left).round() as usize, rerolls: Mutex::new(Default::default()) }
+        Spending::of(lr.antes_left, MoneyCurve { pool: pool.to_vec(), pack_gain })
     }
 
-    fn rerolls(&self, excess: f64) -> f64 {
-        let k = (excess / 5.0).round() as i64;
-        if let Some(v) = self.rerolls.lock().unwrap().get(&k) {
+    /// From what another long run of the same state built it from (`curve`)
+    pub fn of(antes_left: f64, curve: MoneyCurve) -> Spending {
+        Spending { curve, shops: (3.0 * antes_left).round() as usize, rerolls: Mutex::new(Default::default()) }
+    }
+
+    /// What it's built from, for another long run of the same state (`LongRun::past_cap`)
+    pub fn curve(&self) -> MoneyCurve {
+        self.curve.clone()
+    }
+
+    /// The rerolls' walk from `excess` past the cap, with `flow` more money every ante past it
+    /// than your board's (a third before each shop: rent in reverse; the walk pays your board's
+    /// own at each cash-out). Remembered by the two amounts alone: one long run's (`lr`) only
+    fn rerolls(&self, lr: &LongRun, excess: f64, flow: f64) -> f64 {
+        let key = ((excess / 5.0).round() as i64, flow.round() as i64);
+        if let Some(v) = self.rerolls.lock().unwrap().get(&key) {
             return *v;
         }
         // (each round's cash-out and your rent, as every walk; but from the money past the line
         // + $30 alone, so its interest is that money's, not the cap's you'd earn on all you hold:
         // gap 36 (a). The long run this factor scales counts the money too, as levels: gap 17's
         // two models of what money buys)
-        let v = money_value_with(self.lr, self.pool, &Kept::Weighted(&|c: &Candidate| c.long_mult.unwrap_or(1.0)), 1.0, k as f64 * 5.0, Shops::after(self.shops), Start::board(super::board_rent(self.lr.run)));
-        self.rerolls.lock().unwrap().insert(k, v);
+        let rent = super::board_rent(lr.run) - key.1 as f64 / 3.0;
+        let v = money_value_with(lr, &self.curve.pool, &Kept::Weighted(&|c: &Candidate| c.long_mult.unwrap_or(1.0)), 1.0, key.0 as f64 * 5.0, Shops::after(self.shops), Start::board(rent));
+        self.rerolls.lock().unwrap().insert(key, v);
         v
     }
 
@@ -2025,16 +2156,30 @@ impl<'a> Spending<'a> {
 
     /// What holding `m` is worth by Ante 8 through rerolls and packs (a factor; compare two
     /// amounts by their ratio)
-    pub fn factor(&self, m: f64) -> f64 {
-        let excess = (m - Self::starts_at(self.lr)).max(0.0);
-        let mut best = self.rerolls(excess);
+    pub fn factor(&self, lr: &LongRun, m: f64) -> f64 {
+        self.factor_with(lr, m, 0.0, 0.0)
+    }
+
+    /// `factor` on a board whose jokers pay `flow` every ante past the cap (their money less
+    /// rent: `LongRun::past_of`) where your board's pay `yours`: packs are bought from the money
+    /// held past the cap and the board's flow over the shops ahead, its whole flow, so a few
+    /// cents more or less cross no pack's price that your board's own flow already pays; the
+    /// rerolls' walk takes what's left and the difference before each shop (it pays your
+    /// board's money at each cash-out, `rerolls`), starting in debt where the packs took more
+    /// than the money held (paid back from the rounds' money first). The difference in $1 steps
+    /// an ante, in both.
+    pub fn factor_with(&self, lr: &LongRun, m: f64, flow: f64, yours: f64) -> f64 {
+        let excess = (m - Self::starts_at(lr)).max(0.0);
+        let more = (flow - yours).round();
+        let total = excess + (yours + more) * self.shops as f64 / 3.0;
+        let mut best = self.rerolls(lr, excess, more);
         let mut packs = 0.0;
         for p in 1..=(2 * self.shops) {
-            if PACK_PRICE * p as f64 > excess {
+            if PACK_PRICE * p as f64 > total {
                 break;
             }
-            packs += self.pack_gain * 0.8f64.powi(p as i32 - 1);
-            best = best.max((1.0 + packs) * self.rerolls(excess - PACK_PRICE * p as f64));
+            packs += self.curve.pack_gain * 0.8f64.powi(p as i32 - 1);
+            best = best.max((1.0 + packs) * self.rerolls(lr, excess - PACK_PRICE * p as f64, more));
         }
         best
     }

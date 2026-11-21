@@ -32,7 +32,7 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
     let has_seals = run.hand.iter().chain(&run.draw_pile).any(|c| c.seal == Some(crate::model::Seal::Blue));
     // A dollar won this round, in the same long-run measure: what +$10 does, spent once and
     // held (rerolls and packs, `Spending`)
-    let dollar_gain = ((lr.value(&Gain::money(10.0)) * spending.factor(run.dollars + 10.0) / spending.factor(run.dollars).max(1e-9) - 1.0) / 10.0).max(0.0);
+    let dollar_gain = ((lr.value(&Gain::money(10.0)) * spending.factor(lr, run.dollars + 10.0) / spending.factor(lr, run.dollars).max(1e-9) - 1.0) / 10.0).max(0.0);
     b.deck_remaining = run.draw_pile.len() as i64;
     // Cards worth drawing this round: for each consumable you hold that goes on one card, how
     // much more your run is worth with it used on a card in the draw pile than on its target in
