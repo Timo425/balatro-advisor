@@ -1203,7 +1203,17 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    projection (ties listed, not weighed by this round), as its "use now" move. Targets that win this
    blind but leave a weaker deck aren't tried. The general fix comes with the next gap: the
    race's best sets go to Best play as separate uses, once a simulated round values the deck
-   it leaves.
+   it leaves. A target that wins this blind is a smaller case, measured 2026-11-21 at 8208304
+   and not built (CLAUDE.md step 2): 264 of the owner's 2,347 saved states in a blind hold a
+   consumable that goes on cards, in 91 blinds one other than The Hanged Man (whose destroy the
+   round in progress doesn't play, `sim::effect_on`). On each of 23 of those blinds' last state
+   holding it (the 13 left with 2 hands or fewer, the 2 that ended a run, 8 more), Best play's
+   quick pass wins 17 at 100% without it, uses it in 4 (two at 88%), plays one at 99.7%
+   without it and loses one: EH6FFRAK's Ante 7 Big Blind at 2.8%, which Justice's best Glass
+   lifts to 4.8% (`whatif`, 400 rounds), its boss next at 0.2%. The bot's saved states hold no
+   blind in progress. The fix it takes, the race weighing each of its rounds' projection by
+   whether the blind in progress is won on that round with the set used, is the parked card "A
+   tarot whose target wins this blind is used".
 3. **Random effects and DNA reach only part of the search.** Aura's random edition isn't a
    Best play move (random outcomes aren't turned into `sim::Use`) nor counted in "cards worth
    drawing" (`play.rs` reads `consumable::card_effect`, certain effects only); DNA's race
