@@ -1207,13 +1207,18 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    and not built (CLAUDE.md step 2): 264 of the owner's 2,347 saved states in a blind hold a
    consumable that goes on cards, in 91 blinds one other than The Hanged Man (whose destroy the
    round in progress doesn't play, `sim::effect_on`). On each of 23 of those blinds' last state
-   holding it (the 13 left with 2 hands or fewer, the 2 that ended a run, 8 more), Best play's
-   quick pass wins 17 at 100% without it, uses it in 4 (two at 88%), plays one at 99.7%
-   without it and loses one: EH6FFRAK's Ante 7 Big Blind at 2.8%, which Justice's best Glass
-   lifts to 4.8% (`whatif`, 400 rounds), its boss next at 0.2%. The bot's saved states hold no
-   blind in progress. The fix it takes, the race weighing each of its rounds' projection by
-   whether the blind in progress is won on that round with the set used, is the parked card "A
-   tarot whose target wins this blind is used".
+   holding it (the 13 left with 2 hands or fewer, 2 of the 3 a run's history ends in, 8 more),
+   Best play's quick pass wins 17 at 100% without it, uses it in 4 (two at 88%), plays one at
+   99.7% without it and loses one: EH6FFRAK's Ante 7 Big Blind at 2.8%, which Justice's best
+   Glass lifts to 4.8% (`whatif`, 400 rounds), its boss next at 0.2%. The third, LVZ4W3KB's
+   Ante 4 Big Blind (The Magician used with 4 hands left), is not this case: the race's target
+   there, 9♦ 7♠, is the best of 5 pairs tried for the blind too (`whatif`, 14% → 31.5%), though
+   Best play plays on without it at 29% (why: not read). One of the other 67 checked at its
+   start (7JR7ZTZ6, Ante 8's Big Blind, The Sun) wins at 100% without it. The bot holds none
+   in a blind: it uses a pack's at once and buys no shop one (gap 31), and none of the 161
+   blind selects it saved a game state for holds one. The fix it takes, the race weighing each
+   of its rounds' projection by whether the blind in progress is won on that round with the
+   set used, is the parked card "A tarot whose target wins this blind is used".
 3. **Random effects and DNA reach only part of the search.** Aura's random edition isn't a
    Best play move (random outcomes aren't turned into `sim::Use`) nor counted in "cards worth
    drawing" (`play.rs` reads `consumable::card_effect`, certain effects only); DNA's race
