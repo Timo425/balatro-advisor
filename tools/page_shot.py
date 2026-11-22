@@ -8,7 +8,9 @@ analysis), then draws each in headless Chrome from a small local server that ser
 that one body, so a screen that lasts seconds live holds still for the picture.
 
 Usage: tools/page_shot.py <state.jkr> [--out DIR] [--binary PATH] [--size WxH]
-Chrome: $BAV_CHROME, else chrome-for-testing, google-chrome, chromium or chromium-browser on PATH.
+Chrome: $BAV_CHROME, else chrome-for-testing, google-chrome, chromium or chromium-browser on PATH,
+else Chrome where Windows installs it. The advisor runs at the lowest priority (nice -n 19, on
+Windows its idle class).
 Prints the PNG paths (first.png when a first ranking was made, full.png)."""
 import argparse, http.server, json, os, shutil, subprocess, sys, tempfile, threading, time, urllib.request
 
@@ -19,7 +21,9 @@ ap.add_argument("--binary", default="balatro-advisor")
 ap.add_argument("--size", default="1250,1700")
 args = ap.parse_args()
 
-chrome = os.environ.get("BAV_CHROME") or next((c for c in ("chrome-for-testing", "google-chrome", "chromium", "chromium-browser") if shutil.which(c)), None)
+WINDOWS_CHROME = [os.path.join(os.environ.get(v, ""), "Google", "Chrome", "Application", "chrome.exe") for v in ("ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA")]
+chrome = (os.environ.get("BAV_CHROME") or next((c for c in ("chrome-for-testing", "google-chrome", "chromium", "chromium-browser") if shutil.which(c)), None)
+          or next((c for c in WINDOWS_CHROME if os.name == "nt" and os.path.isfile(c)), None))
 if not chrome:
     sys.exit("no Chrome found: set BAV_CHROME")
 os.makedirs(args.out, exist_ok=True)
@@ -36,8 +40,9 @@ def get(path):
 os.makedirs(os.path.join(tmp, "save", "1"))
 shutil.copy(args.state, os.path.join(tmp, "save", "1", "save.jkr"))
 env = dict(os.environ, XDG_DATA_HOME=os.path.join(tmp, "xdg"))
-server = subprocess.Popen(["nice", "-n", "19", args.binary, "ui", "--save-dir", os.path.join(tmp, "save"), "--profile", "1", "--port", str(PORT), "--no-open"],
-                          env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+ui = [args.binary, "ui", "--save-dir", os.path.join(tmp, "save"), "--profile", "1", "--port", str(PORT), "--no-open"]
+low = {"creationflags": subprocess.IDLE_PRIORITY_CLASS} if os.name == "nt" else {}
+server = subprocess.Popen(ui if os.name == "nt" else ["nice", "-n", "19", *ui], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **low)
 page, bodies, t0 = None, {}, time.time()
 try:
     while time.time() - t0 < 300:
