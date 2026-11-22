@@ -44,9 +44,9 @@ verdict on the advice. As of 2026-10-24 the bot:
   "(you have it)" option is worth it (Blue Seals' planets, which it had held unused, and The
   High Priestess's; a held one that acts on the cards in hand or goes on cards is used only in a
   blind, on Best play's word, below: its "(you have it)" option ranked first in the shop is
-  counted, "used in a blind"); a planet Best play says to use first; a Standard pack's playing-card pick (found by its label:
-  the advisor offers no Standard pack in the shop and doesn't value the Standard Tag, so no run
-  has opened one yet). Before, every voucher, tarot and spectral was left and every "use X first"
+  counted, "used in a blind"); a planet Best play says to use first; a Standard pack's playing-card pick (found by its label),
+  the pack bought when the advisor ranks it first (valued since 2026-11-22; the Standard Tag
+  still isn't). Before, every voucher, tarot and spectral was left and every "use X first"
   ignored uncounted. Since 2026-11-15, tarots and spectrals that go on cards, on the cards the
   advisor names (its `targets`, gap 31): picked from Arcana and Spectral packs, those
   opened by a Charm or Ethereal Tag included (Death's two cards put in order first, `target_places`);
@@ -735,7 +735,7 @@ def take(o, a, gs, sims, log):
             if held(o):
                 raise
         return "tarot"
-    if kind == "pack" and key.startswith(("p_buffoon", "p_celestial", "p_arcana", "p_spectral")):
+    if kind == "pack" and key.startswith(("p_buffoon", "p_celestial", "p_arcana", "p_spectral", "p_standard")):
         i = index_of_key(gs, "packs", key)
         if i is None:
             return None

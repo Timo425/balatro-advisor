@@ -885,6 +885,119 @@ pub(crate) fn apply_mods(start: &RoundStart, added: &[&Joker], removed: &[&Joker
 const SCREEN_DEALS: usize = 100;
 /// Random outcomes a random effect (Immolate's, Familiar's…) is valued over
 const RANDOM_OUTCOMES: usize = 6;
+/// The game's edition rate (`G.GAME.edition_rate`): the `extra` of the highest of Hone and Glow
+/// Up redeemed, which sets it (card.lua `Card:apply_to_run`), else 1
+fn edition_rate(run: &RunState, data: &GameData) -> f64 {
+    run.vouchers
+        .iter()
+        .filter(|v| matches!(v.as_str(), "v_hone" | "v_glow_up"))
+        .filter_map(|v| data.center(v).and_then(|c| c.config.get("extra")).and_then(|x| x.as_f64()))
+        .fold(1.0, f64::max)
+}
+
+/// A kind of card a Standard pack draws: its chance, and the cards it can be (each with its
+/// chance within the kind), valued as one random outcome over them (`LongRun::decks_value`)
+type PackKind = (f64, Vec<(f64, Card)>);
+
+/// The game's odds of each roll on a Standard pack's card (card.lua `Card:open`, each its own
+/// roll): an enhancement when its roll is over 0.6, any of the eight alike (common_events.lua
+/// `create_card` keeps the whole Enhanced pool); an edition by `poll_edition` at twice the rate and
+/// never Negative (Foil 0.04·r, Holographic 0.028·r, Polychrome 0.012·r, `r` the run's
+/// `edition_rate`); a seal when its roll is over 0.8, any of the four alike
+fn standard_odds(edition_rate: f64) -> [Vec<f64>; 3] {
+    [vec![0.4 / 8.0; 8], [0.04, 0.028, 0.012].iter().map(|p| p * edition_rate).collect(), vec![0.2 / 4.0; 4]]
+}
+
+/// The kinds of playing card a Standard pack's cards are valued by, each with its chance in the
+/// game (its rank and suit any of the 52, `G.P_CARDS`): a plain card (none of the three rolls
+/// lands) a kind per rank, its suit any of the four; each enhancement, edition and seal (in
+/// `standard_odds`' order) a kind over all 52 cards with that one alone, at the chance a card has
+/// it, so the modified kinds' chances overlap (`standard_pack_draws` combines them); its rank and
+/// suit as an average, not the one picked (heuristic). Exact chances, not a sample: no card stands
+/// for more of a pack than it is.
+fn standard_pack_kinds(edition_rate: f64) -> Vec<PackKind> {
+    use crate::model::{Edition, Enhancement, Rank, Seal, Suit};
+    const ENHANCEMENTS: [Enhancement; 8] = [Enhancement::Bonus, Enhancement::Mult, Enhancement::Wild, Enhancement::Glass, Enhancement::Steel, Enhancement::Stone, Enhancement::Gold, Enhancement::Lucky];
+    const EDITIONS: [Edition; 3] = [Edition::Foil, Edition::Holo, Edition::Polychrome];
+    const SEALS: [Seal; 4] = [Seal::Red, Seal::Blue, Seal::Gold, Seal::Purple];
+    let [enh, eds, seals] = standard_odds(edition_rate);
+    let plain: f64 = [&enh, &eds, &seals].iter().map(|o| (1.0 - o.iter().sum::<f64>()).max(0.0)).product();
+    let card = Card::new(Rank(2), Suit::ALL[0]);
+    let mods = ENHANCEMENTS
+        .iter()
+        .zip(&enh)
+        .map(|(&e, &p)| (p, Card { enhancement: Some(e), ..card }))
+        .chain(EDITIONS.iter().zip(&eds).map(|(&e, &p)| (p, Card { edition: Some(e), ..card })))
+        .chain(SEALS.iter().zip(&seals).map(|(&s, &p)| (p, Card { seal: Some(s), ..card })));
+    let on = |c: Card, rank: usize, suit: usize| Card { rank: Rank(2 + rank as u8), suit: Suit::ALL[suit], ..c };
+    let plains = (0..13).map(|r| (plain / 13.0, (0..4).map(|s| (0.25, on(card, r, s))).collect()));
+    let kinds = mods.map(|(p, c)| (p, (0..52).map(|f| (1.0 / 52.0, on(c, f % 13, f / 13))).collect()));
+    plains.chain(kinds).collect()
+}
+
+/// A Standard pack's cards as the game rolls them (`standard_odds`: the enhancement, the edition
+/// and the seal each on its own roll), each worth its kind's value (`vals`, in
+/// `standard_pack_kinds`' order): a plain card its rank's; a card with one or more of the three the
+/// best of their kinds' (heuristic: their gains together not counted, so it reads low unless one of
+/// them costs the card, as Stone takes its rank and suit). Chances add to 1.
+fn standard_pack_draws(edition_rate: f64, vals: &[f64]) -> Vec<(f64, f64)> {
+    let mut at = 13;
+    // each roll: lands on none, or on one of its kinds (its index in `vals`)
+    let rolls: Vec<Vec<(f64, Option<usize>)>> = standard_odds(edition_rate)
+        .iter()
+        .map(|o| {
+            let r = std::iter::once(((1.0 - o.iter().sum::<f64>()).max(0.0), None)).chain(o.iter().enumerate().map(|(i, &p)| (p, Some(at + i)))).collect();
+            at += o.len();
+            r
+        })
+        .collect();
+    let mut out = vec![];
+    for &(pe, e) in &rolls[0] {
+        for &(pd, d) in &rolls[1] {
+            for &(ps, s) in &rolls[2] {
+                let p = pe * pd * ps;
+                match [e, d, s].into_iter().flatten().map(|i| vals[i]).reduce(f64::max) {
+                    Some(v) => out.push((p, v)),
+                    None => out.extend(vals[..13].iter().map(|&v| (p / 13.0, v))),
+                }
+            }
+        }
+    }
+    out
+}
+
+/// A pack's value from the expected best of its cards (`best(floor)`: each card worth at least
+/// `floor`): or skipping it. `second`: a Mega pack's, whose second pick isn't counted, only
+/// skipping instead of it (its best at least 1, × the second's worth or skipping's)
+fn pack_value_by(best: impl Fn(f64) -> f64, second: Option<f64>, skip: f64) -> f64 {
+    match second {
+        None => best(skip),
+        Some(s) => best(1.0) * s.max(skip),
+    }
+}
+
+/// A booster's cards on offer and picks (its center's `extra` and `choose`)
+fn pack_size(data: &GameData, key: &str) -> Option<(usize, usize)> {
+    let c = data.center(key)?;
+    let field = |f: &str, or: u64| c.config.get(f).and_then(|v| v.as_u64()).unwrap_or(or) as usize;
+    Some((field("extra", 3), field("choose", 1)))
+}
+
+/// The expected best of `k` cards drawn from `kinds` (chance, value), each at least `floor`: the
+/// chance the best is a kind is that of all `k` at most it less that of all `k` below it
+fn best_of_drawn(kinds: &[(f64, f64)], k: usize, floor: f64) -> f64 {
+    let mut v: Vec<(f64, f64)> = kinds.iter().map(|&(p, x)| (p, x.max(floor))).collect();
+    v.sort_by(|a, b| a.1.total_cmp(&b.1));
+    let total: f64 = v.iter().map(|(p, _)| p).sum::<f64>().max(f64::MIN_POSITIVE);
+    let (mut below, mut sum) = (0.0f64, 0.0);
+    for (p, x) in v {
+        let upto = below + p / total;
+        sum += x * (upto.min(1.0).powi(k as i32) - below.min(1.0).powi(k as i32));
+        below = upto;
+    }
+    sum
+}
+
 /// Rounds in a quick deck projection (a card worth drawing is screened on it)
 const TARGET_SCREEN_ROUNDS: usize = 48;
 /// A screened tarot's target race's most rounds (`TarotBudget`)
@@ -1721,14 +1834,15 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
         // grows from (`Gain::rerolls`).
         let mut rng = crate::engine::Rng::new(opts.seed ^ 0x10ae);
         for o in options.iter_mut() {
-            let (cards, share) = match (o.kind.as_str(), o.key.as_deref()) {
-                ("tarot", Some("c_judgement")) => (1, 1.0),
-                ("reroll", _) => (run.shop_rates.slots.max(1) as usize, joker_share),
-                ("pack", _) if o.label.contains("Buffoon") => (if o.label.contains("Jumbo") || o.label.contains("Mega") { 4 } else { 2 }, 1.0),
+            let size = o.key.as_deref().and_then(|k| pack_size(data, k));
+            let (cards, share) = match (o.kind.as_str(), o.key.as_deref(), size) {
+                ("tarot", Some("c_judgement"), _) => (1, 1.0),
+                ("reroll", _, _) => (run.shop_rates.slots.max(1) as usize, joker_share),
+                ("pack", _, Some((extra, _))) if o.label.contains("Buffoon") => (extra, 1.0),
                 _ => continue,
             };
             let is_pack = o.kind == "pack";
-            let mega = is_pack && o.label.contains("Mega");
+            let mega = is_pack && size.is_some_and(|(_, choose)| choose > 1);
             // a one-pick pack can be skipped instead of picking (a Mega pack: instead of its second pick)
             let draw = long_draw(pool_entries, cards, share, if is_pack && !mega { skip } else { 1.0 }, &mut rng);
             // a reroll's jokers still have to be paid for; a pack's are free
@@ -1811,30 +1925,43 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
         // (read by the packs only: not in a first ranking)
         let planet_long: Vec<f64> = if first { vec![] } else { planet_hands.iter().map(|&h| lr.planet(h)).collect() };
         let price = |cost: i64| if cost == 0 { 1.0 } else { lr.value(&Gain::money(-(cost as f64))) };
+        // A Standard pack's playing cards, each by your run with it in your deck (as an open
+        // pack's card is, `plain_long` below), over the kinds of card it draws at their chances
+        let standard = |o: &ShopOption| o.kind == "pack" && o.key.as_deref().is_some_and(|k| k.starts_with("p_standard"));
+        let standard_rate = edition_rate(run, data);
+        let standard_kinds = if first || !options.iter().any(standard) { vec![] } else { standard_pack_kinds(standard_rate) };
+        let standard_long: Vec<f64> = par_map(&standard_kinds, |(_, cards)| {
+            let decks: Vec<(f64, Vec<Card>)> = cards.iter().map(|(w, c)| (*w, ctx.fresh_deck.iter().copied().chain([*c]).collect())).collect();
+            lr.decks_value(&decks, 0.0, value::TAROT_ROUNDS, (0, 0, 0))
+        });
+        let standard_draws = if standard_long.is_empty() { vec![] } else { standard_pack_draws(standard_rate, &standard_long) };
+        for o in options.iter_mut().filter(|o| standard(o) && !standard_draws.is_empty()) {
+            let Some((k, choose)) = o.key.as_deref().and_then(|k| pack_size(data, k)) else { continue };
+            o.long_mult = Some(pack_value_by(|floor| best_of_drawn(&standard_draws, k, floor), (choose > 1).then_some(1.0), skip) * price(o.cost));
+            o.note.push_str(&skip_note);
+        }
         for o in options.iter_mut() {
+            let size = o.key.as_deref().and_then(|k| pack_size(data, k));
             if o.kind == "tarot" && o.money_gain <= 0.0 {
                 if let Some(i) = o.key.as_ref().and_then(|k| tarots.iter().position(|t| &t.key == k)) {
                     o.long_mult = Some(tarot_long[i] * price(o.cost));
                 }
-            } else if o.kind == "pack" && o.label.contains("Celestial") {
+            } else if o.kind == "pack" && o.label.contains("Celestial") && let Some((k, choose)) = size {
                 // planets: a level for their hand, and ×0.1 for Constellation each; a Mega pack's
                 // second pick used too (about an average planet)
-                let k = if o.label.contains("Jumbo") || o.label.contains("Mega") { 5 } else { 3 };
                 if !planet_long.is_empty() {
-                    let second = o.label.contains("Mega").then(|| planet_long.iter().map(|v| v.max(1.0)).sum::<f64>() / planet_long.len() as f64);
+                    let second = (choose > 1).then(|| planet_long.iter().map(|v| v.max(1.0)).sum::<f64>() / planet_long.len() as f64);
                     o.long_mult = Some(pack_value(&planet_long, k, second, skip) * price(o.cost));
                     o.note.push_str(&skip_note);
                 }
-            } else if o.kind == "pack" && o.label.contains("Spectral") {
-                let k = if o.label.contains("Jumbo") || o.label.contains("Mega") { 4 } else { 2 };
+            } else if o.kind == "pack" && o.label.contains("Spectral") && let Some((k, choose)) = size {
                 let vals: Vec<f64> = tarot_long.iter().zip(&tarots).filter(|(_, t)| t.spectral).map(|(v, _)| *v).collect();
                 // a Mega pack's second pick isn't counted (only skipping instead of it)
-                o.long_mult = Some(pack_value(&vals, k, o.label.contains("Mega").then_some(1.0), skip) * price(o.cost));
+                o.long_mult = Some(pack_value(&vals, k, (choose > 1).then_some(1.0), skip) * price(o.cost));
                 o.note.push_str(&skip_note);
-            } else if o.kind == "pack" && o.label.contains("Arcana") {
-                let k = if o.label.contains("Jumbo") || o.label.contains("Mega") { 5 } else { 3 };
+            } else if o.kind == "pack" && o.label.contains("Arcana") && let Some((k, choose)) = size {
                 let vals: Vec<f64> = tarot_long.iter().zip(&tarots).filter(|(_, t)| !t.spectral).map(|(v, _)| *v).collect();
-                o.long_mult = Some(pack_value(&vals, k, o.label.contains("Mega").then_some(1.0), skip) * price(o.cost));
+                o.long_mult = Some(pack_value(&vals, k, (choose > 1).then_some(1.0), skip) * price(o.cost));
                 o.note.push_str(&skip_note);
             }
         }
@@ -2967,6 +3094,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
         .into_iter()
         .chain(ctx.specs.iter().any(|x| x.start.pool.is_some()).then_some(NEXT_ANTE_NOTE))
         .chain(skips.then_some(SKIP_NOTE))
+        .chain(run.shop.iter().flat_map(|s| &s.boosters).any(|b| b.key.starts_with("p_standard")).then_some(STANDARD_NOTE))
         .chain(grows.then_some(
             "Best play counts what the round's hands and discards leave the jokers that grow or fade in a round, by what one more Mult, ×Mult or Chip adds by Ante 8 (measured on a step of +2 Mult, +×0.25 or +10 Chips, taken as linear; a fall never costs more than losing the joker; several jokers' factors multiplied, heuristic) and, in this ante, by what they do to the chance of getting through the blinds still ahead (see the note on those); the simulated player aims for it in how it finishes the round (the winning play worth most, or playing on for growth on a few simulated futures) and, with no win on the table, in a play that grows them more while it keeps pace and scores as much over the hands left as its own pick (weighed on 16 simulated futures), not in its digs or discards, and what they do to your cards (Vampire's enhancements, Glass breaking) isn't counted. The blind odds shown still play your jokers as they are now.",
         ))
@@ -3008,6 +3136,8 @@ const HEURISTICS: [&str; 8] = [
 /// Said where the next ante is read (`next_boss_pool`)
 const NEXT_ANTE_NOTE: &str = "The next ante's boss is one of the bosses the game can draw there (the least drawn so far of those allowed at that ante; when the next ante is the last, its five final bosses), each as likely: each simulated round meets one, with its own target and its rule where it's simulated; its reach is shown against a plain boss's target (2× the base). An option with no simulated chance there has it read off its scores as your board's against each boss (simulated on its own rounds, heuristic: a lognormal for each), moved together to your board's chance there. At the last ante nothing past its boss is counted.";
 
+/// Said where a Standard pack is on offer (`standard_pack_kinds`)
+const STANDARD_NOTE: &str = "A Standard pack is valued by its best card added to your deck, projected to Ante 8, or skipping it: the expected best of as many cards as the pack holds, at the game's odds (Enhanced 40%, a seal 20%, an edition 8%, more with Hone or Glow Up, each its own roll; a plain card by its rank, its suit as an average; an enhanced, sealed or edition card as an average over the 52 it can be, not the card you'd pick; one with two or three of them by the best of them, not all together: heuristic, reads low unless one of them costs your deck, as a Stone card's lost rank and suit can); the blinds ahead are played as on your board (one card more in your deck: heuristic), a consumable you hold that could go on the card isn't counted, nor a Mega pack's second pick (not modelled).";
 /// Said with a skip-or-play comparison (`SkipCompare`)
 const SKIP_NOTE: &str = "Skip or play compares the chance to get through this ante (playing, the blind you choose and the boss; the shops before the boss counted, one fewer if you skip; a Big Blind between the one you choose and the boss: its chance isn't counted, its reward and the shop after it are: not modelled) × the next ante's boss × By Ante 8. Each round's chance (the blind you choose and the boss, and the next ante's boss) counts at least a chance told from none (3 wins in its rounds, as in the shop ranking), so a round hopeless both ways leaves the rest to decide. Close: within 3% (heuristic). A tag whose effect isn't valued gives no verdict (not modelled), nor does the comparison count the copies a Double Tag you hold would make (not modelled).";
 
@@ -3867,9 +3997,7 @@ fn shop_options(
     let mut rng = crate::engine::Rng::new(ctx.opts.seed ^ 0x5eed);
     let packs = run.shop.as_ref().map(|s| s.boosters.clone()).unwrap_or_default();
     for pk in &packs {
-        let Some(center) = data.center(&pk.key) else { continue };
-        let extra = center.config.get("extra").and_then(|v| v.as_u64()).unwrap_or(3) as usize;
-        let choose = center.config.get("choose").and_then(|v| v.as_u64()).unwrap_or(1);
+        let Some((extra, choose)) = pack_size(data, &pk.key) else { continue };
         let pick_note = if choose > 1 { " (you pick 2: your best 1, plus the other's sell value)" } else { "" };
         if pk.key.starts_with("p_celestial") && !planets.is_empty() {
             // Exact: average over every set of `extra` distinct planets of the best one in it.
@@ -4057,8 +4185,7 @@ fn shop_options(
         }
     }
     for pk in run.shop.as_ref().map(|s| s.boosters.clone()).unwrap_or_default().iter().filter(|p| p.key.starts_with("p_spectral")) {
-        let Some(center) = data.center(&pk.key) else { continue };
-        let extra = center.config.get("extra").and_then(|v| v.as_u64()).unwrap_or(2) as usize;
+        let Some((extra, _)) = pack_size(data, &pk.key) else { continue };
         let spectrals: Vec<&TarotValue> = tarots.iter().filter(|t| t.spectral).collect();
         let vals: Vec<f64> = spectrals.iter().map(|t| t.p_win.max(now)).collect();
         let (avg, top) = best_of_subsets(&vals, extra);
@@ -4081,9 +4208,7 @@ fn shop_options(
         });
     }
     for pk in run.shop.as_ref().map(|s| s.boosters.clone()).unwrap_or_default().iter().filter(|p| p.key.starts_with("p_arcana")) {
-        let Some(center) = data.center(&pk.key) else { continue };
-        let extra = center.config.get("extra").and_then(|v| v.as_u64()).unwrap_or(3) as usize;
-        let choose = center.config.get("choose").and_then(|v| v.as_u64()).unwrap_or(1);
+        let Some((extra, choose)) = pack_size(data, &pk.key) else { continue };
         let arcana: Vec<&TarotValue> = tarots.iter().filter(|t| !t.spectral).collect();
         let vals: Vec<f64> = arcana.iter().map(|t| t.p_win.max(now)).collect();
         let (avg, top) = best_of_subsets(&vals, extra);
@@ -4093,6 +4218,27 @@ fn shop_options(
             cost: pk.cost,
             p_win: avg,
             note: format!("{extra} tarots, best is usually {}{}", arcana.get(top).map_or("?", |t| t.name.as_str()), if choose > 1 { " (you pick 2; counted as your best 1)" } else { "" }),
+            money_after: 0.0,
+            interest_now: 0,
+            interest_after: 0,
+            unaffordable: false,
+            money_gain: 0.0,
+            long_mult: None,
+            key: Some(pk.key.clone()),
+            desc: None,
+        });
+    }
+    // Standard packs: valued by the run with their best card in your deck, with the packs' long
+    // values (`standard_long`); this ante's rounds played as yours (one card more in your deck:
+    // heuristic, `STANDARD_NOTE`)
+    for pk in run.shop.as_ref().map(|s| s.boosters.clone()).unwrap_or_default().iter().filter(|p| p.key.starts_with("p_standard")) {
+        let Some((extra, choose)) = pack_size(data, &pk.key) else { continue };
+        out.push(ShopOption { tied: false, rounds: OptionRounds { before_yours: true, ..Default::default() }, noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None,
+            label: pk.name.clone(),
+            kind: "pack".into(),
+            cost: pk.cost,
+            p_win: now,
+            note: format!("pick {choose} of {extra} playing cards{}", if choose > 1 { " (counted as your best 1)" } else { "" }),
             money_after: 0.0,
             interest_now: 0,
             interest_after: 0,
@@ -4194,13 +4340,13 @@ fn shop_options(
         tarots.iter().filter(|t| t.spectral == spectral && t.reach_now > 0.0).map(|t| (t.reach / t.reach_now).max(1.0)).collect()
     };
     for o in out.iter_mut().filter(|o| o.kind == "pack") {
-        let big = o.label.contains("Jumbo") || o.label.contains("Mega");
-        let (vals, k): (Vec<f64>, usize) = if o.label.contains("Celestial") {
-            (planet_next.iter().map(|v| v.unwrap_or(1.0).max(1.0)).collect(), if big { 5 } else { 3 })
+        let Some((k, choose)) = o.key.as_deref().and_then(|k| pack_size(data, k)) else { continue };
+        let vals: Vec<f64> = if o.label.contains("Celestial") {
+            planet_next.iter().map(|v| v.unwrap_or(1.0).max(1.0)).collect()
         } else if o.label.contains("Arcana") {
-            (tarot_next(false), if big { 5 } else { 3 })
+            tarot_next(false)
         } else if o.label.contains("Spectral") {
-            (tarot_next(true), if big { 4 } else { 2 })
+            tarot_next(true)
         } else {
             continue;
         };
@@ -4208,7 +4354,7 @@ fn shop_options(
             continue;
         }
         let mut v = best_of_subsets(&vals, k).0;
-        if o.label.contains("Mega") {
+        if choose > 1 {
             v *= vals.iter().sum::<f64>() / vals.len() as f64;
         }
         o.next_strength = Some(v);
@@ -4729,10 +4875,7 @@ fn money_per_run_count(data: &GameData, key: &str, run: &RunState) -> Option<(f6
 /// (card.lua `skip_booster`).
 fn pack_value(vals: &[f64], k: usize, second: Option<f64>, skip: f64) -> f64 {
     let floored = |f: f64| vals.iter().map(|v| v.max(f)).collect::<Vec<_>>();
-    match second {
-        None => best_of_subsets(&floored(skip), k).0,
-        Some(s) => best_of_subsets(&floored(1.0), k).0 * s.max(skip),
-    }
+    pack_value_by(|f| best_of_subsets(&floored(f), k).0, second, skip)
 }
 
 /// Average over every `k`-subset of `vals` of its maximum, and the index most often best.
@@ -8739,10 +8882,11 @@ mod tests {
                 pack("p_arcana_normal_1", "Arcana Pack"),
                 pack("p_buffoon_normal_1", "Buffoon Pack"),
                 pack("p_spectral_normal_1", "Spectral Pack"),
+                pack("p_standard_normal_1", "Standard Pack"),
             ];
             let a = analyze(&r, GameData::bundled(), None, &quick());
             let kinds: Vec<&ShopOption> = a.options.iter().filter(|o| o.kind == "pack" || o.kind == "reroll").collect();
-            assert_eq!(kinds.len(), 5, "{:?}", a.options.iter().map(|o| &o.label).collect::<Vec<_>>());
+            assert_eq!(kinds.len(), 6, "{:?}", a.options.iter().map(|o| &o.label).collect::<Vec<_>>());
             for o in kinds {
                 let counted = o.note.contains(note);
                 let expect = (owned == "j_red_card") == (o.kind == "pack");
@@ -8754,6 +8898,79 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_standard_packs_cards_hold_the_games_odds() {
+        // card.lua `Card:open`: no enhancement 60%, no seal 80%, no edition 92% at the base rate
+        // (`poll_edition` ×2: Foil 4%, Holo 2.8%, Polychrome 1.2%), 68% with Glow Up (×4), each
+        // its own roll: every kind at the chance a card has it, and the drawn cards at the game's
+        use crate::model::{Edition, Seal, Suit};
+        let plain = |c: &Card| c.enhancement.is_none() && c.edition.is_none() && c.seal.is_none();
+        for (r, editions) in [(1.0, 0.08), (2.0, 0.16), (4.0, 0.32)] {
+            let ks = standard_pack_kinds(r);
+            assert_eq!(ks.len(), 13 + 8 + 3 + 4);
+            let plain_p = 0.6 * 0.8 * (1.0 - editions);
+            assert!(ks[..13].iter().all(|(p, cs)| (p - plain_p / 13.0).abs() < 1e-12 && cs.iter().all(|(_, c)| plain(c))), "a plain card at the game's odds, a kind per rank");
+            assert!(ks[13..].iter().all(|(_, cs)| cs.iter().all(|(_, c)| [c.enhancement.is_some(), c.edition.is_some(), c.seal.is_some()].iter().filter(|x| **x).count() == 1)), "a modified kind has one of the three alone");
+            let kind = |f: &dyn Fn(&Card) -> bool| ks.iter().position(|(_, cs)| f(&cs[0].1)).expect("a kind");
+            let (blue, poly) = (kind(&|c| c.seal == Some(Seal::Blue)), kind(&|c| c.edition == Some(Edition::Polychrome)));
+            assert!((ks[blue].0 - 0.05).abs() < 1e-12 && (ks[poly].0 - 0.012 * r).abs() < 1e-12, "a Blue Seal at 5%, Polychrome at 1.2%·r");
+            assert!(ks.iter().flat_map(|(_, cs)| cs).all(|(_, c)| c.edition != Some(Edition::Negative) && (2..=14).contains(&c.rank.0)));
+            for (p, cs) in &ks {
+                assert!((cs.iter().map(|(w, _)| w).sum::<f64>() - 1.0).abs() < 1e-9, "each kind's cards add up to it");
+                let within = |f: &dyn Fn(&Card) -> bool| cs.iter().filter(|(_, c)| f(c)).map(|(w, _)| w).sum::<f64>();
+                for suit in Suit::ALL {
+                    assert!((within(&|c| c.suit == suit) - 0.25).abs() < 1e-9, "a {p} kind's {suit:?}");
+                }
+                if cs.iter().all(|(_, c)| !plain(c)) {
+                    // every rank 1/13 within each modifier (nothing rides on the order they're listed in)
+                    for rank in 2..=14u8 {
+                        assert!((within(&|c| c.rank.0 == rank) - 1.0 / 13.0).abs() < 1e-9, "a {p} kind's rank {rank}");
+                    }
+                }
+            }
+            assert!((2..=14u8).all(|rank| ks[..13].iter().filter(|(_, cs)| cs[0].1.rank.0 == rank).count() == 1), "a plain kind per rank");
+            // the drawn cards: their chances add to 1, each kind's card comes at its own chance
+            // (one marked kind worth 2, the rest 1), and two marked: the card with both is the
+            // better of them, either at 1 − (1 − p)(1 − q)
+            let marked = |m: &[(usize, f64)]| {
+                let mut v = vec![1.0; ks.len()];
+                m.iter().for_each(|&(i, x)| v[i] = x);
+                standard_pack_draws(r, &v)
+            };
+            let at = |d: &[(f64, f64)], f: &dyn Fn(f64) -> bool| d.iter().filter(|(_, v)| f(*v)).map(|(p, _)| p).sum::<f64>();
+            assert!((at(&marked(&[]), &|_| true) - 1.0).abs() < 1e-12, "the chances add to 1");
+            for (i, (p, _)) in ks.iter().enumerate() {
+                assert!((at(&marked(&[(i, 2.0)]), &|v| v > 1.5) - p).abs() < 1e-12, "kind {i} at its chance {p}");
+            }
+            let both = marked(&[(blue, 3.0), (poly, 2.0)]);
+            assert!((at(&both, &|v| v > 2.5) - 0.05).abs() < 1e-12 && (at(&both, &|v| v > 1.5) - (1.0 - 0.95 * (1.0 - 0.012 * r))).abs() < 1e-12);
+        }
+        // the expected best of k draws: one card worth 2 at chance 0.1, the rest 1: 1 + (1 − 0.9^k)
+        let kinds = [(0.9, 1.0), (0.1, 2.0)];
+        for k in [1, 3, 5] {
+            assert!((best_of_drawn(&kinds, k, 0.0) - (2.0 - 0.9f64.powi(k as i32))).abs() < 1e-12);
+        }
+        assert!((best_of_drawn(&kinds, 3, 1.5) - (1.5 + 0.5 * (1.0 - 0.9f64.powi(3)))).abs() < 1e-12, "each at least the floor");
+    }
+
+    #[test]
+    fn a_standard_pack_is_an_option_and_a_bigger_one_worth_no_less() {
+        // Every pack on offer is an option ("unmodelled is reported as not modelled"): a Standard
+        // pack by the best of its playing cards added to your deck, or skipping it; free here, so
+        // the Jumbo's five cards are worth at least the normal pack's three
+        let pack = |key: &str, name: &str| crate::save::ItemCard { key: key.into(), name: name.into(), set: "Booster".into(), cost: 0, edition: None, card: None, rental: false, eternal: false, perishable: None };
+        let mut r = shop_run(&[("j_joker", None, None)], &[]);
+        r.shop.as_mut().unwrap().boosters = vec![pack("p_standard_normal_1", "Standard Pack"), pack("p_standard_jumbo_1", "Jumbo Standard Pack"), pack("p_standard_mega_1", "Mega Standard Pack")];
+        let a = analyze(&r, GameData::bundled(), None, &quick());
+        let get = |label: &str| a.options.iter().find(|o| o.label == label).unwrap_or_else(|| panic!("{label} is an option: {:?}", a.options.iter().map(|o| &o.label).collect::<Vec<_>>()));
+        let (normal, jumbo, mega) = (get("Standard Pack"), get("Jumbo Standard Pack"), get("Mega Standard Pack"));
+        assert!(normal.note.starts_with("pick 1 of 3 playing cards") && jumbo.note.starts_with("pick 1 of 5 playing cards"), "{} / {}", normal.note, jumbo.note);
+        assert!(mega.note.starts_with("pick 2 of 5 playing cards (counted as your best 1)"), "{}", mega.note);
+        let (n, j) = (normal.long_mult.expect("valued"), jumbo.long_mult.expect("valued"));
+        assert!(n >= 1.0 - 1e-9 && j >= n - 1e-9, "skipping ×1.00 ≤ normal ×{n:.4} ≤ jumbo ×{j:.4}");
+        assert!(a.heuristics.contains(&STANDARD_NOTE));
     }
 
     #[test]
