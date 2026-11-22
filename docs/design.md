@@ -1141,6 +1141,14 @@ the same retriggered ×Mult.
   and new interleaved): a blind's quick pass +6%, a shop −4% (the Ante 8 shop, with no next
   ante, faster on every run: 32 → 28 s on a quiet one). Tried and taken out: a boss
   reroll's worth at the next ante (gap 13 (a), the queue).
+- **Done 2026-11-22:** a shop's Standard pack is an option (gap 10), valued by the expected best
+  of its cards added to your deck by Ante 8, or skipping it, at the game's odds
+  (`standard_pack_draws`); every shop pack sized from its center (`pack_size`); the bot buys one
+  ranked first. On the 12 fixtures offering one, the first option shown is unchanged and the pack
+  is never clear of leaving (above it but tied with it in 5); on 17 bot seeds' first Ante 2-4
+  shop with one, first and clear in 1, clear in 4 more; a bot run on BAVANG06 bought and opened
+  one. The owner opened 93 of the 238 offered: whether the advice reads them low against that
+  isn't measured (the queue's "What's left of gap 10"). Shops +6% on the timing set.
 - **Next:** a free hand banked before the
   hand that wins (gap 34); Ceremonial Dagger's value (gap 8); the blind odds shown and the
   outlook chained as Best play's blinds ahead are (gap 28).
@@ -1851,10 +1859,10 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    kept) and Campfire's reset after a boss.
 9. **The long-run projection spends money on your main hand's planets.** A board that wants
    several hands levelled is valued as if it wanted one.
-10. **Packs are valued in two places, sized by their label.** A shop pack and the same pack
+10. **Packs are valued in two places.** A shop pack and the same pack
    from a skip tag have their own branches (Meteor's Mega Celestial by explicit planets, the
-   shop's by an average), and "Mega" / "Jumbo" are read from the name, not the center's
-   `extra` / `choose`. In an open Mega pack, picking one card and then skipping the rest (for
+   shop's by an average), and a tag's pack has its size set in code, not read from the center's
+   `extra` / `choose` as a shop's packs are since 2026-11-22 (`pack_size`). In an open Mega pack, picking one card and then skipping the rest (for
    Red Card) isn't an option: the picks left aren't read from the save. The general fix: one
    pack valuation from the center config (`pack_value`'s rule), used by shop packs, tags and
    the open pack. A shop's Standard Pack (2026-11-22) is valued from its center's `extra` and
