@@ -240,6 +240,7 @@ pub fn run(run: &RunState, data: &GameData, plan: &Plan, sims: usize, seed: u64)
                     disabled: cb.is_some_and(|c| c.disabled),
                     juggle: 0,
                     short: 0,
+                    pool: None,
                 }
                 // a hand short since its last draw waits for the draw after its next move
                 .dealt()
@@ -260,6 +261,7 @@ pub fn run(run: &RunState, data: &GameData, plan: &Plan, sims: usize, seed: u64)
                     hidden: None,
                     changes: vec![],
                     short: 0,
+                    pool: None,
                 };
                 // the plan's jokers; all of blind.lua Blind:set_blind, then the jokers',
                 // come as it's set on the board, per round (sim::round_odds -> Board::at_blind_set_drawn)
@@ -277,14 +279,19 @@ pub fn run(run: &RunState, data: &GameData, plan: &Plan, sims: usize, seed: u64)
                 round_money: st.money + st.hands_left * run.money_per_hand,
             });
         }
-        // Next ante: a plain boss, to see how far the board carries
+        // Next ante: its boss as the game draws it (any of the bosses allowed there, each
+        // round one: `advise::next_boss_pool`), to see how far the board carries; its target and
+        // reach a plain boss's (2× the base); none at the win ante, whose boss ends the run
+        let Some(pool) = crate::advise::next_boss_pool(run, data) else { return out };
         let ante = run.ante + 1;
         let target = crate::save::blind_amount(ante, run.blind_scaling) * 2.0 * run.ante_scaling;
+        let n = pool.len();
+        let not = crate::advise::pool_unmodelled(&pool).map_or(String::new(), |u| format!("; {u}"));
         let b = board_with(js, full);
-        let start = RoundStart { hand: vec![], deck: full.to_vec(), hand_size: run.hand_size, hands: run.round_hands, discards: run.round_discards, scored: 0.0, target, fresh: true, ..Default::default() };
+        let start = RoundStart { hand: vec![], deck: full.to_vec(), hand_size: run.hand_size, hands: run.round_hands, discards: run.round_discards, scored: 0.0, target, fresh: true, pool: Some(pool), ..Default::default() };
         let start = crate::advise::apply_mods(&start, added, removed);
         let (p, st) = sim::round_odds(&b, &start, sims, seed);
-        out.push(BlindOdds { label: format!("Ante {ante} plain boss"), target, p_win: p, p_with_bones: None, reach: st.mean / target.max(1.0), round_money: st.money + st.hands_left * run.money_per_hand });
+        out.push(BlindOdds { label: format!("Ante {ante} boss (any of {n}; target and reach a plain one's{not})"), target, p_win: p, p_with_bones: None, reach: st.mean / target.max(1.0), round_money: st.money + st.hands_left * run.money_per_hand });
         out
     };
     // Money: the jokers sold and bought (by key, as above), and the payouts and rent of the

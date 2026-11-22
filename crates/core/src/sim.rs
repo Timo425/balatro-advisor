@@ -1190,6 +1190,13 @@ pub struct RoundStart {
     /// `CardArea:change_size`: those cards). None: the hand is filled as the round starts (a
     /// fresh round's first deal, or the draw after the move before).
     pub short: usize,
+    /// A fresh round whose boss isn't drawn yet (the next ante's): the bosses the game can draw
+    /// there, each as likely (common_events.lua `get_new_boss`: `pseudorandom_element` over the
+    /// least drawn), each with its target; each simulated round plays one, picked from its
+    /// setup's seed (`Board::at_blind_set_drawn`), so round i meets the same boss on every board.
+    /// `blind` and `target` hold a plain boss's, for what reads the round's size (its reach)
+    /// and a setup with no seed (`Board::at_blind_set`)
+    pub pool: Option<std::sync::Arc<[(String, f64)]>>,
 }
 
 /// `hand` with a consumable's card effect done on the cards at `places` (`consumable::apply`) on

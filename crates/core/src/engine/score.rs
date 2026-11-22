@@ -782,10 +782,24 @@ impl Board {
         if !start.fresh {
             return (self.clone(), start.clone());
         }
+        // a boss not drawn yet: this round's, picked from its seed (`RoundStart::pool`), on a
+        // hash of its own so the setup's other draws stay as they are
+        // (a boss not drawn yet is a new ante's: nothing played in it yet, as state_events.lua
+        // `end_round` clears `played_this_ante` once a boss is beaten)
+        let new_ante = start.pool.is_some();
+        let picked;
+        let start = match (start.pool.as_deref(), draw) {
+            (Some(pool), Some(seed)) if !pool.is_empty() => {
+                let i = ((seed ^ 0x706f_6f6c).wrapping_mul(0x9e37_79b9_7f4a_7c15) >> 32) as usize % pool.len();
+                picked = RoundStart { blind: pool[i].0.clone(), target: pool[i].1, pool: None, ..start.clone() };
+                &picked
+            }
+            _ => start,
+        };
         let mut b = self.clone();
         b.new_round(&start.blind);
         b.blind.disabled = start.disabled;
-        let mut s = RoundStart { fresh: false, juggle: 0, ..start.clone() };
+        let mut s = RoundStart { fresh: false, juggle: 0, pool: None, ..start.clone() };
         s.hand_size += b.round_resets.0;
         s.hands += b.round_resets.1;
         s.discards += b.round_resets.2;
@@ -797,7 +811,7 @@ impl Board {
         // a card like it not marked yet
         for c in s.hand.iter_mut().chain(s.deck.iter_mut()) {
             c.face_down = false;
-            c.played_this_ante &= !b.ante_over;
+            c.played_this_ante &= !(b.ante_over || new_ante);
         }
         for p in &b.played_ante {
             if let Some(c) = s.hand.iter_mut().chain(s.deck.iter_mut()).find(|c| !c.played_this_ante && c.same_kind(p) && c.perma_bonus == p.perma_bonus) {

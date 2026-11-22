@@ -89,7 +89,8 @@ pub struct Round {
     pub p_win: f64,
     pub total: Stats,
     pub in_progress: bool,
-    /// A plain boss in a later ante: "how far does this board carry".
+    /// The next ante's boss, any of those the game can draw there (its target and reach a plain
+    /// boss's, 2× the base): "how far does this board carry".
     pub horizon: bool,
     /// Mean round total as a share of the target.
     pub reach: f64,
@@ -926,6 +927,9 @@ struct Ctx<'a> {
     /// set once the long run is built, outside a quick pass in a blind): the higher, the less it
     /// costs
     removal_rank: std::sync::OnceLock<Vec<f64>>,
+    /// Your board's fit against each boss the next ante can be (`Ctx::next_bosses`), worked out
+    /// once where a chance there is read off scores
+    next_bosses: std::sync::OnceLock<Vec<(f64, f64)>>,
     data: &'a GameData,
     base: Board,
     specs: Vec<Spec>,
@@ -984,6 +988,25 @@ impl Ctx<'_> {
 
     fn odds_one(&self, b: &Board, spec: &Spec, sims: usize) -> (f64, Stats) {
         sim::round_odds(b, &spec.start, sims, self.opts.seed)
+    }
+
+    /// Your board's fit against each boss a round of `spec`'s pool can meet (`RoundStart::pool`:
+    /// the next ante's), each on a third of that round's own count of rounds (`NEXT_BOSS_SHARE`
+    /// of `spec_rounds`, at least 20: a budget), for reading a chance there off scores
+    /// (`Scores::mixed`, which moves them to your board's chance on the round's own rounds); once,
+    /// the first spec with a pool asked
+    fn next_bosses(&self, spec: &Spec) -> &[(f64, f64)] {
+        self.next_bosses.get_or_init(|| {
+            let Some(pool) = spec.start.pool.as_deref() else { return vec![] };
+            let n = (spec_rounds(spec, self.opts.sims) / NEXT_BOSS_SHARE).max(20);
+            par_map(pool, |(key, target)| {
+                // (a new ante's round: nothing played in it yet, as `Board::set_blind` sets a pool's)
+                let deck = spec.start.deck.iter().map(|c| Card { played_this_ante: false, ..*c }).collect();
+                let start = RoundStart { blind: key.clone(), target: *target, pool: None, deck, ..spec.start.clone() };
+                let (p, st) = sim::round_odds(&self.base, &start, n, self.opts.seed);
+                Scores::from_odds(0, p, &st, *target).at
+            })
+        })
     }
 
     /// `b`'s chance at each of this ante's blinds before its hardest round (`before`), with what
@@ -1219,6 +1242,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
                 disabled: cb.disabled,
                 juggle: 0,
                 short: 0,
+                pool: None,
             }
             .dealt(),
             horizon: false,
@@ -1248,14 +1272,17 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
     }
     // Every upcoming blind, for the blind overview (base board only, so it's cheap)
     let overview_specs: Vec<(String, Spec)> = upcoming.iter().map(|bl| (bl.slot.clone(), blind_spec(bl))).collect();
-    // Next ante: a plain boss (2x base, no effect), to see how far the board carries.
-    for k in 1..=1 {
-        let ante = run.ante + k;
+    // Next ante: its boss as the game draws it (`next_boss_pool`: each simulated round meets one
+    // of the bosses allowed there), to see how far the board carries; its target and reach a
+    // plain boss's (2× the base). None at the win ante: the run ends with its boss (gap 13).
+    if let Some(pool) = next_boss_pool(run, data) {
+        let ante = run.ante + 1;
         let target = crate::save::blind_amount(ante, run.blind_scaling) * 2.0 * run.ante_scaling;
+        let n = pool.len();
         specs.push(Spec {
             label: format!("Ante {ante}"),
             blind_key: String::new(),
-            blind_name: "plain boss".into(),
+            blind_name: if n == 1 { "the one it can be".into() } else { format!("any of the {n} it can be") },
             start: RoundStart {
                 hand: vec![],
                 deck: fresh_deck.clone(),
@@ -1271,6 +1298,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
                 hidden: None,
                 changes: vec![],
                 short: 0,
+                pool: Some(pool),
             },
             horizon: true,
         });
@@ -1286,7 +1314,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
     } else {
         vec![]
     };
-    let ctx = Ctx { run, data, base, specs, ahead, before, fresh_deck, opts: opts.clone(), removal_rank: Default::default(), arrange: run.blind_in_play().is_none(), orders: Default::default() };
+    let ctx = Ctx { run, data, base, specs, ahead, before, fresh_deck, opts: opts.clone(), removal_rank: Default::default(), next_bosses: Default::default(), arrange: run.blind_in_play().is_none(), orders: Default::default() };
 
     lap("setup");
     let base_odds = ctx.odds(&ctx.base, &[], &[], opts.sims);
@@ -2378,7 +2406,8 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
         // (`money_value_with`: walk i draws the same shops for every option, this ante, the next
         // and for the strength its finds add). Not in it (so not in a tie's width): the luck of
         // the long run's rounds and of the pool's screen, each the same draws for every option,
-        // and which reroll cap a walk's first half chose (gap 7)
+        // which reroll cap a walk's first half chose, and the next ante's bosses' own fits that
+        // shape a chance read off scores there (`Ctx::next_bosses`) (gap 7)
         {
             let floor = three_wins(next_rounds(&ctx));
             let hz = ctx.specs.iter().position(|x| x.horizon);
@@ -2523,7 +2552,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
                 best_play: None,
                 gold: gold.map(|g| GoldSummary { have: g.have_gold, total: g.total, this_run_counts: run.stake >= 8 }),
                 caveats: run.snapshot.caveats.clone(),
-                heuristics: HEURISTICS.iter().copied().chain([FIRST_RANKING_NOTE]).collect(),
+                heuristics: HEURISTICS.iter().copied().chain(ctx.specs.iter().any(|x| x.start.pool.is_some()).then_some(NEXT_ANTE_NOTE)).chain([FIRST_RANKING_NOTE]).collect(),
                 save_age_secs: run.snapshot.age_secs,
                 live: run.snapshot.live,
                 order_tips: vec![],
@@ -2936,6 +2965,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
         caveats: run.snapshot.caveats.clone(),
         heuristics: HEURISTICS
         .into_iter()
+        .chain(ctx.specs.iter().any(|x| x.start.pool.is_some()).then_some(NEXT_ANTE_NOTE))
         .chain(skips.then_some(SKIP_NOTE))
         .chain(grows.then_some(
             "Best play counts what the round's hands and discards leave the jokers that grow or fade in a round, by what one more Mult, ×Mult or Chip adds by Ante 8 (measured on a step of +2 Mult, +×0.25 or +10 Chips, taken as linear; a fall never costs more than losing the joker; several jokers' factors multiplied, heuristic) and, in this ante, by what they do to the chance of getting through the blinds still ahead (see the note on those); the simulated player aims for it in how it finishes the round (the winning play worth most, or playing on for growth on a few simulated futures) and, with no win on the table, in a play that grows them more while it keeps pace and scores as much over the hands left as its own pick (weighed on 16 simulated futures), not in its digs or discards, and what they do to your cards (Vampire's enhancements, Glass breaking) isn't counted. The blind odds shown still play your jokers as they are now.",
@@ -2948,7 +2978,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
         .chain((run.screen.in_blind() && run.hand.iter().any(|c| c.face_down)).then_some(if ctx.specs.iter().any(|x| x.in_progress()) { play::FACE_DOWN_NOTE } else { play::FACE_DOWN_FALLBACK_NOTE }))
         // the rounds simulated under a boss that turns cards down (`Board::stays_flipped`), not
         // disabled as its blind is set (Chicot, the save's: as `round_unmodelled` reads it)
-        .chain(ctx.specs.iter().any(|x| crate::engine::score::turns_cards_down(&x.blind_key) && !x.start.disabled && !ctx.base.at_blind_set(&x.start).0.blind.disabled).then_some(TURNED_DOWN_NOTE))
+        .chain(ctx.specs.iter().any(|x| (crate::engine::score::turns_cards_down(&x.blind_key) && !x.start.disabled && !ctx.base.at_blind_set(&x.start).0.blind.disabled) || x.start.pool.as_deref().is_some_and(|p| p.iter().any(|(k, _)| crate::engine::score::turns_cards_down(k)))).then_some(TURNED_DOWN_NOTE))
         .chain((run.hand.len() > sim::ALL_MOVES_MAX).then_some(
             "A big hand: Best play's moves come from the hand's structure (its plays whose cards can all score, and with face-down cards every play holding one, the best few of each kind and then by score now; its structure's discards), not every move; the simulated player's best play looks only at its 16 highest cards.",
         ))
@@ -2974,6 +3004,9 @@ const HEURISTICS: [&str; 8] = [
         "With your joker slots full, the joker a shop or pool joker replaces is chosen by the shop ranking's measure: the chance through this ante (for a joker on offer every blind still ahead before its hardest round, then that round; for one the shops ahead may show, that round alone) × the next ante's boss × the geometric mean of the long run with that sale (its income and growth by Ante 8) and the strength at the next ante, with Mr. Bones' save counted at the rounds it plays, a save spent on a blind before the hardest round gone for the rounds after it (the shop ranking counts it through every round ahead: on chained runs, the share of lost rounds a save rescues applied to each option's survival, a heuristic); the swaps (outside a blind each on the board it leaves as you'd arrange it; in a blind, the freed slot and the right end) raced on the same simulated rounds (to the full count), those it can't tell apart reported as ties; a round lost counts at the chance told from none (3 wins in its rounds, as in the shop ranking), so where no swap gets through, what each sale leaves you decides, its money included (heuristic budget: at most 6 swaps after 32 rounds, 4 after 64, 3 after 128; a sale's places that play the first 32 rounds the same count as one). A Negative joker is never the one sold to make room (its slot goes with it), nor a charged Invisible Joker (it copies another joker into the row as it's sold). What a sale does that isn't modelled is said on the option (a joker that acts when sold: Diet Cola, a charged Invisible Joker; Campfire's growth from it). A joker's money is the money a round won pays on the board with it against without it, on the same rounds of this ante's plain blinds (scoring, discards, the round's end, hands left); a joker whose money that doesn't reach (Gift Card, Credit Card, Matador's boss payout) is said \"not modelled\" on an option that sells it. The pool's quick screen tries only the joker whose removal leaves most by the same measure. A perished joker is the one sold.",
         "Shop options are told apart by the simulation's own noise: one is listed above another, or above keeping your money, only when it's ahead by more than 2 standard errors of their difference on the simulated rounds and shops both rest on, with 3% of the rank counted in for what no round shows (the By Ante 8 projection's own luck, a pack's or a reroll's cards, an estimate, an effect left out). Closer than that is a tie (≈), keeping your money first; skipping an open pack goes after the pack's picks worth more that leave no less money (its cards are gone once it closes). A round's chance under 3 wins in its rounds counts as that much for every option (it can't be told from none), so where a round is lost whatever you pick, what each option leaves you ranks them, the money it spends included.",
 ];
+
+/// Said where the next ante is read (`next_boss_pool`)
+const NEXT_ANTE_NOTE: &str = "The next ante's boss is one of the bosses the game can draw there (the least drawn so far of those allowed at that ante; when the next ante is the last, its five final bosses), each as likely: each simulated round meets one, with its own target and its rule where it's simulated; its reach is shown against a plain boss's target (2× the base). An option with no simulated chance there has it read off its scores as your board's against each boss (simulated on its own rounds, heuristic: a lognormal for each), moved together to your board's chance there. At the last ante nothing past its boss is counted.";
 
 /// Said with a skip-or-play comparison (`SkipCompare`)
 const SKIP_NOTE: &str = "Skip or play compares the chance to get through this ante (playing, the blind you choose and the boss; the shops before the boss counted, one fewer if you skip; a Big Blind between the one you choose and the boss: its chance isn't counted, its reward and the shop after it are: not modelled) × the next ante's boss × By Ante 8. Each round's chance (the blind you choose and the boss, and the next ante's boss) counts at least a chance told from none (3 wins in its rounds, as in the shop ranking), so a round hopeless both ways leaves the rest to decide. Close: within 3% (heuristic). A tag whose effect isn't valued gives no verdict (not modelled), nor does the comparison count the copies a Double Tag you hold would make (not modelled).";
@@ -3045,6 +3078,10 @@ const TURNED_DOWN_NOTE: &str = "Under The House, The Mark, The Wheel or The Fish
 /// The Pillar its replays from the start and Verdant Leaf the sale its odds assume
 /// (`sim::leaf_choice`, named); else the boss's (`unmodelled_boss`)
 fn round_unmodelled(ctx: &Ctx, s: &Spec) -> Option<String> {
+    // a boss not drawn yet (the next ante's): what isn't simulated of the bosses it can be
+    if let Some(pool) = s.start.pool.as_deref() {
+        return pool_unmodelled(pool);
+    }
     if s.start.disabled || ctx.base.at_blind_set(&s.start).0.blind.disabled {
         return None;
     }
@@ -3058,6 +3095,22 @@ fn round_unmodelled(ctx: &Ctx, s: &Spec) -> Option<String> {
         }
         _ => unmodelled_boss(&s.blind_key),
     }
+}
+
+/// What isn't simulated of the bosses a round not drawn yet can meet (`RoundStart::pool`: the
+/// next ante's), each boss's as `unmodelled_boss` says it but for the next ante: The Pillar's
+/// cards played there before it, Verdant Leaf's sale a simulated round makes first (no move of
+/// Best play's is shown there)
+pub fn pool_unmodelled(pool: &[(String, f64)]) -> Option<String> {
+    let not: Vec<String> = pool
+        .iter()
+        .filter_map(|(k, _)| match k.as_str() {
+            "bl_pillar" => Some("The Pillar's debuffs on the cards that ante's blinds before it will play".to_string()),
+            "bl_final_leaf" => Some("Verdant Leaf played with a joker sold first (the simulated player's pick)".to_string()),
+            _ => unmodelled_boss(k).map(|r| r.trim_start_matches("not simulated: ").to_string()),
+        })
+        .collect();
+    (!not.is_empty()).then(|| format!("not simulated, of the {} bosses it can be: {}", pool.len(), not.join("; ")))
 }
 
 fn unmodelled_boss(key: &str) -> Option<String> {
@@ -3145,14 +3198,16 @@ const SAVE_DRAWS: u64 = 0x7361_7665_6c69_6674;
 /// does for the shop ranking's survival: on `sim::chained_through`'s runs (each run played
 /// round after round, a save played on without the joker that saved it, so it's spent once
 /// for each copy), through every blind still to come this ante (a round in progress first),
-/// then the next ante's Small and Big Blind at their plain sizes and its boss (`spec`'s plain
-/// boss), each round with what the jokers sold or bought (`added`, `removed`) add to it: of the
+/// then the next ante's Small and Big Blind at their plain sizes and its boss (any of the
+/// bosses it can be, `next_boss_pool`; none at the win ante, whose boss is the run's last), each round with what the jokers sold or bought (`added`, `removed`) add to it: of the
 /// runs that lose a round on score, the share the saves get through, this ante (`now`), and the
 /// next ante among the runs alive after this one (`next`: a save spent this ante is gone there),
 /// one group of runs each, nothing told from fewer than 3 lost. The caller applies them to an
 /// option's own losses (`p + (1 − p)·share`). Nothing on a board with no such joker.
 fn save_lift(ctx: &Ctx, b: &Board, added: &[&Joker], removed: &[&Joker]) -> (f64, f64) {
-    let (Some(key_round), Some(hz)) = (ctx.specs.iter().rposition(|s| !s.horizon), ctx.specs.iter().position(|s| s.horizon)) else { return (0.0, 0.0) };
+    // (at the win ante no next ante: this ante's blinds alone, its boss the run's last round)
+    let Some(key_round) = ctx.specs.iter().rposition(|s| !s.horizon) else { return (0.0, 0.0) };
+    let hz = ctx.specs.iter().position(|s| s.horizon);
     if b.saves_lost_round(1.0, 1.0).is_none() {
         return (0.0, 0.0);
     }
@@ -3165,11 +3220,11 @@ fn save_lift(ctx: &Ctx, b: &Board, added: &[&Joker], removed: &[&Joker]) -> (f64
         .filter(|s| s.in_progress())
         .map(|s| s.start.clone())
         .chain(run.blinds.iter().filter(|bl| matches!(bl.state.as_str(), "Select" | "Upcoming")).map(|bl| blind_from_start(&bl.key, bl.target, run, &ctx.fresh_deck)))
-        .chain([("bl_small", 1.0), ("bl_big", 1.5)].map(|(key, m)| blind_from_start(key, base * m, run, &ctx.fresh_deck)))
-        .chain(std::iter::once(ctx.specs[hz].start.clone()))
+        .chain(hz.into_iter().flat_map(|hz| [("bl_small", 1.0), ("bl_big", 1.5)].map(|(key, m)| blind_from_start(key, base * m, run, &ctx.fresh_deck)).into_iter().chain(std::iter::once(ctx.specs[hz].start.clone()))))
         .map(|s| apply_mods(&s, added, removed))
         .collect();
-    let (k, n) = (rounds.len() - 3, rounds.len());
+    let n = rounds.len();
+    let k = if hz.is_some() { n.saturating_sub(3) } else { n };
     let runs = sim::chained_through(b, &rounds, ctx.opts.sims, ctx.opts.seed ^ SAVE_DRAWS);
     // Of the runs lost on score in rounds `from..to` (among those alive at `from`), the share a
     // save got through; nothing told from fewer than 3 such runs (`three_wins`' rule of three)
@@ -3993,7 +4048,7 @@ fn shop_options(
     }
     for c in run.open_pack.iter().filter(|c| c.set == "Tarot" || c.set == "Spectral") {
         if let Some(t) = tarot_p(&c.key) {
-            out.push(ShopOption { tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None, label: format!("pick {}", c.name), kind: "tarot".into(), cost: 0, p_win: t.p_win, note: format!("{} · next ante reach {:.0}% → {:.0}%", t.note, t.reach_now * 100.0, t.reach * 100.0), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: t.money_gain, long_mult: None, key: Some(c.key.clone()), desc: None });
+            out.push(ShopOption { tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None, label: format!("pick {}", c.name), kind: "tarot".into(), cost: 0, p_win: t.p_win, note: if ctx.specs.iter().any(|x| x.horizon) { format!("{} · next ante reach {:.0}% → {:.0}%", t.note, t.reach_now * 100.0, t.reach * 100.0) } else { t.note.clone() }, money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: t.money_gain, long_mult: None, key: Some(c.key.clone()), desc: None });
         }
     }
     for c in run.consumables.iter().filter(|c| c.set == "Tarot" || c.set == "Spectral") {
@@ -4373,6 +4428,51 @@ fn long_draw(pool: &[Candidate], cards: usize, joker_share: f64, floor: f64, rng
     total / trials as f64
 }
 
+/// The bosses the game can draw at `ante` (common_events.lua `get_new_boss`): those allowed
+/// there (a boss's `boss.min` at most the ante, Ante 0 counted as 1; the showdown bosses only at
+/// a multiple of the win ante from Ante 2, and then only they), the run's banned keys out, and of
+/// the rest only those drawn least so far (`bosses_used`), each as likely
+/// (`pseudorandom_element`). The next ante's (`next_boss_pool`) and a reroll's this ante
+/// (`boss_reroll_option`, the boss in play left out: `but`).
+fn boss_pool_but<'a>(run: &RunState, data: &'a GameData, ante: i64, but: Option<&str>) -> Vec<&'a crate::data::Blind> {
+    let win = run.win_ante.max(1);
+    let showdown = ante >= 2 && ante % win == 0;
+    let used = |k: &str| run.bosses_used.iter().find(|(x, _)| x == k).map_or(0, |x| x.1);
+    let eligible: Vec<&crate::data::Blind> = data
+        .blinds
+        .iter()
+        .filter(|b| Some(b.key.as_str()) != but && !run.banned_keys.contains(&b.key))
+        .filter(|b| {
+            let sd = b.boss.get("showdown").and_then(|v| v.as_bool()).unwrap_or(false);
+            let min = b.boss.get("min").and_then(|v| v.as_i64());
+            min.is_some() && if showdown { sd } else { !sd && min.unwrap_or(99) <= ante.max(1) }
+        })
+        .collect();
+    let least = eligible.iter().map(|b| used(&b.key)).min().unwrap_or(0);
+    eligible.into_iter().filter(|b| used(&b.key) == least).collect()
+}
+
+/// Your board's rounds against each boss the next ante can be (`Ctx::next_bosses`), as a
+/// share of that round's own: 1 in 3 (a budget: the change that brought the pool in costs the
+/// timing set +6% in a blind's quick pass and −4% in a shop with it, on a busy PC, 2026-11-22)
+const NEXT_BOSS_SHARE: usize = 3;
+
+/// The next ante's boss as the game will draw it (`boss_pool_but` at the next ante, each with its
+/// target: its `mult` times the ante's base), for a simulated round to meet one at random
+/// (`RoundStart::pool`); none at the win ante unless its boss is beaten (it ends the run, gap 13),
+/// or with nothing to draw
+pub fn next_boss_pool(run: &RunState, data: &GameData) -> Option<std::sync::Arc<[(String, f64)]>> {
+    let ante = run.ante + 1;
+    // (at the win ante unless its boss is beaten: the game moves on to the ante after it as the
+    // boss's round ends, state_events.lua `end_round`, so a save there reads the next ante)
+    if run.ante == run.win_ante && !run.blinds.iter().any(|b| b.slot == "Boss" && b.state == "Defeated") {
+        return None;
+    }
+    let base = crate::save::blind_amount(ante, run.blind_scaling) * run.ante_scaling;
+    let pool: Vec<(String, f64)> = boss_pool_but(run, data, ante, None).iter().map(|b| (b.key.clone(), base * b.mult)).collect();
+    (!pool.is_empty()).then(|| pool.into())
+}
+
 /// Director's Cut / Retcon: the options round's boss against a reroll into any boss the
 /// game could draw instead (`get_new_boss` in common_events.lua: bosses allowed at this
 /// ante, showdown ones only on the final ante, banned ones out, least drawn first).
@@ -4399,20 +4499,7 @@ fn boss_reroll_option(ctx: &Ctx, run: &RunState, data: &GameData, spec: &Spec, n
         o.note = " (no boss left this ante to reroll)".into();
         return o;
     };
-    let showdown = run.ante >= 2 && run.ante % run.win_ante.max(1) == 0;
-    let used = |k: &str| run.bosses_used.iter().find(|(x, _)| x == k).map_or(0, |x| x.1);
-    let eligible: Vec<&crate::data::Blind> = data
-        .blinds
-        .iter()
-        .filter(|b| b.key != cur.key && !run.banned_keys.contains(&b.key))
-        .filter(|b| {
-            let sd = b.boss.get("showdown").and_then(|v| v.as_bool()).unwrap_or(false);
-            let min = b.boss.get("min").and_then(|v| v.as_i64());
-            min.is_some() && if showdown { sd } else { !sd && min.unwrap_or(99) <= run.ante.max(1) }
-        })
-        .collect();
-    let least = eligible.iter().map(|b| used(&b.key)).min().unwrap_or(0);
-    let eligible: Vec<&crate::data::Blind> = eligible.into_iter().filter(|b| used(&b.key) == least).collect();
+    let eligible: Vec<&crate::data::Blind> = boss_pool_but(run, data, run.ante, Some(&cur.key));
     if eligible.is_empty() {
         o.note = " (no other boss to reroll into)".into();
         return o;
@@ -4436,7 +4523,7 @@ fn boss_reroll_option(ctx: &Ctx, run: &RunState, data: &GameData, spec: &Spec, n
         o.money_gain = -10.0;
         o.note = format!(": worth using on {} now ({:.0}% → {:.0}% on average over {} bosses it could become{rough_note})", cur.name, now * 100.0, avg * 100.0, eligible.len());
     } else {
-        o.note = format!(": keep {} ({:.0}%; a reroll averages {:.0}% over {} bosses{rough_note}). Also a reroll on every later boss, Ante 8's included (not valued)", cur.name, now * 100.0, avg * 100.0, eligible.len());
+        o.note = format!(": keep {} ({:.0}%; a reroll averages {:.0}% over {} bosses{rough_note}). Also a reroll on every later boss, the next ante's included (not valued)", cur.name, now * 100.0, avg * 100.0, eligible.len());
     }
     o
 }
@@ -5331,6 +5418,7 @@ fn blind_from_start(key: &str, target: f64, run: &RunState, deck: &[Card]) -> Ro
         hidden: None,
         changes: vec![],
         short: 0,
+        pool: None,
     }
 }
 
@@ -5886,16 +5974,39 @@ pub(super) struct Scores {
     /// Your board's chance there is 0 or 1 in its rounds (placed by the rule of three)
     sure: bool,
     /// (log of the multiplier on every score that brings its chance to a half, the spread of the
-    /// log scores)
+    /// log scores); for a mix of bosses (`mix`) the shift on every boss's fit, and 1
     at: (f64, f64),
+    /// A round against one of several bosses, each as likely (`Scores::mixed`): your board's fit
+    /// against each, its gap and spread
+    mix: Option<std::sync::Arc<[(f64, f64)]>>,
+    /// The mix's chance at `MIX_POINTS` multipliers, their logs evenly from `MIX_LX` to its
+    /// negative (`mix_lx`)
+    curve: Option<std::sync::Arc<[f64]>>,
+}
+
+/// The grid a mix of bosses' chance is read on (`Scores::mixed`): this many multipliers on your
+/// board's scores, their logs evenly from −8 to 8 (×1/3000 to ×3000; past them a mix is at its
+/// bounds), read linearly between them (a budget: off by at most about 2e-4 of a chance, where
+/// a boss's scores spread least, 0.05 in log terms)
+const MIX_POINTS: usize = 4097;
+const MIX_LX: f64 = -8.0;
+
+fn mix_lx(k: usize) -> f64 {
+    MIX_LX + 2.0 * MIX_LX.abs() * k as f64 / (MIX_POINTS - 1) as f64
 }
 
 impl Scores {
     /// Your board's scores in round `i` from its simulated odds there (none simulated, or a board
-    /// that scores nothing: several jokers count as the best of them)
+    /// that scores nothing: several jokers count as the best of them); a round whose boss isn't
+    /// drawn yet (the next ante's, `RoundStart::pool`) a mix of your board's scores against each
+    /// boss it can be (`Ctx::next_bosses`), moved together to your simulated chance against the
+    /// pool (`Scores::mixed`)
     fn of(ctx: &Ctx, i: usize, base: &[(f64, Stats)]) -> Scores {
-        let none = Scores { round: i, mean: f64::INFINITY, sure: true, at: (f64::INFINITY, 1.0) };
+        let none = Scores { round: i, mean: f64::INFINITY, sure: true, at: (f64::INFINITY, 1.0), mix: None, curve: None };
         let Some(((p, st), spec)) = base.get(i).zip(ctx.specs.get(i)) else { return none };
+        if spec.start.pool.as_deref().is_some_and(|pool| !pool.is_empty()) {
+            return Scores::mixed(i, *p, st, ctx.next_bosses(spec));
+        }
         Scores::from_odds(i, *p, st, spec.start.target)
     }
 
@@ -5903,7 +6014,7 @@ impl Scores {
     /// `specs` doesn't hold, `Ctx::before`: `round` then names none of `specs`)
     fn from_odds(i: usize, p: f64, st: &Stats, target: f64) -> Scores {
         if st.p50 <= 0.0 || st.mean <= 0.0 || target <= 0.0 {
-            return Scores { round: i, mean: f64::INFINITY, sure: true, at: (f64::INFINITY, 1.0) };
+            return Scores { round: i, mean: f64::INFINITY, sure: true, at: (f64::INFINITY, 1.0), mix: None, curve: None };
         }
         let spread = ((st.p90.max(1.0).ln() - st.p10.max(1.0).ln()) / (2.0 * 1.281_551_6)).max(0.05);
         let half = 0.5 / st.n.max(1) as f64;
@@ -5916,27 +6027,82 @@ impl Scores {
         } else {
             to(p)
         };
-        Scores { round: i, mean: st.mean, sure: p <= 0.0 || p >= 1.0, at: (gap, spread) }
+        Scores { round: i, mean: st.mean, sure: p <= 0.0 || p >= 1.0, at: (gap, spread), mix: None, curve: None }
+    }
+
+    /// A round against one of several bosses, each as likely: your board's fit against each
+    /// (`bosses`: each its gap and spread, `from_odds` on rounds of its own), all moved by one
+    /// shift (`at.0`) so the mix gives `p`, your board's chance on the round's own rounds (so
+    /// a board read at your strength reads your simulated chance, as a single boss's does); at
+    /// none or a sure pass, half a round of `st`'s count short of it, the shift no nearer the
+    /// target than the bosses' own fits put it. The bosses' sizes and rules shape how the chance
+    /// moves with a board's strength: Violet Vessel's 6× caps it where the others are beaten
+    fn mixed(i: usize, p: f64, st: &Stats, bosses: &[(f64, f64)]) -> Scores {
+        let mix: std::sync::Arc<[(f64, f64)]> = bosses.into();
+        let half = 0.5 / st.n.max(1) as f64;
+        let at = |shift: f64| Scores { round: i, mean: st.mean, sure: p <= 0.0 || p >= 1.0, at: (shift, 1.0), mix: Some(mix.clone()), curve: None };
+        // (the shift whose mix gives chance q: the chance falls as the shift grows)
+        let solve = |q: f64| {
+            let (mut lo, mut hi) = (-30.0f64, 30.0f64);
+            for _ in 0..80 {
+                let mid = 0.5 * (lo + hi);
+                if at(mid).chance(1.0) > q { lo = mid } else { hi = mid }
+            }
+            0.5 * (lo + hi)
+        };
+        let shift = if p <= 0.0 {
+            solve(half).max(0.0)
+        } else if p >= 1.0 {
+            solve(1.0 - half).min(0.0)
+        } else {
+            solve(p)
+        };
+        // (the mix's chance on a grid of the multiplier's log, read between its points: the
+        // money's walks read it thousands of times)
+        let mut sc = at(shift);
+        sc.curve = Some((0..MIX_POINTS).map(|k| sc.mix_chance(mix_lx(k))).collect());
+        sc
+    }
+
+    /// The mix's chance at `ln x`, from its bosses' fits
+    fn mix_chance(&self, lx: f64) -> f64 {
+        let m = self.mix.as_deref().unwrap_or(&[]);
+        m.iter().map(|(g, s)| normal_above((g + self.at.0 - lx) / s)).sum::<f64>() / m.len().max(1) as f64
     }
 
     /// The chance with every score of your board's ×`x`
     fn chance(&self, x: f64) -> f64 {
-        let (gap, spread) = self.at;
-        normal_above((gap - x.max(1e-12).ln()) / spread)
+        let lx = x.max(1e-12).ln();
+        match (&self.curve, &self.mix) {
+            (Some(c), _) => {
+                let f = ((lx - MIX_LX) / (2.0 * MIX_LX.abs()) * (MIX_POINTS - 1) as f64).clamp(0.0, (MIX_POINTS - 1) as f64);
+                let k = (f as usize).min(MIX_POINTS - 2);
+                c[k] + (c[k + 1] - c[k]) * (f - k as f64)
+            }
+            (None, Some(_)) => self.mix_chance(lx),
+            (None, None) => normal_above((self.at.0 - lx) / self.at.1),
+        }
+    }
+
+    /// How fast `chance` rises with the log of the multiplier at `ln x`
+    fn density_at(&self, lx: f64) -> f64 {
+        let density = |z: f64| (-0.5 * z * z).exp() / (2.0 * std::f64::consts::PI).sqrt();
+        match &self.mix {
+            None => density((self.at.0 - lx) / self.at.1) / self.at.1,
+            Some(m) => m.iter().filter(|(g, _)| g.is_finite()).map(|(g, s)| density((g + self.at.0 - lx) / s) / s).sum::<f64>() / m.len().max(1) as f64,
+        }
     }
 
     /// How far `chance(x)` moves with your board's own simulated chance (the scores moved
     /// along with it: nothing where that chance is 0 or 1, placed by the rule of three) and
     /// with `x`
     fn chance_slopes(&self, x: f64) -> (f64, f64) {
-        let (gap, spread) = self.at;
-        if !gap.is_finite() {
+        if !self.at.0.is_finite() {
             return (0.0, 0.0);
         }
-        let density = |z: f64| (-0.5 * z * z).exp() / (2.0 * std::f64::consts::PI).sqrt();
-        let at = density((gap - x.max(1e-12).ln()) / spread);
-        let yours = density(gap / spread);
-        (if self.sure { 0.0 } else { at / yours.max(1e-12) }, at / (spread * x.max(1e-12)))
+        let at = self.density_at(x.max(1e-12).ln());
+        let yours = self.density_at(0.0);
+        (if self.sure { 0.0 } else { at / yours.max(1e-12) }, at / x.max(1e-12))
     }
 
     /// The multiplier on every score of your board's that gives chance `p` (0 < p < 1; else 1)
@@ -5945,7 +6111,18 @@ impl Scores {
         if !gap.is_finite() || p <= 0.0 || p >= 1.0 {
             return 1.0;
         }
-        (gap - spread * normal_quantile_above(p)).exp()
+        if self.mix.is_none() {
+            return (gap - spread * normal_quantile_above(p)).exp();
+        }
+        // (the chance rises with the multiplier, on the grid's points: the first at or past `p`,
+        // read back between it and the one before; one the mix can't reach is the grid's end)
+        let c = self.curve.as_deref().unwrap_or(&[]);
+        let k = c.partition_point(|&q| q < p);
+        if k == 0 || k >= c.len() {
+            return mix_lx(k.min(MIX_POINTS - 1)).exp();
+        }
+        let f = (p - c[k - 1]) / (c[k] - c[k - 1]).max(1e-15);
+        (mix_lx(k - 1) + f * (mix_lx(k) - mix_lx(k - 1))).exp()
     }
 
     /// A board's scores against yours as these scores read them, from its simulated chance `p` on
@@ -6463,6 +6640,7 @@ fn archetype_outlook(
             hidden: None,
             changes: vec![],
             short: 0,
+            pool: None,
         },
         horizon: true,
     };
@@ -6761,7 +6939,7 @@ mod tests {
         let data = GameData::bundled();
         let mut fresh_deck = r.full_deck();
         fresh_deck.sort_by_key(Card::order_key);
-        let ctx = Ctx { run: &r, removal_rank: Default::default(), arrange: false, orders: Default::default(), data, base: Board::from_run(&r, data), specs: vec![], ahead: vec![], before: vec![], fresh_deck, opts: quick() };
+        let ctx = Ctx { run: &r, removal_rank: Default::default(), next_bosses: Default::default(), arrange: false, orders: Default::default(), data, base: Board::from_run(&r, data), specs: vec![], ahead: vec![], before: vec![], fresh_deck, opts: quick() };
         let fresh = RoundStart { hand: vec![], deck: ctx.fresh_deck.clone(), hand_size: r.hand_size, hands: r.round_hands, discards: r.round_discards, scored: 0.0, target: 1.0, fresh: true, ..Default::default() };
         let no_burglar = without(&ctx.base, 0);
         assert_eq!(fresh.hands_on(&ctx.base), (7, 0));
@@ -6880,7 +7058,7 @@ mod tests {
         let data = GameData::bundled();
         let mut fresh_deck = r.full_deck();
         fresh_deck.sort_by_key(Card::order_key);
-        let ctx = Ctx { run: &r, removal_rank: Default::default(), arrange: false, orders: Default::default(), data, base: Board::from_run(&r, data), specs: vec![], ahead: vec![], before: vec![], fresh_deck, opts: quick() };
+        let ctx = Ctx { run: &r, removal_rank: Default::default(), next_bosses: Default::default(), arrange: false, orders: Default::default(), data, base: Board::from_run(&r, data), specs: vec![], ahead: vec![], before: vec![], fresh_deck, opts: quick() };
         let set = |b: &Board, key: &str| {
             let start = blind_from_start(key, 1.0, &r, &ctx.fresh_deck);
             assert_eq!((start.hands, start.discards), (4, 3), "{key}: the run's round_resets");
@@ -6905,7 +7083,7 @@ mod tests {
         let data = GameData::bundled();
         let mut fresh_deck = r.full_deck();
         fresh_deck.sort_by_key(Card::order_key);
-        let ctx = Ctx { run: &r, removal_rank: Default::default(), arrange: false, orders: Default::default(), data, base: Board::from_run(&r, data), specs: vec![], ahead: vec![], before: vec![], fresh_deck: fresh_deck.clone(), opts: quick() };
+        let ctx = Ctx { run: &r, removal_rank: Default::default(), next_bosses: Default::default(), arrange: false, orders: Default::default(), data, base: Board::from_run(&r, data), specs: vec![], ahead: vec![], before: vec![], fresh_deck: fresh_deck.clone(), opts: quick() };
         let mut played = ctx.base.clone();
         played.levels[crate::engine::HandType::Pair as usize].played_this_round = 3;
         assert_eq!(ctx.typical(&played, &[], &[]).mean, ctx.typical(&ctx.base, &[], &[]).mean);
@@ -6931,6 +7109,76 @@ mod tests {
         let spec = Spec { start: RoundStart { hand_size: m.round_hand_size(), disabled: true, ..spec.start.clone() }, ..spec };
         let again = fresh_round(&spec, &m, &fresh_deck).start;
         assert_eq!(ctx.base.at_blind_set(&again).1.hand_size, m.hand_size + 3);
+    }
+
+    #[test]
+    fn the_next_antes_boss_is_drawn_from_the_bosses_the_game_allows_there() {
+        let data = GameData::bundled();
+        let mut r = shop_run(&[("j_joker", None, None)], &[]);
+        let keys = |v: Vec<&crate::data::Blind>| v.iter().map(|b| b.key.clone()).collect::<std::collections::BTreeSet<_>>();
+        // at Ante 7 the next ante is the win ante: its five showdown bosses only, Violet Vessel at 6×
+        r.ante = 7;
+        let showdown = keys(boss_pool_but(&r, data, 8, None));
+        assert_eq!(showdown, ["bl_final_acorn", "bl_final_bell", "bl_final_heart", "bl_final_leaf", "bl_final_vessel"].map(String::from).into());
+        let pool = next_boss_pool(&r, data).expect("a pool at Ante 8");
+        let base = crate::save::blind_amount(8, r.blind_scaling) * r.ante_scaling;
+        assert_eq!(pool.iter().find(|(k, _)| k == "bl_final_vessel").unwrap().1, base * 6.0);
+        // none at the win ante: the run ends with its boss
+        r.ante = 8;
+        r.blinds = vec![crate::save::BlindSlot { slot: "Boss".into(), key: "bl_final_vessel".into(), name: "Violet Vessel".into(), state: "Upcoming".into(), target: base * 6.0, reward: 5, skip_tag: None }];
+        assert!(next_boss_pool(&r, data).is_none());
+        r.blinds.clear();
+        assert!(next_boss_pool(&r, data).is_none());
+        // at Ante 1 only the bosses allowed there (`boss.min` 1), no showdown one
+        let ante1 = keys(boss_pool_but(&r, data, 1, None));
+        assert!(!ante1.is_empty() && !ante1.contains("bl_final_vessel") && !ante1.contains("bl_wall"), "{ante1:?}");
+        // the least drawn so far only, the banned out
+        r.bosses_used = vec![("bl_final_acorn".into(), 0), ("bl_final_bell".into(), 1), ("bl_final_heart".into(), 0), ("bl_final_leaf".into(), 0), ("bl_final_vessel".into(), 0)];
+        r.banned_keys = vec!["bl_final_heart".into()];
+        assert_eq!(keys(boss_pool_but(&r, data, 8, None)), ["bl_final_acorn", "bl_final_leaf", "bl_final_vessel"].map(String::from).into());
+    }
+
+    #[test]
+    fn a_round_with_a_pool_meets_one_boss_by_its_seed() {
+        let data = GameData::bundled();
+        let r = shop_run(&[("j_joker", None, None)], &[]);
+        let b = Board::from_run(&r, data);
+        let pool: std::sync::Arc<[(String, f64)]> = vec![("bl_needle".to_string(), 100.0), ("bl_final_vessel".to_string(), 600.0), ("bl_club".to_string(), 200.0)].into();
+        let start = RoundStart { deck: fresh_deck_of(&r), hand_size: 8, hands: 4, discards: 3, target: 200.0, fresh: true, pool: Some(pool.clone()), ..Default::default() };
+        let met: Vec<(String, f64, i64)> = (0..60).map(|seed| {
+            let (bb, s) = b.at_blind_set_drawn(&start, seed);
+            (bb.blind.key.clone(), s.target, s.hands)
+        }).collect();
+        // every boss met, each with its own target and rule; the same seed meets the same one
+        for (key, target) in pool.iter() {
+            assert!(met.iter().any(|(k, t, _)| k == key && t == target), "{key} not met: {met:?}");
+        }
+        assert!(met.iter().filter(|(k, ..)| k == "bl_needle").all(|(.., h)| *h == 1));
+        // round i meets the same boss on every board (the pick reads the seed alone)
+        let other = Board::from_run(&shop_run(&[("j_greedy_joker", None, None), ("j_jolly", None, None)], &[]), data);
+        assert!((0..60).all(|seed| other.at_blind_set_drawn(&start, seed).0.blind.key == met[seed as usize].0));
+        // set with no seed, it's the plain size it stands for
+        assert_eq!(b.at_blind_set(&start).1.target, 200.0);
+    }
+
+    #[test]
+    fn a_pool_of_bosses_reads_a_stronger_board_by_each_bosss_own_scores() {
+        // four bosses your board beats about 90% of the time and one 3× the size it can't beat:
+        // anchored at its pooled chance, a much stronger board gets past the four but not the fifth
+        let st = Stats { mean: 100.0, p10: 80.0, p50: 100.0, p90: 125.0, n: 100, ..Default::default() };
+        let easy = Scores::from_odds(0, 0.9, &st, 80.0).at;
+        let hard = Scores::from_odds(0, 0.0, &st, 300.0).at;
+        let mix = Scores::mixed(0, 0.72, &st, &[easy, easy, easy, easy, hard]);
+        assert!((mix.chance(1.0) - 0.72).abs() < 1e-6, "{}", mix.chance(1.0));
+        assert!(mix.chance(1.6) < 0.81 && mix.chance(1.6) > 0.79, "capped by the fifth: {}", mix.chance(1.6));
+        // one lognormal through the pooled chance reads the same board near a sure pass
+        assert!(Scores::from_odds(0, 0.72, &st, 100.0).chance(1.6) > 0.95);
+        // the multiplier that gives a chance, back again; the slopes as the single fit's at one boss
+        let x = mix.ratio_of(0.78);
+        assert!((mix.chance(x) - 0.78).abs() < 1e-6, "{}", mix.chance(x));
+        let one = Scores::from_odds(0, 0.4, &st, 110.0);
+        let alone = Scores::mixed(0, 0.4, &st, &[one.at]);
+        assert!((alone.chance(1.3) - one.chance(1.3)).abs() < 1e-4 && (alone.chance_slopes(1.3).1 - one.chance_slopes(1.3).1).abs() < 1e-6);
     }
 
     #[test]
@@ -7078,7 +7326,7 @@ mod tests {
         assert_eq!(action, "replace Joker");
         let r = shop_run(&[("j_joker", None, None), ("j_joker", Some(Edition::Holo), None)], &[]);
         let data = GameData::bundled();
-        let ctx = Ctx { run: &r, removal_rank: Default::default(), arrange: true, orders: Default::default(), data, base: Board::from_run(&r, data), specs: vec![], ahead: vec![], before: vec![], fresh_deck: fresh_deck_of(&r), opts: quick() };
+        let ctx = Ctx { run: &r, removal_rank: Default::default(), next_bosses: Default::default(), arrange: true, orders: Default::default(), data, base: Board::from_run(&r, data), specs: vec![], ahead: vec![], before: vec![], fresh_deck: fresh_deck_of(&r), opts: quick() };
         let b = ctx.placed(with_joker(&without(&ctx.base, 0), Joker::from_key("j_cavendish", data).unwrap(), 0));
         assert_eq!(b.jokers.iter().map(|j| j.key.as_str()).collect::<Vec<_>>(), vec!["j_joker", "j_cavendish"]);
         // in a blind, as it was put
@@ -7257,7 +7505,7 @@ mod tests {
         let mut fresh_deck = r.full_deck();
         fresh_deck.sort_by_key(Card::order_key);
         let start = blind_from_start("bl_big", 1e15, &r, &fresh_deck);
-        let probe = Ctx { run: &r, removal_rank: Default::default(), arrange: false, orders: Default::default(), data, base: Board::from_run(&r, data), specs: vec![], ahead: vec![], before: vec![], fresh_deck: fresh_deck.clone(), opts: quick() };
+        let probe = Ctx { run: &r, removal_rank: Default::default(), next_bosses: Default::default(), arrange: false, orders: Default::default(), data, base: Board::from_run(&r, data), specs: vec![], ahead: vec![], before: vec![], fresh_deck: fresh_deck.clone(), opts: quick() };
         let spec = Spec { label: "Boss".into(), blind_key: "bl_big".into(), blind_name: "Boss".into(), start, horizon: false };
         let bought = with_joker(&without(&probe.base, 2), Joker::from_key("j_jolly", data).unwrap(), 2);
         let target = probe.odds_one(&bought, &spec, 120).1.mean;
@@ -7481,7 +7729,7 @@ mod tests {
         let data = GameData::bundled();
         let mut fresh_deck = run.full_deck();
         fresh_deck.sort_by_key(Card::order_key);
-        let ctx = Ctx { run, removal_rank: Default::default(), arrange: false, orders: Default::default(), data, base: Board::from_run(run, data), specs: vec![], ahead: vec![], before: vec![], fresh_deck, opts: quick() };
+        let ctx = Ctx { run, removal_rank: Default::default(), next_bosses: Default::default(), arrange: false, orders: Default::default(), data, base: Board::from_run(run, data), specs: vec![], ahead: vec![], before: vec![], fresh_deck, opts: quick() };
         let growths = growths.unwrap_or_else(|| growths_for(&ctx, &[]));
         let lr = value::LongRun::new(&ctx, mix, &growths, &[], [0; 4], None);
         f(&lr)
@@ -7503,7 +7751,7 @@ mod tests {
             let start = blind_from_start("bl_big", target, &r, &fresh_deck);
             Spec { label: "Next: Big".into(), blind_key: "bl_big".into(), blind_name: "Big Blind".into(), start, horizon: false }
         };
-        let mut ctx = Ctx { run: &r, removal_rank: Default::default(), arrange: false, orders: Default::default(), data, base, specs: vec![], ahead: vec![], before: vec![], fresh_deck: fresh_deck.clone(), opts: Options { sims: 120, ..quick() } };
+        let mut ctx = Ctx { run: &r, removal_rank: Default::default(), next_bosses: Default::default(), arrange: false, orders: Default::default(), data, base, specs: vec![], ahead: vec![], before: vec![], fresh_deck: fresh_deck.clone(), opts: Options { sims: 120, ..quick() } };
         // the board's whole rounds (a target no round reaches): past most of them
         let (_, all) = ctx.odds_one(&ctx.base, &spec(1e15), 120);
         let target = all.p90 * 1.5;
@@ -7533,7 +7781,7 @@ mod tests {
             let start = blind_from_start(key, target, &r, &fresh_deck);
             Spec { label: key.into(), blind_key: key.into(), blind_name: key.into(), start, horizon: false }
         };
-        let mut ctx = Ctx { run: &r, removal_rank: Default::default(), arrange: false, orders: Default::default(), data, base, specs: vec![], ahead: vec![], before: vec![], fresh_deck: fresh_deck.clone(), opts: Options { sims: 120, ..quick() } };
+        let mut ctx = Ctx { run: &r, removal_rank: Default::default(), next_bosses: Default::default(), arrange: false, orders: Default::default(), data, base, specs: vec![], ahead: vec![], before: vec![], fresh_deck: fresh_deck.clone(), opts: Options { sims: 120, ..quick() } };
         let (_, all) = ctx.odds_one(&ctx.base, &spec("bl_big", 1e15), 120);
         ctx.ahead = vec![spec("bl_big", all.p10 * 0.9), spec("bl_big", all.p90 * 1.5)];
         let find = |ctx: &Ctx, lifts: [f64; 2]| {
@@ -7629,7 +7877,7 @@ mod tests {
             let start = blind_from_start(key, target, &r, &fresh_deck);
             Spec { label: key.into(), blind_key: key.into(), blind_name: key.into(), start, horizon: false }
         };
-        let mut ctx = Ctx { run: &r, removal_rank: Default::default(), arrange: false, orders: Default::default(), data, base, specs: vec![], ahead: vec![], before: vec![], fresh_deck: fresh_deck.clone(), opts: Options { sims: 300, ..quick() } };
+        let mut ctx = Ctx { run: &r, removal_rank: Default::default(), next_bosses: Default::default(), arrange: false, orders: Default::default(), data, base, specs: vec![], ahead: vec![], before: vec![], fresh_deck: fresh_deck.clone(), opts: Options { sims: 300, ..quick() } };
         let (_, all) = ctx.odds_one(&ctx.base, &spec("bl_big", 1e15), 120);
         ctx.ahead = vec![spec("bl_big", all.p90 * 1.5)];
         let dollar = |ctx: &Ctx, lifts: [f64; 2], more: f64| {
@@ -8024,7 +8272,7 @@ mod tests {
         let data = GameData::bundled();
         let mut fresh_deck = r.full_deck();
         fresh_deck.sort_by_key(Card::order_key);
-        let ctx = Ctx { run: &r, removal_rank: Default::default(), arrange: false, orders: Default::default(), data, base: Board::from_run(&r, data), specs: vec![], ahead: vec![], before: vec![], fresh_deck, opts: quick() };
+        let ctx = Ctx { run: &r, removal_rank: Default::default(), next_bosses: Default::default(), arrange: false, orders: Default::default(), data, base: Board::from_run(&r, data), specs: vec![], ahead: vec![], before: vec![], fresh_deck, opts: quick() };
         let growths = growths_for(&ctx, &[]);
         let mix = [HandShare { hand: "Pair".into(), share: 1.0, played: 1.0, mean: 1.0 }];
         let plain = value::LongRun::new(&ctx, &mix, &growths, &[], [0; 4], None);

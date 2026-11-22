@@ -294,7 +294,7 @@ function render(d) {
       ${!done ? `<div class="bar"><i style="width:${p * 100}%;background:${color(p)}"></i></div>` : ""}
     </div>`;
   }).join("") + `</div>` +
-    (hz ? `<div class="lbl" style="margin-top:6px" title="Your current jokers against a plain boss next ante: how far this board carries without new jokers">Next ante with these jokers: ${esc(hz.label)} boss needs ${num(hz.target)}, you reach <b style="color:${color(hz.reach)}">${pct(Math.min(hz.reach, 1))}</b> of it on average</div>` : "") +
+    (hz ? `<div class="lbl" style="margin-top:6px" title="${esc(`Your current jokers against next ante's boss, ${hz.blind}, each as likely: the score you reach on average, as a share of a plain boss's target (twice the ante's base chips), without new jokers${hz.unmodelled ? ". Every boss counts; these are played with their target alone (" + hz.unmodelled + ")" : ""}`)}">Next ante with these jokers: against ${esc(hz.label)}'s bosses you reach <b style="color:${color(hz.reach)}">${pct(Math.min(hz.reach, 1))}</b> of a plain boss's ${num(hz.target)} on average</div>` : "") +
     `</section>`;
 
   // Left: jokers, hand mix, best play
@@ -452,13 +452,14 @@ function render(d) {
     right += `<section><h2>Worth digging for</h2><div class="empty">Coming with the full analysis (the shop pool, every tarot and the style outlook), shown when it finishes.${first ? "" : " Best play seldom changes then, and only between moves about equal."}</div></section>`;
   } else if (tab === "tarots") {
     const hz = a.rounds.find((r) => r.horizon);
-    const tr = [...(a.tarots || [])].sort((x, y) => y.reach - x.reach);
-    right += `<section><h2>Worth digging for ${tabs} <small>every tarot, used the way you sensibly would · ranked by share of the ${esc(hz ? hz.label + " boss" : "next ante boss")} reached</small></h2>
-      <table><tr><th>Tarot</th><th>What it does here</th><th class="num">${esc(hz ? hz.label : "Next ante")} reach</th><th class="num">${esc(roundName(a.rounds[a.options_round]))}</th><th class="num">Shop</th></tr>` +
+    // (at the win ante there's no next ante: ranked by this round's chance, no reach column)
+    const tr = [...(a.tarots || [])].sort((x, y) => hz ? y.reach - x.reach : y.p_win - x.p_win);
+    right += `<section><h2>Worth digging for ${tabs} <small>every tarot, used the way you sensibly would · ranked by ${hz ? "share of the " + esc(hz.label) + " boss reached" : "the chance at " + esc(roundName(a.rounds[a.options_round]))}</small></h2>
+      <table><tr><th>Tarot</th><th>What it does here</th>${hz ? `<th class="num">${esc(hz.label)} reach</th>` : ""}<th class="num">${esc(roundName(a.rounds[a.options_round]))}</th><th class="num">Shop</th></tr>` +
       tr.map((t) => {
         const d = t.reach - t.reach_now, dp = t.p_win - a.rounds[a.options_round].p_win;
         return `<tr><td class="name"><b>${esc(t.name)}</b></td><td class="muted">${esc(t.note)}</td>
-          <td class="num"><span class="muted">${pct(t.reach_now)}</span><span class="arr">→</span>${Math.abs(d) < NOISE ? '<span class="flat" title="Within simulation noise">±0</span>' : `<span class="${d > 0 ? "up" : "down"}">${pct(t.reach)}</span>`}</td>
+          ${hz ? `<td class="num"><span class="muted">${pct(t.reach_now)}</span><span class="arr">→</span>${Math.abs(d) < NOISE ? '<span class="flat" title="Within simulation noise">±0</span>' : `<span class="${d > 0 ? "up" : "down"}">${pct(t.reach)}</span>`}</td>` : ""}
           <td class="num">${Math.abs(dp) < NOISE ? '<span class="flat" title="Within simulation noise">±0</span>' : `<span class="${dp > 0 ? "up" : "down"}">${pct(t.p_win)}</span>`}</td>
           <td class="num muted">${pct(t.per_shop)}</td></tr>`;
       }).join("") + `</table><div class="more muted">Card-changing tarots only work on cards in your hand (during a blind or in an opened pack), so these assume you hold suitable ones.</div></section>`;
