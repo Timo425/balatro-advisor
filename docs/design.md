@@ -2465,7 +2465,9 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    (`shop_playon`) plays to the next ante's boss and charges no rent, so it couldn't see what
    the bot runs showed: $1 rentals bought and picked while poor, $6-9 rent a round by Ante 2, a
    debt for the rest of the run (six broke seeds replayed, the bot bench paragraph); nor
-   interest paid past that boss. Its verdict holds only for what it plays.
+   interest paid past that boss. Its verdict holds only for what it plays. Fixture
+   `shop_gluttonous_spent_below_interest`'s `pending_expect` waits on a judge that plays past that
+   boss: to it, the buy is a wash (gap 40, 2026-11-22).
 18. **Growth is played for at Best play's own move, the simulated player's finish and its plays
    that cost no pace, in its digs only as this round's points (gap 8), and a joker the projection replaces counts only in this ante's blinds ahead.** Since 2026-10-14 a round's value
    (`RoundGoals::value`) counts what its hands and discards leave the jokers a round changes,
@@ -4043,19 +4045,41 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    shown (the play-every-blind series on the same seeds, 2bd251f, older code, died earlier:
    BAVANG01 at Ante 2 in 2 of 3 runs). The bot follows these verdicts (`tools/botrun.py`), so
    its runs show them, as the live page does.
-40. **Money held is worth less to the advice than to the owner.**
-   Found 2026-10-30 (the bot bench paragraph in the valuation stage; queue card "Money held on
-   boards without rentals"): the bot's rental-free boards hold less than the owner's at the first
-   shop of a round ($10/$13/$19 at Antes 2-4 against the owner's $17/$25/$27), and on the owner's
-   first shops of a round the advisor of 6dd28fa took something where the owner kept the money.
-   Fixture `shop_gluttonous_spent_below_interest` (BAVANG07 a2-r4 at 0b4af1a: Gluttonous Joker at
-   $5 with $14 held, Half Joker a rental, so not a rental-free board; the owner: "I'd rather save
-   the economy"): by value the buy is above leaving
-   (`rank_above` pending since 2026-11-13), and since 2026-11-15, when the money's walk began
-   paying a round's measured money (about $2 of hands left a round there, where it counted $1),
-   by a finding too (`above` pending). The walk's money is right by the game there, so what's
-   left is how the advice values money held, not the walk. Suspects, none shown: the shop
-   ranking's value of money held (gap 36's money past the cap, gap 13's run end, `Spending`), a
-   price's interest read at today's money and not along the money's path (gap 17; along it
-   since 2026-11-18, below the interest line), the owner's own saving being better or worse than the advice's spending (their runs
-   reach Ante 5.4, the bot's 3.9).
+40. **Money held is worth less to the advice than to the owner (closed 2026-11-22 for joker buys
+   below the interest line: it isn't).** Found 2026-10-30 (the bot bench paragraph; queue card
+   "Money held on boards without rentals"): the bot's rental-free boards held less than the
+   owner's at the first shop of a round ($10/$13/$19 at Antes 2-4 against $17/$25/$27, the bot at
+   2bd251f), and on the owner's first shops the advisor of 6dd28fa took something where the owner
+   kept the money. Measured again at 5d69060 (100 simulations, seed 42) on the owner's 304 first
+   shops of a round at Antes 2-4 (the 45 of the 52 saved runs that reach Ante 2; 178 rental-free).
+   Under the bot's rule (`worth`: the top option, `beats_keep`), on the rental-free ones whose
+   visit reaches the next blind select (4 more stop before it and tell nothing of the owner's
+   choice), the advisor takes something about as often as the owner: 75 of 86 against 66 at Ante
+   2, 47 of 55 against 53 at Ante 3, 27 of 33 against 30 at Ante 4. It takes something where the
+   owner keeps the money on 15 at Ante 2 (7 jokers, 6 packs, 2 rerolls; 13 of the 15 below an
+   interest step), 0 at Ante 3 and 3 at Ante 4 (packs), and keeps it where the owner spends on 6,
+   6 and 6. Those 18 played on by the shop judge (`shop_playon`, to the next ante's boss, holding
+   the interest line after as the owner does, "cap"): the 7 joker buys get through both bosses
+   +0.181 more often on average, all ahead, 5 clearly (2 standard errors); the 9 packs +0.059, 4
+   clearly ahead, none clearly behind; the 2 rerolls +0.015; with "spend" after, all 18 +0.046.
+   The judge keeps a bought perishable joker for good: Abstract Joker and Joker (GA74B7U3,
+   MXW8ATQD), bought after a round 3, are debuffed by the next ante's boss, and on this ante's boss
+   alone they're still clearly ahead (+0.226 ± 0.040, +0.156 ± 0.023). It shares the engine, not
+   the valuation, and sees nothing past the next ante's boss on either side (the joker's or the
+   levels' later worth, what the money kept buys later, and its interest): the picks end $2.5
+   poorer there on average, four of them $5-10. So a joker buy below the interest line on a
+   rental-free board is right where the advice makes it and the owner saves, as far as the judge
+   sees, as on 2026-10-24 (gap 17, "Earlier"); a pack or a reroll there is no worse. Left, past
+   the judge's horizon (gap 17's judge that plays further, the queue card "What's left of gap 17:
+   … past the next ante's boss"): the spends the long run alone carries at a sure win now
+   (545MMUWQ a Buffoon Pack at $18, LVZ4W3KB a reroll at $19: the judge −0.001, −0.003), and
+   fixture `shop_gluttonous_spent_below_interest` (Gluttonous Joker at $14, a rental held; the
+   owner: "I'd rather save the economy"): the advice +0.042 over leaving (1.028 against 0.986),
+   the judge a wash to the next ante's boss (−0.006 ± 0.004 holding the cap, +0.008 ± 0.015
+   spending; it charges no rent, on both sides), so its `pending_expect` waits on gap 17. Not
+   measured: the bot's money by ante on today's code and where it goes (the queue card "The bot's
+   money by ante on today's code: a ledger of what comes in and goes out"); one pointer, A7LD1T91
+   at 3328b3a (rental-free): $10 → $0, $9 → $1, $9 → $1 at Antes 2-3 in shops where leaving got
+   through this ante 0.77, 0.51 and 0.07, 6 of the 9 blinds played there, and next-round income
+   $1-13 against the owner's $8-34 on the same seed. Not judged: the 18 shops where the owner
+   spent and the advice kept the money.
