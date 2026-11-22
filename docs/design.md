@@ -1136,8 +1136,9 @@ the same retriggered ×Mult.
   board, 52% → 26% at Ante 6). On the fixtures, with the mix: every next-ante chance moved (most down, 0.79 → 0.49 on the Head fixtures), 4 shop
   top options (2 leads no longer clear of the noise, 1 tie reordered, Mail-In Rebate below
   leaving: its expectation restored, gap 27) and 2 skip verdicts to "close"; no Best play pick
-  moved (Best play reads no next ante). The advice's time on the timing set (a busy PC): a
-  blind's quick pass +6%, a shop −4% (no next ante at Ante 8). Tried and taken out: a boss
+  moved (Best play reads no next ante). The advice's time on the timing set (a busy PC, old
+  and new interleaved): a blind's quick pass +6%, a shop −4% (the Ante 8 shop, with no next
+  ante, faster on every run: 32 → 28 s on a quiet one). Tried and taken out: a boss
   reroll's worth at the next ante (gap 13 (a), the queue).
 - **Next:** a free hand banked before the
   hand that wins (gap 34); Ceremonial Dagger's value (gap 8); the blind odds shown and the
@@ -1912,8 +1913,13 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    to your board's chance against the pool: a board much stronger than yours gets past the
    others before Violet Vessel's 6× (register "the next ante's bosses"). Left: (a) a boss reroll
    (Director's Cut, Retcon) isn't valued past this ante's boss, held or on offer, and nothing
-   says at the blind select when to use one held (the queue's "A boss reroll held…" and "Boss
-   rerolls valued…"; the fixture `shop_directors_cut_for_the_final_boss` waits on it); (b) the
+   says at the blind select when to use one held (the queue's "Boss rerolls valued and
+   advised…" and "The bot rerolls the boss…"; the fixture `shop_directors_cut_for_the_final_boss`
+   waits on it); the reroll of this ante's boss reads your board as it is, so on the bot's
+   Q815VJET at Ante 8 it read 0% → 3% two blinds before Violet Vessel and 0% → 33% one blind
+   before (`bot/shops/Q815VJET/a8-r15-097`, `a8-r16-100`): Ride the Bus grew +36 → +43 Mult over
+   the Big Blind (the typical hand +13%) and the four other bosses' 2× target sat at the board's
+   mean, where the chance is steep (gap 28: the blinds before it aren't played first); (b) the
    owner's "anticipate earlier" (2026-11-19): at Antes 5-6 only the long run (By Ante 8) could
    see a final boss the board can't beat, and it plays rounds with no boss and no target
    (`long_spec`): its horizon is this gap's general fix.
