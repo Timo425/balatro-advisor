@@ -669,6 +669,39 @@ pub struct BlindView {
     /// now): skipping it for its tag against playing it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skip: Option<SkipCompare>,
+    /// For the boss at a blind select, with a boss reroll you can use now and its $10: rerolling
+    /// it against keeping it (`BossReroll`)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reroll: Option<BossReroll>,
+}
+
+/// Reroll this ante's boss or keep it (Director's Cut, Retcon; button_callbacks.lua
+/// `G.FUNCS.reroll_boss`), on skip-or-play's measure: the chance against the boss, against the
+/// next ante's boss with the shops before it (the money's walk, with $10 less once rerolled),
+/// and By Ante 8 with the money. Your board as it is; a verdict only at the boss's own blind
+/// select (before it the reroll can wait, after the shops before it). An estimate.
+#[derive(Debug, Clone, Serialize)]
+pub struct BossReroll {
+    /// Your board's chance against the boss shown
+    pub keep: f64,
+    /// On average over the bosses a reroll can draw (`boss_pool`: the one shown out while others are drawn less)
+    pub rerolled: f64,
+    /// How many it can draw
+    pub bosses: usize,
+    pub keep_next: f64,
+    pub rerolled_next: f64,
+    pub keep_long: f64,
+    pub rerolled_long: f64,
+    /// keep × keep_next × keep_long, each chance counted at least three wins in its rounds
+    pub keep_value: f64,
+    pub reroll_value: f64,
+    /// At the boss's own blind select "reroll", "keep" or "close" (within 3%, as skip-or-play's,
+    /// or a reroll ahead whose chance isn't above the boss's by two standard errors, as the
+    /// walks' reroll is read, `Scores::with_reroll`);
+    /// before it "later" (the reroll can wait for it, the numbers as if rerolled now)
+    pub verdict: String,
+    /// The bosses it can draw whose rules aren't simulated, or that deal cards face down
+    pub note: String,
 }
 
 /// Skip or play: the chance to get through this ante (the shops before the boss count, one
@@ -1043,6 +1076,9 @@ struct Ctx<'a> {
     /// Your board's fit against each boss the next ante can be (`Ctx::next_bosses`), worked out
     /// once where a chance there is read off scores
     next_bosses: std::sync::OnceLock<Vec<(f64, f64)>>,
+    /// Your board against each boss a reroll of this ante's can become (`Ctx::reroll_into`):
+    /// its chance and its fit, worked out once where a reroll is valued
+    reroll_into: std::sync::OnceLock<(String, Vec<RerollInto>)>,
     data: &'a GameData,
     base: Board,
     specs: Vec<Spec>,
@@ -1120,6 +1156,46 @@ impl Ctx<'_> {
                 Scores::from_odds(0, p, &st, *target).at
             })
         })
+    }
+
+    /// Your board against each boss a reroll of `spec`'s boss (this ante's, not in play) can
+    /// become (`boss_pool`: button_callbacks.lua `G.FUNCS.reroll_boss` draws with
+    /// `get_new_boss`, the boss shown out while others are drawn less, its draw already in
+    /// `bosses_used`): its chance and its fit as `Scores::from_odds`
+    /// reads it, each on a third of the round's own rounds (`NEXT_BOSS_SHARE`, at least 20, as
+    /// the next ante's: a budget); none for a round that isn't a boss's. Once, the first asked
+    fn reroll_into(&self, spec: &Spec) -> Vec<RerollInto> {
+        let work = || {
+            let Some(cur) = self.data.blinds.iter().find(|b| b.key == spec.blind_key && !b.boss.is_null()).filter(|_| !spec.horizon && !spec.in_progress()) else { return vec![] };
+            let into = boss_pool(self.run, self.data, self.run.ante);
+            let base = spec.start.target / cur.mult.max(0.1);
+            let n = (spec_rounds(spec, self.opts.sims) / NEXT_BOSS_SHARE).max(20);
+            par_map(&into, |b| {
+                let start = RoundStart { blind: b.key.clone(), target: base * b.mult, ..spec.start.clone() };
+                let (p, st) = sim::round_odds(&self.base, &start, n, self.opts.seed);
+                (p, Scores::from_odds(0, p, &st, start.target).at)
+            })
+        };
+        // (kept for the boss first asked; another worked out afresh)
+        let (key, v) = self.reroll_into.get_or_init(|| (spec.blind_key.clone(), work()));
+        if *key == spec.blind_key { v.clone() } else { work() }
+    }
+
+    /// Your board's scores in round `i` (`Scores::of`), with a boss reroll in hand for its boss
+    /// (`Scores::with_reroll`) when `reroll`: the next ante's, or this ante's boss before it's
+    /// played (`reroll_into`); else, or with nothing to reroll into, as they are
+    fn scores_with(&self, i: usize, base: &[(f64, Stats)], reroll: bool) -> Scores {
+        let sc = Scores::of(self, i, base);
+        match self.specs.get(i).filter(|_| reroll) {
+            // (each boss on a third of the round's own rounds, as `next_bosses` and `reroll_into`
+            // simulate them)
+            Some(spec) if spec.start.pool.is_some() => sc.with_reroll(&[], (spec_rounds(spec, self.opts.sims) / NEXT_BOSS_SHARE).max(20)),
+            Some(spec) => {
+                let into: Vec<(f64, f64)> = self.reroll_into(spec).iter().map(|x| x.1).collect();
+                sc.with_reroll(&into, (spec_rounds(spec, self.opts.sims) / NEXT_BOSS_SHARE).max(20))
+            }
+            None => sc,
+        }
     }
 
     /// `b`'s chance at each of this ante's blinds before its hardest round (`before`), with what
@@ -1427,7 +1503,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
     } else {
         vec![]
     };
-    let ctx = Ctx { run, data, base, specs, ahead, before, fresh_deck, opts: opts.clone(), removal_rank: Default::default(), next_bosses: Default::default(), arrange: run.blind_in_play().is_none(), orders: Default::default() };
+    let ctx = Ctx { run, data, base, specs, ahead, before, fresh_deck, opts: opts.clone(), removal_rank: Default::default(), next_bosses: Default::default(), reroll_into: Default::default(), arrange: run.blind_in_play().is_none(), orders: Default::default() };
 
     lap("setup");
     let base_odds = ctx.odds(&ctx.base, &[], &[], opts.sims);
@@ -1632,6 +1708,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
                     name: data.tag(k).map_or_else(|| k.clone(), |t| t.name.clone()),
                 }),
                 skip: None,
+                reroll: None,
             }
         })
         .collect();
@@ -2348,6 +2425,10 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
             let base = base_odds.get(key_round).zip(ctx.specs.get(key_round)).map_or(0.0, |(b, sp)| b.1.mean / sp.start.target.max(1.0));
             let scores = Scores::of(&ctx, key_round, &base_odds);
             let kept = Kept::Chances(Scores::of(&ctx, key_round, &base_odds));
+            // (with a boss reroll in hand for this ante's boss, held or the voucher an option
+            // buys: its walks use it where its money pays, `Scores::with_reroll`)
+            let kept_r = options.iter().any(|o| reroll_usable(run, buying(o), true)).then(|| Kept::Chances(ctx.scores_with(key_round, &base_odds, true)));
+            let kept_of = |o: &ShopOption| kept_r.as_ref().filter(|_| reroll_usable(run, buying(o), true)).unwrap_or(&kept);
             let owned = owned_in(key_round, &|p, m| scores.ratio_for(p, ctx.opts.sims, Some(m)));
             let yours: Vec<(f64, f64, f64)> = owned.iter().map(|e| (e.1, e.2, e.3)).collect();
             // (each option's walk as a function of the chance it starts from: your board's for a
@@ -2356,14 +2437,15 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
                 let o = &options[k];
                 let stay = Stay::of(o);
                 let on_board = stay == Stay::Reroll || money_only(o);
+                let kept = kept_of(o);
                 let walk = |p: f64, mut gains: Option<&mut Vec<f64>>| {
                     if on_board {
                         let from = Start { owned: &yours, ..Start::board(board_rent) };
-                        survival_with(lr, pool_entries, &kept, p, if stay == Stay::Reroll { run.dollars } else { o.money_after }, false, stay, from, gains)
+                        survival_with(lr, pool_entries, kept, p, if stay == Stay::Reroll { run.dollars } else { o.money_after }, false, stay, from, gains)
                     } else {
                         let ratio = scores.ratio_for(p, ctx.opts.sims, o.reach.filter(|_| base > 0.0).map(|r| r / base));
                         let mine = entries(o, &owned, ratio);
-                        let with = survival_with(lr, pool_entries, &kept, p, o.money_after, false, stay, Start { ratio, slots: slots_of(o), owned: &mine, rent: rent_change(o) }, gains.as_deref_mut());
+                        let with = survival_with(lr, pool_entries, kept, p, o.money_after, false, stay, Start { ratio, slots: slots_of(o), owned: &mine, rent: rent_change(o) }, gains.as_deref_mut());
                         // (held at its own chance, the walks move nothing)
                         if let Some(g) = gains.filter(|_| with < p) {
                             g.clear();
@@ -2397,6 +2479,9 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
             let p_next = base_odds.get(hz).map_or(0.0, |o| o.0);
             let scores = Scores::of(&ctx, hz, &base_odds);
             let kept = Kept::Chances(Scores::of(&ctx, hz, &base_odds));
+            // (with a boss reroll in hand for the next ante's boss, as this ante's above)
+            let kept_r = options.iter().any(|o| reroll_usable(run, buying(o), false)).then(|| Kept::Chances(ctx.scores_with(hz, &base_odds, true)));
+            let kept_of = |o: &ShopOption| kept_r.as_ref().filter(|_| reroll_usable(run, buying(o), false)).unwrap_or(&kept);
             let n = next_rounds(&ctx);
             let floor = three_wins(n);
             let owned = owned_in(hz, &|p, m| scores.ratio_for(p, n, Some(m)));
@@ -2409,15 +2494,16 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
                 let strength = o.next_strength.unwrap_or(1.0);
                 let own = o.next_p.unwrap_or_else(|| scores.chance(strength));
                 let on_board = stay == Stay::Reroll || money_only(o);
+                let kept = kept_of(o);
                 // (the walk as a function of the chance it starts from, as this ante's)
                 let survive = |p: f64, mut gains: Option<&mut Vec<f64>>| {
                     if on_board {
                         let board = Start { owned: &yours, ..Start::board(board_rent) };
-                        survival_with(lr, pool_entries, &kept, p, if stay == Stay::Reroll { run.dollars } else { o.money_after }, true, stay, board, gains)
+                        survival_with(lr, pool_entries, kept, p, if stay == Stay::Reroll { run.dollars } else { o.money_after }, true, stay, board, gains)
                     } else {
                         let ratio = scores.ratio_for(p, n, Some(strength));
                         let mine = entries(o, &owned, ratio);
-                        let with = survival_with(lr, pool_entries, &kept, p, o.money_after, true, stay, Start { ratio, slots: slots_of(o), owned: &mine, rent: rent_change(o) }, gains.as_deref_mut());
+                        let with = survival_with(lr, pool_entries, kept, p, o.money_after, true, stay, Start { ratio, slots: slots_of(o), owned: &mine, rent: rent_change(o) }, gains.as_deref_mut());
                         if let Some(g) = gains.filter(|_| with < p) {
                             g.clear();
                         }
@@ -2534,7 +2620,8 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
         // and for the strength its finds add). Not in it (so not in a tie's width): the luck of
         // the long run's rounds and of the pool's screen, each the same draws for every option,
         // which reroll cap a walk's first half chose, and the next ante's bosses' own fits that
-        // shape a chance read off scores there (`Ctx::next_bosses`) (gap 7)
+        // shape a chance read off scores there (`Ctx::next_bosses`), as those a boss reroll is
+        // read on (`Ctx::reroll_into`, `Scores::with_reroll`) (gaps 7, 13 (a))
         {
             let floor = three_wins(next_rounds(&ctx));
             let hz = ctx.specs.iter().position(|x| x.horizon);
@@ -2818,7 +2905,9 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
         let p_blind = bv.p_win.unwrap_or(1.0);
         let p_boss = base_odds.get(key_round).map_or(0.0, |o| o.0);
         let value = |c: &Candidate| measured_p(&ctx, c, key_round, p_boss);
-        let kept = Kept::Chances(Scores::of(&ctx, key_round, &base_odds));
+        // (a boss reroll you hold used on this ante's boss and the next ante's where the money
+        // left pays it, as the shop ranking's walks use it: `Scores::with_reroll`)
+        let kept = Kept::Chances(ctx.scores_with(key_round, &base_odds, reroll_usable(run, None, true)));
         let (_, k) = shops_ahead(run, false);
         // (playing: the blind's money is in `gain`, so the shop after it adds none; skipping: no
         // shop after it, and it pays nothing)
@@ -3006,7 +3095,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
         let (play_next, skip_next) = match ctx.specs.iter().position(|x| x.horizon) {
             Some(hz) => {
                 let p_next = base_odds.get(hz).map_or(0.0, |o| o.0);
-                let kept_next = Kept::Chances(Scores::of(&ctx, hz, &base_odds));
+                let kept_next = Kept::Chances(ctx.scores_with(hz, &base_odds, reroll_usable(run, None, false)));
                 let shops_next = k + 3;
                 let next_with = |money: f64, shops: Shops, p0: f64| money_value_with(lr, &pool_entries, &kept_next, p0, money, shops, Start::board(board_rent)).max(p0).min(1.0);
                 let skip_p0 = if next_boards.is_empty() {
@@ -3039,6 +3128,64 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
             "play"
         };
         blind_views[bi].skip = Some(SkipCompare { play_survive, play_next, play_long, skip_survive, skip_next, skip_long, play_value, skip_value, verdict: verdict.into(), tag: what, valued, grows });
+    }
+    // At a blind select with a boss reroll you can use on this ante's boss and its $10: rerolling
+    // it against keeping it (`BossReroll`), your board as it is
+    let boss_view = blind_views.iter().position(|b| b.slot == "Boss" && b.p_win.is_some());
+    if let Some((bi, spec)) = boss_view.zip(ctx.specs.get(key_round)).filter(|_| run.screen == crate::save::Screen::BlindSelect && reroll_usable(run, None, true) && run.dollars >= BOSS_REROLL_COST) {
+        let into = ctx.reroll_into(spec);
+        if !into.is_empty() {
+            let keep = base_odds.get(key_round).map_or(0.0, |o| o.0);
+            let rerolled = into.iter().map(|x| x.0).sum::<f64>() / into.len() as f64;
+            // (each counted at least the chance told from none in its rounds: the boss shown on
+            // its own, the bosses drawn on theirs together, `Ctx::reroll_into`)
+            let into_rounds = (spec_rounds(spec, opts.sims) / NEXT_BOSS_SHARE).max(20) * into.len();
+            let (keep_floor, into_floor, next_floor) = (three_wins(now_rounds(&ctx)), three_wins(into_rounds), three_wins(next_rounds(&ctx)));
+            let next = |money: f64| match ctx.specs.iter().position(|x| x.horizon) {
+                Some(hz) => {
+                    let p_next = base_odds.get(hz).map_or(0.0, |o| o.0);
+                    let kept = Kept::Chances(ctx.scores_with(hz, &base_odds, reroll_usable(run, None, false)));
+                    money_value_with(lr, &pool_entries, &kept, p_next, money, Shops::ahead(run, true), Start::board(board_rent)).max(p_next).min(1.0)
+                }
+                None => 1.0,
+            };
+            let long = |delta: f64| lr.value(&Gain::money(delta)) * spending.factor(lr, run.dollars + delta) / spending.factor(lr, run.dollars).max(1e-9);
+            let (keep_next, rerolled_next) = (next(run.dollars), next(run.dollars - BOSS_REROLL_COST));
+            let (keep_long, rerolled_long) = (long(0.0), long(-BOSS_REROLL_COST));
+            let keep_value = keep.max(keep_floor) * keep_next.max(next_floor) * keep_long;
+            let reroll_value = rerolled.max(into_floor) * rerolled_next.max(next_floor) * rerolled_long;
+            // (before the boss's own blind select the reroll can wait for it, with the board the
+            // shops before it leave: rerolling now can't do better than deciding there)
+            // (the chances told apart as the walks' reroll tells them, `Scores::with_reroll`: by
+            // two standard errors, each no nearer 0 or 1 than 3 wins in its rounds)
+            let var = |p: f64, n: usize| {
+                let t = three_wins(n);
+                p.clamp(t, 1.0 - t) * (1.0 - p.clamp(t, 1.0 - t)) / n.max(1) as f64
+            };
+            let per = into_rounds / into.len();
+            let apart = (var(keep, now_rounds(&ctx)) + into.iter().map(|x| var(x.0, per)).sum::<f64>() / (into.len() * into.len()) as f64).sqrt() * SHOP_ERRORS;
+            let verdict = if blind_views[bi].state != "Select" {
+                "later"
+            } else if (keep_value - reroll_value).abs() <= 0.03 * keep_value.max(reroll_value) || (reroll_value > keep_value && rerolled - keep <= apart) {
+                "close"
+            } else if reroll_value > keep_value {
+                "reroll"
+            } else {
+                "keep"
+            };
+            let eligible = boss_pool(run, data, run.ante);
+            let rough = eligible.iter().filter(|b| unmodelled_boss(&b.key).is_some()).count();
+            let turned = eligible.iter().filter(|b| crate::engine::score::turns_cards_down(&b.key)).count();
+            let note = [
+                (rough > 0).then(|| format!("{rough} of them have rules that aren't simulated, so the reroll may look better than it is")),
+                (turned > 0).then(|| format!("{turned} of them deal cards face down, decided over 4 draws of them (heuristic)")),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join("; ");
+            blind_views[bi].reroll = Some(BossReroll { keep, rerolled, bosses: into.len(), keep_next, rerolled_next, keep_long, rerolled_long, keep_value, reroll_value, verdict: verdict.into(), note });
+        }
     }
     let outlook = if quick_blind { None } else { archetype_outlook(&ctx, run, data, &pool_entries, &hand_mix) };
 
@@ -4094,7 +4241,7 @@ fn shop_options(
             o.label = v.name.clone();
             o.key = Some(v.key.clone());
             o.cost = v.cost;
-            o.note = format!("{}{}", if v.key == "v_retcon" { "reroll the boss for $10, as often as you like" } else { "reroll the boss once per ante for $10" }, o.note);
+            o.note = format!("{}{}", if v.key == "v_retcon" { "reroll the boss for $10, as often as you like (one reroll a boss counted)" } else { "reroll the boss once per ante for $10" }, o.note);
             out.push(o);
         }
         for v in shop.vouchers.iter().filter(|v| !matches!(v.key.as_str(), "v_directors_cut" | "v_retcon")) {
@@ -4579,15 +4726,16 @@ fn long_draw(pool: &[Candidate], cards: usize, joker_share: f64, floor: f64, rng
 /// a multiple of the win ante from Ante 2, and then only they), the run's banned keys out, and of
 /// the rest only those drawn least so far (`bosses_used`), each as likely
 /// (`pseudorandom_element`). The next ante's (`next_boss_pool`) and a reroll's this ante
-/// (`boss_reroll_option`, the boss in play left out: `but`).
-fn boss_pool_but<'a>(run: &RunState, data: &'a GameData, ante: i64, but: Option<&str>) -> Vec<&'a crate::data::Blind> {
+/// (`Ctx::reroll_into`: the boss shown is counted in `bosses_used` since it was drawn, so it's
+/// left out while another is drawn less, and in again once none is, as the game has it).
+fn boss_pool<'a>(run: &RunState, data: &'a GameData, ante: i64) -> Vec<&'a crate::data::Blind> {
     let win = run.win_ante.max(1);
     let showdown = ante >= 2 && ante % win == 0;
     let used = |k: &str| run.bosses_used.iter().find(|(x, _)| x == k).map_or(0, |x| x.1);
     let eligible: Vec<&crate::data::Blind> = data
         .blinds
         .iter()
-        .filter(|b| Some(b.key.as_str()) != but && !run.banned_keys.contains(&b.key))
+        .filter(|b| !run.banned_keys.contains(&b.key))
         .filter(|b| {
             let sd = b.boss.get("showdown").and_then(|v| v.as_bool()).unwrap_or(false);
             let min = b.boss.get("min").and_then(|v| v.as_i64());
@@ -4598,12 +4746,34 @@ fn boss_pool_but<'a>(run: &RunState, data: &'a GameData, ante: i64, but: Option<
     eligible.into_iter().filter(|b| used(&b.key) == least).collect()
 }
 
+/// A boss a reroll can draw (`Ctx::reroll_into`): your board's chance against it, and its fit
+/// as `Scores::from_odds` reads it
+type RerollInto = (f64, (f64, f64));
+
+/// What a boss reroll costs (button_callbacks.lua `G.FUNCS.reroll_boss`, `ease_dollars(-10)`;
+/// a Boss Tag's is free and uses Director's Cut's for the ante, `boss_rerolled`)
+const BOSS_REROLL_COST: f64 = 10.0;
+
+/// Whether a boss reroll can be used on this ante's boss (`this_ante`) or the next ante's, with
+/// the vouchers you hold and `buying` (the one an option buys): Retcon always, Director's Cut
+/// once an ante, not when this ante's boss was rerolled (button_callbacks.lua
+/// `G.FUNCS.reroll_boss_button`; its $10 is the money's walk's, `Scores::with_reroll`)
+fn reroll_usable(run: &RunState, buying: Option<&str>, this_ante: bool) -> bool {
+    let has = |k: &str| buying == Some(k) || run.vouchers.iter().any(|v| v == k);
+    has("v_retcon") || has("v_directors_cut") && !(this_ante && run.boss_rerolled)
+}
+
+/// The voucher a shop option buys, if it's one
+fn buying(o: &ShopOption) -> Option<&str> {
+    o.key.as_deref().filter(|_| o.kind == "voucher")
+}
+
 /// Your board's rounds against each boss the next ante can be (`Ctx::next_bosses`), as a
 /// share of that round's own: 1 in 3 (a budget: the change that brought the pool in costs the
 /// timing set +6% in a blind's quick pass and −4% in a shop with it, on a busy PC, 2026-11-22)
 const NEXT_BOSS_SHARE: usize = 3;
 
-/// The next ante's boss as the game will draw it (`boss_pool_but` at the next ante, each with its
+/// The next ante's boss as the game will draw it (`boss_pool` at the next ante, each with its
 /// target: its `mult` times the ante's base), for a simulated round to meet one at random
 /// (`RoundStart::pool`); none at the win ante unless its boss is beaten (it ends the run, gap 13),
 /// or with nothing to draw
@@ -4615,14 +4785,17 @@ pub fn next_boss_pool(run: &RunState, data: &GameData) -> Option<std::sync::Arc<
         return None;
     }
     let base = crate::save::blind_amount(ante, run.blind_scaling) * run.ante_scaling;
-    let pool: Vec<(String, f64)> = boss_pool_but(run, data, ante, None).iter().map(|b| (b.key.clone(), base * b.mult)).collect();
+    let pool: Vec<(String, f64)> = boss_pool(run, data, ante).iter().map(|b| (b.key.clone(), base * b.mult)).collect();
     (!pool.is_empty()).then(|| pool.into())
 }
 
-/// Director's Cut / Retcon: the options round's boss against a reroll into any boss the
-/// game could draw instead (`get_new_boss` in common_events.lua: bosses allowed at this
-/// ante, showdown ones only on the final ante, banned ones out, least drawn first).
-/// Rerolling costs $10, counted in the money after when it's worth doing.
+/// Director's Cut / Retcon on offer: an option on your board, its price paid, whose walks
+/// through the shops ahead use the reroll on this ante's boss (its blind select still to come,
+/// not rerolled this ante) and on the next ante's, where the money left pays the reroll's $10
+/// (`Scores::with_reroll`, `money_value_walks`); its note says what a reroll of this ante's boss
+/// does on your board as it is, over the bosses the game could draw instead (`get_new_boss` in
+/// common_events.lua: allowed at this ante, showdown ones only on the final ante, banned ones
+/// out, least drawn first; `Ctx::reroll_into`)
 fn boss_reroll_option(ctx: &Ctx, run: &RunState, data: &GameData, spec: &Spec, now: f64) -> ShopOption {
     let mut o = ShopOption {
         tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None,
@@ -4641,36 +4814,26 @@ fn boss_reroll_option(ctx: &Ctx, run: &RunState, data: &GameData, spec: &Spec, n
         key: None,
         desc: None,
     };
-    let Some(cur) = data.blinds.iter().find(|b| b.key == spec.blind_key && !b.boss.is_null()) else {
-        o.note = " (no boss left this ante to reroll)".into();
+    let next = if ctx.specs.iter().any(|s| s.horizon && s.start.pool.is_some()) { "; the next ante's boss too, where your board does worse against it than against the others" } else { "" };
+    let counted = format!(" (in the ranking: used at the boss's blind select where the money left after the shops pays it{next})");
+    let Some(cur) = data.blinds.iter().find(|b| b.key == spec.blind_key && !b.boss.is_null()).filter(|_| !spec.in_progress()) else {
+        o.note = format!(": no boss left this ante to reroll{counted}");
         return o;
     };
-    let eligible: Vec<&crate::data::Blind> = boss_pool_but(run, data, run.ante, Some(&cur.key));
-    if eligible.is_empty() {
-        o.note = " (no other boss to reroll into)".into();
+    let eligible: Vec<&crate::data::Blind> = boss_pool(run, data, run.ante);
+    let into = ctx.reroll_into(spec);
+    if eligible.is_empty() || into.is_empty() {
+        o.note = format!(": no other boss to reroll {} into{counted}", cur.name);
         return o;
     }
-    let base_target = spec.start.target / cur.mult.max(0.1);
-    let odds: Vec<f64> = par_map(&eligible, |b| {
-        let mut sp = spec.clone();
-        sp.blind_key = b.key.clone();
-        sp.blind_name = b.name.clone();
-        sp.start = blind_from_start(&b.key, base_target * b.mult, run, &spec.start.deck);
-        ctx.odds_one(&ctx.base, &sp, (ctx.opts.sims / 2).max(50)).0
-    });
-    let avg = odds.iter().sum::<f64>() / odds.len() as f64;
+    let avg = into.iter().map(|x| x.0).sum::<f64>() / into.len() as f64;
     let rough = eligible.iter().filter(|b| unmodelled_boss(&b.key).is_some()).count();
     let rough_note = if rough > 0 { format!("; {rough} of them have effects that aren't simulated, so the reroll may look better than it is") } else { String::new() };
     // the bosses among them whose rounds deal cards face down: the analysis' note on them
     let turned = eligible.iter().filter(|b| crate::engine::score::turns_cards_down(&b.key)).count();
     let rough_note = if turned > 0 { format!("{rough_note}; {turned} of them deal cards face down, decided over 4 draws of them (heuristic)") } else { rough_note };
-    if avg > now {
-        o.p_win = avg;
-        o.money_gain = -10.0;
-        o.note = format!(": worth using on {} now ({:.0}% → {:.0}% on average over {} bosses it could become{rough_note})", cur.name, now * 100.0, avg * 100.0, eligible.len());
-    } else {
-        o.note = format!(": keep {} ({:.0}%; a reroll averages {:.0}% over {} bosses{rough_note}). Also a reroll on every later boss, the next ante's included (not valued)", cur.name, now * 100.0, avg * 100.0, eligible.len());
-    }
+    let verb = if avg > now { "worth using on" } else { "keep" };
+    o.note = format!(": {verb} {} now ({:.0}% → {:.0}% on average over {} bosses it could become{rough_note}){counted}", cur.name, now * 100.0, avg * 100.0, eligible.len());
     o
 }
 
@@ -6125,6 +6288,10 @@ pub(super) struct Scores {
     /// The mix's chance at `MIX_POINTS` multipliers, their logs evenly from `MIX_LX` to its
     /// negative (`mix_lx`)
     curve: Option<std::sync::Arc<[f64]>>,
+    /// With a boss reroll to use on this round's boss (Director's Cut, Retcon:
+    /// `Scores::with_reroll`), the chance at the same multipliers, each boss the round can be
+    /// kept or rerolled into the others, whichever reads higher there (`chance_rerolled`)
+    reroll: Option<std::sync::Arc<[f64]>>,
 }
 
 /// The grid a mix of bosses' chance is read on (`Scores::mixed`): this many multipliers on your
@@ -6138,6 +6305,14 @@ fn mix_lx(k: usize) -> f64 {
     MIX_LX + 2.0 * MIX_LX.abs() * k as f64 / (MIX_POINTS - 1) as f64
 }
 
+/// A chance read on the grid of `mix_lx` at `lx`, linearly between its points (at its bounds
+/// past them)
+fn on_grid(c: &[f64], lx: f64) -> f64 {
+    let f = ((lx - MIX_LX) / (2.0 * MIX_LX.abs()) * (MIX_POINTS - 1) as f64).clamp(0.0, (MIX_POINTS - 1) as f64);
+    let k = (f as usize).min(MIX_POINTS - 2);
+    c[k] + (c[k + 1] - c[k]) * (f - k as f64)
+}
+
 impl Scores {
     /// Your board's scores in round `i` from its simulated odds there (none simulated, or a board
     /// that scores nothing: several jokers count as the best of them); a round whose boss isn't
@@ -6145,7 +6320,7 @@ impl Scores {
     /// boss it can be (`Ctx::next_bosses`), moved together to your simulated chance against the
     /// pool (`Scores::mixed`)
     fn of(ctx: &Ctx, i: usize, base: &[(f64, Stats)]) -> Scores {
-        let none = Scores { round: i, mean: f64::INFINITY, sure: true, at: (f64::INFINITY, 1.0), mix: None, curve: None };
+        let none = Scores { round: i, mean: f64::INFINITY, sure: true, at: (f64::INFINITY, 1.0), mix: None, curve: None, reroll: None };
         let Some(((p, st), spec)) = base.get(i).zip(ctx.specs.get(i)) else { return none };
         if spec.start.pool.as_deref().is_some_and(|pool| !pool.is_empty()) {
             return Scores::mixed(i, *p, st, ctx.next_bosses(spec));
@@ -6157,7 +6332,7 @@ impl Scores {
     /// `specs` doesn't hold, `Ctx::before`: `round` then names none of `specs`)
     fn from_odds(i: usize, p: f64, st: &Stats, target: f64) -> Scores {
         if st.p50 <= 0.0 || st.mean <= 0.0 || target <= 0.0 {
-            return Scores { round: i, mean: f64::INFINITY, sure: true, at: (f64::INFINITY, 1.0), mix: None, curve: None };
+            return Scores { round: i, mean: f64::INFINITY, sure: true, at: (f64::INFINITY, 1.0), mix: None, curve: None, reroll: None };
         }
         let spread = ((st.p90.max(1.0).ln() - st.p10.max(1.0).ln()) / (2.0 * 1.281_551_6)).max(0.05);
         let half = 0.5 / st.n.max(1) as f64;
@@ -6170,7 +6345,7 @@ impl Scores {
         } else {
             to(p)
         };
-        Scores { round: i, mean: st.mean, sure: p <= 0.0 || p >= 1.0, at: (gap, spread), mix: None, curve: None }
+        Scores { round: i, mean: st.mean, sure: p <= 0.0 || p >= 1.0, at: (gap, spread), mix: None, curve: None, reroll: None }
     }
 
     /// A round against one of several bosses, each as likely: your board's fit against each
@@ -6183,7 +6358,7 @@ impl Scores {
     fn mixed(i: usize, p: f64, st: &Stats, bosses: &[(f64, f64)]) -> Scores {
         let mix: std::sync::Arc<[(f64, f64)]> = bosses.into();
         let half = 0.5 / st.n.max(1) as f64;
-        let at = |shift: f64| Scores { round: i, mean: st.mean, sure: p <= 0.0 || p >= 1.0, at: (shift, 1.0), mix: Some(mix.clone()), curve: None };
+        let at = |shift: f64| Scores { round: i, mean: st.mean, sure: p <= 0.0 || p >= 1.0, at: (shift, 1.0), mix: Some(mix.clone()), curve: None, reroll: None };
         // (the shift whose mix gives chance q: the chance falls as the shift grows)
         let solve = |q: f64| {
             let (mut lo, mut hi) = (-30.0f64, 30.0f64);
@@ -6217,14 +6392,80 @@ impl Scores {
     fn chance(&self, x: f64) -> f64 {
         let lx = x.max(1e-12).ln();
         match (&self.curve, &self.mix) {
-            (Some(c), _) => {
-                let f = ((lx - MIX_LX) / (2.0 * MIX_LX.abs()) * (MIX_POINTS - 1) as f64).clamp(0.0, (MIX_POINTS - 1) as f64);
-                let k = (f as usize).min(MIX_POINTS - 2);
-                c[k] + (c[k + 1] - c[k]) * (f - k as f64)
-            }
+            (Some(c), _) => on_grid(c, lx),
             (None, Some(_)) => self.mix_chance(lx),
             (None, None) => normal_above((self.at.0 - lx) / self.at.1),
         }
+    }
+
+    /// The chance with every score of your board's ×`x` and a boss reroll used where it reads
+    /// higher (`with_reroll`); without one, `chance`
+    fn chance_rerolled(&self, x: f64) -> f64 {
+        match &self.reroll {
+            Some(c) => on_grid(c, x.max(1e-12).ln()),
+            None => self.chance(x),
+        }
+    }
+
+    /// Whether a boss reroll is read here (`with_reroll`)
+    fn rerolls(&self) -> bool {
+        self.reroll.is_some()
+    }
+
+    /// These scores with a boss reroll in hand for the round's boss (button_callbacks.lua
+    /// `G.FUNCS.reroll_boss`: the boss shown is replaced by one `get_new_boss` draws, each as
+    /// likely), used at its blind select where your board's chance against the boss shown is
+    /// below its average against the ones it can become: so at every multiplier on your scores,
+    /// each boss the round can be kept or rerolled into the others. A mix of bosses not drawn yet
+    /// (the next ante's, `mixed`): each as likely, rerolled into the rest of the mix (the one
+    /// drawn is no longer among the least drawn, `boss_pool`); a known boss (this ante's): into
+    /// `into`, your board's fit against each it can become (`Ctx::reroll_into`, read as
+    /// `from_odds` reads one). Each boss's chance rests on `n` simulated rounds, so a boss is
+    /// rerolled only where the others' average is above it by two standard errors of their
+    /// difference (`SHOP_ERRORS`, as the ranking tells options apart; each chance's error read
+    /// no nearer 0 or 1 than 3 wins in `n`, the rule of three, and the boss shown on `n` too):
+    /// the best of several noisy chances would otherwise read luck as a reroll's worth. One
+    /// reroll a boss (Director's Cut's once an ante; Retcon's more aren't counted). Nothing to
+    /// reroll into: none
+    fn with_reroll(mut self, into: &[(f64, f64)], n: usize) -> Scores {
+        let c = |(g, s): (f64, f64), lx: f64| normal_above((g - lx) / s);
+        let (n, t) = (n.max(1) as f64, three_wins(n));
+        let var = |p: f64| {
+            let q = p.clamp(t, 1.0 - t);
+            q * (1.0 - q) / n
+        };
+        // (kept, or the others' average where it's clearly above)
+        let pick = |p: f64, others: f64, others_var: f64| if others - p > SHOP_ERRORS * (var(p) + others_var).sqrt() { others } else { p };
+        let curve: Option<Vec<f64>> = match self.mix.as_deref() {
+            Some(m) if m.len() >= 2 => {
+                let k = (m.len() - 1) as f64;
+                Some(
+                    (0..MIX_POINTS)
+                        .map(|i| {
+                            let lx = mix_lx(i);
+                            let each: Vec<f64> = m.iter().map(|&(g, s)| c((g + self.at.0, s), lx)).collect();
+                            let (total, total_var): (f64, f64) = (each.iter().sum(), each.iter().map(|&p| var(p)).sum());
+                            each.iter().map(|&p| pick(p, (total - p) / k, (total_var - var(p)) / (k * k))).sum::<f64>() / m.len() as f64
+                        })
+                        .collect(),
+                )
+            }
+            None if !into.is_empty() && self.at.0.is_finite() => {
+                let k = into.len() as f64;
+                Some(
+                    (0..MIX_POINTS)
+                        .map(|i| {
+                            let lx = mix_lx(i);
+                            let each: Vec<f64> = into.iter().map(|&f| c(f, lx)).collect();
+                            pick(c(self.at, lx), each.iter().sum::<f64>() / k, each.iter().map(|&p| var(p)).sum::<f64>() / (k * k))
+                        })
+                        .collect(),
+                )
+            }
+            _ => None,
+        };
+        self.reroll = curve.map(Into::into);
+        self
     }
 
     /// How fast `chance` rises with the log of the multiplier at `ln x`
@@ -6392,16 +6633,22 @@ impl Kept<'_> {
     /// What the jokers kept add over the board the walk starts from, its scores ×`from` yours
     /// (`Start`): with `owned` the share of that board's scores the jokers of yours a find may
     /// take the place of add together (all of them kept: that board), less what they add with
-    /// nothing found (`base`)
-    fn together(&self, kept: &[KeptJoker], from: f64, owned: f64, order: &mut Vec<f64>) -> f64 {
+    /// nothing found (`base`); `rerolled`, with a boss reroll used where it reads higher
+    /// (`Scores::chance_rerolled`; `Chances` only)
+    fn together(&self, kept: &[KeptJoker], from: f64, owned: f64, order: &mut Vec<f64>, rerolled: bool) -> f64 {
         let best = kept.iter().filter(|k| !k.2).map(|k| k.0).fold(0.0, f64::max);
         match self {
             // (the board the walk starts from read on the same scores as the jokers on it, so a
             // joker that adds nothing adds nothing)
             // (a joker of yours ×x adds 1 − 1/x of the board's scores; one found, x − 1 of yours)
-            Kept::Chances(s) if !kept.is_empty() => {
+            Kept::Chances(s) if !kept.is_empty() || rerolled => {
                 let added: f64 = kept.iter().map(|k| if k.2 { 1.0 - 1.0 / k.1.max(1e-9) } else { k.1 - 1.0 }).sum();
-                best.max(s.chance(from * (1.0 + added - owned)) - s.chance(from))
+                let x = from * (1.0 + added - owned);
+                let start = s.chance(from);
+                // (the best find's own simulated gain, with the reroll read at the multiplier
+                // its chance gives on these scores; at a sure pass, as it is)
+                let floor = if rerolled && best > 0.0 && start + best < 1.0 { s.chance_rerolled(s.ratio_of(start + best)) - start } else { best };
+                floor.max(if rerolled { s.chance_rerolled(x) } else { s.chance(x) } - start)
             }
             Kept::Chances(_) => 0.0,
             Kept::Weighted(_) => {
@@ -6587,7 +6834,7 @@ fn money_value_walks(lr: &value::LongRun, pool: &[Candidate], kept_as: &Kept, no
     // pool); the share of the scores they add
     let owned: Vec<KeptJoker> = from.owned.iter().map(|o| kept_as.owned(o.0)).collect();
     let share: f64 = from.owned.iter().map(|o| 1.0 - 1.0 / o.0.max(1e-9)).sum();
-    let base = kept_as.together(&owned, from.ratio, share, &mut order);
+    let base = kept_as.together(&owned, from.ratio, share, &mut order, false);
     // What a joker a shop shows adds per dollar of its price, on average over what the shops
     // show (each rarity at the odds `draw` rolls it, its jokers alike; each joker on its own
     // beside the board the walk starts from): the unit of the bar a buy must clear (`BUY_BARS`)
@@ -6602,7 +6849,7 @@ fn money_value_walks(lr: &value::LongRun, pool: &[Candidate], kept_as: &Kept, no
                 trial.clear();
                 trial.extend_from_slice(&owned);
                 trial.push((gain, x, false));
-                added += odds * (kept_as.together(&trial, from.ratio, share, &mut order) - base).max(0.0) / n;
+                added += odds * (kept_as.together(&trial, from.ratio, share, &mut order, false) - base).max(0.0) / n;
                 price += odds * cost / n;
             }
         }
@@ -6619,8 +6866,15 @@ fn money_value_walks(lr: &value::LongRun, pool: &[Candidate], kept_as: &Kept, no
     let (mut step, mut bar_at, mut rerolls) = (0, 0, least);
     // (whether a walk stopped at the fewest rerolls, under each bar)
     let mut capped_at = [false; BUY_BARS.len()];
-    loop {
+    // With a boss reroll in hand (`Scores::with_reroll`): it's used at the boss's blind select
+    // where the money left pays its $10, and once the policy is chosen, that policy is tried
+    // once more keeping the $10 (`reserve`: every buy and reroll leaves it, and each buy is
+    // judged with the reroll used), the better of the two kept (a budget: one more policy)
+    let can_reroll = matches!(kept_as, Kept::Chances(s) if s.rerolls());
+    let (mut reserve, mut best_rerolls) = (false, least);
+    'policies: loop {
         let bar = BUY_BARS[if step < BUY_BARS.len() { step } else { bar_at }];
+        let keep = if reserve { BOSS_REROLL_COST } else { 0.0 };
         let mut totals = [0.0; 2];
         tried.clear();
         let mut capped = false;
@@ -6649,10 +6903,10 @@ fn money_value_walks(lr: &value::LongRun, pool: &[Candidate], kept_as: &Kept, no
                     // it adds to what's kept
                     cards.sort_by(|a, b| b.0.total_cmp(&a.0).then(b.1.total_cmp(&a.1)));
                     for &(gain, x, cost, at) in cards.iter() {
-                        if cost > m || kept_at.contains(&at) {
+                        if cost > m - keep || kept_at.contains(&at) {
                             continue;
                         }
-                        let have = kept_as.together(&kept, from.ratio, share, &mut order);
+                        let have = kept_as.together(&kept, from.ratio, share, &mut order, reserve);
                         // in a free slot, else in place of the one whose loss costs least: of
                         // yours, or of those found
                         let full = kept.len() >= open_slots;
@@ -6663,7 +6917,7 @@ fn money_value_walks(lr: &value::LongRun, pool: &[Candidate], kept_as: &Kept, no
                             trial.clear();
                             trial.extend(kept.iter().enumerate().filter(|(k, _)| Some(*k) != i).map(|(_, k)| *k));
                             trial.push((gain, x, false));
-                            let v = kept_as.together(&trial, from.ratio, share, &mut order);
+                            let v = kept_as.together(&trial, from.ratio, share, &mut order, reserve);
                             if v > have + 1e-9 && pick.is_none_or(|p| v > p.1) {
                                 pick = Some((i, v));
                             }
@@ -6684,10 +6938,12 @@ fn money_value_walks(lr: &value::LongRun, pool: &[Candidate], kept_as: &Kept, no
                         }
                     }
                     let cost = if done < free { 0.0 } else { (start + (done - free) as i64).max(0) as f64 };
-                    if cost > m {
+                    let must = if here { forced } else { 0 };
+                    // (the reroll an option makes is made whatever is kept; the $10 held back
+                    // from the rerolls past it)
+                    if cost > m - if done < must { 0.0 } else { keep } {
                         break;
                     }
-                    let must = if here { forced } else { 0 };
                     if done >= (rerolls + free).max(must) {
                         // (read on the walks the policy is chosen on: a higher cap can't change
                         // their total once none of them stopped here)
@@ -6699,7 +6955,9 @@ fn money_value_walks(lr: &value::LongRun, pool: &[Candidate], kept_as: &Kept, no
                     draw(&mut cards, walk, s + left as usize + dropped, done);
                 }
             }
-            let gain = kept_as.together(&kept, from.ratio, share, &mut order) - base;
+            // (a boss reroll in hand used at the boss's blind select, after the shops, where the
+            // money left pays for it)
+            let gain = kept_as.together(&kept, from.ratio, share, &mut order, can_reroll && m >= BOSS_REROLL_COST) - base;
             totals[walk % 2] += gain;
             if walk % 2 == 1 && gains.is_some() {
                 tried.push(gain);
@@ -6710,26 +6968,36 @@ fn money_value_walks(lr: &value::LongRun, pool: &[Candidate], kept_as: &Kept, no
                 bar_at = step;
             }
             best = Some((totals[0], totals[1]));
+            best_rerolls = rerolls;
             if let Some(g) = gains.as_deref_mut() {
                 std::mem::swap(g, &mut tried);
             }
         }
-        // a higher cap changes nothing once no walk stopped at this one
-        if step < BUY_BARS.len() {
-            capped_at[step] = capped;
-            step += 1;
-            if step < BUY_BARS.len() {
-                continue;
-            }
-            if !capped_at[bar_at] {
-                break;
-            }
-        } else if !capped {
+        if reserve {
             break;
         }
-        rerolls += 1;
-        if rerolls > WALK_REROLLS.max(least) {
-            break;
+        // a higher cap changes nothing once no walk stopped at this one
+        let chosen = 'next: {
+            if step < BUY_BARS.len() {
+                capped_at[step] = capped;
+                step += 1;
+                if step < BUY_BARS.len() {
+                    continue 'policies;
+                }
+                if !capped_at[bar_at] {
+                    break 'next true;
+                }
+            } else if !capped {
+                break 'next true;
+            }
+            rerolls += 1;
+            rerolls > WALK_REROLLS.max(least)
+        };
+        if chosen {
+            if !can_reroll {
+                break;
+            }
+            (reserve, rerolls, step) = (true, best_rerolls, BUY_BARS.len());
         }
     }
     now + best.map_or(0.0, |b| b.1) / (WALKS / 2) as f64
@@ -7082,7 +7350,7 @@ mod tests {
         let data = GameData::bundled();
         let mut fresh_deck = r.full_deck();
         fresh_deck.sort_by_key(Card::order_key);
-        let ctx = Ctx { run: &r, removal_rank: Default::default(), next_bosses: Default::default(), arrange: false, orders: Default::default(), data, base: Board::from_run(&r, data), specs: vec![], ahead: vec![], before: vec![], fresh_deck, opts: quick() };
+        let ctx = Ctx { run: &r, removal_rank: Default::default(), next_bosses: Default::default(), reroll_into: Default::default(), arrange: false, orders: Default::default(), data, base: Board::from_run(&r, data), specs: vec![], ahead: vec![], before: vec![], fresh_deck, opts: quick() };
         let fresh = RoundStart { hand: vec![], deck: ctx.fresh_deck.clone(), hand_size: r.hand_size, hands: r.round_hands, discards: r.round_discards, scored: 0.0, target: 1.0, fresh: true, ..Default::default() };
         let no_burglar = without(&ctx.base, 0);
         assert_eq!(fresh.hands_on(&ctx.base), (7, 0));
@@ -7201,7 +7469,7 @@ mod tests {
         let data = GameData::bundled();
         let mut fresh_deck = r.full_deck();
         fresh_deck.sort_by_key(Card::order_key);
-        let ctx = Ctx { run: &r, removal_rank: Default::default(), next_bosses: Default::default(), arrange: false, orders: Default::default(), data, base: Board::from_run(&r, data), specs: vec![], ahead: vec![], before: vec![], fresh_deck, opts: quick() };
+        let ctx = Ctx { run: &r, removal_rank: Default::default(), next_bosses: Default::default(), reroll_into: Default::default(), arrange: false, orders: Default::default(), data, base: Board::from_run(&r, data), specs: vec![], ahead: vec![], before: vec![], fresh_deck, opts: quick() };
         let set = |b: &Board, key: &str| {
             let start = blind_from_start(key, 1.0, &r, &ctx.fresh_deck);
             assert_eq!((start.hands, start.discards), (4, 3), "{key}: the run's round_resets");
@@ -7226,7 +7494,7 @@ mod tests {
         let data = GameData::bundled();
         let mut fresh_deck = r.full_deck();
         fresh_deck.sort_by_key(Card::order_key);
-        let ctx = Ctx { run: &r, removal_rank: Default::default(), next_bosses: Default::default(), arrange: false, orders: Default::default(), data, base: Board::from_run(&r, data), specs: vec![], ahead: vec![], before: vec![], fresh_deck: fresh_deck.clone(), opts: quick() };
+        let ctx = Ctx { run: &r, removal_rank: Default::default(), next_bosses: Default::default(), reroll_into: Default::default(), arrange: false, orders: Default::default(), data, base: Board::from_run(&r, data), specs: vec![], ahead: vec![], before: vec![], fresh_deck: fresh_deck.clone(), opts: quick() };
         let mut played = ctx.base.clone();
         played.levels[crate::engine::HandType::Pair as usize].played_this_round = 3;
         assert_eq!(ctx.typical(&played, &[], &[]).mean, ctx.typical(&ctx.base, &[], &[]).mean);
@@ -7261,7 +7529,7 @@ mod tests {
         let keys = |v: Vec<&crate::data::Blind>| v.iter().map(|b| b.key.clone()).collect::<std::collections::BTreeSet<_>>();
         // at Ante 7 the next ante is the win ante: its five showdown bosses only, Violet Vessel at 6×
         r.ante = 7;
-        let showdown = keys(boss_pool_but(&r, data, 8, None));
+        let showdown = keys(boss_pool(&r, data, 8));
         assert_eq!(showdown, ["bl_final_acorn", "bl_final_bell", "bl_final_heart", "bl_final_leaf", "bl_final_vessel"].map(String::from).into());
         let pool = next_boss_pool(&r, data).expect("a pool at Ante 8");
         let base = crate::save::blind_amount(8, r.blind_scaling) * r.ante_scaling;
@@ -7273,12 +7541,12 @@ mod tests {
         r.blinds.clear();
         assert!(next_boss_pool(&r, data).is_none());
         // at Ante 1 only the bosses allowed there (`boss.min` 1), no showdown one
-        let ante1 = keys(boss_pool_but(&r, data, 1, None));
+        let ante1 = keys(boss_pool(&r, data, 1));
         assert!(!ante1.is_empty() && !ante1.contains("bl_final_vessel") && !ante1.contains("bl_wall"), "{ante1:?}");
         // the least drawn so far only, the banned out
         r.bosses_used = vec![("bl_final_acorn".into(), 0), ("bl_final_bell".into(), 1), ("bl_final_heart".into(), 0), ("bl_final_leaf".into(), 0), ("bl_final_vessel".into(), 0)];
         r.banned_keys = vec!["bl_final_heart".into()];
-        assert_eq!(keys(boss_pool_but(&r, data, 8, None)), ["bl_final_acorn", "bl_final_leaf", "bl_final_vessel"].map(String::from).into());
+        assert_eq!(keys(boss_pool(&r, data, 8)), ["bl_final_acorn", "bl_final_leaf", "bl_final_vessel"].map(String::from).into());
     }
 
     #[test]
@@ -7322,6 +7590,77 @@ mod tests {
         let one = Scores::from_odds(0, 0.4, &st, 110.0);
         let alone = Scores::mixed(0, 0.4, &st, &[one.at]);
         assert!((alone.chance(1.3) - one.chance(1.3)).abs() < 1e-4 && (alone.chance_slopes(1.3).1 - one.chance_slopes(1.3).1).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_boss_reroll_is_used_on_the_boss_your_board_does_worse_against() {
+        // The next ante's five bosses, four your board beats about 90% of the time and one it
+        // can't: with a reroll in hand the fifth, drawn 1 time in 5, is rerolled into one of the
+        // four (button_callbacks.lua `G.FUNCS.reroll_boss`), so about 90% in all
+        let st = Stats { mean: 100.0, p10: 80.0, p50: 100.0, p90: 125.0, n: 100, ..Default::default() };
+        let easy = Scores::from_odds(0, 0.9, &st, 80.0).at;
+        let hard = Scores::from_odds(0, 0.0, &st, 300.0).at;
+        let mix = Scores::mixed(0, 0.72, &st, &[easy, easy, easy, easy, hard]).with_reroll(&[], 33);
+        assert!(mix.rerolls());
+        assert!((mix.chance_rerolled(1.0) - 0.9).abs() < 0.01, "{}", mix.chance_rerolled(1.0));
+        // never below the chance without it, and nothing gained where every boss is beaten
+        for x in [0.5, 0.8, 1.0, 1.3, 2.0, 5.0] {
+            assert!(mix.chance_rerolled(x) >= mix.chance(x) - 1e-9, "×{x}");
+        }
+        assert!((mix.chance_rerolled(1e3) - mix.chance(1e3)).abs() < 1e-6);
+        // a mix of one boss has nothing to reroll into
+        assert!(!Scores::mixed(0, 0.4, &st, &[easy]).with_reroll(&[], 33).rerolls());
+        // bosses your board meets about alike, their chances apart by less than their rounds'
+        // luck (33 rounds each): nothing gained, where the best of the noisy chances would read
+        // one. Fails if a boss is rerolled wherever the others' average is above it at all
+        let near: Vec<(f64, f64)> = [0.55, 0.6, 0.6, 0.65, 0.6].iter().map(|&p| Scores::from_odds(0, p, &st, 100.0).at).collect();
+        let alike = Scores::mixed(0, 0.6, &st, &near).with_reroll(&[], 33);
+        assert!((alike.chance_rerolled(1.0) - alike.chance(1.0)).abs() < 1e-3, "{} {}", alike.chance_rerolled(1.0), alike.chance(1.0));
+        // this ante's known boss: rerolled into the others' average where it's above your
+        // chance against it, kept where it's below
+        let known = Scores::from_odds(0, 0.2, &st, 120.0).with_reroll(&[easy, hard], 100);
+        assert!((known.chance_rerolled(1.0) - 0.45).abs() < 0.01, "{}", known.chance_rerolled(1.0));
+        // (read on the grid: `MIX_POINTS`)
+        assert!((known.chance_rerolled(1.6) - known.chance(1.6)).abs() < 1e-3 && known.chance(1.6) > 0.9, "{} {}", known.chance_rerolled(1.6), known.chance(1.6));
+        assert!(!Scores::from_odds(0, 0.2, &st, 120.0).with_reroll(&[], 100).rerolls());
+    }
+
+    #[test]
+    fn a_boss_reroll_is_usable_as_the_game_allows_it() {
+        // button_callbacks.lua `G.FUNCS.reroll_boss_button`: Retcon always, Director's Cut once
+        // an ante (`boss_rerolled`), a voucher an option buys as if held
+        let mut r = shop_run(&[("j_joker", None, None)], &[]);
+        assert!(!reroll_usable(&r, None, true) && !reroll_usable(&r, None, false));
+        assert!(reroll_usable(&r, Some("v_directors_cut"), true));
+        r.vouchers.push("v_directors_cut".into());
+        assert!(reroll_usable(&r, None, true) && reroll_usable(&r, None, false));
+        r.boss_rerolled = true;
+        assert!(!reroll_usable(&r, None, true) && reroll_usable(&r, None, false));
+        assert!(reroll_usable(&r, Some("v_retcon"), true));
+    }
+
+    #[test]
+    fn a_boss_reroll_counts_where_the_money_left_pays_it() {
+        // No shops before the boss: with $9 the reroll can't be paid (button_callbacks.lua: $10)
+        // and the chance is your board's; with $10 it's the rerolled chance
+        let r = shop_run(&[("j_joker", None, None)], &[]);
+        let st = Stats { mean: 100.0, p10: 80.0, p50: 100.0, p90: 125.0, n: 100, ..Default::default() };
+        let easy = Scores::from_odds(0, 0.9, &st, 80.0).at;
+        let hard = Scores::from_odds(0, 0.0, &st, 300.0).at;
+        let mix = Scores::mixed(0, 0.72, &st, &[easy, easy, easy, easy, hard]).with_reroll(&[], 33);
+        let rerolled = mix.chance_rerolled(1.0);
+        let kept = Kept::Chances(mix);
+        with_long_run(&r, |lr| {
+            let v = |money: f64| money_value_with(lr, &[], &kept, 0.72, money, Shops::after(0), Start::BOARD);
+            assert!((v(9.0) - 0.72).abs() < 1e-9, "{}", v(9.0));
+            assert!((v(10.0) - rerolled).abs() < 1e-6, "{} {rerolled}", v(10.0));
+            // the shop's reroll an option makes is paid whatever is kept: from $14 with a $5
+            // reroll, $9 is left and the boss stays. Fails if the walk keeping $10 skips it
+            let cost = r.shop.as_ref().map_or(0, |s| s.reroll_cost) as f64;
+            let forced = Shops { here: true, forced: 1, ..Shops::after(0) };
+            let w = money_value_with(lr, &[], &kept, 0.72, 9.0 + cost, forced, Start::BOARD);
+            assert!(cost > 0.0 && (w - 0.72).abs() < 1e-9, "${cost}: {w}");
+        });
     }
 
     #[test]
@@ -7469,7 +7808,7 @@ mod tests {
         assert_eq!(action, "replace Joker");
         let r = shop_run(&[("j_joker", None, None), ("j_joker", Some(Edition::Holo), None)], &[]);
         let data = GameData::bundled();
-        let ctx = Ctx { run: &r, removal_rank: Default::default(), next_bosses: Default::default(), arrange: true, orders: Default::default(), data, base: Board::from_run(&r, data), specs: vec![], ahead: vec![], before: vec![], fresh_deck: fresh_deck_of(&r), opts: quick() };
+        let ctx = Ctx { run: &r, removal_rank: Default::default(), next_bosses: Default::default(), reroll_into: Default::default(), arrange: true, orders: Default::default(), data, base: Board::from_run(&r, data), specs: vec![], ahead: vec![], before: vec![], fresh_deck: fresh_deck_of(&r), opts: quick() };
         let b = ctx.placed(with_joker(&without(&ctx.base, 0), Joker::from_key("j_cavendish", data).unwrap(), 0));
         assert_eq!(b.jokers.iter().map(|j| j.key.as_str()).collect::<Vec<_>>(), vec!["j_joker", "j_cavendish"]);
         // in a blind, as it was put
@@ -7648,7 +7987,7 @@ mod tests {
         let mut fresh_deck = r.full_deck();
         fresh_deck.sort_by_key(Card::order_key);
         let start = blind_from_start("bl_big", 1e15, &r, &fresh_deck);
-        let probe = Ctx { run: &r, removal_rank: Default::default(), next_bosses: Default::default(), arrange: false, orders: Default::default(), data, base: Board::from_run(&r, data), specs: vec![], ahead: vec![], before: vec![], fresh_deck: fresh_deck.clone(), opts: quick() };
+        let probe = Ctx { run: &r, removal_rank: Default::default(), next_bosses: Default::default(), reroll_into: Default::default(), arrange: false, orders: Default::default(), data, base: Board::from_run(&r, data), specs: vec![], ahead: vec![], before: vec![], fresh_deck: fresh_deck.clone(), opts: quick() };
         let spec = Spec { label: "Boss".into(), blind_key: "bl_big".into(), blind_name: "Boss".into(), start, horizon: false };
         let bought = with_joker(&without(&probe.base, 2), Joker::from_key("j_jolly", data).unwrap(), 2);
         let target = probe.odds_one(&bought, &spec, 120).1.mean;
@@ -7872,7 +8211,7 @@ mod tests {
         let data = GameData::bundled();
         let mut fresh_deck = run.full_deck();
         fresh_deck.sort_by_key(Card::order_key);
-        let ctx = Ctx { run, removal_rank: Default::default(), next_bosses: Default::default(), arrange: false, orders: Default::default(), data, base: Board::from_run(run, data), specs: vec![], ahead: vec![], before: vec![], fresh_deck, opts: quick() };
+        let ctx = Ctx { run, removal_rank: Default::default(), next_bosses: Default::default(), reroll_into: Default::default(), arrange: false, orders: Default::default(), data, base: Board::from_run(run, data), specs: vec![], ahead: vec![], before: vec![], fresh_deck, opts: quick() };
         let growths = growths.unwrap_or_else(|| growths_for(&ctx, &[]));
         let lr = value::LongRun::new(&ctx, mix, &growths, &[], [0; 4], None);
         f(&lr)
@@ -7894,7 +8233,7 @@ mod tests {
             let start = blind_from_start("bl_big", target, &r, &fresh_deck);
             Spec { label: "Next: Big".into(), blind_key: "bl_big".into(), blind_name: "Big Blind".into(), start, horizon: false }
         };
-        let mut ctx = Ctx { run: &r, removal_rank: Default::default(), next_bosses: Default::default(), arrange: false, orders: Default::default(), data, base, specs: vec![], ahead: vec![], before: vec![], fresh_deck: fresh_deck.clone(), opts: Options { sims: 120, ..quick() } };
+        let mut ctx = Ctx { run: &r, removal_rank: Default::default(), next_bosses: Default::default(), reroll_into: Default::default(), arrange: false, orders: Default::default(), data, base, specs: vec![], ahead: vec![], before: vec![], fresh_deck: fresh_deck.clone(), opts: Options { sims: 120, ..quick() } };
         // the board's whole rounds (a target no round reaches): past most of them
         let (_, all) = ctx.odds_one(&ctx.base, &spec(1e15), 120);
         let target = all.p90 * 1.5;
@@ -7924,7 +8263,7 @@ mod tests {
             let start = blind_from_start(key, target, &r, &fresh_deck);
             Spec { label: key.into(), blind_key: key.into(), blind_name: key.into(), start, horizon: false }
         };
-        let mut ctx = Ctx { run: &r, removal_rank: Default::default(), next_bosses: Default::default(), arrange: false, orders: Default::default(), data, base, specs: vec![], ahead: vec![], before: vec![], fresh_deck: fresh_deck.clone(), opts: Options { sims: 120, ..quick() } };
+        let mut ctx = Ctx { run: &r, removal_rank: Default::default(), next_bosses: Default::default(), reroll_into: Default::default(), arrange: false, orders: Default::default(), data, base, specs: vec![], ahead: vec![], before: vec![], fresh_deck: fresh_deck.clone(), opts: Options { sims: 120, ..quick() } };
         let (_, all) = ctx.odds_one(&ctx.base, &spec("bl_big", 1e15), 120);
         ctx.ahead = vec![spec("bl_big", all.p10 * 0.9), spec("bl_big", all.p90 * 1.5)];
         let find = |ctx: &Ctx, lifts: [f64; 2]| {
@@ -8020,7 +8359,7 @@ mod tests {
             let start = blind_from_start(key, target, &r, &fresh_deck);
             Spec { label: key.into(), blind_key: key.into(), blind_name: key.into(), start, horizon: false }
         };
-        let mut ctx = Ctx { run: &r, removal_rank: Default::default(), next_bosses: Default::default(), arrange: false, orders: Default::default(), data, base, specs: vec![], ahead: vec![], before: vec![], fresh_deck: fresh_deck.clone(), opts: Options { sims: 300, ..quick() } };
+        let mut ctx = Ctx { run: &r, removal_rank: Default::default(), next_bosses: Default::default(), reroll_into: Default::default(), arrange: false, orders: Default::default(), data, base, specs: vec![], ahead: vec![], before: vec![], fresh_deck: fresh_deck.clone(), opts: Options { sims: 300, ..quick() } };
         let (_, all) = ctx.odds_one(&ctx.base, &spec("bl_big", 1e15), 120);
         ctx.ahead = vec![spec("bl_big", all.p90 * 1.5)];
         let dollar = |ctx: &Ctx, lifts: [f64; 2], more: f64| {
@@ -8415,7 +8754,7 @@ mod tests {
         let data = GameData::bundled();
         let mut fresh_deck = r.full_deck();
         fresh_deck.sort_by_key(Card::order_key);
-        let ctx = Ctx { run: &r, removal_rank: Default::default(), next_bosses: Default::default(), arrange: false, orders: Default::default(), data, base: Board::from_run(&r, data), specs: vec![], ahead: vec![], before: vec![], fresh_deck, opts: quick() };
+        let ctx = Ctx { run: &r, removal_rank: Default::default(), next_bosses: Default::default(), reroll_into: Default::default(), arrange: false, orders: Default::default(), data, base: Board::from_run(&r, data), specs: vec![], ahead: vec![], before: vec![], fresh_deck, opts: quick() };
         let growths = growths_for(&ctx, &[]);
         let mix = [HandShare { hand: "Pair".into(), share: 1.0, played: 1.0, mean: 1.0 }];
         let plain = value::LongRun::new(&ctx, &mix, &growths, &[], [0; 4], None);

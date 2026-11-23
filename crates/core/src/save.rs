@@ -110,6 +110,11 @@ pub struct RunState {
     /// Times each boss has been drawn this run (`GAME.bosses_used`): rerolls pick among the least used.
     #[serde(default)]
     pub bosses_used: Vec<(String, i64)>,
+    /// This ante's boss was rerolled (`round_resets.boss_rerolled`, set by button_callbacks.lua
+    /// `G.FUNCS.reroll_boss`, a Boss Tag's reroll too; cleared as an ante's blinds are reset,
+    /// common_events.lua `reset_blinds`): Director's Cut can't reroll it again this ante
+    #[serde(default)]
+    pub boss_rerolled: bool,
     pub shop_rates: ShopRates,
     pub snapshot: Snapshot,
 }
@@ -722,6 +727,7 @@ pub fn from_value(g: &Value, data: &GameData, path: &Path, age_secs: Option<u64>
                 })
                 .collect()
         }),
+        boss_rerolled: rr.get("boss_rerolled").truthy(),
         shop_rates: ShopRates {
             joker: game.get("joker_rate").num().unwrap_or(20.0),
             tarot: game.get("tarot_rate").num().unwrap_or(4.0),
