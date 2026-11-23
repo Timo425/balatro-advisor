@@ -1149,22 +1149,23 @@ the same retriggered ×Mult.
   shop with one, first and clear in 1, clear in 4 more; a bot run on BAVANG06 bought and opened
   one. The owner opened 93 of the 238 offered: whether the advice reads them low against that
   isn't measured (the queue's "What's left of gap 10"). Shops +6% on the timing set.
-- **Done 2026-11-22:** boss rerolls valued and advised (gap 13 (a)): Director's Cut or Retcon,
+- **Done 2026-11-23:** boss rerolls valued and advised (gap 13 (a)): Director's Cut or Retcon,
   held or on offer, is a purchase on the money's walk ($10 kept for it where the money left
   pays it, the forced shop reroll paid first), used on this ante's known boss while it hasn't
   been rerolled and on the next ante's drawn boss, only where the boss your board does worse
   against is clear of the average over the rest by two standard errors. At a boss's blind
-  select with a reroll held and $10, the boss's row says reroll or keep (or close). On the
+  select with a reroll held and $10, the boss's row says reroll, keep or close (earlier selects: decide at its blind select). On the
   fixtures: only the Director's Cut fixture moved, Director's Cut 0.744 (below leaving) →
   first at 0.925 (next ante 75% → 93%, Violet Vessel rerolled): its expectation restored. On 30
   of the owner's screens with a reroll voucher (3 runs, a shop and the blind select a round):
-  1 shop top pick moved (that same state), 3 shop top options' ranks moved by under 1%, the
+  1 shop top pick moved (an earlier save of that shop), 2 shops' top options' ranks moved by under 1%, the
   blind select's keep values rose where the next ante's boss can be rerolled (0.728 → 0.907 on
   A7LD1T91 Ante 7); the boss's own select said keep on GA74B7U3's Ante 8 Amber Acorn (5.7%
   against 4.5% rerolled). No Best play pick moved (the quick pass reads no reroll). The
   advice's time on the timing set: a blind's quick pass 30.1 → 30.0 s, a shop 113.6 → 111.2 s
-  (−2%, noise); on the 30 reroll-voucher screens, one run each, about alike (two Ante 8
-  GA74B7U3 states +7 and +9 s on a busy PC, the rest within ±3 s).
+  (−2%, within noise; a busy PC, load 34.6, the code before the rebase onto 3143be3); on the 30
+  reroll-voucher screens, one run each on a busy PC: about alike, two Ante 8 GA74B7U3 states
+  +7 and +9 s (+17%, +20%), the rest within ±3 s, not timed again.
 - **Next:** a free hand banked before the
   hand that wins (gap 34); Ceremonial Dagger's value (gap 8); the blind odds shown and the
   outlook chained as Best play's blinds ahead are (gap 28).
@@ -1984,8 +1985,9 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    `shop_directors_cut_for_the_final_boss`, its expectation restored) the voucher went from
    below leaving (0.744 against 0.747) to first (0.925: the next ante 75% → 93%, Violet Vessel
    rerolled); on GA74B7U3 at Ante 8, where the owner held one with $18 and lost to Amber Acorn,
-   the boss's row says keep (70% at its first blind select against 30% over the four it can
-   become, Violet Vessel among them). Still left of (a): Retcon's rerolls past the first, a
+   the boss's row says decide at its blind select at the first one (70% kept against 30% over
+   the four it can become, Violet Vessel among them) and keep at the boss's own (5.7% against
+   4.5%). Still left of (a): Retcon's rerolls past the first, a
    reroll of this ante's boss and the next ante's paid from one walk's money (each walk pays its
    own), a reroll of this ante's boss drawing one more (`bosses_used`) and so narrowing the next
    ante's pool, the next ante's pool of one least-drawn boss (its reroll draws from the next
