@@ -53,13 +53,14 @@ task serves that; judge its effort by it, and its cost in the advice's time by w
 - **Unmodelled is reported as `not modelled`**, never silently ignored; **heuristics are labelled**
   in every output (text and JSON). Code, comments and docs in English (D4).
 - **The live page's text is for the owner mid-game**, who reads neither the code nor the docs
-  (chats write those for chats: no model for it). Each new text says what they're looking at or
-  what to do, in the game's words and the page's existing ones, in one short line, placed on the
-  thing it's about (a row, a cell); the reason goes in a tooltip. Before committing new or changed
+  (chats write those for chats: no model for it). Each new text is a label, not a sentence: a few
+  words saying what they're looking at or what to do (`Best so far · still checking`), in the
+  game's words and the page's existing ones, placed on the thing it's about (a row, a cell); every
+  reason and condition goes in its tooltip. Before committing new or changed
   page text, look at it drawn (`tools/page_shot.py <saved state>`: screenshots of the page in
   headless Chrome, a shop's first ranking and the full analysis), and a reader that hasn't seen
   the change (an agent given only the screenshot) says what each text tells it; what it gets
-  wrong is rewritten.
+  wrong is rewritten, still as a label.
 - **No coupling** to `balatro-agent` or other local repos: copy and adapt with attribution.
 - **Know where things stand before judging.** A chat that brainstorms, judges a gap or picks work
   first runs `tools/status.py`, reads `docs/owner-view.md` (the owner's words only) and says what's
