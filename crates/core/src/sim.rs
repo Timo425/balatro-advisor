@@ -5088,7 +5088,7 @@ pub fn grown_over(b: &Board, starts: &[RoundStart], checkpoints: &[usize], chain
                 })
             })
             .collect();
-        hs.into_iter().flat_map(|h| crate::progress::joined(h.join())).collect()
+        crate::progress::joined_all(hs).into_iter().flatten().collect()
     });
     let none = |n: Option<[f64; 3]>| n.unwrap_or([0.0, 1.0, 0.0]);
     let n = runs.len().max(1) as f64;
@@ -5164,7 +5164,7 @@ fn chained(b: &Board, rounds: &[RoundStart], sims: usize, seed: u64, saves: bool
                 })
             })
             .collect();
-        hs.into_iter().flat_map(|h| crate::progress::joined(h.join())).collect()
+        crate::progress::joined_all(hs).into_iter().flatten().collect()
     })
 }
 
@@ -5268,7 +5268,7 @@ pub fn round_odds(b: &Board, start: &RoundStart, sims: usize, seed: u64) -> (f64
                     })
                 })
                 .collect();
-            hs.into_iter().flat_map(|h| crate::progress::joined(h.join())).collect()
+            crate::progress::joined_all(hs).into_iter().flatten().collect()
         })
     };
     // Win chance on score alone: Mr. Bones' one-off save is reported separately (p_saved),

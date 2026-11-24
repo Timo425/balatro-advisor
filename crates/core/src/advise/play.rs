@@ -219,7 +219,7 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
         // a hand the game allows a move from always has one; none means nothing to race: the fallback below (the best play of your hand, if any) instead of
         // ranking an empty field
         if cands.is_empty() {
-            return (vec![], vec![], None, vec![]);
+            return (vec![], vec![], None, vec![], None);
         }
         // All compared in one race (see `compare`), on one measure per simulated round, as
         // the shop ranking does: winning it, times the long-run value of what it leaves you
@@ -251,14 +251,21 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
             true,
         );
         // as good as the leader: shown equal, or still undecided at the round cap (1600 rounds
-        // couldn't tell them apart)
+        // couldn't tell them apart); a move still in at the analysis' deadline is neither: not
+        // decided, ranked below the leader by its estimate
         let tied: Vec<bool> = race.tied.iter().zip(&race.undecided).map(|(t, u)| *t || *u).collect();
+        race.note_time_up("Best play");
+        let time_limit = race.timed_out.map(|n| {
+            let still = race.still.iter().filter(|u| **u).count();
+            format!("stopped at the time limit after {n} rounds: the best so far, not decided{}", if still > 0 { format!(" ({still} other move{} still in, not told apart from it yet)", if still == 1 { "" } else { "s" }) } else { String::new() })
+        });
         // how each move left the race, for the reference (`Options::reference`)
         let fate: Vec<String> = (0..cands.len())
             .map(|c| match race.left[c] {
                 _ if c == race.leader => "the race's leader".to_string(),
                 Some((n, "equal")) if !race.tied[c] => format!("equal after {n} rounds to a move later found worse"),
                 Some((n, why)) => format!("{why} after {n} rounds"),
+                None if race.timed_out.is_some() => "still in at the time limit".to_string(),
                 None => "undecided at the cap".to_string(),
             })
             .collect();
@@ -407,11 +414,12 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
         let reference: Vec<(String, f64, String)> = by_value.into_iter().map(|c| (label(&opts[c]), reference[c], fate[c].clone())).collect();
         let mut sorted: Vec<PlayOption> = order.into_iter().map(|c| opts[c].clone()).collect();
         sorted.dedup_by(|a, b| a.action == b.action && a.cards == b.cards && a.use_first == b.use_first);
-        (sorted, reference, gap, judged)
+        (sorted, reference, gap, judged, time_limit)
     });
     let reference = look.as_ref().map_or(vec![], |l| l.1.clone());
     let reference_gap = look.as_ref().and_then(|l| l.2);
     let judged = look.as_ref().map_or(vec![], |l| l.3.clone());
+    let time_limit = look.as_ref().and_then(|l| l.4.clone());
     match look.map(|l| l.0).filter(|o| !o.is_empty()) {
         Some(mut opts) => {
             let best = opts.remove(0);
@@ -433,7 +441,7 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
                 tips.extend(ctx.specs.iter().find(|x| x.in_progress()).and_then(|s| s.start.hidden.as_deref()).and_then(sim::Hidden::fell_back_note));
             }
             let tip = (!tips.is_empty()).then(|| tips.join(". "));
-            Some(PlayAdvice { reference, reference_gap, judged, worth_drawing: worth_drawing.clone(), grows: grows.clone(), counts_ahead, grown: best.grown, then: best.then.clone(), ties: opts.iter().filter(|o| o.tie).count(), planets: Some(best.planets), use_first: best.use_first, use_targets: best.use_targets, spare_hands: Some(best.spare_hands), round_money: Some(best.round_money), action: best.action, cards: best.cards, arrange: best.arrange, arrange_indices: best.arrange_indices, dig: best.dig, indices: best.indices, hand: best.hand, score: best.score, score_range: best.score_range, blind: best.blind, p_win: Some(best.p_win), alternatives: opts, tip })
+            Some(PlayAdvice { reference, reference_gap, judged, worth_drawing: worth_drawing.clone(), grows: grows.clone(), counts_ahead, grown: best.grown, then: best.then.clone(), ties: opts.iter().filter(|o| o.tie).count(), planets: Some(best.planets), use_first: best.use_first, use_targets: best.use_targets, spare_hands: Some(best.spare_hands), round_money: Some(best.round_money), action: best.action, cards: best.cards, arrange: best.arrange, arrange_indices: best.arrange_indices, dig: best.dig, indices: best.indices, hand: best.hand, score: best.score, score_range: best.score_range, blind: best.blind, p_win: Some(best.p_win), alternatives: opts, tip, time_limit })
         }
         None => {
             // your hand as the round has it (a face-down card its stand-in), and what's known of
@@ -491,6 +499,7 @@ pub(super) fn best_play(ctx: &Ctx, lr: &LongRun, spending: &Spending, tarots: &[
             let (order, (arrange, arrange_indices), o) = arranged(&b, hand, &cards, hand_order, &|i| shown(hand, i, hand_order, names));
             let (order, arrange, arrange_indices) = if blind { (cards.clone(), vec![], vec![]) } else { (order, arrange, arrange_indices) };
             PlayAdvice {
+            time_limit: None,
             use_first: None,
             use_targets: None,
             reference: vec![],

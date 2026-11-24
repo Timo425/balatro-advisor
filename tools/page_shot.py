@@ -7,11 +7,15 @@ stay untouched), keeps each screen the page is served on the way (the first rank
 analysis), then draws each in headless Chrome from a small local server that serves the page with
 that one body, so a screen that lasts seconds live holds still for the picture.
 
-Usage: tools/page_shot.py <state.jkr> [--out DIR] [--binary PATH] [--size WxH]
+Usage: tools/page_shot.py <state.jkr> [--out DIR] [--binary PATH] [--size WxH] [--deadline S]
 Chrome: $BAV_CHROME, else chrome-for-testing, google-chrome, chromium or chromium-browser on PATH,
 else Chrome where Windows installs it. The advisor runs at the lowest priority (nice -n 19, on
 Windows its idle class).
-Prints the PNG paths (first.png when a first ranking was made, full.png)."""
+Prints the PNG paths (first.png when a first ranking was made, full.png, running.png: the
+page while a pass with a time limit runs, its status line saying when it answers, and quick.png:
+a blind's quick pass answered while the full pass runs on, what a time limit's answer looks
+like). `--wait` (default 300 s) bounds the wait for the full analysis; past it, what was caught
+is still drawn."""
 import argparse, http.server, json, os, shutil, subprocess, sys, tempfile, threading, time, urllib.request
 
 ap = argparse.ArgumentParser()
@@ -19,6 +23,8 @@ ap.add_argument("state")
 ap.add_argument("--out", default=".")
 ap.add_argument("--binary", default="balatro-advisor")
 ap.add_argument("--size", default="1250,1700")
+ap.add_argument("--wait", type=float, default=300, help="seconds to wait for the full analysis")
+ap.add_argument("--deadline", type=float, default=None, help="the page's time limit (ui --deadline; 0: none; default the page's own)")
 args = ap.parse_args()
 
 WINDOWS_CHROME = [os.path.join(os.environ.get(v, ""), "Google", "Chrome", "Application", "chrome.exe") for v in ("ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA")]
@@ -40,12 +46,12 @@ def get(path):
 os.makedirs(os.path.join(tmp, "save", "1"))
 shutil.copy(args.state, os.path.join(tmp, "save", "1", "save.jkr"))
 env = dict(os.environ, XDG_DATA_HOME=os.path.join(tmp, "xdg"))
-ui = [args.binary, "ui", "--save-dir", os.path.join(tmp, "save"), "--profile", "1", "--port", str(PORT), "--no-open"]
+ui = [args.binary, "ui", "--save-dir", os.path.join(tmp, "save"), "--profile", "1", "--port", str(PORT), "--no-open"] + (["--deadline", str(args.deadline)] if args.deadline is not None else [])
 low = {"creationflags": subprocess.IDLE_PRIORITY_CLASS} if os.name == "nt" else {}
 server = subprocess.Popen(ui if os.name == "nt" else ["nice", "-n", "19", *ui], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **low)
 page, bodies, t0 = None, {}, time.time()
 try:
-    while time.time() - t0 < 300:
+    while time.time() - t0 < args.wait:
         try:
             page = page or get("/")
             raw = get("/api/analysis")
@@ -54,9 +60,17 @@ try:
             continue
         w = json.loads(raw)
         b = w.get("data") or {}
+        # with a time limit, the page while a pass runs (its status line says when it answers)
+        run = w.get("running") or {}
+        if w.get("busy") and run.get("deadline") is not None and run.get("secs", 0) >= 5 and "running" not in bodies:
+            bodies["running"] = raw
         if b.get("first") and "first" not in bodies:
             bodies["first"] = raw
             print(f"first ranking at {time.time() - t0:.1f}s", file=sys.stderr)
+        # a blind's quick pass answered while the full pass runs on
+        if b.get("status") == "ok" and w.get("busy") and "quick" not in bodies and "first" not in bodies:
+            bodies["quick"] = raw
+            print(f"quick pass answered at {time.time() - t0:.1f}s", file=sys.stderr)
         if b.get("status") == "ok" and not b.get("partial") and not w.get("busy"):
             bodies["full"] = raw
             print(f"full analysis at {time.time() - t0:.1f}s", file=sys.stderr)
@@ -66,7 +80,9 @@ finally:
     server.terminate()
     server.wait()
 if "full" not in bodies:
-    sys.exit("the full analysis didn't come within 300 s")
+    print(f"the full analysis didn't come within {args.wait:.0f} s", file=sys.stderr)
+    if not bodies:
+        sys.exit(1)
 
 # 2. Each body, held still, drawn by Chrome
 current = {}
@@ -92,7 +108,7 @@ class Still(http.server.BaseHTTPRequestHandler):
 
 still = http.server.ThreadingHTTPServer(("127.0.0.1", SHOT_PORT), Still)
 threading.Thread(target=still.serve_forever, daemon=True).start()
-for name in ("first", "full"):
+for name in ("running", "quick", "first", "full"):
     if name not in bodies:
         continue
     current["raw"] = bodies[name]

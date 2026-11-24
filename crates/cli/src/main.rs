@@ -69,6 +69,11 @@ enum Cmd {
         /// In a blind, only what the play decision needs (much faster; for bots)
         #[arg(long)]
         quick: bool,
+        /// Answer within about this many seconds with what the analysis has then (the races'
+        /// leaders so far, a shop's first ranking), labelled in `time_limit`; steps that can't
+        /// stop yet run on past it and say so
+        #[arg(long)]
+        deadline: Option<f64>,
     },
     /// Simulate a plan against the blinds ahead, next to the board as it is. For "what if I…"
     /// questions (meant for agents too): e.g. --sell mystic_summit,misprint
@@ -105,6 +110,10 @@ enum Cmd {
         /// Don't open the browser
         #[arg(long)]
         no_open: bool,
+        /// Each pass answers within about this many seconds with what it has then, labelled
+        /// ("let it finish" on the page lets it run on); 0: no time limit
+        #[arg(long)]
+        deadline: Option<f64>,
     },
     /// How well the advisor's win chances matched what happened (logged while `ui` runs)
     Calibration,
@@ -296,7 +305,7 @@ fn main() -> Result<()> {
                 println!("\nSaved {}. After playing it: balatro-advisor golden set {name} <score the game showed>", p.display());
             }
         }
-        Cmd::Analyze { sims, seed, file, quick } => {
+        Cmd::Analyze { sims, seed, file, quick, deadline } => {
             let (run, g) = match file {
                 Some(f) => (save::load(f, data)?, None),
                 None => {
@@ -305,7 +314,8 @@ fn main() -> Result<()> {
                     (save::load(&save::run_path(&dir, p), data)?, gold::load(&dir, p, data).ok())
                 }
             };
-            let opts = balatro_advisor::advise::Options { sims: *sims, seed: *seed, quick: *quick, ..Default::default() };
+            let progress = deadline.filter(|d| *d > 0.0).map(|d| balatro_advisor::progress::Progress::with_deadline(Some(std::time::Duration::from_secs_f64(d))));
+            let opts = balatro_advisor::advise::Options { sims: *sims, seed: *seed, quick: *quick, progress, ..Default::default() };
             let a = balatro_advisor::advise::analyze(&run, data, g.as_ref(), &opts);
             println!("{}", serde_json::to_string_pretty(&a)?);
         }
@@ -351,10 +361,11 @@ fn main() -> Result<()> {
                 println!("(win chance on score, Mr. Bones' save in brackets · average share of the target reached · money the round pays for how it's played: Lucky, Gold cards, money jokers, hands left; {sims} rounds each. Score odds don't see money: compare the money rows for jokers that pay)");
             }
         }
-        Cmd::Ui { port, no_open } => {
+        Cmd::Ui { port, no_open, deadline } => {
             let dir = dir()?;
             let p = profile(&dir);
-            ui::run(dir, p, *port, !*no_open)?;
+            let deadline = deadline.or(ui::DEFAULT_DEADLINE_S).filter(|d| *d > 0.0).map(std::time::Duration::from_secs_f64);
+            ui::run(dir, p, *port, !*no_open, deadline)?;
         }
         Cmd::Calibration => {
             use balatro_advisor::calibration::{self, Entry};

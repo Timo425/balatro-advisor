@@ -12,6 +12,14 @@ use balatro_advisor::{gold, save};
 
 const PAGE: &str = include_str!("ui.html");
 
+/// The time limit a blind's quick pass answers by (`ui --deadline`), when none is given: the
+/// owner's call (2026-11-23: "go with 30s"; 97% of the quick passes in a blind logged
+/// 2026-10-09..11-13 ended within it). Only the quick pass has one: it's a state's first answer
+/// in a blind. A shop's or an open pack's first answer is its first ranking, shown within seconds
+/// (`advise::FirstSink`), and a full pass only adds to an answer on screen, so it runs on until a
+/// newer state stops it (Best play decided there replaces the quick pass's)
+pub const DEFAULT_DEADLINE_S: Option<f64> = Some(30.0);
+
 #[derive(Default)]
 struct Shared {
     version: u64,
@@ -23,11 +31,13 @@ struct Shared {
     /// Shop options ticked "as if bought" (labels), and a counter that changes with them
     plan: Vec<String>,
     plan_version: u64,
+    /// The time limit a blind's quick pass answers by (`ui --deadline`, `DEFAULT_DEADLINE_S`)
+    deadline: Option<Duration>,
 }
 
-pub fn run(save_dir: PathBuf, profile: u8, port: u16, open: bool) -> Result<()> {
+pub fn run(save_dir: PathBuf, profile: u8, port: u16, open: bool, deadline: Option<Duration>) -> Result<()> {
     lower_priority();
-    let shared = Arc::new(Mutex::new(Shared { body: r#"{"status":"starting"}"#.into(), ..Default::default() }));
+    let shared = Arc::new(Mutex::new(Shared { body: r#"{"status":"starting"}"#.into(), deadline, ..Default::default() }));
 
     let beat_dir = save_dir.clone();
     // Hands log: each state kept in the history goes to a thread of its own, which pairs it with
@@ -260,6 +270,13 @@ pub fn run(save_dir: PathBuf, profile: u8, port: u16, open: bool) -> Result<()> 
                     Err(e) => tiny_http::Response::from_string(format!("bad plan: {e}")).with_status_code(400),
                 }
             }
+            // "Let it finish": the pass running goes on past its time limit
+            "/api/more" => {
+                if let Some((p, _)) = &shared.lock().unwrap().running {
+                    p.lift_deadline();
+                }
+                tiny_http::Response::from_string("ok")
+            }
             "/" => tiny_http::Response::from_string(PAGE)
                 .with_header(header("Content-Type", "text/html; charset=utf-8")),
             "/api/analysis" => {
@@ -276,7 +293,8 @@ pub fn run(save_dir: PathBuf, profile: u8, port: u16, open: bool) -> Result<()> 
                     .is_some_and(|v| v.get("colourblind_option").truthy());
                 // How far the analysis running has got: steps done of all, seconds so far
                 let running = s.running.as_ref().map_or("null".to_string(), |(p, t)| {
-                    format!(r#"{{"steps":{},"of":{},"secs":{}}}"#, p.steps_done(), progress::STEPS, t.elapsed().as_secs())
+                    let deadline = p.deadline().map_or("null".to_string(), |d| format!("{:.0}", d.as_secs_f64()));
+                    format!(r#"{{"steps":{},"of":{},"secs":{},"deadline":{deadline}}}"#, p.steps_done(), progress::STEPS, t.elapsed().as_secs())
                 });
                 let body = format!(
                     r#"{{"boot":"{boot}","version":{},"busy":{},"running":{running},"game_seen_secs":{seen},"high_contrast":{high_contrast},"data":{}}}"#,
@@ -327,7 +345,8 @@ fn stoppable(
     analyse: impl FnOnce(Progress) -> advise::Analysis,
 ) -> std::thread::Result<Option<advise::Analysis>> {
     let started = Instant::now();
-    let p = Progress::new();
+    // the time limit: a blind's quick pass only (`DEFAULT_DEADLINE_S`)
+    let p = Progress::with_deadline(shared.lock().unwrap().deadline.filter(|_| pass == "quick"));
     shared.lock().unwrap().running = Some((p.clone(), Instant::now()));
     let done = std::sync::atomic::AtomicBool::new(false);
     let out = std::thread::scope(|s| {
@@ -407,7 +426,7 @@ fn keep_history(save: &std::path::Path, r: &save::RunState) -> Option<PathBuf> {
 /// One line per analysis in `timings.jsonl` (next to the calibration log): when, which state
 /// (ante, round, screen, cards in hand, jokers, consumables), which pass (`quick`: a blind's
 /// first look; `full`; `planned`: with the ticked options bought),
-/// how it ended, its total and each step's time (ms). For finding where real analyses spend
+/// how it ended ("done", "time limit": answered at it, "stopped", "crashed"), its total and each step's time (ms). For finding where real analyses spend
 /// their time; nothing reads it back.
 fn log_timing(run: &save::RunState, pass: &str, how: Result<&advise::Analysis, &str>, steps_done: usize, took: Duration) {
     let Some(dir) = balatro_advisor::calibration::default_dir() else { return };
@@ -423,7 +442,7 @@ fn log_timing(run: &save::RunState, pass: &str, how: Result<&advise::Analysis, &
         "consumables": run.consumables.len(),
         "planned": pass == "planned",
         "pass": pass,
-        "ended": how.as_ref().map_or_else(|e| e.to_string(), |_| "done".to_string()),
+        "ended": how.as_ref().map_or_else(|e| e.to_string(), |a| if a.time_limit.is_some() { "time limit" } else { "done" }.to_string()),
         "steps_done": steps_done,
         "total_ms": took.as_millis(),
         "steps_ms": how.ok().map(|a| a.steps_ms.clone()),

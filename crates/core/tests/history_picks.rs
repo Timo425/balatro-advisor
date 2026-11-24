@@ -12,7 +12,11 @@
 //! `BAV_ONLY=a,b` for the sampled states whose path contains any of these, `BAV_HOLDS` for those
 //! holding what a change can reach (`common/filter.rs`: a face-down card, a boss, a joker...),
 //! each a part of the full run's states with the same picks; `BAV_SEED` for another seed
-//! than the analysis' default (what noise alone moves: a placebo for a check's moved picks).
+//! than the analysis' default (what noise alone moves: a placebo for a check's moved picks);
+//! `BAV_DEADLINE=<s>` for the quick pass answering by then (the live page's time limit:
+//! `progress::Progress::with_deadline`; this needs the code of 2026-11-23 on), each state's time
+//! and whether it answered at the limit in `$BAV_PICKS/times.tsv`. A pick moved at a limit is
+//! partly the machine's load (how many rounds fit by then): say the load with the result (D22).
 
 #![allow(dead_code)]
 
@@ -90,6 +94,8 @@ fn history_picks() {
     let _run = stamp::start("history_picks", Some(&out));
     stamp::set_aside(&out, "picks.tsv");
     let t0 = std::time::Instant::now();
+    let deadline: Option<f64> = std::env::var("BAV_DEADLINE").ok().and_then(|s| s.parse().ok()).filter(|d: &f64| *d > 0.0);
+    let mut times = String::new();
     let mut lines = String::new();
     let mut n = 0;
     for p in states() {
@@ -104,8 +110,10 @@ fn history_picks() {
             continue;
         }
         let t = std::time::Instant::now();
-        let a = advise::analyze(&run, GameData::bundled(), None, &advise::Options { quick: true, seed: std::env::var("BAV_SEED").ok().and_then(|s| s.parse().ok()).unwrap_or(advise::Options::default().seed), ..Default::default() });
+        let progress = deadline.map(|d| balatro_advisor::progress::Progress::with_deadline(Some(std::time::Duration::from_secs_f64(d))));
+        let a = advise::analyze(&run, GameData::bundled(), None, &advise::Options { quick: true, seed: std::env::var("BAV_SEED").ok().and_then(|s| s.parse().ok()).unwrap_or(advise::Options::default().seed), progress, ..Default::default() });
         eprintln!("{} {:.1?}", name(&p), t.elapsed());
+        times += &format!("{}\t{}\t{}\n", name(&p), t.elapsed().as_millis(), a.time_limit.as_ref().map_or(String::new(), |l| l.note.clone()));
         n += 1;
         lines += &match a.best_play {
             Some(bp) => format!("{}\t{}\t{} {} [{}]\n", name(&p), by_positions(&bp), bp.action, bp.cards.join(" "), bp.use_first.clone().unwrap_or_default()),
@@ -113,5 +121,6 @@ fn history_picks() {
         };
     }
     std::fs::write(out.join("picks.tsv"), lines).unwrap();
+    std::fs::write(out.join("times.tsv"), times).unwrap();
     println!("{n} states ({:.0?})", t0.elapsed());
 }

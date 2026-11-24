@@ -714,3 +714,36 @@ parked by the time box.
 
 Approved by the owner 2026-11-11 ("order without me is better yes, but just order and dont
 randomly throw cards at the top. ok with all 3").
+
+## D22. An answer by a deadline (accepted 2026-11-23)
+
+**What.** An analysis can be given a deadline (`progress::Progress::with_deadline`: `analyze
+--deadline`, botrun's `--deadline`, the live page's quick pass in a blind at 30 s by default).
+Past it, each stage that can stop does with what it has: a race keeps its leader so far once
+every option has its first batch, those still in not decided (but where holding a consumable is
+still in, which D8 keeps over a change not told apart from none); a shop's or an open pack's
+analysis answers with its first ranking. The steps that can't stop yet run on and say how far past it they ran (the joker pool's screen
+before a shop's first ranking, and a blind select, which has no first ranking to fall back on:
+not yet, the queue's "The steps a deadline can't stop yet"). Every answer at a
+limit says so (`Analysis::time_limit`, Best play's `time_limit`, the page's ⏱ line). With no
+deadline, or one not reached, nothing changes (the replay snapshot byte for byte).
+
+The sentence this makes untrue: `docs/design.md`'s pattern "**Deterministic.** Same input, same
+output: fixed seeds, and nothing depends on the order cards or options happen to be listed in."
+An answer at a deadline depends on how fast the machine ran. The pattern is widened: an answer at
+a limit says so, with none reached the output is the same, and the checks run without one unless
+they measure the limit itself (`BAV_DEADLINE`, whose moved picks are partly the machine's load).
+
+**Why.** The owner asked for it (2026-11-19, `docs/owner-view.md`): "a card or something to make
+advisor/bot draw a decision in a time limit (with maybe an additional option to extend that
+wait"); a bot run on their seed B43IFPN9 ended at an analysis past 300 s with no answer to give,
+and on the live page 2.8% of the quick passes in a blind (2026-10-09..11-13) took over 30 s. An
+answer that depends on the clock, labelled, serves the question every piece of advice answers
+better than none at all; an unlabelled one wouldn't.
+
+**Revisit if** an answer at the limit is often worse than waiting would have been where the
+owner did wait (the history check at the limit, `timings.jsonl`'s "time limit" passes), or the
+steps that can't stop yet (the joker pool's screen) keep the limit from being met where it
+matters.
+
+The page's 30 s default approved by the owner 2026-11-23 ("ok go with 30s"); the widened pattern needs no approval (CLAUDE.md "What needs a decision").

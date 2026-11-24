@@ -60,6 +60,12 @@ said. `tools/status.py` reads the ratings below; CLAUDE.md says when to read thi
 - **2026-11-19** On waiting for the page's advice: "i wait sometimes and obviously the better the
   advisor is the more i would respect it, but of course waiting a long time all the time would
   suck too".
+- **2026-11-23** On the page's time limit (an answer by a deadline, "let it finish" to run on): "ok
+  go with 30s". On timing while chats work on the advisor: "perhaps not when im playing balatro
+  with advisor up, but at least when working on the advisor itself in claude, i often have the
+  pc on some load (like playing some other game, today im playing all day for some example). i
+  guess at least when its under load its usually stably under similar load? so i wonder if
+  things can be timed and just consider its load or thats tii variable."
 
 ## The state, in the owner's words
 

@@ -255,6 +255,9 @@ function skipNotes(s) {
 }
 
 let last = null;
+// "Let it finish": the pass running goes on past its time limit (`/api/more`)
+const MORE = `<a href="#" data-more style="color:var(--gold)" title="Work it out with no time limit (a newer state from the game still stops it)">let it finish</a>`;
+
 function render(d) {
   last = d;
   if (d.status === "no_run") {
@@ -385,12 +388,19 @@ function render(d) {
       <div class="play">${bp.use_first ? `<b>Use ${esc(bp.use_first)}</b>${useOn(bp.use_targets)}, then ` : ""}${bp.action === "discard" ? "<b>discard</b> " : ""}${cardsHtml(bp.cards)}<span style="margin-left:6px">${what(bp)}${bp.p_win != null ? ` · <b style="color:${color(bp.p_win)}">${pct(bp.p_win)}</b> to win` : ""}${thenTxt(bp)}${bp.ties ? ` <span class="muted" title="Other moves the simulation can't tell apart from this one">· ${bp.ties} other move${bp.ties > 1 ? "s" : ""} just as good (below)</span>` : ""}</span></div>
       ${bp.arrange && bp.arrange.length ? `<div class="order" style="margin-top:6px" title="The game plays the selected cards in the order they sit in your hand, and scores the cards kept left to right; this order scores more than the hand as it sits (counted in the score and win chance)">Arrange your hand, left to right: ${cardsHtml(bp.arrange.slice(0, bp.cards.length))} <span class="muted">(play these)</span> ${cardsHtml(bp.arrange.slice(bp.cards.length))}</div>` : ""}
       ${bp.worth_drawing && bp.worth_drawing.length ? `<div class="muted" style="margin-top:6px" title="Cards in your draw pile that a consumable you hold would be worth more on than anything in your hand (By Ante 8)">Worth drawing: ${bp.worth_drawing.map(([c, by, g]) => `${cardsHtml([c])} <span class="muted">(${esc(by)}, +${pct(g)} by Ante 8)</span>`).join(" ")}</div>` : ""}
+      ${bp.time_limit ? `<div class="order" style="margin-top:6px" title="${esc(`Best play ${bp.time_limit}. The full analysis goes on simulating until the best move is clear, and replaces this when it finishes (unless your next move comes first).`)}">⏱ Best so far${d.partial ? " · still checking" : ""}</div>` : ""}
       ${bp.tip ? `<div class="order" style="margin-top:8px">💡 ${esc(bp.tip)}</div>` : ""}
       ${alts ? `<details style="margin-top:6px"><summary class="muted">other moves for this hand</summary><table class="mix">${alts}</table></details>` : ""}</section>`;
   }
 
   // Right: shop, dig list
   let right = "";
+  // a choice other than Best play's cut short at the time limit (which cards a tarot goes on):
+  // said once, its details in the tooltip
+  const tl = a.time_limit;
+  if (tl && !tl.first_ranking && !(a.best_play && a.best_play.time_limit) && tl.stopped.length) {
+    right += `<section style="padding:7px 12px"><div class="order" title="${esc([`Answered at the ${Math.round(tl.secs)} s time limit with the best so far where these were still deciding; the full analysis replaces it when it finishes.`, ...tl.stopped].join("\n"))}">⏱ Some choices: best so far${d.partial ? " · still checking" : ""}</div></section>`;
+  }
   currentPlan = (d.plan && d.plan.items) || [];
   if (d.plan) {
     right += `<section class="planbar"><h2>As if bought <small>the whole page is the advice with these already bought · <a href="#" data-plan-clear>back to the real state</a></small></h2>` +
@@ -450,7 +460,7 @@ function render(d) {
   const tabs = `<span class="tabs">${["jokers", "tarots"].map((t) => `<a href="#" class="${t === tab ? "on" : ""}" onclick="try{localStorage.setItem('digTab','${t}')}catch(e){};render(last);return false">${t === "jokers" ? "Jokers" : "Tarots"}</a>`).join("")}</span>`;
   if (d.partial) {
     // the blind's quick pass: the dig list and the outlook come with the full analysis
-    right += `<section><h2>Worth digging for</h2><div class="empty">Coming with the full analysis (the shop pool, every tarot and the style outlook), shown when it finishes.${first ? "" : " Best play seldom changes then, and only between moves about equal."}</div></section>`;
+    right += `<section><h2>Worth digging for</h2><div class="empty">Coming with the full analysis (the shop pool, every tarot and the style outlook), shown when it finishes.${first || (a.best_play && a.best_play.time_limit) ? "" : " Best play seldom changes then, and only between moves about equal."}</div></section>`;
   } else if (tab === "tarots") {
     const hz = a.rounds.find((r) => r.horizon);
     // (at the win ante there's no next ante: ranked by this round's chance, no reach column)
@@ -499,6 +509,7 @@ document.addEventListener("click", (e) => {
   const t = e.target;
   if (t.dataset && t.dataset.unplan != null) { e.preventDefault(); setPlan(currentPlan.filter((x) => x !== t.dataset.unplan)); }
   if (t.dataset && t.dataset.planClear != null) { e.preventDefault(); setPlan([]); }
+  if (t.dataset && t.dataset.more != null) { e.preventDefault(); fetch("/api/more", { method: "POST" }); }
 });
 
 function goldSection(g) {
@@ -522,7 +533,7 @@ document.addEventListener("input", (e) => {
   if (last) render(last);
 });
 
-let version = -1;
+let version = -1, lastStatus = "";
 async function poll() {
   try {
     const r = await fetch("/api/analysis", { cache: "no-store" });
@@ -537,10 +548,15 @@ async function poll() {
     $("#dot").className = "dot" + (j.busy ? " busy" : gameUp ? "" : " off");
     const run = j.running;
     const took = run ? (run.secs < 60 ? `${run.secs} s` : `${Math.floor(run.secs / 60)} min`) : "";
-    $("#status").textContent = j.busy ? (run && run.secs >= 5 ? `analysing… step ${Math.min(run.steps + 1, run.of)} of ${run.of}, ${took} (a newer state from the game stops it)` : "analysing…")
+    // with a time limit, when the pass answers, and the link that lets it run on; past it, a step
+    // that can't stop yet is still running
+    const by = run && run.deadline != null ? (run.secs < run.deadline ? ` · best so far at ${run.deadline} s, or ${MORE}` : ` · over the ${run.deadline} s limit, finishing a step`) : "";
+    const status = j.busy ? (run && run.secs >= 5 ? `analysing… step ${Math.min(run.steps + 1, run.of)} of ${run.of}, ${took}${by || " (a newer state from the game stops it)"}` : "analysing…")
       : gameUp ? "live from the game"
       : seen != null ? `game not running (last seen ${seen < 120 ? seen + " s" : Math.round(seen / 60) + " min"} ago)`
       : "reading checkpoint saves (live mod not active)";
+    // (rewritten only when it changes, so the link isn't replaced under the pointer)
+    if (status !== lastStatus) { lastStatus = status; $("#status").innerHTML = status; }
     const hc = j.high_contrast !== false;
     if (j.version !== version || hc !== highContrast) { version = j.version; highContrast = hc; render(j.data); }
   } catch (e) {

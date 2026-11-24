@@ -1503,7 +1503,7 @@ impl<'a> LongRun<'a> {
             .collect();
         growers.sort();
         let key = growers.join(",");
-        let mut cache = self.spare_choice.lock().unwrap();
+        let mut cache = self.spare_choice.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(&c) = cache.get(&key) {
             return c;
         }
@@ -1602,7 +1602,7 @@ impl<'a> LongRun<'a> {
     pub fn round_decks(&self, key: &str) -> Option<std::sync::Arc<RoundChange>> {
         use crate::engine::consumable;
         let (effect, min, max) = consumable::round_card_effect(key)?;
-        let mut cache = self.round_decks.lock().unwrap();
+        let mut cache = self.round_decks.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(d) = cache.get(key) {
             return Some(d.clone());
         }

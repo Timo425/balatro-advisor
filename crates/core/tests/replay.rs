@@ -198,7 +198,7 @@ fn holds_terms() {
 /// `diff -r`. Run: `BAV_SNAPSHOT_DIR=/tmp/before cargo test --release --test replay -- --ignored snapshot`
 /// (`BAV_ONLY=a,b` for the fixtures whose name contains any of these, `BAV_HOLDS` for those
 /// holding what a change can reach, `common/filter.rs`; `BAV_SEED` for another seed than 42:
-/// what noise alone changes)
+/// what noise alone changes; `BAV_SNAPSHOT_FIRST`, `BAV_SNAPSHOT_DEADLINE` below)
 #[test]
 #[ignore]
 fn snapshot() {
@@ -213,11 +213,63 @@ fn snapshot() {
         // snapshot shows the finished analysis is the same either way (`advise::FirstSink`)
         let opts = advise::Options { sims: 300, seed, ..Default::default() };
         let opts = if std::env::var_os("BAV_SNAPSHOT_FIRST").is_some() { first::catching(&opts, std::time::Instant::now()).0 } else { opts };
+        // `BAV_SNAPSHOT_DEADLINE=<s>`: with a deadline the analysis doesn't reach (an hour, say),
+        // so the snapshot shows that one not reached changes nothing (D22: the races sample in
+        // pieces they could stop between, a first ranking is held)
+        let deadline: Option<f64> = std::env::var("BAV_SNAPSHOT_DEADLINE").ok().and_then(|s| s.trim().parse().ok());
+        let opts = advise::Options { progress: deadline.map(|d| balatro_advisor::progress::Progress::with_deadline(Some(std::time::Duration::from_secs_f64(d)))), ..opts };
         let mut a = serde_json::to_value(advise::analyze(&run, GameData::bundled(), None, &opts)).unwrap();
         for k in ["elapsed_ms", "steps_ms", "save_age_secs", "live"] {
             a.as_object_mut().unwrap().remove(k);
         }
         std::fs::write(out.join(f.file_name().unwrap()), serde_json::to_string_pretty(&a).unwrap()).unwrap();
+    }
+}
+
+/// An analysis past its deadline answers with what it has, labelled (D22): with a deadline of
+/// none at all, a shop or an open pack that makes a first ranking answers with it (its
+/// `pending` named), and Best play in a blind with its leader after the first batch, saying so.
+/// On the first few fixtures of each kind (fewer simulations: a stop's labels, not the advice,
+/// are what's tested)
+#[test]
+fn a_deadline_past_answers_with_what_it_has_said_so() {
+    use balatro_advisor::progress::Progress;
+    let (mut shops, mut blinds) = (0, 0);
+    for (_, name, v) in &fixtures() {
+        let run: RunState = serde_json::from_value(v["state"].clone()).unwrap();
+        let in_shop = run.screen == balatro_advisor::save::Screen::Shop || run.screen.in_pack();
+        let in_blind = run.screen.in_blind() && !run.hand.is_empty();
+        if (in_shop && shops >= 3) || (in_blind && blinds >= 3) || !(in_shop || in_blind) {
+            continue;
+        }
+        let opts = |progress| advise::Options { sims: 60, quick: in_blind, progress, ..Default::default() };
+        let a = advise::analyze(&run, GameData::bundled(), None, &opts(Some(Progress::with_deadline(Some(std::time::Duration::ZERO)))));
+        let Some(tl) = &a.time_limit else {
+            // (nothing cut and done within a second of the deadline counts as in time,
+            // `TimeLimit::of`: a fast machine on a small state; a cut race always says so)
+            assert!(a.best_play.as_ref().is_none_or(|b| b.time_limit.is_none()), "{name}: past its deadline and not said");
+            continue;
+        };
+        if in_shop {
+            // a first ranking when one is made (none past the planet-level cap, nor in a pack none
+            // of whose picks it holds): then it's the answer, the rest named
+            let (made, caught) = first::catching(&opts(None), std::time::Instant::now());
+            let full = advise::analyze(&run, GameData::bundled(), None, &made);
+            if let Some((_, f)) = caught.lock().unwrap().take() {
+                assert!(tl.first_ranking, "{name}: {tl:?}");
+                assert_eq!(a.pending, f.pending, "{name}");
+                assert_eq!(a.options.iter().map(|o| &o.label).collect::<Vec<_>>(), f.options.iter().map(|o| &o.label).collect::<Vec<_>>(), "{name}");
+                assert!(full.time_limit.is_none(), "{name}");
+                shops += 1;
+            }
+        } else if let Some(bp) = a.best_play.as_ref().filter(|b| b.time_limit.is_some()) {
+            // (a race the first batch decides, one move left, isn't cut: nothing to say)
+            assert!(tl.stopped.iter().any(|s| s.starts_with("Best play")), "{name}: {tl:?} {:?}", bp.time_limit);
+            blinds += 1;
+        }
+    }
+    if !fixtures().is_empty() {
+        assert!(shops > 0 && blinds > 0, "a first ranking answered on {shops} shops, Best play cut on {blinds} blinds");
     }
 }
 

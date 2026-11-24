@@ -291,6 +291,10 @@ pub struct PlayAdvice {
     /// A tip about how to play the round
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tip: Option<String>,
+    /// The search ended at the analysis' deadline (`Options::progress`): what it says ("stopped
+    /// at the time limit after N rounds: the best so far, not decided")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time_limit: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -404,6 +408,94 @@ pub struct Analysis {
     pub elapsed_ms: u128,
     /// Each step's time (ms, in order; the steps `BAV_TIMING` prints): what the live page logs
     pub steps_ms: Vec<(String, u128)>,
+    /// The analysis met its deadline (`Options::progress`, `progress::Progress::with_deadline`):
+    /// what stopped there and what ran on past it. None with no deadline, or one not reached
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time_limit: Option<TimeLimit>,
+}
+
+/// An analysis' answer by its deadline (`Analysis::time_limit`): the best it had when time was
+/// up, never a finding that the rest is worse
+#[derive(Debug, Clone, Serialize)]
+pub struct TimeLimit {
+    /// The deadline, seconds after the analysis started
+    pub secs: f64,
+    /// How long it took in all
+    pub took_secs: f64,
+    /// A shop's or an open pack's first ranking answered in place of the full analysis: the
+    /// options in `Analysis::pending` weren't valued, nor the dig list and the outlook
+    pub first_ranking: bool,
+    /// What stopped at the deadline, with what it kept ("Best play: stopped at the time limit
+    /// after 64 rounds, the leader so far, …")
+    pub stopped: Vec<String>,
+    /// The steps that can't stop yet and ran on past the deadline, each with how long past it
+    /// (ms)
+    pub ran_past: Vec<(String, u128)>,
+    /// One line for the owner: what this answer is
+    pub note: String,
+}
+
+impl TimeLimit {
+    /// What `p`'s deadline did to `a` (`first_ranking`: `a` is the first ranking answered in
+    /// its place), None when it wasn't reached
+    fn of(p: &crate::progress::Progress, deadline: std::time::Duration, a: &Analysis, first_ranking: bool) -> Option<TimeLimit> {
+        let took = p.elapsed();
+        // (a first ranking rests only on what was done before it was held; the same race cut
+        // many times, once per hand or per round, said once with its count)
+        let notes = if first_ranking { p.notes_before_hold() } else { p.notes() };
+        let mut stopped: Vec<String> = vec![];
+        let mut counts: Vec<usize> = vec![];
+        for n in notes {
+            match stopped.iter().position(|x| *x == n) {
+                Some(i) => counts[i] += 1,
+                None => {
+                    stopped.push(n);
+                    counts.push(1);
+                }
+            }
+        }
+        let stopped: Vec<String> = stopped.into_iter().zip(counts).map(|(n, c)| if c > 1 { format!("{n} ×{c}") } else { n }).collect();
+        let limit = deadline.as_millis();
+        let mut end = 0u128;
+        let mut ran_past = vec![];
+        // (a first ranking's steps are those before it: what ran after it was thrown away)
+        for (what, ms) in a.steps_ms.iter().filter(|_| !first_ranking) {
+            let start = end;
+            end += ms;
+            if end > limit && *ms > 0 {
+                ran_past.push((what.clone(), end - start.max(limit)));
+            }
+        }
+        // (nothing to say when nothing stopped and it was in time, or "let it finish" lifted the
+        // deadline first: `Progress::lift_deadline`; within a second of it counts as in time,
+        // what a race's last batch takes to land: the text gives whole seconds)
+        let past: u128 = ran_past.iter().map(|r: &(String, u128)| r.1).sum();
+        if past < 1000 {
+            ran_past.clear();
+        }
+        if !first_ranking && stopped.is_empty() && (took <= deadline + std::time::Duration::from_secs(1) || p.deadline().is_none()) {
+            return None;
+        }
+        let secs = deadline.as_secs_f64();
+        let mut note = if first_ranking {
+            format!(
+                "Answered at the {secs:.0} s time limit with the first ranking: its options {}{}; leaving isn't weighed against what wasn't valued",
+                if stopped.is_empty() { "are final" } else { "are final but for the choices cut at the limit before it" },
+                if a.pending.is_empty() { String::new() } else { format!("; not valued: {}", a.pending.join(", ")) }
+            )
+        } else if !stopped.is_empty() {
+            format!("Answered at the {secs:.0} s time limit: the best so far where it was still deciding, not decided")
+        } else {
+            format!("Past the {secs:.0} s time limit: nothing could stop there")
+        };
+        if !ran_past.is_empty() && !first_ranking {
+            // (a step past it is one that can't stop yet, or a race's first rounds: every option
+            // gets those)
+            let big: Vec<String> = ran_past.iter().filter(|r| r.1 >= 1000).map(|r| format!("{} {:.0} s", r.0, r.1 as f64 / 1000.0)).collect();
+            note += &format!("; it ran {:.0} s past the limit{}", past as f64 / 1000.0, if big.is_empty() { String::new() } else { format!(" ({})", big.join(", ")) });
+        }
+        Some(TimeLimit { secs, took_secs: took.as_secs_f64(), first_ranking, stopped, ran_past, note })
+    }
 }
 
 /// "Which play style has the most room?": each style's best 2-joker addition from the
@@ -1324,6 +1416,47 @@ fn fresh_deck_of(run: &RunState) -> Vec<Card> {
 /// joker's place (the jokers' list, a sale's index) is mapped back to where they sit. In a
 /// blind they're scored as they sit, as Best play plays them (an order for the moment: gap 37).
 pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts: &Options) -> Analysis {
+    // With a deadline (`Options::progress`): a shop's or an open pack's first ranking is asked
+    // for and held, and once it is, past the deadline the analysis unwinds (`progress::TimeUp`)
+    // and answers with it; the races stop at the deadline wherever they are (`compare`), the
+    // steps that can't stop run on. Each says so (`Analysis::time_limit`)
+    let p = opts.progress.clone().or_else(crate::progress::current);
+    let Some((p, deadline)) = p.and_then(|p| p.deadline().map(|d| (p, d))) else { return analyze_ordered(run, data, gold, opts) };
+    let held: std::sync::Arc<std::sync::Mutex<Option<Analysis>>> = Default::default();
+    let first = {
+        let (held, p, theirs) = (held.clone(), p.clone(), opts.first.clone());
+        FirstSink(std::sync::Arc::new(move |a: Analysis| {
+            *held.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(a.clone());
+            p.hold_fallback();
+            if let Some(t) = &theirs {
+                (t.0)(a)
+            }
+        }))
+    };
+    let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| analyze_ordered(run, data, gold, &Options { progress: Some(p.clone()), first: Some(first), ..opts.clone() })));
+    match out {
+        Ok(mut a) => {
+            a.time_limit = TimeLimit::of(&p, deadline, &a, false);
+            a
+        }
+        Err(e) if crate::progress::is_time_up(&*e) => {
+            let mut a = held.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take().expect("time is up only once a first ranking is held");
+            a.elapsed_ms = p.elapsed().as_millis();
+            for h in a.heuristics.iter_mut() {
+                if *h == FIRST_RANKING_NOTE {
+                    *h = FIRST_RANKING_AT_LIMIT_NOTE;
+                }
+            }
+            a.time_limit = TimeLimit::of(&p, deadline, &a, true);
+            a
+        }
+        Err(e) => std::panic::resume_unwind(e),
+    }
+}
+
+/// `analyze` with no deadline to meet: on your jokers as you'd arrange them, where that's worth
+/// it outside a blind (`order_search`)
+fn analyze_ordered(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts: &Options) -> Analysis {
     let t0 = Instant::now();
     let found = if run.blind_in_play().is_none() { order_search(&Board::from_run(run, data), &fresh_deck_of(run), run, opts.seed, true) } else { None };
     let Some((order, gain)) = found.filter(|f| f.1 >= ORDER_GAIN) else { return analyze_as_given(run, data, gold, opts, None) };
@@ -2770,6 +2903,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
                 pending: later,
                 elapsed_ms: t0.elapsed().as_millis(),
                 steps_ms: steps.borrow().clone(),
+                time_limit: None,
             });
         }
     }
@@ -3262,6 +3396,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
         pending: vec![],
         elapsed_ms: t0.elapsed().as_millis(),
         steps_ms: steps.take(),
+        time_limit: None,
     }
 }
 
@@ -3288,6 +3423,10 @@ const SKIP_NOTE: &str = "Skip or play compares the chance to get through this an
 
 /// Said with a shop's first ranking (`FirstSink`)
 const FIRST_RANKING_NOTE: &str = "A first ranking, shown while the rest is worked out: the jokers, planets and vouchers on offer, the planets you hold, your jokers' sales and leaving (with a pack open, its joker and planet picks and skipping it), each with the numbers the full analysis gives it, ranked among themselves. Not in it yet: the reroll, the packs, tarots and a pack's playing cards (they wait on what is worked out after it: every joker's and tarot's By Ante 8 value, the planets not on offer, a pack's playing cards' own rounds), and an option that leaves you more money than the planet-level cap (what money past it buys reads those values). None is made with more money than that cap, or with a pack open when none of its picks is in it. The full analysis replaces it.";
+
+/// `FIRST_RANKING_NOTE` for a first ranking given as the answer at a time limit
+/// (`TimeLimit::first_ranking`): nothing replaces it
+const FIRST_RANKING_AT_LIMIT_NOTE: &str = "A first ranking, given as the answer at the time limit: the jokers, planets and vouchers on offer, the planets you hold, your jokers' sales and leaving (with a pack open, its joker and planet picks and skipping it), each with the numbers the full analysis gives it, ranked among themselves. Not in it: the reroll, the packs, tarots and a pack's playing cards, and an option that leaves you more money than the planet-level cap; the dig list and the outlook. Leaving isn't weighed against what isn't in it.";
 
 /// The kinds of option a shop's first ranking holds (`FirstSink`): those whose numbers read
 /// nothing worked out after the pool's screen. The others (the reroll, packs, tarots, a pack's
@@ -3800,6 +3939,7 @@ fn evaluate_candidate(lr: &value::LongRun, j: Joker, cost: i64, rental: bool, ba
     let now_floor = three_wins(sims);
     let (value, secondary) = (|s: &SwapRound| s.value(now_floor, floor), |s: &SwapRound| s.reach);
     let race = compare::race(picks.len(), SWAP_FIRST, sims.max(SWAP_FIRST), compare::halving(SWAP_BUDGET, SWAP_FIRST, picks.len()), sample, value, secondary, tie_order, true);
+    race.note_time_up(&format!("which joker to sell for {}", data.name(&j.key)));
     let lead = &picks[race.leader];
     let mut c = simulate(lead, sims);
     let mut tied: Vec<usize> = (0..picks.len()).filter(|&p| race.tied[p] || race.undecided[p]).filter_map(|p| picks[p].4 .0).filter(|&i| Some(i) != lead.4 .0).collect();
@@ -6058,7 +6198,7 @@ fn target_race_budget(
         |i, r| {
             let mut total = vec![0.0; r.len()];
             for (k, &(w, e)) in outcomes.iter().enumerate() {
-                let mut inc = incomes[i][k].lock().unwrap();
+                let mut inc = incomes[i][k].lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 let (v, used) = lr.deck_rounds(&decks_of(e, &sets[i]), 0.0, after + r.start..after + r.end, *inc, price.planets_share);
                 *inc = Some(used);
                 total.iter_mut().zip(v).for_each(|(t, x)| *t += w * x);
@@ -6075,6 +6215,10 @@ fn target_race_budget(
         false,
         status_quo,
     );
+    // (at the deadline, with the status quo still in, the advice keeps it: D8, below; the note
+    // says so rather than naming the race's leader)
+    let kept_quo = race.timed_out.is_some() && status_quo.is_some_and(|q| q != race.leader && race.still[q] && price.keeps);
+    race.note_time_up(if kept_quo { "which cards a consumable or DNA's copy goes on (not using it kept: not told apart from it yet)" } else { "which cards a consumable or DNA's copy goes on" });
     // each set's estimate: the leader's mean plus its paired difference to the leader on the
     // rounds both were sampled on (sets cut early have fewer, other rounds than the leader)
     let mean = |v: &[f64]| v.iter().sum::<f64>() / v.len().max(1) as f64;
@@ -6084,8 +6228,10 @@ fn target_race_budget(
         mean(lead) + mean(&race.samples[i][..k]) - mean(&lead[..k])
     };
     let by_estimate = |a: &usize, b: &usize| estimate(*b).total_cmp(&estimate(*a)).then_with(|| key(&sets[*a]).cmp(&key(&sets[*b])));
-    // as good: shown equal, or still undecided at the cap (as far as these rounds can tell)
-    let even = |i: usize| race.tied[i] || race.undecided[i];
+    // as good: shown equal, or still undecided at the cap (as far as these rounds can tell); at
+    // the analysis' deadline the status quo still in too (D8: a held consumable isn't spent on a
+    // change not told apart from none), the other sets still in not decided, below the leader
+    let even = |i: usize| race.tied[i] || race.undecided[i] || (race.still[i] && Some(i) == status_quo);
     let mut as_good: Vec<usize> = (0..sets.len()).filter(|&i| i != race.leader && even(i)).collect();
     as_good.sort_by(by_estimate);
     let mut rest: Vec<usize> = (0..sets.len()).filter(|&i| i != race.leader && !even(i)).collect();

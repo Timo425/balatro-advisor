@@ -66,7 +66,13 @@ verdict on the advice. As of 2026-10-24 the bot:
   pick that goes on cards whose value names none ("no cards named"), a skip whose tag is not
   valued at all (Foil, Double, Juggle on a Small blind…), and a blind whose analysis failed: it
   plays (an analysis past `ANALYSIS_TIMEOUT_S`, 300 s, counts as failed there; anywhere else it
-  ends the run, logged as "errors", as a 20-card hand at The Mark did, 2026-11-19). Skip-or-play
+  ends the run, logged as "errors", as a 20-card hand at The Mark did, 2026-11-19). With
+  `--deadline S` each analysis answers by about S seconds with what it has then (the advisor's
+  `time_limit`: Best play's leader so far, a shop's first ranking, with its packs, rerolls and tarots not
+  valued: how often its top differs from the full ranking's isn't measured, so runs with a
+  deadline aren't compared with runs without one), listed in the run's
+  `time_limited`; the steps that can't stop yet (the joker pool's screen) run on, the process
+  limit then S + 120 s, at least 300 s. Skip-or-play
   doesn't read the tags held (gap 21). Vouchers move the money a run holds: compare runs on
   either side of 2026-11-02 knowing it.
   Counted in `not_followed` (all but the held tarot: holding it is Best play's own call), as is a
@@ -258,6 +264,18 @@ def keep_state(screen):
 
 
 ANALYSIS_TIMEOUT_S = 300
+# `--deadline`: each analysis answers by then with what it has (`balatro-advisor analyze
+# --deadline`), its process limit a margin above it for the steps that can't stop yet
+DEADLINE_S = None
+DEADLINE_MARGIN_S = 120
+# the analyses answered at the deadline this run (screen: the advisor's note)
+TIME_LIMITED = []
+
+
+def analysis_limit():
+    """How long an analysis may run before it counts as failed: `ANALYSIS_TIMEOUT_S`, or with a
+    deadline that plus `DEADLINE_MARGIN_S` where that's longer."""
+    return max(ANALYSIS_TIMEOUT_S, DEADLINE_S + DEADLINE_MARGIN_S) if DEADLINE_S else ANALYSIS_TIMEOUT_S
 
 
 class AnalysisTimeout(RuntimeError):
@@ -277,15 +295,17 @@ def analyze(sims, quick=False, keep=None):
     if VERBOSE and v:
         print(f"  (pack state {v})")
     t = time.monotonic()
+    limit = analysis_limit()
     try:
         out = subprocess.run(
-            ["balatro-advisor", "analyze", "--file", str(STATE), "--sims", str(sims), "--seed", str(ADVISOR_SEED)] + (["--quick"] if quick else []),
-            capture_output=True, text=True, timeout=ANALYSIS_TIMEOUT_S,
+            ["balatro-advisor", "analyze", "--file", str(STATE), "--sims", str(sims), "--seed", str(ADVISOR_SEED)] + (["--quick"] if quick else [])
+            + (["--deadline", str(DEADLINE_S)] if DEADLINE_S else []),
+            capture_output=True, text=True, timeout=limit,
         )
     except subprocess.TimeoutExpired:
         ANALYSIS_S += time.monotonic() - t
         keep_state("error")
-        raise AnalysisTimeout(f"analysis timed out after {ANALYSIS_TIMEOUT_S} s") from None
+        raise AnalysisTimeout(f"analysis timed out after {limit:.0f} s") from None
     ANALYSIS_S += time.monotonic() - t
     if out.returncode != 0:
         # (the state it failed on, for a fixture: kept whatever the screen)
@@ -293,7 +313,14 @@ def analyze(sims, quick=False, keep=None):
         raise RuntimeError(out.stderr.strip()[-300:])
     if kept:
         kept.with_suffix(".advice.json").write_text(out.stdout)
-    return json.loads(out.stdout)
+    a = json.loads(out.stdout)
+    # answered at the deadline (the advisor's `time_limit`): the best it had then, counted
+    tl = a.get("time_limit")
+    if tl:
+        TIME_LIMITED.append(f"{a.get('screen', '?')}: {tl.get('note', '')}")
+        if VERBOSE:
+            print(f"  ({tl.get('note', '')})")
+    return a
 
 
 # Tarots and spectrals that go on no card you pick: the game's data gives them no
@@ -1321,6 +1348,7 @@ def one_run(args, n, seed=None):
     global ANALYSIS_S, KEEP_DIR
     ANALYSIS_S = 0.0
     NOT_FOLLOWED.clear()
+    TIME_LIMITED.clear()
     FOR_BLIND.clear()
     NAMED_LOGGED.clear()
     rpc("menu")
@@ -1390,6 +1418,7 @@ def one_run(args, n, seed=None):
         "ended": "won" if won(gs) else "game over" if gs["state"] == "GAME_OVER" else "errors" if not restarted else "restart",
         "errors": sum(1 for l in log if l.startswith("error")), "shop_money": shop_money, "ante2_reach": ante2_reach, "skips": skips, "label": args.label, "advisor_seed": ADVISOR_SEED, "commit": commit(),
         "not_followed": NOT_FOLLOWED[:],
+        **({"deadline_s": DEADLINE_S, "time_limited": TIME_LIMITED[:]} if DEADLINE_S else {}),
         "jokers": [j.get("label") for j in cards(gs, "jokers")],
         "game_rss_mb": game_rss_mb(), "minutes": round((time.monotonic() - t0) / 60, 1), "analysis_minutes": round(ANALYSIS_S / 60, 1), "log": log, "states": str(KEEP_DIR), "time": int(time.time()),
     }
@@ -1409,6 +1438,9 @@ def main():
     p.add_argument("--deck", default="RED")
     p.add_argument("--stake", default="WHITE")
     p.add_argument("--sims", type=int, default=100, help="advisor round simulations (fewer = faster)")
+    p.add_argument("--deadline", type=float, default=None,
+                   help="each analysis answers within about this many seconds with what it has then (balatro-advisor analyze --deadline); "
+                        "the run's `time_limited` lists those that did; the process limit is this plus 120 s, at least 300 s")
     p.add_argument("--strategy", default="advisor")
     p.add_argument("-v", "--verbose", action="store_true", help="print every hand")
     p.add_argument("--restart-game", choices=["each", "never"], default="each",
@@ -1418,9 +1450,10 @@ def main():
     p.add_argument("--restart-below", type=float, default=0.0,
                    help="after Ante 1, start over if the board reaches less than this share of the next plain boss (e.g. 0.5)")
     args = p.parse_args()
-    global VERBOSE, ADVISOR_SEED
+    global VERBOSE, ADVISOR_SEED, DEADLINE_S
     VERBOSE = args.verbose
     ADVISOR_SEED = args.advisor_seed
+    DEADLINE_S = args.deadline if args.deadline and args.deadline > 0 else None
     OUT.mkdir(parents=True, exist_ok=True)
     started_from = None  # Windows, native: the profile settings.jkr had before botrun started the game
     if NATIVE:
