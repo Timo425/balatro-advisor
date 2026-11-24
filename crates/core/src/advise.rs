@@ -1992,13 +1992,8 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
         for (t, l) in tarots.iter_mut().zip(&tarot_long) {
             t.long_mult = Some(*l);
         }
-        // Every planet the game can offer, projected: its hand +1 level, Constellation +×0.1
-        let planet_hands: Vec<crate::engine::HandType> = data
-            .centers
-            .iter()
-            .filter(|c| c.set == "Planet")
-            .filter_map(|c| c.config.get("hand_type").and_then(|v| v.as_str()).and_then(crate::engine::HandType::from_name))
-            .collect();
+        // Every planet the game can offer now, projected: its hand +1 level, Constellation +×0.1
+        let planet_hands: Vec<crate::engine::HandType> = offered_planets(data, &ctx.base).into_iter().map(|(_, h)| h).collect();
         // (read by the packs only: not in a first ranking)
         let planet_long: Vec<f64> = if first { vec![] } else { planet_hands.iter().map(|&h| lr.planet(h)).collect() };
         let price = |cost: i64| if cost == 0 { 1.0 } else { lr.value(&Gain::money(-(cost as f64))) };
@@ -2148,8 +2143,10 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
             let extra = ((p1 - p0) * r.slots.max(1) as f64 * 3.0 * antes_left).max(0.0);
             // The money model already lets spare money buy planets; what the voucher adds is
             // planets to buy, so only its own price is charged.
-            // a twelfth of them on your main hand, the rest only grow Constellation
-            let main: Vec<(crate::engine::HandType, f64)> = top_hand.map(|t| vec![(t, extra / 12.0)]).unwrap_or_default();
+            // your main hand's share of them (`main_planet_share`: 1 in 9 until a secret hand is
+            // played), the rest only grow Constellation
+            let share = main_planet_share(data, &ctx.base, top_hand);
+            let main: Vec<(crate::engine::HandType, f64)> = top_hand.filter(|_| share > 0.0).map(|t| vec![(t, extra * share)]).unwrap_or_default();
             let other = extra - main.iter().map(|m| m.1).sum::<f64>();
             o.long_mult = Some(lr.value(&Gain { money: -(o.cost as f64), planets: main, other_planets: other, ..Default::default() }));
             o.note = format!("{} · about {extra:.0} more planets by Ante 8 (estimate)", o.note);
@@ -3024,9 +3021,10 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
                 "+$25 after the boss".to_string()
             }
             "tag_meteor" => {
-                // Mega Celestial: 5 planets, pick 2. Your main hand's planet is in it about 5 times
-                // in 12; each planet used grows Constellation by ×0.1 (card.lua).
-                let hit = 5.0 / 12.0;
+                // Mega Celestial: 5 planets, pick 2. Your main hand's planet is in it 5 times in
+                // as many as the game offers (`main_planet_share`: 5 in 9 until a secret hand is
+                // played); each planet used grows Constellation by ×0.1 (card.lua).
+                let hit = (5.0 * main_planet_share(data, &ctx.base, top_hand)).min(1.0);
                 let grow = |b: &mut Board, level: bool| {
                     for j in b.jokers.iter_mut().filter(|j| j.key == "j_constellation") {
                         j.x_mult += 0.2;
@@ -4065,6 +4063,35 @@ pub fn boss_effect(key: &str) -> Option<&'static str> {
     })
 }
 
+/// The planets the game can offer now, in a shop or a Celestial pack, and the hand each levels:
+/// every Planet but a `softlock` one (Planet X, Ceres, Eris) before its hand was played
+/// (common_events.lua `get_current_pool`)
+fn offered_planets<'a>(data: &'a GameData, board: &Board) -> Vec<(&'a crate::data::Center, crate::engine::HandType)> {
+    data.centers
+        .iter()
+        .filter(|c| c.set == "Planet")
+        .filter_map(|c| {
+            let h = crate::engine::HandType::from_name(c.config.get("hand_type")?.as_str()?)?;
+            let softlock = c.config.get("softlock").and_then(|v| v.as_bool()).unwrap_or(false);
+            (!softlock || board.levels[h as usize].played > 0).then_some((c, h))
+        })
+        .collect()
+}
+
+/// The share of the planets the game offers now (`offered_planets`) that levels `top`, your
+/// main hand: what one planet drawn fresh (a pack's card, a shop's) gives it; 0 without a main
+/// hand or while the game can't offer its planet yet (a secret hand not played). Not counted
+/// (gap 10): the game also leaves out a planet that exists (held or for sale, unless you own
+/// Showman: common_events.lua `get_current_pool`, `G.GAME.used_jokers`), so one held and kept
+/// never comes, one used first can; and Telescope's first card
+fn main_planet_share(data: &GameData, board: &Board, top: Option<crate::engine::HandType>) -> f64 {
+    let offered = offered_planets(data, board);
+    match top {
+        Some(t) if offered.iter().any(|&(_, h)| h == t) => 1.0 / offered.len() as f64,
+        _ => 0.0,
+    }
+}
+
 /// Planets (bought, held or from Celestial packs), Buffoon packs and rerolls, all valued as
 /// the win chance for `round` afterwards. Packs and rerolls are expected values: you take
 /// the best thing offered, if it beats what you have and you can pay for it.
@@ -4087,16 +4114,9 @@ fn shop_options(
     let Some(spec) = ctx.specs.get(round) else { return (vec![], vec![]) };
     let mut out = Vec::new();
 
-    // Planets the game can offer now (Planet X, Ceres, Eris only once their hand was played)
-    let planets: Vec<(&crate::data::Center, HandType)> = data
-        .centers
-        .iter()
-        .filter(|c| c.set == "Planet")
-        .filter_map(|c| {
-            let h = HandType::from_name(c.config.get("hand_type")?.as_str()?)?;
-            let softlock = c.config.get("softlock").and_then(|v| v.as_bool()).unwrap_or(false);
-            (!softlock || ctx.base.levels[h as usize].played > 0).then_some((c, h))
-        })
+    // Planets the game can offer now
+    let planets: Vec<(&crate::data::Center, HandType)> = offered_planets(data, &ctx.base)
+        .into_iter()
         // (a first ranking, `first`: the planets on offer, in the open pack or held; the others
         // are read by the packs and tarots it leaves for the full one)
         .filter(|(c, _)| !first || run.shop.iter().flat_map(|s| &s.other_cards).any(|o| o.key == c.key) || run.open_pack.iter().any(|o| o.key == c.key) || run.consumables.iter().any(|o| o.key == c.key))
@@ -7305,6 +7325,37 @@ mod tests {
                 last = size(&g);
             }
         }
+    }
+
+    #[test]
+    fn offered_planets_leave_out_the_secret_hands_until_played() {
+        // common_events.lua `get_current_pool`: Planet X, Ceres and Eris only once their hand
+        // was played; the 9 others always
+        let data = GameData::bundled();
+        let mut b = Board::from_run(&shop_run(&[], &[]), data);
+        let hands = |b: &Board| offered_planets(data, b).into_iter().map(|(_, h)| h).collect::<Vec<_>>();
+        let now = hands(&b);
+        assert_eq!(now.len(), 9, "{now:?}");
+        assert!(!now.contains(&crate::engine::HandType::FlushFive) && now.contains(&crate::engine::HandType::Pair));
+        b.levels[crate::engine::HandType::FlushFive as usize].played = 1;
+        let later = hands(&b);
+        assert_eq!(later.len(), 10);
+        assert!(later.contains(&crate::engine::HandType::FlushFive));
+    }
+
+    #[test]
+    fn a_main_hands_planet_share_is_one_in_as_many_as_the_game_offers() {
+        // what Planet Merchant's extra planets and the Meteor Tag's pack give your main hand
+        use crate::engine::HandType;
+        let data = GameData::bundled();
+        let mut b = Board::from_run(&shop_run(&[], &[]), data);
+        assert!((main_planet_share(data, &b, Some(HandType::Flush)) - 1.0 / 9.0).abs() < 1e-12);
+        assert_eq!(main_planet_share(data, &b, None), 0.0);
+        // a secret hand's planet isn't offered until that hand is played
+        assert_eq!(main_planet_share(data, &b, Some(HandType::FlushFive)), 0.0);
+        b.levels[HandType::FlushFive as usize].played = 1;
+        assert!((main_planet_share(data, &b, Some(HandType::FlushFive)) - 0.1).abs() < 1e-12);
+        assert!((main_planet_share(data, &b, Some(HandType::Flush)) - 0.1).abs() < 1e-12);
     }
 
     #[test]

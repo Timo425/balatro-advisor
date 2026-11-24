@@ -54,7 +54,7 @@ pub(super) const LEVEL_BELOW_LINE: f64 = 18.0;
 pub(super) const LEVELS_MAX: f64 = 2.0;
 /// A level of your main hand bought with one-off money, or with the money the money's walk
 /// leaves at the end (`spend_once`, `fill_split`): about $12 (its planet is only in some shops
-/// and packs: a Celestial pack holds it ~1 time in 4)
+/// and packs: a Celestial pack holds it ~1 time in 3, `advise::offered_planets`)
 pub(super) const LEVEL_ONCE: f64 = 12.0;
 
 /// The cheapest booster pack ($4: game.lua P_CENTERS, a normal pack): what money pays to open,
