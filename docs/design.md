@@ -2554,7 +2554,32 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    Arcana or Spectral pack `arcana:` / `spectral:<cards>:<price>:<picks>`, Seed Money or Money
    Tree `voucher:<key>:<price>`; leaving is the zero every option is played against) and
    played by `shop_playon` (`BAV_PLAYON`), the mean of its two policies' "both bosses" lines; a
-   move better or worse where the difference is over two standard errors. Top picks on the 144
+   move better or worse where the difference is over two standard errors. Since 2026-11-25 two
+   commands do this for any change. The picks: `BAV_SHOP_PICKS=<dir> cargo test --release --test
+   shop_picks -- --ignored shop_picks --nocapture` on each side (the base's in a `git worktree`
+   with `tests/shop_picks.rs` and `tests/common/{stamp,source_hash}.rs` copied in; about 30
+   minutes a side on the WSL laptop; `BAV_SHOP_STATES` for another list, `BAV_ONLY` to filter)
+   writes each shop's top 3 options with the judge option read from the option's own fields and
+   its shop's cards, never its label (a Standard pack, a card or joker from an open pack and
+   vouchers but Seed Money and Money Tree are written `-` with why). The judge:
+   `BAV_SHOP_PICKS_BEFORE=<dir> BAV_SHOP_PICKS_AFTER=<dir> cargo test --release --test
+   shop_playon -- --ignored shop_judge --nocapture` plays every moved top pick, old and new,
+   against leaving, and judges the new less the old trial by trial on the same shops and
+   rounds, averaged over the two policies (paired errors); what it played is cached
+   (`shop_judge_cache.tsv` in the live page's folder, by code, state file, option, trials and
+   rounds). An option plays in 15 s to 3.5 min at 12 trials (`BAV_PLAYON_TRIALS`). Rerun on
+   51dbc73 and ff02159 (2026-11-25): 45 top picks moved, as gap 17 counted (it kept only the
+   count; by kind 29 the judge of then could play and 16 tarot-related, against its 28 and 17,
+   so at least one moved pick differs; why, not found), all playable by today's judge. The
+   tool reproduces the 17's verdicts on their own code: today's judge files in a worktree of
+   bd53fb5, P4NKP4S7 a4-r10's Spectral Pack over a reroll −0.116 ± 0.057, WORSE (−0.12 ± 0.06
+   below), a reroll → Judgement (8I93CDBG a4-r8) +0.076 ± 0.044 (+0.08 ± 0.05). On today's code
+   (dd89b45) they read −0.127 ± 0.066 (within) and +0.024 ± 0.023, the library's tarot values
+   and pools having moved since; and Chaos the Clown (Foil) → a Buffoon Pack (8I93CDBG a1-r1,
+   one of the 28, within below on the judge before the sorted deck) reads −0.136 ± 0.038,
+   WORSE, while today's advice still ranks the Buffoon Pack first there. All 45 weren't judged
+   again (about 4-5 hours at 12 trials): on today's library that judges gap 17's picks anew,
+   not redoes them. Top picks on the 144
    shops against the commit before (51dbc73, the judge playing each option against leaving on
    the two bosses' joint chance, the mean of its two policies; the judge now also plays planets,
    Celestial packs, a sale, a Mega Buffoon's two picks and Chaos the Clown's free reroll): 45

@@ -40,18 +40,22 @@
 //! Slow (a board with full slots tries every swap):
 //! `BAV_PLAYON=list.txt cargo test --release --test shop_playon -- --ignored --nocapture`, a
 //! list of lines `<state.jkr> <option>`: `joker:<key>[:<edition>]`, `reroll`, `pack:<jokers>:<price>[:<picks>]`
-//! (a Buffoon pack), `celestial:<planets>:<price>` (a Celestial pack, one picked: the hand it
-//! levels counted for the rest of the branch), `planet:<hand>:<price>`, `tarot:<key>[:<price>]`
+//! (a Buffoon pack), `celestial:<planets>:<price>[:<picks>]` (a Celestial pack, the best one picked, a Mega
+//! pack's two: the hands they level counted for the rest of the branch), `planet:<hand>:<price>`, `tarot:<key>[:<price>]`
 //! (a tarot or spectral from the shop, used at once), `arcana:<tarots>:<price>[:<picks>]`,
 //! `spectral:<cards>:<price>[:<picks>]`, `voucher:<key>:<price>` (Seed Money, Money Tree),
-//! `sell:<key>`, `leave` (the money you hold played on through the shops ahead, from your
+//! `sell:<key>[:<place in your row, from 1>]`, `leave` (the money you hold played on through the shops ahead, from your
 //! board's chances), `money` (the same with this shop's rerolls first); both also with
 //! "spend8", rerolling up to 8 times a shop as the advice's money walk may;
 //! `BAV_PLAYON_TRIALS` (24), `BAV_PLAYON_SIMS` (150); `BAV_PLAYON_SHOW`: each deck change a
 //! tarot makes, and your board's chances on that deck (to check against `whatif --card`).
+//!
+//! `shop_judge`: a change's moved top picks judged by this, from two runs of `shop_picks.rs`
+//! (before and after the change).
 
-#[path = "common/stamp.rs"]
-mod stamp;
+#[path = "shop_picks.rs"]
+mod shop_picks;
+use shop_picks::stamp;
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -446,6 +450,21 @@ struct Branch {
 }
 
 fn judge(path: &str, option: &str, trials: usize, sims: usize) -> String {
+    judge_trials(path, option, trials, sims).0
+}
+
+/// One policy's trials, each its board's chance at both bosses (this ante's × the next
+/// ante's) with the option taken and with leaving (the same for `leave`), trial by trial on the
+/// same shops and rounds
+#[derive(Clone, Debug)]
+struct Trials {
+    policy: String,
+    take: Vec<f64>,
+    leave: Vec<f64>,
+}
+
+/// `judge`'s text, and its trials, or why it can't play the option
+fn judge_trials(path: &str, option: &str, trials: usize, sims: usize) -> (String, Result<Vec<Trials>, String>) {
     let data = GameData::bundled();
     let run = save::load(std::path::Path::new(path), data).expect("load");
     let mut pool: [Vec<(String, i64)>; 4] = Default::default();
@@ -454,7 +473,7 @@ fn judge(path: &str, option: &str, trials: usize, sims: usize) -> String {
             pool[c.rarity.unwrap_or(1).min(3) as usize].push((k.clone(), c.cost));
         }
     }
-    let Some(boss) = run.blinds.iter().find(|b| b.slot == "Boss") else { return format!("{path}: no boss") };
+    let Some(boss) = run.blinds.iter().find(|b| b.slot == "Boss") else { return (format!("{path}: no boss"), Err("no boss".into())) };
     let held0: Vec<Held> = run.jokers.iter().map(|sj| Held { key: sj.key.clone(), ed: sj.edition.map(ed_name), sell: sj.sell_value, eternal: sj.eternal }).collect();
     let negatives = held0.iter().filter(|h| h.ed == Some("negative")).count() as i64;
     // the hands a Celestial pack's planets level: every planet's, a secret hand's once played
@@ -536,8 +555,9 @@ fn judge(path: &str, option: &str, trials: usize, sims: usize) -> String {
         }
     };
     // the shop's price of a card it sells, else the one given, else its base price
+    // the price given (a card you hold or pick from a pack: 0), else the shop's, else its base price
     let shop_cost = |key: &str, given: Option<&str>| -> f64 {
-        run.shop.as_ref().and_then(|s| s.other_cards.iter().chain(&s.vouchers).find(|x| x.key == key)).map(|x| x.cost as f64).or_else(|| given.and_then(|g| g.parse().ok())).unwrap_or_else(|| j.price(key))
+        given.and_then(|g| g.parse().ok()).or_else(|| run.shop.as_ref().and_then(|s| s.other_cards.iter().chain(&s.vouchers).find(|x| x.key == key)).map(|x| x.cost as f64)).unwrap_or_else(|| j.price(key))
     };
     // An Arcana or Spectral pack's cards (card.lua `Card:open`; common_events.lua `create_card`:
     // its pool leaves out a card you hold unless you have Showman, `get_current_pool`; The Soul
@@ -574,12 +594,18 @@ fn judge(path: &str, option: &str, trials: usize, sims: usize) -> String {
                     Some((k, e)) => (k, Some(match e { "foil" => "foil", "holo" => "holo", "poly" | "polychrome" => "poly", "negative" => "negative", other => return Err(format!("unknown edition {other}")) })),
                     None => (spec, None),
                 };
-                let cost = run.shop.as_ref().and_then(|s| s.jokers.iter().find(|x| x.key == k)).map_or_else(|| j.price(k), |x| x.cost as f64);
+                // the shop's card of that key and edition, else of that key
+                let shop = run.shop.as_ref().map(|s| s.jokers.as_slice()).unwrap_or_default();
+                let card = shop.iter().find(|x| x.key == k && x.edition.map(ed_name) == ed).or_else(|| shop.iter().find(|x| x.key == k));
+                let cost = card.map_or_else(|| j.price(k), |x| x.cost as f64);
                 let (v, sold, _) = j.with(&b.js, &b.rest, &Held { key: k.to_string(), ed, sell: ((cost as i64) / 2).max(1), eternal: false }, false);
                 b.js = v;
                 b.money += sold as f64 - cost;
-            } else if let Some(k) = option.strip_prefix("sell:") {
-                if let Some(i) = b.js.iter().position(|h| h.key == k) {
+            } else if let Some(r) = option.strip_prefix("sell:") {
+                // `sell:<key>[:<place in your row, from 1>]`
+                let (k, place) = r.split_once(':').map_or((r, None), |(k, p)| (k, p.parse::<usize>().ok()));
+                let at = place.and_then(|p| p.checked_sub(1)).filter(|&i| b.js.get(i).is_some_and(|h| h.key == k));
+                if let Some(i) = at.or_else(|| b.js.iter().position(|h| h.key == k)) {
                     b.money += b.js.remove(i).sell as f64;
                 }
             } else if let Some((hand, cost)) = option.strip_prefix("planet:").and_then(|r| r.rsplit_once(':')) {
@@ -611,23 +637,29 @@ fn judge(path: &str, option: &str, trials: usize, sims: usize) -> String {
                     let k = shown.remove(i);
                     j.use_card(&mut b, &k, &mut s, 0)?;
                 }
-            } else if let Some((n, cost)) = option.strip_prefix("celestial:").and_then(|r| r.split_once(':')) {
-                // a Celestial pack: `n` planets of the hands you can level, one picked
-                b.money -= cost.parse::<f64>().unwrap_or(4.0);
+            } else if let Some(r) = option.strip_prefix("celestial:") {
+                // a Celestial pack, `celestial:<planets>:<price>[:<picks>]`: `n` planets of the
+                // hands you can level, the best picked (a Mega pack: two)
+                let parts: Vec<&str> = r.split(':').collect();
+                let n = parts.first().and_then(|x| x.parse().ok()).unwrap_or(3usize);
+                b.money -= parts.get(1).and_then(|x| x.parse::<f64>().ok()).unwrap_or(4.0);
+                let picks = parts.get(2).and_then(|x| x.parse().ok()).unwrap_or(1usize);
                 let mut s = Stream::new(0xce1 ^ (t as u64).wrapping_mul(977));
                 let mut hands = planets.clone();
                 let mut shown = vec![];
-                for _ in 0..n.parse().unwrap_or(3usize).min(hands.len()) {
+                for _ in 0..n.min(hands.len()) {
                     shown.push(hands.remove(s.below(hands.len())));
                 }
-                let now = j.aim(&b.js, &b.rest, false);
-                let pick = shown.into_iter().map(|h| {
-                    let mut r = b.rest.clone();
-                    r.lv.push(h);
-                    (j.aim(&b.js, &r, false), r)
-                }).max_by(|x, y| x.0.total_cmp(&y.0));
-                if let Some((_, r)) = pick.filter(|p| p.0 > now) {
+                for _ in 0..picks {
+                    let now = j.aim(&b.js, &b.rest, false);
+                    let pick = shown.iter().enumerate().map(|(i, h)| {
+                        let mut r = b.rest.clone();
+                        r.lv.push(h.clone());
+                        (j.aim(&b.js, &r, false), r, i)
+                    }).max_by(|x, y| x.0.total_cmp(&y.0));
+                    let Some((_, r, i)) = pick.filter(|p| p.0 > now) else { break };
                     b.rest = r;
+                    shown.remove(i);
                 }
             } else {
                 if option != "reroll" && !option.starts_with("pack:") {
@@ -693,6 +725,7 @@ fn judge(path: &str, option: &str, trials: usize, sims: usize) -> String {
     // the money's own play-on also rerolls up to 8 times a shop, as the advice's walk may
     let more = [Policy { name: "spend8", reserve: 0.0, big: 0.0, rerolls: 8 }];
     let policies: Vec<Policy> = policies.into_iter().chain(if option == "money" || option == "leave" { more.to_vec() } else { vec![] }).collect();
+    let mut kept: Vec<Trials> = vec![];
     for pol in policies {
         if option == "leave" || option == "money" {
             // leaving alone: what the shops ahead add with the money you hold, played on
@@ -701,6 +734,8 @@ fn judge(path: &str, option: &str, trials: usize, sims: usize) -> String {
             let (dn, sen) = mean_se(&res.iter().map(|b| b.next - n0).collect::<Vec<_>>());
             let (m, _) = mean_se(&res.iter().map(|b| b.money).collect::<Vec<_>>());
             out += &format!("  {:5}: this boss {db:+.3} ± {seb:.3}, next {dn:+.3} ± {sen:.3} from the shops ahead; money at the next boss ${m:.1}\n", pol.name);
+            let both: Vec<f64> = res.iter().map(|b| b.boss * b.next).collect();
+            kept.push(Trials { policy: pol.name.into(), take: both.clone(), leave: both });
             continue;
         }
         let res: Result<Vec<(Branch, Branch)>, String> = (0..trials).map(|t| Ok((play(pol, true, t)?, play(pol, false, t)?))).collect();
@@ -709,7 +744,7 @@ fn judge(path: &str, option: &str, trials: usize, sims: usize) -> String {
             Err(e) => {
                 // what it can't play isn't judged
                 out += &format!("  can't judge: {e}\n");
-                return out;
+                return (out, Err(e));
             }
         };
         let stat = |f: &dyn Fn(&Branch, &Branch) -> f64| {
@@ -727,8 +762,9 @@ fn judge(path: &str, option: &str, trials: usize, sims: usize) -> String {
             "  {:5}: both bosses {d:+.3} ± {se:.3} against leaving (this boss {db:+.3} ± {seb:.3}, next {dn:+.3} ± {sen:.3}); money at the next boss ${ma:.1} ({dm:+.1})\n",
             pol.name
         );
+        kept.push(Trials { policy: pol.name.into(), take: res.iter().map(|(a, _)| a.boss * a.next).collect(), leave: res.iter().map(|(_, b)| b.boss * b.next).collect() });
     }
-    out
+    (out, Ok(kept))
 }
 
 /// The mean of `v` and its standard error
@@ -749,6 +785,193 @@ fn shop_playon() {
         let (path, option) = line.trim().split_once(' ').expect("`<state.jkr> <option>`");
         print!("{}", judge(path, option.trim(), trials, sims));
     }
+}
+
+/// Where the judge pass keeps what it played (`BAV_SHOP_JUDGE_CACHE`, else
+/// `shop_judge_cache.tsv` in the live page's folder): a row per option played, keyed by the
+/// code it was played on (the library's inputs and this file), the state, the option, the
+/// trials and the rounds, so a check judged again, or another check moving the same pick on the
+/// same code, plays nothing twice
+fn cache_path() -> std::path::PathBuf {
+    std::env::var_os("BAV_SHOP_JUDGE_CACHE").map(std::path::PathBuf::from).unwrap_or_else(|| {
+        let dir = balatro_advisor::calibration::default_dir().unwrap_or_else(std::env::temp_dir);
+        let _ = std::fs::create_dir_all(&dir);
+        dir.join("shop_judge_cache.tsv")
+    })
+}
+
+/// The code the judge plays on: the library's inputs and this file's text
+fn judge_code() -> String {
+    let fnv = |s: &str| s.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3));
+    format!("{}-{:08x}", stamp::source_hash(std::path::Path::new(env!("CARGO_MANIFEST_DIR"))), fnv(include_str!("shop_playon.rs")) as u32)
+}
+
+type Played = Result<Vec<Trials>, String>;
+
+/// The cache's rows for `code`: (state, option, trials, rounds) → what was played
+fn read_cache(code: &str) -> HashMap<(String, String, usize, usize), Played> {
+    let mut out: HashMap<(String, String, usize, usize), Played> = HashMap::new();
+    let nums = |s: &str| s.split(',').filter(|x| !x.is_empty()).map(|x| x.parse::<f64>().unwrap_or(f64::NAN)).collect::<Vec<f64>>();
+    for l in std::fs::read_to_string(cache_path()).unwrap_or_default().lines() {
+        let f: Vec<&str> = l.split('\t').collect();
+        if f.len() < 7 || f[0] != code {
+            continue;
+        }
+        let (Ok(t), Ok(s)) = (f[3].parse(), f[4].parse()) else { continue };
+        let k = (f[1].to_string(), f[2].to_string(), t, s);
+        if f[5] == "ERR" {
+            out.insert(k, Err(f[6].to_string()));
+            continue;
+        }
+        // (a row cut short by a killed run is skipped: its option is played again)
+        let (take, leave) = (nums(f[6]), nums(f.get(7).copied().unwrap_or("")));
+        if take.is_empty() || take.len() != leave.len() || take.iter().chain(&leave).any(|x| x.is_nan()) {
+            continue;
+        }
+        if let Ok(v) = out.entry(k).or_insert_with(|| Ok(vec![])) {
+            v.push(Trials { policy: f[5].to_string(), take, leave });
+        }
+    }
+    out
+}
+
+fn write_cache(code: &str, name: &str, option: &str, trials: usize, sims: usize, played: &Played) {
+    use std::io::Write;
+    let head = format!("{code}\t{name}\t{option}\t{trials}\t{sims}");
+    let csv = |v: &[f64]| v.iter().map(|x| format!("{x:.6}")).collect::<Vec<_>>().join(",");
+    let rows = match played {
+        Err(e) => format!("{head}\tERR\t{}\n", e.replace(['\t', '\n'], " ")),
+        Ok(ts) => ts.iter().map(|t| format!("{head}\t{}\t{}\t{}\n", t.policy, csv(&t.take), csv(&t.leave))).collect(),
+    };
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(cache_path()) {
+        let _ = f.write_all(rows.as_bytes());
+    }
+}
+
+/// The judged policies (the two every option is played by, "spend8" left out: only leaving has
+/// it), and per trial the mean over them of `f`'s gain against leaving
+fn per_trial(a: &[Trials], b: Option<&[Trials]>) -> Vec<f64> {
+    let gain = |t: &Trials, i: usize| t.take[i] - t.leave[i];
+    let pols: Vec<&Trials> = a.iter().filter(|t| t.policy != "spend8").collect();
+    let n = pols.iter().map(|t| t.take.len()).min().unwrap_or(0);
+    (0..n)
+        .map(|i| {
+            let v: Vec<f64> = pols
+                .iter()
+                .map(|t| {
+                    let old = b.and_then(|b| b.iter().find(|o| o.policy == t.policy)).map_or(0.0, |o| gain(o, i));
+                    gain(t, i) - old
+                })
+                .collect();
+            v.iter().sum::<f64>() / v.len().max(1) as f64
+        })
+        .collect()
+}
+
+/// The shop judge on a change's moved top picks (gap 17's "How the picks were judged"): for
+/// each state whose top option moved between two runs of `shop_picks.rs` (`BAV_SHOP_PICKS_BEFORE`
+/// and `BAV_SHOP_PICKS_AFTER`, each made on its own code: a base's in a worktree), the old and
+/// the new top option each played on against leaving (`judge_trials`: both policies, trial by
+/// trial on the same shops and rounds), and the new less the old, trial by trial, averaged
+/// over the two policies: better or worse where that's over two standard errors from zero,
+/// else within. A pick moves when its judge option changes (its label where either can't be
+/// played). What the judge can't play is counted apart with its reason. Slow: an option played
+/// is 1-10 minutes at the default 24 trials (`BAV_PLAYON_TRIALS`, `BAV_PLAYON_SIMS` as for
+/// `shop_playon`), kept in the cache (`cache_path`) so nothing is played twice on the same
+/// code; `BAV_ONLY` as for the picks.
+/// `BAV_SHOP_PICKS_BEFORE=/tmp/before BAV_SHOP_PICKS_AFTER=/tmp/after cargo test --release
+/// --test shop_playon -- --ignored shop_judge --nocapture`
+#[test]
+#[ignore]
+fn shop_judge() {
+    let _run = stamp::start("shop_judge", None);
+    let (Some(before), Some(after)) = (std::env::var_os("BAV_SHOP_PICKS_BEFORE"), std::env::var_os("BAV_SHOP_PICKS_AFTER")) else { panic!("set BAV_SHOP_PICKS_BEFORE and BAV_SHOP_PICKS_AFTER") };
+    let num = |k: &str, d: usize| std::env::var(k).ok().and_then(|s| s.parse().ok()).unwrap_or(d);
+    let (trials, sims) = (num("BAV_PLAYON_TRIALS", 24), num("BAV_PLAYON_SIMS", 150));
+    assert!(trials >= 2, "BAV_PLAYON_TRIALS: at least 2 trials, for a standard error");
+    let top = |dir: &std::ffi::OsStr| -> std::collections::BTreeMap<String, shop_picks::Row> {
+        shop_picks::read(std::path::Path::new(dir)).into_iter().filter(|r| r.1 <= 1).map(|r| (r.0.clone(), r)).collect()
+    };
+    let (before, after) = (top(&before), top(&after));
+    let paths: HashMap<String, Option<std::path::PathBuf>> = shop_picks::states().into_iter().collect();
+    let id = |r: &shop_picks::Row| if r.2 == "-" { format!("label {}", r.3) } else { r.2.clone() };
+    let moved: Vec<(&String, &shop_picks::Row, &shop_picks::Row)> =
+        after.iter().filter(|(k, _)| paths.contains_key(*k)).filter_map(|(k, new)| before.get(k).filter(|old| id(old) != id(new)).map(|old| (k, old, new))).collect();
+    let both = after.keys().filter(|k| before.contains_key(*k) && paths.contains_key(*k)).count();
+    println!("{both} states in both, {} top picks moved ({trials} trials a policy, {sims} rounds)", moved.len());
+    let code = judge_code();
+    let mut cache = read_cache(&code);
+    // (the state is keyed by its name and its file's hash: the same name from another history
+    // folder, or a file saved again under it, is played again)
+    let mut play = |name: &str, path: &std::path::Path, option: &str| -> Played {
+        let fnv = |b: &[u8]| b.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &x| (h ^ x as u64).wrapping_mul(0x100_0000_01b3));
+        let name = &format!("{name}@{:016x}", fnv(&std::fs::read(path).unwrap_or_default()));
+        let k = (name.to_string(), option.to_string(), trials, sims);
+        if let Some(p) = cache.get(&k) {
+            return p.clone();
+        }
+        let t = std::time::Instant::now();
+        let played = judge_trials(&path.to_string_lossy(), option, trials, sims).1;
+        eprintln!("{name} {option}: played in {:.0?}", t.elapsed());
+        write_cache(&code, name, option, trials, sims, &played);
+        cache.insert(k, played.clone());
+        played
+    };
+    let mut rows: Vec<(f64, String)> = vec![];
+    let mut unjudged: Vec<String> = vec![];
+    let (mut better, mut worse, mut within, mut up, mut down, mut even, mut sum) = (0, 0, 0, 0, 0, 0, 0.0);
+    for (name, old, new) in &moved {
+        let line = format!("{name}: {} -> {}", if old.3.is_empty() { &old.2 } else { &old.3 }, if new.3.is_empty() { &new.2 } else { &new.3 });
+        let Some(Some(path)) = paths.get(*name) else {
+            unjudged.push(format!("{line}: the state isn't on this machine"));
+            continue;
+        };
+        if let Some(r) = [old, new].iter().find(|r| r.2 == "-") {
+            unjudged.push(format!("{line}: {} ({})", r.3, if r.4.is_empty() { "not played" } else { &r.4 }));
+            continue;
+        }
+        let (a, b) = (play(name, path, &old.2), play(name, path, &new.2));
+        let (a, b) = match (a, b) {
+            (Ok(a), Ok(b)) => (a, b),
+            (Err(e), _) | (_, Err(e)) => {
+                unjudged.push(format!("{line}: {e}"));
+                continue;
+            }
+        };
+        let (d, se) = mean_se(&per_trial(&b, Some(&a)));
+        let (vo, so) = mean_se(&per_trial(&a, None));
+        let (vn, sn) = mean_se(&per_trial(&b, None));
+        let verdict = if d - 2.0 * se > 0.0 {
+            better += 1;
+            "BETTER"
+        } else if d + 2.0 * se < 0.0 {
+            worse += 1;
+            "WORSE"
+        } else {
+            within += 1;
+            "within"
+        };
+        sum += d;
+        match d.total_cmp(&0.0) {
+            std::cmp::Ordering::Greater => up += 1,
+            std::cmp::Ordering::Less => down += 1,
+            std::cmp::Ordering::Equal => even += 1,
+        }
+        rows.push((d, format!("{verdict:6} {line} ({} -> {}): {d:+.3} ± {se:.3} (against leaving {vo:+.3} ± {so:.3} -> {vn:+.3} ± {sn:.3})", old.2, new.2)));
+    }
+    rows.sort_by(|a, b| a.0.total_cmp(&b.0));
+    for (_, r) in &rows {
+        println!("{r}");
+    }
+    for u in &unjudged {
+        println!("can't   {u}");
+    }
+    println!(
+        "moved {}, judged {}: {better} better, {worse} worse, {within} within two standard errors, summing {sum:+.3} ({up} up, {down} down, {even} even); {} not judged",
+        moved.len(),
+        rows.len(),
+        unjudged.len()
+    );
 }
 
 /// What the shop ranking's money's finds are made of, on one shop state (gap 17): the
