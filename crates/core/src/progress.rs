@@ -7,9 +7,9 @@
 //!
 //! A `Progress` can also carry a deadline (`with_deadline`): past it, each stage that can stop
 //! does, with what it has (`time_up`: a race keeps its leader so far, `compare`; once a shop's
-//! first ranking is held, the analysis unwinds with `TimeUp` and `advise::analyze` answers
-//! with that ranking), saying so (`note`); the stages that can't stop yet run on and say how
-//! far past it they ran. With no deadline nothing changes. The deadline can be lifted while the
+//! first ranking or a blind select's answer so far is held, the analysis unwinds with `TimeUp`
+//! and `advise::analyze` answers with that), saying so (`note`); the stages that can't stop yet
+//! run on and say how far past it they ran. With no deadline nothing changes. The deadline can be lifted while the
 //! analysis runs (`lift_deadline`: the live page's "let it finish").
 
 use std::cell::RefCell;
@@ -27,7 +27,8 @@ struct Inner {
     start: Instant,
     /// The deadline, in ms after `start` (`NONE`: none)
     deadline_ms: AtomicU64,
-    /// A fallback answer is held (a shop's first ranking): past the deadline, checkpoints
+    /// A fallback answer is held (a shop's first ranking, a blind select's answer so far): past
+    /// the deadline, checkpoints
     /// unwind with `TimeUp`
     fallback: AtomicBool,
     /// What stopped at the deadline, with what it kept (`note`)

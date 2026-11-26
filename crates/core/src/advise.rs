@@ -52,7 +52,8 @@ pub struct Options {
     /// game writes a newer state
     pub progress: Option<crate::progress::Progress>,
     /// In a shop or an open pack, where the first ranking goes (`FirstSink`), while the analysis
-    /// works out the rest; `None`: no first ranking is made
+    /// works out the rest (and, with a deadline, a blind select's answer so far); `None`: no
+    /// first ranking is made
     pub first: Option<FirstSink>,
 }
 
@@ -64,7 +65,10 @@ pub struct Options {
 /// value, every tarot's and every planet's, worked out after it). Each option in it has the
 /// numbers the finished analysis gives it (`tests/replay.rs` checks that on every fixture); the
 /// order and the ties are among the options it holds. Not made when you hold more than the
-/// planet-level cap (what money past it buys reads the same values).
+/// planet-level cap (what money past it buys reads the same values). With a deadline
+/// (`progress`), a blind select hands it its answer so far too: the blinds' chances once base
+/// odds are in (what isn't made yet named in `pending`, skip-or-play and the boss reroll among
+/// it), then the full answer but for the outlook; the deadline's answer is the last one held.
 #[derive(Clone)]
 pub struct FirstSink(pub std::sync::Arc<dyn Fn(Analysis) + Send + Sync>);
 
@@ -425,6 +429,10 @@ pub struct TimeLimit {
     /// A shop's or an open pack's first ranking answered in place of the full analysis: the
     /// options in `Analysis::pending` weren't valued, nor the dig list and the outlook
     pub first_ranking: bool,
+    /// An answer held earlier answered in place of the full analysis: a shop's or pack's first
+    /// ranking, or a blind select's answer so far (what `Analysis::pending` names wasn't valued,
+    /// nor the outlook)
+    pub held: bool,
     /// What stopped at the deadline, with what it kept ("Best play: stopped at the time limit
     /// after 64 rounds, the leader so far, …")
     pub stopped: Vec<String>,
@@ -436,13 +444,15 @@ pub struct TimeLimit {
 }
 
 impl TimeLimit {
-    /// What `p`'s deadline did to `a` (`first_ranking`: `a` is the first ranking answered in
-    /// its place), None when it wasn't reached
-    fn of(p: &crate::progress::Progress, deadline: std::time::Duration, a: &Analysis, first_ranking: bool) -> Option<TimeLimit> {
+    /// What `p`'s deadline did to `a` (`held`: `a` is an answer held earlier, answered in its
+    /// place: a first ranking, a blind select's answer so far), None when it wasn't reached
+    fn of(p: &crate::progress::Progress, deadline: std::time::Duration, a: &Analysis, held: bool) -> Option<TimeLimit> {
+        let blind_select = a.screen == format!("{:?}", crate::save::Screen::BlindSelect);
+        let first_ranking = held && !blind_select;
         let took = p.elapsed();
         // (a first ranking rests only on what was done before it was held; the same race cut
         // many times, once per hand or per round, said once with its count)
-        let notes = if first_ranking { p.notes_before_hold() } else { p.notes() };
+        let notes = if held { p.notes_before_hold() } else { p.notes() };
         let mut stopped: Vec<String> = vec![];
         let mut counts: Vec<usize> = vec![];
         for n in notes {
@@ -458,8 +468,8 @@ impl TimeLimit {
         let limit = deadline.as_millis();
         let mut end = 0u128;
         let mut ran_past = vec![];
-        // (a first ranking's steps are those before it: what ran after it was thrown away)
-        for (what, ms) in a.steps_ms.iter().filter(|_| !first_ranking) {
+        // (a held answer's steps are those before it: what ran after it was thrown away)
+        for (what, ms) in &a.steps_ms {
             let start = end;
             end += ms;
             if end > limit && *ms > 0 {
@@ -473,11 +483,17 @@ impl TimeLimit {
         if past < 1000 {
             ran_past.clear();
         }
-        if !first_ranking && stopped.is_empty() && (took <= deadline + std::time::Duration::from_secs(1) || p.deadline().is_none()) {
+        if !held && stopped.is_empty() && (took <= deadline + std::time::Duration::from_secs(1) || p.deadline().is_none()) {
             return None;
         }
         let secs = deadline.as_secs_f64();
-        let mut note = if first_ranking {
+        let mut note = if held && blind_select {
+            format!(
+                "Answered at the {secs:.0} s time limit with the blind select as far as it got: what it shows is final{}{}",
+                if stopped.is_empty() { "" } else { " but for the choices cut at the limit before it" },
+                if a.pending.is_empty() { String::new() } else { format!("; not valued: {}", a.pending.join(", ")) }
+            )
+        } else if first_ranking {
             format!(
                 "Answered at the {secs:.0} s time limit with the first ranking: its options {}{}; leaving isn't weighed against what wasn't valued",
                 if stopped.is_empty() { "are final" } else { "are final but for the choices cut at the limit before it" },
@@ -488,13 +504,13 @@ impl TimeLimit {
         } else {
             format!("Past the {secs:.0} s time limit: nothing could stop there")
         };
-        if !ran_past.is_empty() && !first_ranking {
+        if !ran_past.is_empty() && !held {
             // (a step past it is one that can't stop yet, or a race's first rounds: every option
             // gets those)
             let big: Vec<String> = ran_past.iter().filter(|r| r.1 >= 1000).map(|r| format!("{} {:.0} s", r.0, r.1 as f64 / 1000.0)).collect();
             note += &format!("; it ran {:.0} s past the limit{}", past as f64 / 1000.0, if big.is_empty() { String::new() } else { format!(" ({})", big.join(", ")) });
         }
-        Some(TimeLimit { secs, took_secs: took.as_secs_f64(), first_ranking, stopped, ran_past, note })
+        Some(TimeLimit { secs, took_secs: took.as_secs_f64(), first_ranking, held, stopped, ran_past, note })
     }
 }
 
@@ -1254,6 +1270,12 @@ impl Ctx<'_> {
         })
     }
 
+    /// Whether round `spec`'s boss has bosses to reroll into (`reroll_into` non-empty), without
+    /// simulating them: a boss round not yet started, with a pool to draw from
+    fn rerolls_into_any(&self, spec: &Spec) -> bool {
+        !spec.horizon && !spec.in_progress() && self.data.blinds.iter().any(|b| b.key == spec.blind_key && !b.boss.is_null()) && !boss_pool(self.run, self.data, self.run.ante).is_empty()
+    }
+
     /// Your board against each boss a reroll of `spec`'s boss (this ante's, not in play) can
     /// become (`boss_pool`: button_callbacks.lua `G.FUNCS.reroll_boss` draws with
     /// `get_new_boss`, the boss shown out while others are drawn less, its draw already in
@@ -1262,7 +1284,10 @@ impl Ctx<'_> {
     /// the next ante's: a budget); none for a round that isn't a boss's. Once, the first asked
     fn reroll_into(&self, spec: &Spec) -> Vec<RerollInto> {
         let work = || {
-            let Some(cur) = self.data.blinds.iter().find(|b| b.key == spec.blind_key && !b.boss.is_null()).filter(|_| !spec.horizon && !spec.in_progress()) else { return vec![] };
+            if !self.rerolls_into_any(spec) {
+                return vec![];
+            }
+            let Some(cur) = self.data.blinds.iter().find(|b| b.key == spec.blind_key && !b.boss.is_null()) else { return vec![] };
             let into = boss_pool(self.run, self.data, self.run.ante);
             let base = spec.start.target / cur.mult.max(0.1);
             let n = (spec_rounds(spec, self.opts.sims) / NEXT_BOSS_SHARE).max(20);
@@ -1421,9 +1446,10 @@ fn fresh_deck_of(run: &RunState) -> Vec<Card> {
 /// blind they're scored as they sit, as Best play plays them (an order for the moment: gap 37).
 pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts: &Options) -> Analysis {
     // With a deadline (`Options::progress`): a shop's or an open pack's first ranking is asked
-    // for and held, and once it is, past the deadline the analysis unwinds (`progress::TimeUp`)
-    // and answers with it; the races stop at the deadline wherever they are (`compare`), the
-    // steps that can't stop run on. Each says so (`Analysis::time_limit`)
+    // for and held (a blind select's answer so far too, `FirstSink`), and once it is, past the
+    // deadline the analysis unwinds (`progress::TimeUp`) and answers with it; the races stop at
+    // the deadline wherever they are (`compare`), the steps that can't stop run on. Each says so
+    // (`Analysis::time_limit`)
     let p = opts.progress.clone().or_else(crate::progress::current);
     let Some((p, deadline)) = p.and_then(|p| p.deadline().map(|d| (p, d))) else { return analyze_ordered(run, data, gold, opts) };
     let held: std::sync::Arc<std::sync::Mutex<Option<Analysis>>> = Default::default();
@@ -1444,7 +1470,7 @@ pub fn analyze(run: &RunState, data: &GameData, gold: Option<&GoldReport>, opts:
             a
         }
         Err(e) if crate::progress::is_time_up(&*e) => {
-            let mut a = held.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take().expect("time is up only once a first ranking is held");
+            let mut a = held.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take().expect("time is up only once an answer is held");
             a.elapsed_ms = p.elapsed().as_millis();
             for h in a.heuristics.iter_mut() {
                 if *h == FIRST_RANKING_NOTE {
@@ -1480,6 +1506,21 @@ fn analyze_ordered(run: &RunState, data: &GameData, gold: Option<&GoldReport>, o
     a.steps_ms.insert(0, ("arrange".into(), searched));
     a.elapsed_ms = t0.elapsed().as_millis();
     a
+}
+
+/// What the page needs to turn the pool's odds into a shop's (`ShopOdds`), with `per_rarity`
+/// jokers of each rarity in the pool
+fn shop_odds_of(run: &RunState, per_rarity: [usize; 4]) -> ShopOdds {
+    ShopOdds {
+        joker_share: run.shop_rates.joker_share(),
+        slots: run.shop_rates.slots,
+        reroll_cost: run.shop.as_ref().map_or(5, |s| s.reroll_cost),
+        pool_by_rarity: per_rarity,
+        rarity_weight: [0.0, 0.7, 0.25, 0.05],
+        money_per_hand: run.money_per_hand,
+        interest_amount: run.interest_amount,
+        interest_cap: run.interest_cap,
+    }
 }
 
 /// What an analysis of your jokers arranged says by a joker's place, said by your row's
@@ -1666,6 +1707,119 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
         .collect();
 
     lap("base odds + typical");
+    let bones = ctx.base.round_saves() > 0;
+    let blind_views: Vec<BlindView> = run
+        .blinds
+        .iter()
+        .map(|bl| {
+            let spec = overview_specs.iter().find(|(slot, _)| *slot == bl.slot).map(|(_, s)| s);
+            let odds: Option<(f64, Stats)> = if bl.state == "Current" {
+                // In progress: the simulation that starts from the real hand, draw pile and score so far
+                ctx.specs.iter().position(|m| m.in_progress()).map(|i| base_odds[i].clone())
+            } else {
+                spec.map(|s| {
+                    // reuse the main simulation where it's the same round
+                    ctx.specs
+                        .iter()
+                        .position(|m| !m.horizon && !m.in_progress() && m.blind_key == s.blind_key && m.start.target == s.start.target)
+                        .map_or_else(|| ctx.odds_one(&ctx.base, s, opts.sims), |i| base_odds[i].clone())
+                })
+            };
+            BlindView {
+                slot: bl.slot.clone(),
+                name: bl.name.clone(),
+                effect: boss_effect(&bl.key).map(str::to_string),
+                state: bl.state.clone(),
+                target: bl.target,
+                p_win: odds.as_ref().map(|o| o.0),
+                p_with_bones: odds.as_ref().filter(|_| bones).map(|o| o.1.p_saved),
+                reward: bl.reward,
+                skip_tag: bl.skip_tag.as_ref().map(|k| TagView {
+                    key: k.clone(),
+                    name: data.tag(k).map_or_else(|| k.clone(), |t| t.name.clone()),
+                }),
+                skip: None,
+                reroll: None,
+            }
+        })
+        .collect();
+
+    lap("blind views");
+    // Every joker the shop could still offer, and how many of each rarity (none in a blind's
+    // quick pass: it values no shop)
+    let quick_blind = opts.quick && run.screen.in_blind();
+    let pool = if quick_blind { vec![] } else { shop_pool(run, data) };
+    let per_rarity: [usize; 4] = [0, 1, 2, 3].map(|r| pool.iter().filter(|k| data.center(k).and_then(|c| c.rarity) == Some(r as u8)).count());
+    // A blind select given a deadline holds its answer so far (`FirstSink`; past the deadline the
+    // analysis answers with it, `progress::TimeUp`), as a shop holds its first ranking: here the
+    // blinds' chances, what isn't made yet named in `pending` (skip-or-play and the boss reroll
+    // among them: the blind is played then); again before the outlook, as the full answer but
+    // for it (`assemble`, below). Each part it holds has the numbers the full analysis gives it.
+    // Without a deadline none is made
+    let blind_select_sink = opts.first.as_ref().filter(|_| run.screen == crate::save::Screen::BlindSelect && crate::progress::has_deadline());
+    if let Some(sink) = blind_select_sink {
+        // (what the steps below make: the verdicts by the predicates they're valued on, the
+        // board's own parts by what it holds; the joker order is given here already when your
+        // row was arranged: `in_your_row`)
+        let key_round = ctx.specs.iter().rposition(|s| !s.horizon).unwrap_or(0);
+        let skip_or_play = skip_blind_at(&blind_views, run).is_some();
+        let reroll = boss_reroll_at(&ctx, run, &blind_views, key_round).is_some();
+        let n = ctx.base.jokers.len();
+        let pending = [
+            (n > 0).then_some("your jokers' shares"),
+            (n > 1 && places.is_none()).then_some("the joker order"),
+            Some("the hands that score"),
+            (!run.consumables.is_empty()).then_some("your consumables"),
+            // (every tarot the shops can offer, outside a blind's quick pass: `tarot_values`)
+            Some("the tarots' values"),
+            (!pool.is_empty()).then_some("the jokers the shop can offer"),
+            Some("what By Ante 8 assumes"),
+            skip_or_play.then_some("skip or play"),
+            reroll.then_some("the boss reroll"),
+            Some("the outlook"),
+        ]
+        .into_iter()
+        .flatten()
+        .map(str::to_string)
+        .collect();
+        (sink.0)(Analysis {
+            schema_version: 1,
+            deck: run.deck.clone(),
+            stake: run.stake,
+            ante: run.ante,
+            screen: format!("{:?}", run.screen),
+            dollars: run.dollars,
+            joker_slots: run.joker_slots,
+            rounds: rounds.clone(),
+            typical_hand: base_typical.clone(),
+            hand_mix: vec![],
+            jokers: vec![],
+            order: None,
+            shop: vec![],
+            rescue: vec![],
+            blinds: blind_views.clone(),
+            shop_tie: None,
+            options: vec![],
+            options_round: key_round,
+            tarots: vec![],
+            long_assumptions: String::new(),
+            outlook: None,
+            style_groups: archetypes().into_iter().map(|(n, m, _)| (n.to_string(), m.iter().map(|k| k.to_string()).collect())).collect(),
+            pool: vec![],
+            shop_odds: shop_odds_of(run, per_rarity),
+            best_play: None,
+            gold: gold.map(|g| GoldSummary { have: g.have_gold, total: g.total, this_run_counts: run.stake >= 8 }),
+            caveats: run.snapshot.caveats.clone(),
+            heuristics: analysis_notes(&ctx, run, false, false, false, false),
+            save_age_secs: run.snapshot.age_secs,
+            live: run.snapshot.live,
+            order_tips: vec![],
+            pending,
+            elapsed_ms: t0.elapsed().as_millis(),
+            steps_ms: steps.borrow().clone(),
+            time_limit: None,
+        });
+    }
     // Contributions
     let n = ctx.base.jokers.len();
     let idx: Vec<usize> = (0..n).collect();
@@ -1739,10 +1893,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
             offers.push((j, 0, c.rental, value::sell_value(c.cost, c.rental)));
         }
     }
-    // Every joker the shop could still offer
-    let quick_blind = opts.quick && run.screen.in_blind();
-    let pool = if quick_blind { vec![] } else { shop_pool(run, data) };
-    let per_rarity: [usize; 4] = [0, 1, 2, 3].map(|r| pool.iter().filter(|k| data.center(k).and_then(|c| c.rarity) == Some(r as u8)).count());
+    // Every joker the shop could still offer (`pool`, `per_rarity`: above)
     let joker_share = run.shop_rates.joker_share();
     let slots = run.shop_rates.slots.max(1) as i32;
     let candidates: Vec<Joker> = pool.iter().filter_map(|k| Joker::from_key(k, data)).collect();
@@ -1813,44 +1964,6 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
             c
         })
         .collect();
-    let bones = ctx.base.round_saves() > 0;
-    let blind_views: Vec<BlindView> = run
-        .blinds
-        .iter()
-        .map(|bl| {
-            let spec = overview_specs.iter().find(|(slot, _)| *slot == bl.slot).map(|(_, s)| s);
-            let odds: Option<(f64, Stats)> = if bl.state == "Current" {
-                // In progress: the simulation that starts from the real hand, draw pile and score so far
-                ctx.specs.iter().position(|m| m.in_progress()).map(|i| base_odds[i].clone())
-            } else {
-                spec.map(|s| {
-                    // reuse the main simulation where it's the same round
-                    ctx.specs
-                        .iter()
-                        .position(|m| !m.horizon && !m.in_progress() && m.blind_key == s.blind_key && m.start.target == s.start.target)
-                        .map_or_else(|| ctx.odds_one(&ctx.base, s, opts.sims), |i| base_odds[i].clone())
-                })
-            };
-            BlindView {
-                slot: bl.slot.clone(),
-                name: bl.name.clone(),
-                effect: boss_effect(&bl.key).map(str::to_string),
-                state: bl.state.clone(),
-                target: bl.target,
-                p_win: odds.as_ref().map(|o| o.0),
-                p_with_bones: odds.as_ref().filter(|_| bones).map(|o| o.1.p_saved),
-                reward: bl.reward,
-                skip_tag: bl.skip_tag.as_ref().map(|k| TagView {
-                    key: k.clone(),
-                    name: data.tag(k).map_or_else(|| k.clone(), |t| t.name.clone()),
-                }),
-                skip: None,
-                reroll: None,
-            }
-        })
-        .collect();
-
-    lap("blind views");
     // Game text for every joker shown: the shop's own copies, else a fresh one from its config
     let shop_ability = |key: &str| run.shop.as_ref().and_then(|s| s.jokers.iter().find(|j| j.key == key)).map(|j| j.ability.clone());
     let fill = |list: &mut Vec<Candidate>| {
@@ -1989,16 +2102,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
         }
     };
     let long_note = long_note_on(&lr);
-    let shop_odds = ShopOdds {
-        joker_share,
-        slots: run.shop_rates.slots,
-        reroll_cost: run.shop.as_ref().map_or(5, |s| s.reroll_cost),
-        pool_by_rarity: per_rarity,
-        rarity_weight: [0.0, 0.7, 0.25, 0.05],
-        money_per_hand: run.money_per_hand,
-        interest_amount: run.interest_amount,
-        interest_cap: run.interest_cap,
-    };
+    let shop_odds = shop_odds_of(run, per_rarity);
     // The options, each valued up to what money past the planet-level cap buys (`Spending`, which
     // reads every value here) and the ranking: worked out twice where a first ranking is asked
     // for (`first`, `FirstSink`), on the pool as screened, before every pool joker's By Ante 8
@@ -2959,7 +3063,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
                 best_play: None,
                 gold: gold.map(|g| GoldSummary { have: g.have_gold, total: g.total, this_run_counts: run.stake >= 8 }),
                 caveats: run.snapshot.caveats.clone(),
-                heuristics: HEURISTICS.iter().copied().chain(ctx.specs.iter().any(|x| x.start.pool.is_some()).then_some(NEXT_ANTE_NOTE)).chain(holds.then_some(HOLD_NOTE)).chain([FIRST_RANKING_NOTE]).collect(),
+                heuristics: analysis_notes(&ctx, run, false, holds, false, false).into_iter().chain([FIRST_RANKING_NOTE]).collect(),
                 save_age_secs: run.snapshot.age_secs,
                 live: run.snapshot.live,
                 order_tips: vec![],
@@ -3093,8 +3197,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
     // still to come, whose tag is known from the ante's start: what you spend there and whether
     // you'll skip go together, so it's worked out with the money you have now
     let mut blind_views = blind_views;
-    let in_shop = run.screen == crate::save::Screen::Shop && run.open_pack.is_empty();
-    if let Some(bi) = blind_views.iter().position(|b| b.slot != "Boss" && (b.state == "Select" || (in_shop && b.state == "Upcoming"))) {
+    if let Some(bi) = skip_blind_at(&blind_views, run) {
         let bv = blind_views[bi].clone();
         let p_blind = bv.p_win.unwrap_or(1.0);
         let p_boss = base_odds.get(key_round).map_or(0.0, |o| o.0);
@@ -3326,8 +3429,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
     }
     // At a blind select with a boss reroll you can use on this ante's boss and its $10: rerolling
     // it against keeping it (`BossReroll`), your board as it is
-    let boss_view = blind_views.iter().position(|b| b.slot == "Boss" && b.p_win.is_some());
-    if let Some((bi, spec)) = boss_view.zip(ctx.specs.get(key_round)).filter(|_| run.screen == crate::save::Screen::BlindSelect && reroll_usable(run, None, true) && run.dollars >= BOSS_REROLL_COST) {
+    if let Some((bi, spec)) = boss_reroll_at(&ctx, run, &blind_views, key_round) {
         let into = ctx.reroll_into(spec);
         if !into.is_empty() {
             let keep = base_odds.get(key_round).map_or(0.0, |o| o.0);
@@ -3382,6 +3484,55 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
             blind_views[bi].reroll = Some(BossReroll { keep, rerolled, bosses: into.len(), keep_next, rerolled_next, keep_long, rerolled_long, keep_value, reroll_value, verdict: verdict.into(), note });
         }
     }
+    // The answer, from what the steps made: the outlook and Best play as far as they got,
+    // `pending` what isn't made yet. Built once at the end, and at a blind select also before the
+    // outlook (its answer so far at a deadline: Best play is a blind's, so only the outlook is
+    // left by then)
+    let assemble = |outlook: Option<Outlook>, best_play: Option<PlayAdvice>, pending: Vec<String>, steps_ms: Vec<(String, u128)>| -> Analysis {
+        let grows = best_play.as_ref().is_some_and(|b| !b.grows.is_empty());
+        let skips = blind_views.iter().any(|b| b.skip.is_some());
+        let counts_ahead = best_play.as_ref().is_some_and(|b| b.counts_ahead);
+        Analysis {
+            schema_version: 1,
+            deck: run.deck.clone(),
+            stake: run.stake,
+            ante: run.ante,
+            screen: format!("{:?}", run.screen),
+            dollars: run.dollars,
+            joker_slots: run.joker_slots,
+            rounds: rounds.clone(),
+            typical_hand: base_typical.clone(),
+            hand_mix: hand_mix.clone(),
+            jokers: jokers.clone(),
+            order: order.clone(),
+            shop: shop.clone(),
+            rescue: rescue.clone(),
+            blinds: blind_views.clone(),
+            shop_tie: (!options.is_empty()).then(shop_tie),
+            options: options.clone(),
+            options_round: key_round,
+            tarots: tarots.clone(),
+            long_assumptions: long_note.clone(),
+            outlook,
+            style_groups: archetypes().into_iter().map(|(n, m, _)| (n.to_string(), m.iter().map(|k| k.to_string()).collect())).collect(),
+            pool: pool_entries.clone(),
+            shop_odds: shop_odds.clone(),
+            best_play,
+            gold: gold.map(|g| GoldSummary { have: g.have_gold, total: g.total, this_run_counts: run.stake >= 8 }),
+            caveats: run.snapshot.caveats.clone(),
+            heuristics: analysis_notes(&ctx, run, skips, holds, grows, counts_ahead),
+            save_age_secs: run.snapshot.age_secs,
+            live: run.snapshot.live,
+            order_tips: order_tips(run, data, &tarots),
+            pending,
+            elapsed_ms: t0.elapsed().as_millis(),
+            steps_ms,
+            time_limit: None,
+        }
+    };
+    if let Some(sink) = blind_select_sink {
+        (sink.0)(assemble(None, None, vec!["the outlook".to_string()], steps.borrow().clone()));
+    }
     let outlook = if quick_blind { None } else { archetype_outlook(&ctx, run, data, &pool_entries, &hand_mix) };
 
     lap("outlook");
@@ -3399,40 +3550,28 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
         .flatten();
     let best_play = play::best_play(&ctx, lr, &spending, &tarots, &hand_order, ahead.as_ref());
     lap("best play");
+    assemble(outlook, best_play, vec![], steps.take())
+}
 
-    let tips = order_tips(run, data, &tarots);
-    let grows = best_play.as_ref().is_some_and(|b| !b.grows.is_empty());
-    let skips = blind_views.iter().any(|b| b.skip.is_some());
-    let counts_ahead = best_play.as_ref().is_some_and(|b| b.counts_ahead);
-    Analysis {
-        schema_version: 1,
-        deck: run.deck.clone(),
-        stake: run.stake,
-        ante: run.ante,
-        screen: format!("{:?}", run.screen),
-        dollars: run.dollars,
-        joker_slots: run.joker_slots,
-        rounds,
-        typical_hand: base_typical,
-        hand_mix,
-        jokers,
-        order,
-        shop,
-        rescue,
-        blinds: blind_views,
-        shop_tie: (!options.is_empty()).then(shop_tie),
-        options,
-        options_round: key_round,
-        tarots,
-        long_assumptions: long_note.clone(),
-        outlook,
-        style_groups: archetypes().into_iter().map(|(n, m, _)| (n.to_string(), m.iter().map(|k| k.to_string()).collect())).collect(),
-        pool: pool_entries,
-        shop_odds,
-        best_play,
-        gold: gold.map(|g| GoldSummary { have: g.have_gold, total: g.total, this_run_counts: run.stake >= 8 }),
-        caveats: run.snapshot.caveats.clone(),
-        heuristics: HEURISTICS
+/// The heuristics every analysis names (`Analysis::heuristics`); Best play's and a boss's are
+/// added where they apply
+const HEURISTICS: [&str; 8] = [
+        "Blind odds use a simple play/discard policy, not perfect play.",
+        "Card order within a play: +Mult cards first, Glass/Polychrome last.",
+        "Outside a blind every board is valued with its jokers as you'd arrange them (yours, the one each option leaves, and every board projected to Ante 8); where a joker you buy goes is the order advice once you have it. The order: the one worth most on 64 fixed deals of this run's round (each deal's play chosen in the order as they sit, its rolls' floor and ceiling averaged), times the hands the blind's start gives it (a Blueprint copying Burglar); every order of the jokers whose place can change a score up to 6 of them, swaps of two past that; kept as they sit below a 0.5% gain; Ceremonial Dagger and the joker to its right held where they sit, its eat not modelled (heuristic: not the discards a copy takes or its money at the round's end). In a blind, your board and the options are scored as the jokers sit; the boards projected to Ante 8 are still arranged.",
+        "Scaling jokers keep their current value in the blinds ahead. By Ante 8, the ones a round changes grow or fade as the simulated player's rounds at this ante's plain blind sizes leave them (yours by a player that plays to the round's goals, their worths from a projection that keeps them; a shop joker's by a player that plays only to win); the rest by a table.",
+        "Blue Seal planets by Ante 8 assume a consumable held at round end in a measured share of rounds (one run).",
+        "The shop ranking counts what each option's money left buys in the shops ahead: the money spent shop by shop on 2000 simulated walks (rerolls and the jokers they show, a joker bought in the shop it shows in when the money pays for it and it adds enough for its price, into a free slot or in place of the joker whose loss costs least, yours sold for it; enough is a bar per dollar of its price, none, what a shop's joker adds per dollar on average or twice that, chosen on half the walks, then the most rerolls a shop under it, at most 8: budgets, heuristic), starting from the board the option leaves; several jokers' score gains added (most jokers' Chips and Mult add), read off your board's score spread in that round as a lognormal (heuristic); an option with no simulated chance at the next ante's boss read the same way from its score there. Rent comes off at each round's end: your rentals', one the option buys, a Buffoon pack's picks as often as the stake makes them rentals. Each round then pays its blind's reward, the interest and what a round pays on your board as it is (hands and discards left, the cards' and jokers' money, measured on this ante's plain blinds), the same for every option: a money joker bought or sold doesn't change it, nor does a boss's rule (not modelled). Planets, packs and tarots the money could buy aren't counted, nor the stickers of the jokers the walk finds (not modelled). The walk lifts this ante's hardest round only: its blinds before that one count each option's own chance there (simulated on the board a joker, a sale, a planet, a playing card or a voucher that changes one of those rounds leaves, a Celestial Pack's the planet each set of its cards picks; your board's for leaving, a reroll, a money card, a voucher that changes none of them or a boss reroll; another pack's or a tarot's read off its scores against yours on your board's scores at each blind, from its reach at the hardest round where it has one (a Buffoon Pack, Judgement), else its chance at the hardest round where yours there is 10% or more, else its strength at the next ante's boss: heuristic), each played from the board as it stands and the chances multiplied, not chained as Best play's blinds ahead are (heuristic), with nothing the shops before them find (heuristic: a Big Blind behind the Small isn't lifted by the shop after the Small).",
+        "With your joker slots full, the joker a shop or pool joker replaces is chosen by the shop ranking's measure: the chance through this ante (for a joker on offer every blind still ahead before its hardest round, then that round; for one the shops ahead may show, that round alone) × the next ante's boss × the geometric mean of the long run with that sale (its income and growth by Ante 8) and the strength at the next ante, with Mr. Bones' save counted at the rounds it plays, a save spent on a blind before the hardest round gone for the rounds after it (the shop ranking counts it through every round ahead: on chained runs, the share of lost rounds a save rescues applied to each option's survival, a heuristic); the swaps (outside a blind each on the board it leaves as you'd arrange it; in a blind, the freed slot and the right end) raced on the same simulated rounds (to the full count), those it can't tell apart reported as ties; a round lost counts at the chance told from none (3 wins in its rounds, as in the shop ranking), so where no swap gets through, what each sale leaves you decides, its money included (heuristic budget: at most 6 swaps after 32 rounds, 4 after 64, 3 after 128; a sale's places that play the first 32 rounds the same count as one). A Negative joker is never the one sold to make room (its slot goes with it), nor a charged Invisible Joker (it copies another joker into the row as it's sold). What a sale does that isn't modelled is said on the option (a joker that acts when sold: Diet Cola, a charged Invisible Joker; Campfire's growth from it). A joker's money is the money a round won pays on the board with it against without it, on the same rounds of this ante's plain blinds (scoring, discards, the round's end, hands left); a joker whose money that doesn't reach (Gift Card, Credit Card, Matador's boss payout) is said \"not modelled\" on an option that sells it. The pool's quick screen tries only the joker whose removal leaves most by the same measure. A perished joker is the one sold.",
+        "Shop options are told apart by the simulation's own noise: one is listed above another, or above keeping your money, only when it's ahead by more than 2 standard errors of their difference on the simulated rounds and shops both rest on, with 3% of the rank counted in for what no round shows (the By Ante 8 projection's own luck, a pack's or a reroll's cards, an estimate, an effect left out). Closer than that is a tie (≈), keeping your money first; skipping an open pack goes after the pack's picks worth more that leave no less money (its cards are gone once it closes). A round's chance under 3 wins in its rounds counts as that much for every option (it can't be told from none), so where a round is lost whatever you pick, what each option leaves you ranks them, the money it spends included.",
+];
+
+/// The heuristics an analysis names (`Analysis::heuristics`): every analysis' (`HEURISTICS`), then
+/// those of what it holds: the next ante's boss, a skip-or-play verdict (`skips`), a money card
+/// held to a shop ahead (`holds`), a Standard pack, Best play's growth (`grows`) and blinds ahead (`counts_ahead`), face-down cards, a boss
+/// that turns cards down, a big hand
+fn analysis_notes(ctx: &Ctx, run: &RunState, skips: bool, holds: bool, grows: bool, counts_ahead: bool) -> Vec<&'static str> {
+    HEURISTICS
         .into_iter()
         .chain(ctx.specs.iter().any(|x| x.start.pool.is_some()).then_some(NEXT_ANTE_NOTE))
         .chain(skips.then_some(SKIP_NOTE))
@@ -3453,29 +3592,8 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
         .chain((run.hand.len() > sim::ALL_MOVES_MAX).then_some(
             "A big hand: Best play's moves come from the hand's structure (its plays whose cards can all score, and with face-down cards every play holding one, the best few of each kind and then by score now; its structure's discards), not every move; the simulated player's best play looks only at its 16 highest cards.",
         ))
-        .collect(),
-        save_age_secs: run.snapshot.age_secs,
-        live: run.snapshot.live,
-        order_tips: tips,
-        pending: vec![],
-        elapsed_ms: t0.elapsed().as_millis(),
-        steps_ms: steps.take(),
-        time_limit: None,
-    }
+        .collect()
 }
-
-/// The heuristics every analysis names (`Analysis::heuristics`); Best play's and a boss's are
-/// added where they apply
-const HEURISTICS: [&str; 8] = [
-        "Blind odds use a simple play/discard policy, not perfect play.",
-        "Card order within a play: +Mult cards first, Glass/Polychrome last.",
-        "Outside a blind every board is valued with its jokers as you'd arrange them (yours, the one each option leaves, and every board projected to Ante 8); where a joker you buy goes is the order advice once you have it. The order: the one worth most on 64 fixed deals of this run's round (each deal's play chosen in the order as they sit, its rolls' floor and ceiling averaged), times the hands the blind's start gives it (a Blueprint copying Burglar); every order of the jokers whose place can change a score up to 6 of them, swaps of two past that; kept as they sit below a 0.5% gain; Ceremonial Dagger and the joker to its right held where they sit, its eat not modelled (heuristic: not the discards a copy takes or its money at the round's end). In a blind, your board and the options are scored as the jokers sit; the boards projected to Ante 8 are still arranged.",
-        "Scaling jokers keep their current value in the blinds ahead. By Ante 8, the ones a round changes grow or fade as the simulated player's rounds at this ante's plain blind sizes leave them (yours by a player that plays to the round's goals, their worths from a projection that keeps them; a shop joker's by a player that plays only to win); the rest by a table.",
-        "Blue Seal planets by Ante 8 assume a consumable held at round end in a measured share of rounds (one run).",
-        "The shop ranking counts what each option's money left buys in the shops ahead: the money spent shop by shop on 2000 simulated walks (rerolls and the jokers they show, a joker bought in the shop it shows in when the money pays for it and it adds enough for its price, into a free slot or in place of the joker whose loss costs least, yours sold for it; enough is a bar per dollar of its price, none, what a shop's joker adds per dollar on average or twice that, chosen on half the walks, then the most rerolls a shop under it, at most 8: budgets, heuristic), starting from the board the option leaves; several jokers' score gains added (most jokers' Chips and Mult add), read off your board's score spread in that round as a lognormal (heuristic); an option with no simulated chance at the next ante's boss read the same way from its score there. Rent comes off at each round's end: your rentals', one the option buys, a Buffoon pack's picks as often as the stake makes them rentals. Each round then pays its blind's reward, the interest and what a round pays on your board as it is (hands and discards left, the cards' and jokers' money, measured on this ante's plain blinds), the same for every option: a money joker bought or sold doesn't change it, nor does a boss's rule (not modelled). Planets, packs and tarots the money could buy aren't counted, nor the stickers of the jokers the walk finds (not modelled). The walk lifts this ante's hardest round only: its blinds before that one count each option's own chance there (simulated on the board a joker, a sale, a planet, a playing card or a voucher that changes one of those rounds leaves, a Celestial Pack's the planet each set of its cards picks; your board's for leaving, a reroll, a money card, a voucher that changes none of them or a boss reroll; another pack's or a tarot's read off its scores against yours on your board's scores at each blind, from its reach at the hardest round where it has one (a Buffoon Pack, Judgement), else its chance at the hardest round where yours there is 10% or more, else its strength at the next ante's boss: heuristic), each played from the board as it stands and the chances multiplied, not chained as Best play's blinds ahead are (heuristic), with nothing the shops before them find (heuristic: a Big Blind behind the Small isn't lifted by the shop after the Small).",
-        "With your joker slots full, the joker a shop or pool joker replaces is chosen by the shop ranking's measure: the chance through this ante (for a joker on offer every blind still ahead before its hardest round, then that round; for one the shops ahead may show, that round alone) × the next ante's boss × the geometric mean of the long run with that sale (its income and growth by Ante 8) and the strength at the next ante, with Mr. Bones' save counted at the rounds it plays, a save spent on a blind before the hardest round gone for the rounds after it (the shop ranking counts it through every round ahead: on chained runs, the share of lost rounds a save rescues applied to each option's survival, a heuristic); the swaps (outside a blind each on the board it leaves as you'd arrange it; in a blind, the freed slot and the right end) raced on the same simulated rounds (to the full count), those it can't tell apart reported as ties; a round lost counts at the chance told from none (3 wins in its rounds, as in the shop ranking), so where no swap gets through, what each sale leaves you decides, its money included (heuristic budget: at most 6 swaps after 32 rounds, 4 after 64, 3 after 128; a sale's places that play the first 32 rounds the same count as one). A Negative joker is never the one sold to make room (its slot goes with it), nor a charged Invisible Joker (it copies another joker into the row as it's sold). What a sale does that isn't modelled is said on the option (a joker that acts when sold: Diet Cola, a charged Invisible Joker; Campfire's growth from it). A joker's money is the money a round won pays on the board with it against without it, on the same rounds of this ante's plain blinds (scoring, discards, the round's end, hands left); a joker whose money that doesn't reach (Gift Card, Credit Card, Matador's boss payout) is said \"not modelled\" on an option that sells it. The pool's quick screen tries only the joker whose removal leaves most by the same measure. A perished joker is the one sold.",
-        "Shop options are told apart by the simulation's own noise: one is listed above another, or above keeping your money, only when it's ahead by more than 2 standard errors of their difference on the simulated rounds and shops both rest on, with 3% of the rank counted in for what no round shows (the By Ante 8 projection's own luck, a pack's or a reroll's cards, an estimate, an effect left out). Closer than that is a tie (≈), keeping your money first; skipping an open pack goes after the pack's picks worth more that leave no less money (its cards are gone once it closes). A round's chance under 3 wins in its rounds counts as that much for every option (it can't be told from none), so where a round is lost whatever you pick, what each option leaves you ranks them, the money it spends included.",
-];
 
 /// Said where the next ante is read (`next_boss_pool`)
 const NEXT_ANTE_NOTE: &str = "The next ante's boss is one of the bosses the game can draw there (the least drawn so far of those allowed at that ante; when the next ante is the last, its five final bosses), each as likely: each simulated round meets one, with its own target and its rule where it's simulated; its reach is shown against a plain boss's target (2× the base). An option with no simulated chance there has it read off its scores as your board's against each boss (simulated on its own rounds, heuristic: a lognormal for each), moved together to your board's chance there. At the last ante nothing past its boss is counted.";
@@ -4962,6 +5080,24 @@ fn long_draw(pool: &[Candidate], cards: usize, joker_share: f64, floor: f64, rng
         total += best;
     }
     total / trials as f64
+}
+
+/// The blind whose skip-or-play is valued here: a blind select's Small or Big still to select;
+/// in the shop (no pack open), the next one still to come, whose tag is known from the ante's
+/// start. Read by the verdict and by a blind select's answer so far, which names it as not
+/// valued until then
+fn skip_blind_at(views: &[BlindView], run: &RunState) -> Option<usize> {
+    let in_shop = run.screen == crate::save::Screen::Shop && run.open_pack.is_empty();
+    views.iter().position(|b| b.slot != "Boss" && (b.state == "Select" || (in_shop && b.state == "Upcoming")))
+}
+
+/// The boss reroll valued here (`BossReroll`): at a blind select, this ante's boss with its
+/// chance made, a reroll you can use on it and its cost, and bosses to reroll into. Read by the
+/// verdict and by a blind select's answer so far, as `skip_blind_at` is
+fn boss_reroll_at<'a>(ctx: &'a Ctx, run: &RunState, views: &[BlindView], key_round: usize) -> Option<(usize, &'a Spec)> {
+    let bi = views.iter().position(|b| b.slot == "Boss" && b.p_win.is_some())?;
+    let spec = ctx.specs.get(key_round)?;
+    (run.screen == crate::save::Screen::BlindSelect && reroll_usable(run, None, true) && run.dollars >= BOSS_REROLL_COST && ctx.rerolls_into_any(spec)).then_some((bi, spec))
 }
 
 /// The bosses the game can draw at `ante` (common_events.lua `get_new_boss`): those allowed

@@ -17,9 +17,9 @@
 //! what tied with it: a tie only stands when it leads, through ties, to the final leader.
 //!
 //! An analysis with a deadline (`progress`) ends the race once it's past: between batches, or
-//! inside one at the last round every option still in has (a race sampled by round) or at the
-//! batch before (one sampled by range), never before every option has its first batch. The
-//! leader so far stands; the options still in are `still`: not decided, neither ties nor
+//! inside one at the last round every option still in has (a race sampled by round, its first
+//! batch too: every option keeps at least its first piece of it) or at the batch before (one
+//! sampled by range, never before every option has its first batch). The leader so far stands; the options still in are `still`: not decided, neither ties nor
 //! undecided at the cap, ordered by their estimate below the leader (`Race::timed_out` says so:
 //! the leader so far, not decided).
 
@@ -309,7 +309,10 @@ fn race_with<T: Send + Sync>(
             break;
         }
         let mut to = (done + batch).min(max);
-        // the first batch is always done whole: each option needs its rounds to stand on
+        // a first batch sampled by range is always done whole: cut part way, its options would
+        // stand on different rounds (each samples its own range), and with none before it there
+        // is nothing whole to fall back on; sampled by round, the pieces are taken in rows, so a
+        // cut keeps every option on the same first rounds, and every option gets its first piece
         let first_batch = done == 0;
         let new: Vec<Vec<T>> = if timed && cores > 0 {
             // with a deadline, each option's rounds in pieces taken round by round (every
@@ -319,7 +322,7 @@ fn race_with<T: Send + Sync>(
             let size = (to - done).div_ceil(pieces).max(1);
             let starts: Vec<usize> = (done..to).step_by(size).collect();
             let tasks: Vec<(usize, std::ops::Range<usize>)> = starts.iter().flat_map(|&a| (0..alive.len()).map(move |k| (k, a..(a + size).min(to)))).collect();
-            let got = crate::progress::par_map_until(&tasks, if first_batch { tasks.len() } else { 0 }, crate::progress::time_up, |(k, r)| sample(alive[*k], r.clone()));
+            let got = crate::progress::par_map_until(&tasks, if first_batch { alive.len() } else { 0 }, crate::progress::time_up, |(k, r)| sample(alive[*k], r.clone()));
             // the pieces done before the first one not done, in whole rows of every option
             let rows = got.iter().take_while(|g| g.is_some()).count() / alive.len();
             if rows < starts.len() {
@@ -363,6 +366,11 @@ fn race_with<T: Send + Sync>(
             mean(&samples[y], &value).total_cmp(&mean(&samples[x], &value)).then(mean(&samples[y], &secondary).total_cmp(&mean(&samples[x], &secondary))).then(tie_order(y, x))
         });
         leader = alive[0];
+        // a first batch cut at the deadline is too few rounds to stand on: no option leaves on
+        // them, the leader so far stands and the rest are still in
+        if first_batch && timed_out.is_some() {
+            break;
+        }
         let lead: Vec<f64> = samples[leader].iter().map(&value).collect();
         let scale = mean(&samples[leader], &value).abs().max(1e-9);
         // how far the leader is shown better than each option (`better_by`)
@@ -605,8 +613,10 @@ mod tests {
         use std::time::Duration;
         // three options a hair apart, never told apart before the cap: with no deadline the race
         // runs to MAX; a deadline far off changes nothing (the same samples, sampled in other
-        // pieces); one already past ends it after the first batch, its leader the same as the
-        // full race's there, the others undecided, every option on the same rounds
+        // pieces); one already past ends it on the first piece of the first batch (16 rounds in
+        // at least 8 pieces, by the cores), with no finding on so few rounds: its leader the
+        // full race's leader there, the others still in, not decided, every option on the same
+        // rounds
         let round = |o: usize, i: usize| 1.0 - 0.0001 * o as f64 + if (i + o).is_multiple_of(3) { 0.01 } else { 0.0 };
         let run = |deadline: Option<Option<Duration>>| {
             let _g = enter(deadline.map(Progress::with_deadline));
@@ -618,12 +628,14 @@ mod tests {
         assert_eq!(free.samples, far.samples);
         assert_eq!((free.leader, &free.undecided), (far.leader, &far.undecided));
         let past = run(Some(Some(Duration::ZERO)));
-        assert_eq!(past.timed_out, Some(16), "{:?}", past.left);
-        assert!(past.samples.iter().all(|v| v.len() == 16));
+        let k = past.timed_out.expect("ended at the deadline");
+        assert!((1..=2).contains(&k), "{k} {:?}", past.left);
+        assert!(past.samples.iter().zip(&free.samples).all(|(v, f)| v.len() == k && v[..] == f[..k]));
+        assert!(past.left.iter().all(Option::is_none), "{:?}", past.left);
         assert_eq!(past.leader, 0);
         assert_eq!(past.still.iter().filter(|u| **u).count(), 2);
         assert!(!past.undecided.iter().any(|u| *u));
-        // a race sampled by range ends there too
+        // a race sampled by range ends after its whole first batch
         let _g = enter(Some(Progress::with_deadline(Some(Duration::ZERO))));
         let by_range = race(3, 16, MAX, |_| 3, |o: usize, r: std::ops::Range<usize>| r.map(|i| round(o, i)).collect(), |x| *x, |x| *x, |x, y| y.cmp(&x), false);
         assert_eq!(by_range.timed_out, Some(16));

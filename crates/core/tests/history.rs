@@ -1,6 +1,8 @@
 //! The history check's judge (D12): for each saved state whose Best play pick moved between
 //! two runs of `history_picks.rs` (before and after a change), the old pick against the new
-//! one (`advise::Options::judge`: the oracle makes the policy's decisions that aren't a win on
+//! one: the yardstick is this code's own pick, made with no time limit, so "after" must be this
+//! code without one; a pick made at a limit (`BAV_DEADLINE`) goes in `BAV_PICKS_BEFORE`, judged
+//! against waiting (`advise::Options::judge`: the oracle makes the policy's decisions that aren't a win on
 //! the table; the valuation, the engine, the finish and consumable use are the code's own, so
 //! a change to those is half judging itself: read the verdicts with that in mind). Slow;
 //! prints. Run on the change:
@@ -47,7 +49,8 @@ fn cards_of(shown: &str) -> String {
 }
 
 /// For each state whose pick moved between `$BAV_PICKS_BEFORE` and `$BAV_PICKS_AFTER`: the
-/// old pick against the new one, judged by the oracle (`advise::Options::judge`), worst first.
+/// old pick against this code's own (the new one, when "after" is this code with no time limit),
+/// judged by the oracle (`advise::Options::judge`), worst first.
 #[test]
 #[ignore]
 fn history_judge() {
@@ -91,6 +94,12 @@ fn history_judge() {
         let opts = advise::Options { quick: true, judge: vec![old.0.clone()], judge_rounds: rounds, ..Default::default() };
         let bp = advise::analyze(&run, GameData::bundled(), None, &opts).best_play.unwrap();
         let note = if by_positions(&bp) == new.0 { String::new() } else { format!(" (this code picks {}: not the code \"after\" was made on)", by_positions(&bp)) };
+        // (the yardstick is this code's pick: an old pick that is it measures nothing)
+        if by_positions(&bp) == old.0 {
+            *count.entry("judged against itself").or_default() += 1;
+            rows.push((f64::NEG_INFINITY, format!("self    {line}: the old pick is this code's own pick: judged against itself, not a measurement{note}")));
+            continue;
+        }
         let Some((_, Some((d, se)))) = bp.judged.first().cloned() else {
             *count.entry("unjudged").or_default() += 1;
             rows.push((f64::NEG_INFINITY, format!("?       {line}: the old pick isn't a move that can be judged now{note}")));

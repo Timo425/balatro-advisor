@@ -16,7 +16,9 @@
 //! `BAV_DEADLINE=<s>` for the quick pass answering by then (the live page's time limit:
 //! `progress::Progress::with_deadline`; this needs the code of 2026-11-23 on), each state's time
 //! and whether it answered at the limit in `$BAV_PICKS/times.tsv`. A pick moved at a limit is
-//! partly the machine's load (how many rounds fit by then): say the load with the result (D22).
+//! partly the machine's load (how many rounds fit by then): say the load with the result (D22); such
+//! picks are judged against waiting as `BAV_PICKS_BEFORE` (`history.rs`: the judge's yardstick is
+//! the code's own pick with no limit).
 
 #![allow(dead_code)]
 

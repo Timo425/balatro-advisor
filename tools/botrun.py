@@ -71,9 +71,10 @@ verdict on the advice. As of 2026-10-24 the bot:
   `--deadline S` each analysis answers by about S seconds with what it has then (the advisor's
   `time_limit`: Best play's leader so far, a shop's first ranking, with its packs, rerolls and tarots not
   valued: how often its top differs from the full ranking's isn't measured, so runs with a
-  deadline aren't compared with runs without one), listed in the run's
-  `time_limited`; the steps that can't stop yet (the joker pool's screen) run on, the process
-  limit then S + 120 s, at least 300 s. Skip-or-play
+  deadline aren't compared with runs without one; a blind select's answer so far, its skip-or-play
+  not valued when the limit comes first: the bot plays), listed in the run's
+  `time_limited`; the steps that can't stop yet (the joker pool's screen before a shop's first
+  ranking, a held tarot's value in a blind) run on, the process limit then S + 120 s, at least 300 s. Skip-or-play
   doesn't read the tags held (gap 21). Vouchers move the money a run holds: compare runs on
   either side of 2026-11-02 knowing it.
   Counted in `not_followed` (all but the held tarot: holding it is Best play's own call), as is a

@@ -228,19 +228,27 @@ fn snapshot() {
 
 /// An analysis past its deadline answers with what it has, labelled (D22): with a deadline of
 /// none at all, a shop or an open pack that makes a first ranking answers with it (its
-/// `pending` named), and Best play in a blind with its leader after the first batch, saying so.
-/// On the first few fixtures of each kind (fewer simulations: a stop's labels, not the advice,
-/// are what's tested)
+/// `pending` named), a blind select with the blinds' chances (skip-or-play and the boss reroll
+/// named as not valued; the second given Director's Cut and $10, so the reroll is valued), its
+/// answer before the outlook the full one but for it, and Best play in a blind with its leader
+/// so far, saying so. On the first few fixtures of each kind (fewer simulations: a stop's
+/// labels, not the advice, are what's tested)
 #[test]
 fn a_deadline_past_answers_with_what_it_has_said_so() {
     use balatro_advisor::progress::Progress;
-    let (mut shops, mut blinds) = (0, 0);
+    let (mut shops, mut blinds, mut selects) = (0, 0, 0);
     for (_, name, v) in &fixtures() {
-        let run: RunState = serde_json::from_value(v["state"].clone()).unwrap();
+        let mut run: RunState = serde_json::from_value(v["state"].clone()).unwrap();
         let in_shop = run.screen == balatro_advisor::save::Screen::Shop || run.screen.in_pack();
         let in_blind = run.screen.in_blind() && !run.hand.is_empty();
-        if (in_shop && shops >= 3) || (in_blind && blinds >= 3) || !(in_shop || in_blind) {
+        let in_select = run.screen == balatro_advisor::save::Screen::BlindSelect;
+        if (in_shop && shops >= 3) || (in_blind && blinds >= 3) || (in_select && selects >= 2) || !(in_shop || in_blind || in_select) {
             continue;
+        }
+        let reroll_given = in_select && selects == 1 && !run.vouchers.iter().any(|k| k == "v_directors_cut" || k == "v_retcon");
+        if reroll_given {
+            run.vouchers.push("v_directors_cut".into());
+            run.dollars = run.dollars.max(10.0);
         }
         let opts = |progress| advise::Options { sims: 60, quick: in_blind, progress, ..Default::default() };
         let a = advise::analyze(&run, GameData::bundled(), None, &opts(Some(Progress::with_deadline(Some(std::time::Duration::ZERO)))));
@@ -250,7 +258,45 @@ fn a_deadline_past_answers_with_what_it_has_said_so() {
             assert!(a.best_play.as_ref().is_none_or(|b| b.time_limit.is_none()), "{name}: past its deadline and not said");
             continue;
         };
-        if in_shop {
+        if in_select {
+            // the blinds as the full analysis has them, their chances included, with nothing
+            // valued that the full one values after them: its verdicts named as not valued
+            // (with an hour's limit: the same answer as none, its last answer held caught)
+            let (made, caught) = first::catching(&opts(Some(Progress::with_deadline(Some(std::time::Duration::from_secs(3600))))), std::time::Instant::now());
+            let full = advise::analyze(&run, GameData::bundled(), None, &made);
+            assert!(tl.held && !tl.first_ranking, "{name}: {tl:?}");
+            assert_eq!(a.blinds.iter().map(|b| (&b.slot, b.p_win)).collect::<Vec<_>>(), full.blinds.iter().map(|b| (&b.slot, b.p_win)).collect::<Vec<_>>(), "{name}");
+            assert!(a.blinds.iter().all(|b| b.skip.is_none() && b.reroll.is_none()), "{name}");
+            assert_eq!(a.pending.contains(&"skip or play".to_string()), full.blinds.iter().any(|b| b.skip.is_some()), "{name}: {:?}", a.pending);
+            assert_eq!(a.pending.contains(&"the boss reroll".to_string()), full.blinds.iter().any(|b| b.reroll.is_some()), "{name}: {:?}", a.pending);
+            assert!(full.time_limit.is_none(), "{name}");
+            // (the voucher given reaches a boss reroll, so the line above tests that half)
+            assert!(!reroll_given || full.blinds.iter().any(|b| b.reroll.is_some()), "{name}: Director's Cut given, no boss reroll valued");
+            // every part the full answer fills that the first one leaves empty is named
+            let parts = [
+                (a.jokers.is_empty() && !full.jokers.is_empty(), "your jokers' shares"),
+                (a.hand_mix.is_empty() && !full.hand_mix.is_empty(), "the hands that score"),
+                (a.tarots.is_empty() && !full.tarots.is_empty(), "the tarots' values"),
+                (a.pool.is_empty() && a.rescue.is_empty() && !(full.pool.is_empty() && full.rescue.is_empty()), "the jokers the shop can offer"),
+                (a.long_assumptions.is_empty() && !full.long_assumptions.is_empty(), "what By Ante 8 assumes"),
+                (a.outlook.is_none() && full.outlook.is_some(), "the outlook"),
+            ];
+            for (left_out, part) in parts {
+                assert!(!left_out || a.pending.contains(&part.to_string()), "{name}: {part} left out, not named: {:?}", a.pending);
+            }
+            // the answer held before the outlook: the full one but for the outlook, named
+            let (_, before) = caught.lock().unwrap().take().expect("a blind select with a deadline holds its answer");
+            assert_eq!(before.pending, vec!["the outlook".to_string()], "{name}");
+            let fields = |a: &advise::Analysis| {
+                let mut v = serde_json::to_value(a).unwrap();
+                for k in ["outlook", "pending", "elapsed_ms", "steps_ms", "time_limit"] {
+                    v.as_object_mut().unwrap().remove(k);
+                }
+                v
+            };
+            assert_eq!(fields(&before), fields(&full), "{name}");
+            selects += 1;
+        } else if in_shop {
             // a first ranking when one is made (none past the planet-level cap, nor in a pack none
             // of whose picks it holds): then it's the answer, the rest named
             let (made, caught) = first::catching(&opts(None), std::time::Instant::now());
@@ -269,7 +315,7 @@ fn a_deadline_past_answers_with_what_it_has_said_so() {
         }
     }
     if !fixtures().is_empty() {
-        assert!(shops > 0 && blinds > 0, "a first ranking answered on {shops} shops, Best play cut on {blinds} blinds");
+        assert!(shops > 0 && blinds > 0 && selects > 0, "a first ranking answered on {shops} shops, Best play cut on {blinds} blinds, a blind select's answer so far on {selects}");
     }
 }
 

@@ -720,11 +720,13 @@ randomly throw cards at the top. ok with all 3").
 **What.** An analysis can be given a deadline (`progress::Progress::with_deadline`: `analyze
 --deadline`, botrun's `--deadline`, the live page's quick pass in a blind at 30 s by default).
 Past it, each stage that can stop does with what it has: a race keeps its leader so far once
-every option has its first batch, those still in not decided (but where holding a consumable is
-still in, which D8 keeps over a change not told apart from none); a shop's or an open pack's
-analysis answers with its first ranking. The steps that can't stop yet run on and say how far past it they ran (the joker pool's screen
-before a shop's first ranking, and a blind select, which has no first ranking to fall back on:
-not yet, the queue's "The steps a deadline can't stop yet"). Every answer at a
+every option has its first batch (Best play's, sampled round by round, once every move has the
+same first rounds of it: amended 2026-11-24), those still in not decided (but where holding a
+consumable is still in, which D8 keeps over a change not told apart from none); a shop's or an
+open pack's analysis answers with its first ranking, a blind select with its answer so far (the
+blinds' chances, then all but the outlook: amended 2026-11-24). The steps that can't stop yet run on
+and say how far past it they ran (the joker pool's screen before a shop's first ranking, a held
+tarot's value in a blind's quick pass: not yet, gap 20). Every answer at a
 limit says so (`Analysis::time_limit`, Best play's `time_limit`, the page's ⏱ line). With no
 deadline, or one not reached, nothing changes (the replay snapshot byte for byte).
 
@@ -739,11 +741,16 @@ advisor/bot draw a decision in a time limit (with maybe an additional option to 
 wait"); a bot run on their seed B43IFPN9 ended at an analysis past 300 s with no answer to give,
 and on the live page 2.8% of the quick passes in a blind (2026-10-09..11-13) took over 30 s. An
 answer that depends on the clock, labelled, serves the question every piece of advice answers
-better than none at all; an unlabelled one wouldn't.
+better than none at all; an unlabelled one wouldn't. Best play's first batch is cut too
+(amended 2026-11-24) because finishing it was what still ran past the limit on the slowest hands
+(52 s past on two Ante 7 hands): a pick on the rounds every move has, said to be not decided, is
+an answer by the limit where the whole batch is none; no move leaves on so few rounds, and on the
+page the full pass replaces it. A race sampled by range keeps its whole first batch for a
+mechanical reason only: cut part way, its options would stand on different rounds.
 
 **Revisit if** an answer at the limit is often worse than waiting would have been where the
 owner did wait (the history check at the limit, `timings.jsonl`'s "time limit" passes), or the
-steps that can't stop yet (the joker pool's screen) keep the limit from being met where it
-matters.
+steps that can't stop yet (the joker pool's screen, a held tarot's value in a blind) keep the
+limit from being met where it matters.
 
 The page's 30 s default approved by the owner 2026-11-23 ("ok go with 30s"); the widened pattern needs no approval (CLAUDE.md "What needs a decision").

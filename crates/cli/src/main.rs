@@ -70,8 +70,8 @@ enum Cmd {
         #[arg(long)]
         quick: bool,
         /// Answer within about this many seconds with what the analysis has then (the races'
-        /// leaders so far, a shop's first ranking), labelled in `time_limit`; steps that can't
-        /// stop yet run on past it and say so
+        /// leaders so far, a shop's first ranking, a blind select's answer so far), labelled in
+        /// `time_limit`; steps that can't stop yet run on past it and say so
         #[arg(long)]
         deadline: Option<f64>,
     },
