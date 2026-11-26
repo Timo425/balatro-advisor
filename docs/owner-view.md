@@ -101,6 +101,10 @@ said. `tools/status.py` reads the ratings below; CLAUDE.md says when to read thi
   balatro when working on this ,whats the point? balatro with an advisor running would completely
   destroy your times anyway"; "there are not overnight runs, the pc is too noisy"; to dropping the
   ask for a one-line notice: "yes".
+- **2026-11-26** On The Hermit (their saved games use every one at once, even below its cap;
+  their words "buy a hermit but use it later when you have more money (if low)"): "yes the
+  hermit idea i learned in reddit after any of my play sessions and it seemed to maek sense a
+  lot".
 
 ## Each gap's impact
 

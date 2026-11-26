@@ -385,6 +385,7 @@ vs actual blind results and every shop seen).
 | Spending: level cap reached at the interest line + $30; packs $4 (`PACK_PRICE`), 2 a shop, each further one ×0.8; typical pack by shop weights (game.lua 4/4/1.2/0.6/4), Standard counted as 0 (the shop values a Standard pack on offer since 2026-11-22: here it still buys nothing) | `value.rs` `Spending` | money past the cap buys rerolls and packs | logged packs opened and picks |
 | Money a board's jokers pay every ante past the cap (less rent, on top of the money you hold now, the same every ante): what it buys through `Spending` against your board's; packs bought from the money held past the cap and the board's whole flow, the rerolls' walk paid the difference before each shop (a third of an ante's), in $1 steps an ante; counted in a shop or an open pack where some board the long run projects (yours without a joker you could sell, with every joker kept or as it keeps or lets them go; with a joker on offer, with a voucher's round) differs from yours there by $0.50 an ante or more (in whole dollars, as `Spending::factor_with` rounds: `past_reached`), on a second long run built once `Spending` is valued (`past_moves`: the options it values again; every option where it keeps or lets go your jokers differently) | `value.rs` `LongRun::past_cap`, `past_of`, `past_reached`, `Spending::factor_with` | money joker income past the cap buys rerolls and packs, rent costs them | the owner's rich shops (2026-11-21: counted on 11 of 20, the first option moved on none) |
 | The money's walk: 2000 walks, the policy chosen on half of them and valued on the other half (`WALKS`): first the bar a find must clear to be bought, what it adds for each dollar of its price as a share of what a shop's joker adds per dollar on average (each rarity at the shop's odds, `RARITY_ODDS`; each joker on its own beside the board the walk starts from), none, as much or twice (`BUY_BARS`), each tried at the fewest rerolls; then the most rerolls a shop under that bar (up to 8, `WALK_REROLLS`), not the two together, and with a boss reroll in hand that policy once more keeping its $10 (`BOSS_REROLL_COST`: no buy or reroll below it but the reroll the option makes, each buy judged with the reroll used; the boss rerolled at the walk's end wherever the money left pays it, either way: gap 13 (a)) (a budget; since 2026-11-16, gap 39: buying whatever adds anything let a shop more lower the walk, the weak find there leaving too little for a better one later); a find in a free slot or, the slots full, in place of the joker of yours (not Eternal or Negative, the one the option buys among them) or the one found before whose loss costs least, whichever leaves more; the jokers kept, and the board an option leaves, as score gains added (each joker's multiplier less 1; one of yours replaced loses 1 − 1/its multiplier), read off your board's scores in that round as a lognormal with the spread of its p10 and p90 (at least 0.05 in log terms), placed along the scores at its simulated chance (at none or a sure pass no nearer the target than half a round in its count and its median allow, `Scores`); each joker's and each option's multiplier the one its own simulated chance gives there, under 3 wins its mean against yours but no more than 3 wins' (`Scores::ratio_for`); never under the best one's own simulated gain; By Ante 8, reach and next-ante strength values the best, each further buy ×0.6, a joker of yours replaced losing its whole gain | `advise.rs` `money_value_with`, `Kept`, `Scores`, `Start` | what money buys in the shops ahead; joker gains don't add up as chances | **measured** against the same money played on (`shop_playon.rs` `money_finds`, the judge's leaving with up to 8 rerolls a shop, "spend8", on the 25 shops in `tests/fixtures/private/money_finds_states.txt`, 2026-10-27, when the walk paid a round $1 of a hand's money, as the judge still does: gap 17; and bought whatever added anything, as the judge does: the bar since is above none about 1 time in 8 on three bot states, counted on a first version that also walked one shop for the Big Blind, not re-measured): this boss 0.018 high (mean absolute error 0.023), the next ante's boss 0.021 high (0.046), against the old sum's 0.036 high (0.044) and 0.062 low (0.128); the gains multiplied stack small finds on a hopeless board into a near-sure pass (gap 17) |
+| A money card held (The Hermit, Temperance) goes to the first shop ahead whose worth is within $0.50 of the most, when that's $1 more than used now; its worth there is what it pays there (its mean over the walks the value is read on, before that shop's buys, the card unused) as money now, less what its pay now would have grown to by then through the same cash-outs and buys (its interest; a later pay counted as money now, its wait uncharged: what money now would buy in the shops before it isn't taken off, which reads holding high), plus its pay now; its slot a fewer for your Blue Seal cards' planets in the rounds before it (`Gain::slot_rounds`) | `advise.rs` `hold_plan`, `hold_at`, `money_card_pays`, `HeldMoney` | when a money card pays most | the owner's history (when they used theirs); bot runs that hold one |
 | A dollar in Best play: what +$10 does, taken as linear | `play.rs` `dollar_gain` | money won this round | — |
 | Comparison: at most 1,600 rounds an option, "clearly worse" at 95% (paired; where a round can be lost outright, as in Best play, with one round in its favour worth the largest round value counted as if it had happened: what a parting round not yet seen could make up, about 3 × the largest round value / n with no spread, the rule of three as for a tie; a graded measure, a deck's score ratio, as it is), "equal" within 1% of the leader's value | `compare.rs` `MAX`, `EQUAL` | when a difference is real enough to act on | the cap measured 2026-11-14 (gap 1): Best play's rounds past 512 are 10% of its race's rounds on the owner's states; stopping its near-ties sooner saved 6% of the rounds, and the picks that moved leaned worse (not shown by 2 standard errors) |
 | The live page's time limit: a blind's quick pass answers by 30 s with what it has (the owner's call, 2026-11-23); a shop's or pack's full pass and a blind's full pass run on (the first ranking, the quick pass's Best play already on screen); botrun's process limit with `--deadline S` S + 120 s, at least 300 s; a race with a deadline over a simulated round (Best play's) samples each option's batch in at least 8 pieces, so it can stop between them; the others (which joker to sell, which cards a tarot goes on) stop only between whole batches and drop one cut part way | `ui.rs` `DEFAULT_DEADLINE_S`; `botrun.py` `DEADLINE_MARGIN_S`; `compare.rs` `race_with` | the owner's wait against the advice's strength (97% of the quick passes in a blind logged 2026-10-09..11-13 within 30 s); the margin: the steps that can't stop yet (the joker pool's screen); the pieces: how far past it a race runs | the history check at the limit (`BAV_DEADLINE`: the picks it moves, judged, and the time saved); `timings.jsonl`'s "time limit" passes |
@@ -2494,6 +2495,54 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    (the other 8 debt boards still at ×1.00 not tried); a debt is paid by selling jokers, which
    needs (d). (iii) is sound but moved none of the states tried. What is left is the queue's
    parked card "What's left of gap 16".
+   Since 2026-11-24 a money consumable (The Hermit, Temperance: `Pays`, their caps from the
+   game's data) is valued at its best moment, not only as used now. A shop one pays on the money
+   its price leaves (card.lua `Card:use_consumeable`, after `G.FUNCS.buy_from_shop`), and is
+   valued by its money only even where that's $0 (bought with your last dollars: before, its
+   walks read the tarot's reach, its pay counted before the price, as board strength, and the
+   bot bought one at $3 to use at once, Q84UC3NR, 2026-11-24). Where a
+   shop ahead pays more (`hold_plan`: the money's walk through the next ante's boss, the card
+   unused, reads what it would pay at each shop before that shop's buys; for Temperance the
+   sell values of the jokers the walk buys and sells), the shop's card gets a second option,
+   "The Hermit · hold it" (`ShopOption::hold`, offered with a consumable slot free for it,
+   button_callbacks.lua `G.FUNCS.check_for_buy_space`: bought, kept in its slot and used there
+   in its walks; its long run is its worth there as money now, `HeldMoney::worth`, the interest
+   its pay now would have earned by then taken off, also in the money `Spending` reads, and its
+   slot a fewer for your Blue Seals' planets until then, `Gain::slot_rounds`; its walks leave
+   the shop, since the walk's one reroll cap for every shop would spend here the money it's
+   held for, so a reroll here after buying it isn't counted). Using one now stays in the shop
+   as before, its rerolls here taking from the cap the shops ahead share: that reads it low
+   against holding (on Q84UC3NR's held Hermit, 2026-11-24, using it now read 0.762 next-ante
+   survival walked in the shop, 0.851 walked out, against 0.867 held; walked out it loses this
+   ante's rerolls instead, LK1JWUX3's Ante 1 boss 0.908 to 0.727): not modelled, a queue card.
+   A held one and one on offer are planned alike (`shop_hold_plans`: from your board's
+   next-ante reach, the same in the first ranking, so one bought to hold isn't told to be used
+   at once on the next screen; the plan's walk keeps your jokers as they are, heuristic: the
+   options' walks that use it may sell yours). A held one is used there in
+   every other option's walks, so its "(you have it)" option ranks using it now against holding
+   it, not against nothing. A pack's is used at once (UI_definitions.lua
+   `G.UIDEF.use_and_sell_buttons`: only USE for `G.pack_cards`), so it stays used now. Not
+   modelled: a second money card held (of two you hold, the one worth more held is; a shop's
+   bought to hold leaves yours out of its walks), more money buying more in between (the
+   register), a held Temperance's pay on the board an option leaves (read on yours: a sale's
+   sell value counted twice, a buy's missing), a slot's other uses (a tarot or planet bought into
+   it), sell values grown by Egg or Gift Card, using The Hermit before a round's cash-out for its
+   interest, using Temperance after the shop's buys (the walk uses it before them;
+   `order_tips` says it), and skip-or-play still counts a held one as used either way. What
+   each pays is a game fact, `engine::consumable::money_effect`, read by `Pays`. How often:
+   of the owner's 2,026 shop states (51 runs), The Hermit is on offer in 12 and Temperance in 9
+   (in Arcana packs, used at once, 73 and 60 more), and one is held in 8; each of the 11 the
+   owner held was used in the shop (or blind) they got it in, never held to a later one, and the
+   Hermits they bought in a shop below the cap (Q84UC3NR and 8I93CDBG, $12-13) were used at once,
+   then copied by The Fool and used at once again ($10-12). Using one now makes it the last tarot
+   used for The Fool to copy (`G.GAME.last_tarot_planet`): not modelled. The owner settled the direction
+   (2026-11-26, `docs/owner-view.md`): their words ("use it later when you have more money (if
+   low)") came after that play, so the advice holds. How much holding pays isn't proven: two
+   leans read holding high and can carry the margins (the reroll cap above, about 9 of the 10.5
+   points on Q84UC3NR's held Hermit; and a later pay counted as money now, its wait uncharged,
+   which ranks buying one with the last $3 to hold, paying five shops on, first on the bot's
+   Q84UC3NR shop, 0.367 against 0.341 for leaving). The queue's card "The Hermit held for a
+   richer shop" measures it once the reroll cap is fixed.
 17. **The money's finds add every joker's gain and count a full board's swaps in two units.**
    Since 2026-10-26 what an option's money left buys
    (`survival_with`, `money_value_with`) is the money spent shop by shop as a player buys, on

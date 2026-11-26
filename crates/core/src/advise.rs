@@ -547,6 +547,10 @@ pub struct ShopOption {
     /// Money it gives back (money tarots), counted in `money_after`.
     #[serde(default)]
     pub money_gain: f64,
+    /// A money consumable bought to hold in a slot and use at a shop ahead, where the money's
+    /// walk expects it to pay more than used now (`HeldMoney`: what it pays, the shop)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hold: Option<HeldMoney>,
     /// Chance to get through this ante: its blinds before its hardest round on the board it
     /// leaves where that's simulated, else your board's or read off its scores against yours
     /// (`OptionRounds::before`), then that round with the shops still to come before it:
@@ -2005,7 +2009,39 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
         // (on the long run given: this one, or the one that counts money past the cap, below)
         let (l0, skip) = (lr.l0, lr.event(RunEvent::SkipPack));
         let skip_note = if skip > 1.0 { format!(" · or skip it for {} (×{skip:.2} by Ante 8)", lr.event_note(RunEvent::SkipPack)) } else { String::new() };
-        let (mut options, mut tarots) = shop_options(&ctx, lr, run, data, pool_entries, &base_odds, key_round, per_rarity, joker_share, &shop, first);
+        // Money cards are planned from your board's next-ante reach (`base_odds`): one you hold,
+        // and one on offer bought to hold (`shop_hold_plans`), so it's planned alike once held
+        let hz_reach = ctx.specs.iter().position(|x| x.horizon).and_then(|h| base_odds.get(h).zip(ctx.specs.get(h))).map_or(0.0, |(o, sp)| o.1.mean / sp.start.target.max(1.0));
+        let shop_holds = shop_hold_plans(lr, run, data, pool_entries, hz_reach);
+        let (mut options, mut tarots) = shop_options(&ctx, lr, run, data, pool_entries, &base_odds, key_round, per_rarity, joker_share, &shop, &shop_holds, first);
+        // A money card you hold that pays more held to a shop ahead (`hold_plan`; of two, the one
+        // worth more held, the other held as well isn't: not modelled): used there in every
+        // option's walks but the one using it now, whose long run is then against holding it.
+        // From your board's next-ante reach (`hz_reach`, above), which the first ranking has too,
+        // so both rankings hold it alike
+        let held_money: Option<(String, HeldMoney)> = run
+            .consumables
+            .iter()
+            .filter_map(|c| hold_plan(lr, pool_entries, hz_reach, Pays::of(data, run, &c.key)?, run.dollars).map(|h| (c.key.clone(), h)))
+            .max_by(|a, b| (a.1.worth - a.1.pays.paid(run.dollars, 0.0)).total_cmp(&(b.1.worth - b.1.pays.paid(run.dollars, 0.0))).then(b.0.cmp(&a.0)));
+        let uses_held = |o: &ShopOption| held_money.as_ref().is_some_and(|(k, _)| o.kind == "tarot" && o.cost == 0 && o.key.as_deref() == Some(k.as_str()) && o.label.ends_with("(you have it)"));
+        // the money card an option's walks hold and use ahead: its own, bought to hold, or yours
+        // (a shop's bought to hold: yours held as well isn't, not modelled)
+        let card_of = |o: &ShopOption| o.hold.or_else(|| held_money.as_ref().filter(|_| !uses_held(o)).map(|h| h.1));
+        // (holding a money card: what it's worth held, as money now, and the slot it takes until
+        // it's used, `Gain::slot_rounds`)
+        let held_gain = |h: &HeldMoney| Gain { money: h.worth, slot_rounds: h.at as f64, ..Default::default() };
+        // (yours used now says where holding it pays more instead, and leaving says to hold it)
+        let mut held_name: Option<String> = None;
+        if let Some((k, h)) = &held_money {
+            let name = run.consumables.iter().find(|c| &c.key == k).map_or("it", |c| c.name.as_str());
+            for o in options.iter_mut().filter(|o| uses_held(o)) {
+                o.note = format!("{} · or hold it: {}", o.note, hold_note(run, h));
+            }
+            held_name = Some(name.to_string());
+        }
+        // (a money consumable, whatever it pays now: valued by its money, `Pays`)
+        let money_card = |o: &ShopOption| o.kind == "tarot" && o.key.as_deref().is_some_and(|k| Pays::of(data, run, k).is_some());
         let mut later = vec![];
         // (the kinds the first ranking holds: kept here, so the rest isn't worked out twice, and
         // again at the end, over the options made below too)
@@ -2020,14 +2056,26 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
         };
         if first {
             kinds_first(&mut options, &mut later);
+            // (a money card on offer bought to hold: made with the tarots' values, so left for
+            // the full ranking, which makes it where it has a plan)
+            later.extend(shop_holds.iter().map(|(name, _)| format!("{name} · hold it")));
         } else {
             lap("shop options");
         }
         // Planets and money cards, with the money they cost or give
-        let long_idx: Vec<usize> = options.iter().enumerate().filter(|(_, o)| o.kind == "planet" || o.money_gain > 0.0).map(|(i, _)| i).collect();
+        let long_idx: Vec<usize> = options.iter().enumerate().filter(|(_, o)| o.kind == "planet" || o.money_gain > 0.0 || money_card(o)).map(|(i, _)| i).collect();
         let long_opts: Vec<Option<f64>> = par_map(&long_idx, |&i| {
             let o = &options[i];
+            // (one bought to hold to a shop ahead: what that's worth as money now, and the slot it
+            // takes; yours used now: against holding it there)
             let mut g = Gain::money(o.money_after - run.dollars);
+            if let Some(h) = &o.hold {
+                let held = held_gain(h);
+                return Some(lr.value(&Gain { money: g.money + held.money, ..held }));
+            }
+            if uses_held(o) && let Some((_, h)) = &held_money {
+                return Some(lr.value(&g) / lr.value(&held_gain(h)).max(1e-9));
+            }
             if o.kind == "planet" {
                 let hand = o.key.as_ref().and_then(|k| data.center(k)).and_then(|c| c.config.get("hand_type")).and_then(|v| v.as_str()).and_then(crate::engine::HandType::from_name);
                 g.planets.push((hand?, 1.0));
@@ -2147,7 +2195,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
         }
         for o in options.iter_mut() {
             let size = o.key.as_deref().and_then(|k| pack_size(data, k));
-            if o.kind == "tarot" && o.money_gain <= 0.0 {
+            if o.kind == "tarot" && o.money_gain <= 0.0 && !money_card(o) {
                 if let Some(i) = o.key.as_ref().and_then(|k| tarots.iter().position(|t| &t.key == k)) {
                     o.long_mult = Some(tarot_long[i] * price(o.cost));
                 }
@@ -2343,7 +2391,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
             extra_money.insert(o.label.clone(), flow * antes_left);
         }
         let now_p = base_odds.get(key_round).map_or(0.0, |o| o.0);
-        let keep_money = |label: &str, kind: &str, note: String, long: f64| ShopOption {
+        let keep_money = |label: &str, kind: &str, note: String, long: f64| ShopOption { hold: None,
         tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None,
             reach: None,
             label: label.into(),
@@ -2363,7 +2411,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
         // Leaving the shop with your money is an option too: everything is measured against it
         // (By Ante 8 ×1.00), so whatever ranks below it isn't worth its price.
         if run.screen == crate::save::Screen::Shop && run.open_pack.is_empty() {
-            options.push(keep_money("next round", "leave", format!("keep your ${:.0}", run.dollars), 1.0));
+            options.push(keep_money("next round", "leave", format!("keep your ${:.0}{}", run.dollars, held_name.as_ref().map_or(String::new(), |n| format!(" · hold {n}"))), 1.0));
         }
         // Selling one of your jokers outright is an option too (every choice generated): its rounds
         // simulated without it (the contribution pass, as giving it up for a buy is), its sale's
@@ -2394,7 +2442,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
                 if lr.gone_anyway(i) {
                     extra_money.insert(label.clone(), -money);
                 }
-                options.push(ShopOption {
+                options.push(ShopOption { hold: None,
                 rounds: OptionRounds { now: st.rounds.clone(), next: hz.and_then(|h| contrib[i].1.get(h)).and_then(|o| o.1.rounds.clone()), next_base: None, before: contrib[i].2.iter().map(|(p, st)| (*p, st.rounds.clone())).collect(), before_yours: false },
                     sell_index: Some(i),
                     sell_key: Some(sj.key.clone()),
@@ -2439,9 +2487,11 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
                 0
             }
         };
-        // an option whose own value is money (The Hermit, Temperance: `money_value`): the money goes
-        // in through what it leaves you, not again as its own chance
-        let money_only = |o: &ShopOption| o.kind == "tarot" && o.money_gain > 0.0;
+        // an option whose own value is money (a tarot paying money: The Hermit, Temperance, The
+        // Fool copying one, Immolate; `money_value`): the money goes in through what it leaves
+        // you, not again as its own chance, also where a money card pays nothing (bought with
+        // your last dollars, used at once: `money_card`)
+        let money_only = |o: &ShopOption| o.kind == "tarot" && (o.money_gain > 0.0 || o.hold.is_some() || money_card(o));
         // your jokers a find may take the place of (not an Eternal one, which can't be sold, nor one
         // whose sale frees no slot: card.lua `Card:can_sell_card`, `Board::sale_frees_slot`),
         // each with its scores against your board without it in a round (the contribution pass,
@@ -2570,12 +2620,12 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
                 let kept = kept_of(o);
                 let walk = |p: f64, mut gains: Option<&mut Vec<f64>>| {
                     if on_board {
-                        let from = Start { owned: &yours, ..Start::board(board_rent) };
+                        let from = Start { owned: &yours, card: card_of(o), ..Start::board(board_rent) };
                         survival_with(lr, pool_entries, kept, p, if stay == Stay::Reroll { run.dollars } else { o.money_after }, false, stay, from, gains)
                     } else {
                         let ratio = scores.ratio_for(p, ctx.opts.sims, o.reach.filter(|_| base > 0.0).map(|r| r / base));
                         let mine = entries(o, &owned, ratio);
-                        let with = survival_with(lr, pool_entries, kept, p, o.money_after, false, stay, Start { ratio, slots: slots_of(o), owned: &mine, rent: rent_change(o) }, gains.as_deref_mut());
+                        let with = survival_with(lr, pool_entries, kept, p, o.money_after, false, stay, Start { ratio, slots: slots_of(o), owned: &mine, rent: rent_change(o), card: card_of(o) }, gains.as_deref_mut());
                         // (held at its own chance, the walks move nothing)
                         if let Some(g) = gains.filter(|_| with < p) {
                             g.clear();
@@ -2628,12 +2678,12 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
                 // (the walk as a function of the chance it starts from, as this ante's)
                 let survive = |p: f64, mut gains: Option<&mut Vec<f64>>| {
                     if on_board {
-                        let board = Start { owned: &yours, ..Start::board(board_rent) };
+                        let board = Start { owned: &yours, card: card_of(o), ..Start::board(board_rent) };
                         survival_with(lr, pool_entries, kept, p, if stay == Stay::Reroll { run.dollars } else { o.money_after }, true, stay, board, gains)
                     } else {
                         let ratio = scores.ratio_for(p, n, Some(strength));
                         let mine = entries(o, &owned, ratio);
-                        let with = survival_with(lr, pool_entries, kept, p, o.money_after, true, stay, Start { ratio, slots: slots_of(o), owned: &mine, rent: rent_change(o) }, gains.as_deref_mut());
+                        let with = survival_with(lr, pool_entries, kept, p, o.money_after, true, stay, Start { ratio, slots: slots_of(o), owned: &mine, rent: rent_change(o), card: card_of(o) }, gains.as_deref_mut());
                         if let Some(g) = gains.filter(|_| with < p) {
                             g.clear();
                         }
@@ -2664,14 +2714,16 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
                 let owned = owned_in(hz, &|_, m| m);
                 let yours: Vec<(f64, f64, f64)> = owned.iter().map(|e| (e.1, e.2, e.3)).collect();
                 // (with each walk's gain: the luck of the shops ahead in it, for the ranking's noise)
-                let finds = |money: f64, stay: Stay, slots: i64, owned: &[(f64, f64, f64)], rent: f64| {
+                let finds = |money: f64, stay: Stay, slots: i64, owned: &[(f64, f64, f64)], rent: f64, card: Option<HeldMoney>| {
                     let mut gains = vec![];
-                    (money_value_walks(lr, pool_entries, &kept, 1.0, money, Stay::shops(run, true, stay), Start { ratio: 1.0, slots, owned, rent }, Some(&mut gains)), gains)
+                    (money_value_walks(lr, pool_entries, &kept, 1.0, money, Stay::shops(run, true, stay), Start { ratio: 1.0, slots, owned, rent, card }, Some(&mut gains)), gains)
                 };
-                found_kept = finds(run.dollars, Stay::Out, 0, &yours, board_rent);
+                // (keeping your money: a money card you hold kept to where it pays most, too)
+                found_kept = finds(run.dollars, Stay::Out, 0, &yours, board_rent, held_money.as_ref().map(|h| h.1));
                 let keep = found_kept.0.max(1e-9);
-                // (the money, the stay, the slots, the joker sold, the joker bought's strength, the rent)
-                type FindsKey = (i64, Stay, i64, Option<usize>, u64, u64);
+                // (the money, the stay, the slots, the joker sold, the joker bought's strength, the
+                // rent, the money card held: the shop it's used at, what it pays there)
+                type FindsKey = (i64, Stay, i64, Option<usize>, u64, u64, Option<(usize, u64, bool)>);
                 let mut cache: std::collections::HashMap<FindsKey, (f64, Vec<f64>)> = std::collections::HashMap::new();
                 for (o, fd) in options.iter_mut().zip(found.iter_mut()) {
                     let stay = Stay::of(o);
@@ -2680,7 +2732,8 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
                     let mine = if stay == Stay::Reroll || money_only(o) { yours.clone() } else { entries(o, &owned, own) };
                     let bought = if mine.len() > yours.len() || o.sell_index.is_some() { own.to_bits() } else { 0 };
                     let rent = if stay == Stay::Reroll || money_only(o) { board_rent } else { rent_change(o) };
-                    let f = cache.entry((money.round() as i64, stay, slots, o.sell_index, bought, rent.to_bits())).or_insert_with(|| finds(money, stay, slots, &mine, rent)).clone();
+                    let card = card_of(o);
+                    let f = cache.entry((money.round() as i64, stay, slots, o.sell_index, bought, rent.to_bits(), card.map(|c| (c.at, c.about.to_bits(), matches!(c.pays, Pays::Doubles(_)))))).or_insert_with(|| finds(money, stay, slots, &mine, rent, card)).clone();
                     o.next_strength = Some(own * f.0 / keep);
                     *fd = Some(f);
                 }
@@ -2838,7 +2891,17 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
         } else {
             lap("saves");
         }
-        Valued { options, tarots, tarot_long, extra_money, later }
+        // (a money card held to a shop ahead: its worth there is money the measure's spending
+        // reads, `Spending`, as it reads a voucher's flow: the option holding one, or each that
+        // leaves yours held)
+        for o in &options {
+            if let Some(h) = o.hold.as_ref().or(held_money.as_ref().filter(|_| !uses_held(o)).map(|h| &h.1)) {
+                *extra_money.entry(o.label.clone()).or_default() += h.worth;
+            }
+        }
+        // (the first ranking holds yours in its walks too, though it makes no option for it)
+        let holds = held_money.is_some() || options.iter().any(|o| o.hold.is_some());
+        Valued { options, tarots, tarot_long, extra_money, later, holds }
     };
     // A shop's first ranking, handed over while the rest is worked out (`FirstSink`): the options
     // above with nothing left to wait for, but one that leaves more money than the planet-level
@@ -2849,7 +2912,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
     // again once `Spending` is valued (below), and where that one keeps or lets go your jokers
     // otherwise every option's number moves
     if let Some(sink) = opts.first.as_ref().filter(|_| in_shop_or_pack && run.dollars <= cap && !past_counted) {
-        let Valued { mut options, extra_money, mut later, .. } = valued(true, &pool_entries, &lr);
+        let Valued { mut options, extra_money, mut later, holds, .. } = valued(true, &pool_entries, &lr);
         options.retain(|o| {
             let keep = o.money_after + extra_money.get(&o.label).copied().unwrap_or(0.0) <= cap;
             if !keep {
@@ -2896,7 +2959,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
                 best_play: None,
                 gold: gold.map(|g| GoldSummary { have: g.have_gold, total: g.total, this_run_counts: run.stake >= 8 }),
                 caveats: run.snapshot.caveats.clone(),
-                heuristics: HEURISTICS.iter().copied().chain(ctx.specs.iter().any(|x| x.start.pool.is_some()).then_some(NEXT_ANTE_NOTE)).chain([FIRST_RANKING_NOTE]).collect(),
+                heuristics: HEURISTICS.iter().copied().chain(ctx.specs.iter().any(|x| x.start.pool.is_some()).then_some(NEXT_ANTE_NOTE)).chain(holds.then_some(HOLD_NOTE)).chain([FIRST_RANKING_NOTE]).collect(),
                 save_age_secs: run.snapshot.age_secs,
                 live: run.snapshot.live,
                 order_tips: vec![],
@@ -2939,7 +3002,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
         c.long_mult = m;
     }
     lap("by ante 8");
-    let Valued { mut options, mut tarots, mut tarot_long, mut extra_money, .. } = valued(false, &pool_entries, &lr);
+    let Valued { mut options, mut tarots, mut tarot_long, mut extra_money, mut holds, .. } = valued(false, &pool_entries, &lr);
     // Money past the planet-level cap is worth the rerolls and packs it buys (`Spending`):
     // each option's money left (plus what an economy voucher earns by then) against keeping
     // your money.
@@ -2959,7 +3022,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
     if let Some(l2) = &past_lr {
         if !l2.same_fates(&lr) {
             let v = valued(false, &pool_entries, l2);
-            (options, tarots, tarot_long, extra_money) = (v.options, v.tarots, v.tarot_long, v.extra_money);
+            (options, tarots, tarot_long, extra_money, holds) = (v.options, v.tarots, v.tarot_long, v.extra_money, v.holds);
         }
         let mut again = shop.clone();
         offer_longs(l2, &mut again);
@@ -3373,6 +3436,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
         .into_iter()
         .chain(ctx.specs.iter().any(|x| x.start.pool.is_some()).then_some(NEXT_ANTE_NOTE))
         .chain(skips.then_some(SKIP_NOTE))
+        .chain(holds.then_some(HOLD_NOTE))
         .chain(run.shop.iter().flat_map(|s| &s.boosters).any(|b| b.key.starts_with("p_standard")).then_some(STANDARD_NOTE))
         .chain(grows.then_some(
             "Best play counts what the round's hands and discards leave the jokers that grow or fade in a round, by what one more Mult, ×Mult or Chip adds by Ante 8 (measured on a step of +2 Mult, +×0.25 or +10 Chips, taken as linear; a fall never costs more than losing the joker; several jokers' factors multiplied, heuristic) and, in this ante, by what they do to the chance of getting through the blinds still ahead (see the note on those); the simulated player aims for it in how it finishes the round (the winning play worth most, or playing on for growth on a few simulated futures) and, with no win on the table, in a play that grows them more while it keeps pace and scores as much over the hands left as its own pick (weighed on 16 simulated futures), not in its digs or discards, and what they do to your cards (Vampire's enhancements, Glass breaking) isn't counted. The blind odds shown still play your jokers as they are now.",
@@ -3416,6 +3480,9 @@ const HEURISTICS: [&str; 8] = [
 /// Said where the next ante is read (`next_boss_pool`)
 const NEXT_ANTE_NOTE: &str = "The next ante's boss is one of the bosses the game can draw there (the least drawn so far of those allowed at that ante; when the next ante is the last, its five final bosses), each as likely: each simulated round meets one, with its own target and its rule where it's simulated; its reach is shown against a plain boss's target (2× the base). An option with no simulated chance there has it read off its scores as your board's against each boss (simulated on its own rounds, heuristic: a lognormal for each), moved together to your board's chance there. At the last ante nothing past its boss is counted.";
 
+/// Said where a money card is held to a shop ahead (`hold_plan`)
+const HOLD_NOTE: &str = "A money card (The Hermit, Temperance) is held to a shop ahead where the shop ranking's money walk (above) expects it to pay more: what it pays there is worth that pay as money now, less the interest the money it pays now would have earned by then through the same cash-outs and buys (heuristic, which reads holding high: a later pay counts as money now, its wait uncharged, so what money now would buy in the shops before it isn't taken off), and it's held to the first shop worth within $0.50 of the most, if that's $1 more than using it now. The slot it takes until then costs the planets your Blue Seal cards would make in it. An option buying one to hold rerolls no more in this shop (heuristic: the walk's rerolls here, one cap for every shop, would spend the money it's held for), while using one now may reroll here, at the cost of the rerolls the cap leaves the shops ahead (which reads using it now low against holding it: not modelled); the other options' walks use one you hold at its shop. Where it pays most is read on a walk keeping your jokers as they are and buying on your board's next-ante reach (heuristic: the options' walks, which use it there, may sell yours). Not modelled: a second money card held, a held Temperance's pay on the board an option leaves (it's read on yours), using one before a round's cash-out for its interest, The Fool copying one used now (the last tarot used).";
+
 /// Said where a Standard pack is on offer (`standard_pack_kinds`)
 const STANDARD_NOTE: &str = "A Standard pack is valued by its best card added to your deck, projected to Ante 8, or skipping it: the expected best of as many cards as the pack holds, at the game's odds (Enhanced 40%, a seal 20%, an edition 8%, more with Hone or Glow Up, each its own roll; a plain card by its rank, its suit as an average; an enhanced, sealed or edition card as an average over the 52 it can be, not the card you'd pick; one with two or three of them by the best of them, not all together: heuristic, reads low unless one of them costs your deck, as a Stone card's lost rank and suit can); the blinds ahead are played as on your board (one card more in your deck: heuristic), a consumable you hold that could go on the card isn't counted, nor a Mega pack's second pick (not modelled).";
 /// Said with a skip-or-play comparison (`SkipCompare`)
@@ -3443,6 +3510,8 @@ struct Valued {
     extra_money: std::collections::HashMap<String, f64>,
     /// In a first ranking: the options left for the full one, by label
     later: Vec<String>,
+    /// A money card's held to a shop ahead in some option (`HeldMoney`: its note said)
+    holds: bool,
 }
 
 /// The options a shop's first ranking leaves for the full one that `shop_options` doesn't make
@@ -4247,6 +4316,7 @@ fn shop_options(
     per_rarity: [usize; 4],
     joker_share: f64,
     shop_jokers: &[Candidate],
+    shop_holds: &[(String, HeldMoney)],
     first: bool,
 ) -> (Vec<ShopOption>, Vec<TarotValue>) {
     use crate::engine::HandType;
@@ -4287,17 +4357,17 @@ fn shop_options(
     let shop_cards = run.shop.as_ref().map(|s| s.other_cards.clone()).unwrap_or_default();
     for c in shop_cards.iter().filter(|c| c.set == "Planet") {
         if let Some(p) = p_of(&c.key) {
-            out.push(ShopOption { tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None, label: c.name.clone(), kind: "planet".into(), cost: c.cost, money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: Some(c.key.clone()), desc: None, p_win: p, note: format!("levels up {}", data.center(&c.key).and_then(|x| x.config.get("hand_type")).and_then(|v| v.as_str()).unwrap_or("")) });
+            out.push(ShopOption { hold: None, tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None, label: c.name.clone(), kind: "planet".into(), cost: c.cost, money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: Some(c.key.clone()), desc: None, p_win: p, note: format!("levels up {}", data.center(&c.key).and_then(|x| x.config.get("hand_type")).and_then(|v| v.as_str()).unwrap_or("")) });
         }
     }
     for c in run.open_pack.iter().filter(|c| c.set == "Planet") {
         if let Some(p) = p_of(&c.key) {
-            out.push(ShopOption { tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None, label: format!("pick {}", c.name), kind: "planet".into(), cost: 0, p_win: p, note: format!("levels up {}", data.center(&c.key).and_then(|x| x.config.get("hand_type")).and_then(|v| v.as_str()).unwrap_or("")), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: Some(c.key.clone()), desc: None });
+            out.push(ShopOption { hold: None, tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None, label: format!("pick {}", c.name), kind: "planet".into(), cost: 0, p_win: p, note: format!("levels up {}", data.center(&c.key).and_then(|x| x.config.get("hand_type")).and_then(|v| v.as_str()).unwrap_or("")), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: Some(c.key.clone()), desc: None });
         }
     }
     for c in run.consumables.iter().filter(|c| c.set == "Planet") {
         if let Some(p) = p_of(&c.key) {
-            out.push(ShopOption { tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None, label: format!("{} (you have it)", c.name), kind: "planet".into(), cost: 0, p_win: p, note: "use it before the blind".into(), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: Some(c.key.clone()), desc: None });
+            out.push(ShopOption { hold: None, tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None, label: format!("{} (you have it)", c.name), kind: "planet".into(), cost: 0, p_win: p, note: "use it before the blind".into(), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: Some(c.key.clone()), desc: None });
         }
     }
 
@@ -4341,7 +4411,7 @@ fn shop_options(
             // (on the rounds of the planet it picks most often there: a stand-in for the mix,
             // dealt as every board's are)
             let before = before_sum.iter().enumerate().map(|(j, s)| (s / count.max(1.0), planet_rounds[top].before.get(j).and_then(|x| x.1.clone()))).collect();
-            out.push(ShopOption { tied: false, rounds: OptionRounds { before, ..Default::default() }, noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None,
+            out.push(ShopOption { hold: None, tied: false, rounds: OptionRounds { before, ..Default::default() }, noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None,
                 money_after: 0.0,
                 interest_now: 0,
                 interest_after: 0,
@@ -4359,7 +4429,7 @@ fn shop_options(
         } else if pk.key.starts_with("p_buffoon") {
             // Jokers picked from a pack are free: no budget limit on what's inside.
             let e = expected_best(ctx, pool, round, now, extra, 1.0, f64::INFINITY, per_rarity, &mut rng);
-            out.push(ShopOption { tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None, label: pk.name.clone(), kind: "pack".into(), cost: pk.cost, p_win: e, note: format!("{extra} jokers{pick_note}"), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: Some(pk.key.clone()), desc: None });
+            out.push(ShopOption { hold: None, tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None, label: pk.name.clone(), kind: "pack".into(), cost: pk.cost, p_win: e, note: format!("{extra} jokers{pick_note}"), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: Some(pk.key.clone()), desc: None });
         }
     }
 
@@ -4375,7 +4445,7 @@ fn shop_options(
             }
             let budget = run.dollars - spent as f64;
             let e = expected_best(ctx, pool, round, now, slots * k, joker_share, budget, per_rarity, &mut rng);
-            out.push(ShopOption { tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None,
+            out.push(ShopOption { hold: None, tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None,
                 money_after: 0.0,
                 interest_now: 0,
                 interest_after: 0,
@@ -4450,7 +4520,7 @@ fn shop_options(
             };
             let (p, now_rounds) = if sim { let (p, st) = ctx.odds_one(&ctx.base, &sp, ctx.opts.sims); (p, st.rounds) } else { (now, None) };
             let before = if sim_before { ctx.before.iter().map(|(b, _)| ctx.odds_one(&ctx.base, &with_voucher(b), ctx.opts.sims)).map(|(p, st)| (p, st.rounds)).collect() } else { vec![] };
-            out.push(ShopOption { tied: false, rounds: OptionRounds { now: now_rounds, before, before_yours: !sim_before, ..Default::default() }, noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None, label: v.name.clone(), kind: "voucher".into(), cost: v.cost, p_win: p, note, money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: Some(v.key.clone()), desc: None });
+            out.push(ShopOption { hold: None, tied: false, rounds: OptionRounds { now: now_rounds, before, before_yours: !sim_before, ..Default::default() }, noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None, label: v.name.clone(), kind: "voucher".into(), cost: v.cost, p_win: p, note, money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: None, key: Some(v.key.clone()), desc: None });
         }
     }
     // Tarots: applied to the deck the way a player sensibly would, then the round re-simulated.
@@ -4478,17 +4548,30 @@ fn shop_options(
     let shop_cards = run.shop.as_ref().map(|s| s.other_cards.clone()).unwrap_or_default();
     for c in shop_cards.iter().filter(|c| c.set == "Tarot" || c.set == "Spectral") {
         if let Some(t) = tarot_p(&c.key) {
-            out.push(ShopOption { tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None, label: c.name.clone(), kind: "tarot".into(), cost: c.cost, p_win: t.p_win, note: t.note.clone(), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: t.money_gain, long_mult: None, key: Some(c.key.clone()), desc: None });
+            // (a money card bought pays on the money its price leaves: card.lua
+            // `Card:use_consumeable`, after `G.FUNCS.buy_from_shop` took the price)
+            let pays = Pays::of(data, run, &c.key);
+            let after_price = run.dollars - c.cost as f64;
+            let (money_gain, note) = match pays {
+                Some(p) if p.paid(after_price, 0.0) != t.money_gain => (p.paid(after_price, 0.0), p.note(after_price)),
+                _ => (t.money_gain, t.note.clone()),
+            };
+            let o = ShopOption { hold: None, tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None, label: c.name.clone(), kind: "tarot".into(), cost: c.cost, p_win: t.p_win, note, money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain, long_mult: None, key: Some(c.key.clone()), desc: None };
+            // bought to hold in a slot, where it pays more at a shop ahead (`shop_hold_plans`)
+            if let Some(h) = shop_holds.iter().find(|(name, _)| *name == c.name).map(|(_, h)| *h) {
+                out.push(ShopOption { label: format!("{} · hold it", c.name), note: hold_note(run, &h), money_gain: 0.0, hold: Some(h), p_win: now, ..o.clone() });
+            }
+            out.push(o);
         }
     }
     for c in run.open_pack.iter().filter(|c| c.set == "Tarot" || c.set == "Spectral") {
         if let Some(t) = tarot_p(&c.key) {
-            out.push(ShopOption { tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None, label: format!("pick {}", c.name), kind: "tarot".into(), cost: 0, p_win: t.p_win, note: if ctx.specs.iter().any(|x| x.horizon) { format!("{} · next ante reach {:.0}% → {:.0}%", t.note, t.reach_now * 100.0, t.reach * 100.0) } else { t.note.clone() }, money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: t.money_gain, long_mult: None, key: Some(c.key.clone()), desc: None });
+            out.push(ShopOption { hold: None, tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None, label: format!("pick {}", c.name), kind: "tarot".into(), cost: 0, p_win: t.p_win, note: if ctx.specs.iter().any(|x| x.horizon) { format!("{} · next ante reach {:.0}% → {:.0}%", t.note, t.reach_now * 100.0, t.reach * 100.0) } else { t.note.clone() }, money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: t.money_gain, long_mult: None, key: Some(c.key.clone()), desc: None });
         }
     }
     for c in run.consumables.iter().filter(|c| c.set == "Tarot" || c.set == "Spectral") {
         if let Some(t) = tarot_p(&c.key) {
-            out.push(ShopOption { tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None, label: format!("{} (you have it)", c.name), kind: "tarot".into(), cost: 0, p_win: t.p_win, note: format!("{} · use it during a blind", t.note), money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: t.money_gain, long_mult: None, key: Some(c.key.clone()), desc: None });
+            out.push(ShopOption { hold: None, tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None, label: format!("{} (you have it)", c.name), kind: "tarot".into(), cost: 0, p_win: t.p_win, note: if Pays::of(data, run, &c.key).is_some() { t.note.clone() } else { format!("{} · use it during a blind", t.note) }, money_after: 0.0, interest_now: 0, interest_after: 0, unaffordable: false, money_gain: t.money_gain, long_mult: None, key: Some(c.key.clone()), desc: None });
         }
     }
     for pk in run.shop.as_ref().map(|s| s.boosters.clone()).unwrap_or_default().iter().filter(|p| p.key.starts_with("p_spectral")) {
@@ -4496,7 +4579,7 @@ fn shop_options(
         let spectrals: Vec<&TarotValue> = tarots.iter().filter(|t| t.spectral).collect();
         let vals: Vec<f64> = spectrals.iter().map(|t| t.p_win.max(now)).collect();
         let (avg, top) = best_of_subsets(&vals, extra);
-        out.push(ShopOption {
+        out.push(ShopOption { hold: None,
             tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None,
             reach: None,
             label: pk.name.clone(),
@@ -4519,7 +4602,7 @@ fn shop_options(
         let arcana: Vec<&TarotValue> = tarots.iter().filter(|t| !t.spectral).collect();
         let vals: Vec<f64> = arcana.iter().map(|t| t.p_win.max(now)).collect();
         let (avg, top) = best_of_subsets(&vals, extra);
-        out.push(ShopOption { tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None,
+        out.push(ShopOption { hold: None, tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None,
             label: pk.name.clone(),
             kind: "pack".into(),
             cost: pk.cost,
@@ -4540,7 +4623,7 @@ fn shop_options(
     // heuristic, `STANDARD_NOTE`)
     for pk in run.shop.as_ref().map(|s| s.boosters.clone()).unwrap_or_default().iter().filter(|p| p.key.starts_with("p_standard")) {
         let Some((extra, choose)) = pack_size(data, &pk.key) else { continue };
-        out.push(ShopOption { tied: false, rounds: OptionRounds { before_yours: true, ..Default::default() }, noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None,
+        out.push(ShopOption { hold: None, tied: false, rounds: OptionRounds { before_yours: true, ..Default::default() }, noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None, reach: None,
             label: pk.name.clone(),
             kind: "pack".into(),
             cost: pk.cost,
@@ -4568,7 +4651,7 @@ fn shop_options(
         let (p, st) = with_card(spec);
         // (this ante's blinds before its hardest round, for the ranking's survival)
         let before = ctx.before.iter().map(|(b, _)| with_card(b)).map(|(p, st)| (p, st.rounds)).collect();
-        out.push(ShopOption {
+        out.push(ShopOption { hold: None,
             tied: false, rounds: OptionRounds { now: st.rounds, before, ..Default::default() }, noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None,
             reach: None,
             label: format!("pick {}", card.label()),
@@ -4614,7 +4697,7 @@ fn shop_options(
         }).filter(|s| !s.is_empty());
         let note = [stickers, Some(action).filter(|a| !a.is_empty()), c.note.clone(), later].into_iter().flatten().collect::<Vec<_>>().join(" · ");
         let from_pack = run.open_pack.iter().any(|p| p.key == c.key);
-        out.push(ShopOption { tied: false, rounds: OptionRounds { now: c.rounds.get(round).cloned().flatten(), next: ctx.specs.iter().position(|x| x.horizon).and_then(|h| c.rounds.get(h).cloned().flatten()), next_base: None, before: c.before.clone(), before_yours: false }, noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, survive: None, survive_next: None, flex: None, reach: None,
+        out.push(ShopOption { hold: None, tied: false, rounds: OptionRounds { now: c.rounds.get(round).cloned().flatten(), next: ctx.specs.iter().position(|x| x.horizon).and_then(|h| c.rounds.get(h).cloned().flatten()), next_base: None, before: c.before.clone(), before_yours: false }, noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, survive: None, survive_next: None, flex: None, reach: None,
             sell_index: c.sell_index,
             sell_key: c.sell_index.and_then(|i| run.jokers.get(i)).map(|j| j.key.clone()),
             label: {
@@ -4957,7 +5040,7 @@ pub fn next_boss_pool(run: &RunState, data: &GameData) -> Option<std::sync::Arc<
 /// common_events.lua: allowed at this ante, showdown ones only on the final ante, banned ones
 /// out, least drawn first; `Ctx::reroll_into`)
 fn boss_reroll_option(ctx: &Ctx, run: &RunState, data: &GameData, spec: &Spec, now: f64) -> ShopOption {
-    let mut o = ShopOption {
+    let mut o = ShopOption { hold: None,
         tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None,
         reach: None,
         label: String::new(),
@@ -5389,13 +5472,7 @@ fn tarot_values(
     let simulate = |d: Vec<Card>, how: Option<(CardEffect, &[usize])>, sims: usize| simulate_sized(d, how, sims, 0);
 
     let hz_idx = ctx.specs.iter().position(|x| x.horizon);
-    let money_gain = |key: &str| -> Option<f64> {
-        match key {
-            "c_hermit" => Some(run.dollars.clamp(0.0, 20.0)),
-            "c_temperance" => Some(run.jokers.iter().map(|j| j.sell_value).sum::<i64>().min(50) as f64),
-            _ => None,
-        }
-    };
+    let money_gain = |key: &str| -> Option<f64> { Pays::of(data, run, key).map(|p| p.paid(run.dollars, 0.0)) };
     let n_spectral = tarots.iter().filter(|c| c.set == "Spectral").count().max(1);
     let spectral_per_shop = if total_rate > 0.0 {
         1.0 - (1.0 - run.shop_rates.spectral / total_rate / n_spectral as f64).powi(run.shop_rates.slots.max(1) as i32)
@@ -5579,12 +5656,9 @@ fn tarot_values(
     // Tarots that don't go on cards (those that do are searched below)
     let tarot_value = |t: &crate::data::Center, sims: usize| -> TarotValue {
         {
+            let pays = Pays::of(data, run, &t.key);
             let note = match t.key.as_str() {
-                "c_hermit" => format!("doubles money: +${:.0}", run.dollars.clamp(0.0, 20.0)),
-                "c_temperance" => {
-                    let v: i64 = run.jokers.iter().map(|j| j.sell_value).sum();
-                    format!("+${} (your jokers' sell value, max $50)", v.min(50))
-                }
+                _ if pays.is_some() => pays.map_or_else(String::new, |p| p.note(run.dollars)),
                 // (a sale that frees one: not an eternal's, a Negative's or a charged Invisible
                 // Joker's, `Board::sale_frees_slot`)
                 "c_judgement" if run.jokers.len() as i64 >= run.joker_slots => {
@@ -6414,6 +6488,10 @@ impl Stay {
 
     fn of(o: &ShopOption) -> Stay {
         match o.kind.as_str() {
+            // (a money card bought to hold leaves the shop: its walk's rerolls, one cap for every
+            // shop, would spend here the money it's held for, `HeldMoney`; a reroll here after
+            // buying it isn't counted, heuristic)
+            _ if o.hold.is_some() => Stay::Out,
             "leave" => Stay::Out,
             "reroll" => Stay::Reroll,
             _ => Stay::In,
@@ -6842,11 +6920,66 @@ pub(super) struct Start<'a> {
     slots: i64,
     owned: &'a [(f64, f64, f64)],
     rent: f64,
+    /// A money consumable held on that board, used at a shop ahead (`HeldMoney`)
+    card: Option<HeldMoney>,
+}
+
+/// What a money consumable pays when it's used (card.lua `Card:use_consumeable`), its cap from
+/// the game's data (`config.extra`)
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub enum Pays {
+    /// The Hermit: the money you hold, at most the cap (`ease_dollars(max(0, min(dollars, extra)))`)
+    Doubles(f64),
+    /// Temperance: your jokers' sell values added up (each one's `sell_cost`, card.lua
+    /// `Card:set_ability`'s update), at most the cap; `now` theirs on the board as it is
+    SellValues { cap: f64, now: f64 },
+}
+
+impl Pays {
+    /// The money consumable `key` is, on your board (its game fact: `engine::consumable::money_effect`)
+    pub(super) fn of(data: &GameData, run: &RunState, key: &str) -> Option<Pays> {
+        use crate::engine::consumable::{MoneyEffect, money_effect};
+        Some(match money_effect(key, &data.center(key)?.config)? {
+            MoneyEffect::Doubles(cap) => Pays::Doubles(cap),
+            MoneyEffect::SellValues(cap) => Pays::SellValues { cap, now: run.jokers.iter().map(|j| j.sell_value).sum::<i64>() as f64 },
+        })
+    }
+
+    /// What it pays used with `money` held and your jokers' sell values moved by `sells` since
+    pub(super) fn paid(&self, money: f64, sells: f64) -> f64 {
+        match *self {
+            Pays::Doubles(cap) => money.clamp(0.0, cap),
+            Pays::SellValues { cap, now } => (now + sells).clamp(0.0, cap),
+        }
+    }
+
+    /// What it pays used now with `money`, as its option's note says it
+    pub(super) fn note(&self, money: f64) -> String {
+        match *self {
+            Pays::Doubles(_) => format!("doubles money: +${:.0}", self.paid(money, 0.0)),
+            Pays::SellValues { cap, .. } => format!("+${:.0} (your jokers' sell value, max ${cap:.0})", self.paid(money, 0.0)),
+        }
+    }
+}
+
+/// A money consumable held on the board a walk starts from (bought into a slot, or yours), used
+/// at the start of the shop after the `at`th blind played from here (0: the shop you're in, a
+/// walk's first, if it's in it), after that blind's cash-out, before the shop's buys
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct HeldMoney {
+    pub pays: Pays,
+    pub at: usize,
+    /// What it pays there, on the money's walks' mean (`hold_plan`)
+    pub about: f64,
+    /// What holding it there is worth as money now: what it pays now, and what it pays there
+    /// more than the money it pays now would have grown to by then, its interest counted
+    /// (`money_card_pays`)
+    pub worth: f64,
 }
 
 impl Start<'static> {
     /// Your board as it is, none of its jokers swapped, no rent (the tests' board)
-    pub(super) const BOARD: Start<'static> = Start { ratio: 1.0, slots: 0, owned: &[], rent: 0.0 };
+    pub(super) const BOARD: Start<'static> = Start { ratio: 1.0, slots: 0, owned: &[], rent: 0.0, card: None };
 
     /// Your board as it is, paying `rent` a round
     pub(super) fn board(rent: f64) -> Start<'static> {
@@ -6940,7 +7073,87 @@ fn money_value_with(lr: &value::LongRun, pool: &[Candidate], kept_as: &Kept, now
 /// read on, under the policy chosen: the value is `now` plus their mean), for what the
 /// value owes to the luck of the shops it walked (`compare::Noise`)
 #[allow(clippy::too_many_arguments)]
-fn money_value_walks(lr: &value::LongRun, pool: &[Candidate], kept_as: &Kept, now: f64, money: f64, shops: Shops, from: Start, mut gains: Option<&mut Vec<f64>>) -> f64 {
+fn money_value_walks(lr: &value::LongRun, pool: &[Candidate], kept_as: &Kept, now: f64, money: f64, shops: Shops, from: Start, gains: Option<&mut Vec<f64>>) -> f64 {
+    money_walks(lr, pool, kept_as, now, money, shops, from, gains, None)
+}
+
+/// What a money consumable not used on the walk (`pays`) would pay at each of its shops if used
+/// there, on the walks the value is read on under the policy chosen (`money_walks`): their mean,
+/// shop by shop as `HeldMoney::at` counts them (0 left at 0 for a walk not in a shop), each
+/// [what it pays there, what that's worth as money now (`HeldMoney::worth`)]. The money it would
+/// pay used now is carried beside the walk's, through the same cash-outs, its interest counted,
+/// and the same buys (heuristic: more money held buys no more)
+#[allow(clippy::too_many_arguments)]
+fn money_card_pays(lr: &value::LongRun, pool: &[Candidate], kept_as: &Kept, now: f64, money: f64, shops: Shops, from: Start, pays: Pays) -> Vec<[f64; 2]> {
+    let mut paid = vec![];
+    money_walks(lr, pool, kept_as, now, money, shops, from, None, Some((pays, &mut paid)));
+    paid
+}
+
+/// The money cards on offer worth buying to hold (`hold_plan`), by name: on the money their price
+/// leaves (card.lua `Card:use_consumeable`, after `G.FUNCS.buy_from_shop` took the price) and with
+/// a slot free for one, a Negative one its own (button_callbacks.lua `G.FUNCS.check_for_buy_space`;
+/// bought to use now needs none); planned from the same next-ante reach (`reach`) as one you hold
+fn shop_hold_plans(lr: &value::LongRun, run: &RunState, data: &GameData, pool: &[Candidate], reach: f64) -> Vec<(String, HeldMoney)> {
+    run.shop
+        .iter()
+        .flat_map(|s| &s.other_cards)
+        .filter(|c| (run.consumables.len() as i64) < run.consumable_slots + (c.edition == Some(crate::model::Edition::Negative)) as i64)
+        .filter_map(|c| {
+            let after_price = run.dollars - c.cost as f64;
+            let p = Pays::of(data, run, &c.key).filter(|_| after_price >= 0.0)?;
+            Some((c.name.clone(), hold_plan(lr, pool, reach, p, after_price)?))
+        })
+        .collect()
+}
+
+/// Where a money consumable held to a shop ahead pays more than used now with `money` (after its
+/// price, where it's bought): the shop the money's walk expects it to pay most, and what it pays
+/// there on the walks' mean (`HeldMoney::about`; `money_card_pays`, out of the shop you're in (`Stay::of`) through the next ante's boss, the walk spending on
+/// the next ante's reach as `tarot_values` values money, from `reach_now`: your board's, the same
+/// for a card held and one on offer, `shop_hold_plans`); none where no shop
+/// ahead pays a dollar more than now, or with no next ante simulated
+fn hold_plan(lr: &value::LongRun, pool: &[Candidate], reach_now: f64, pays: Pays, money: f64) -> Option<HeldMoney> {
+    let h = lr.ctx.specs.iter().position(|x| x.horizon)?;
+    let v = |c: &Candidate| c.reach.get(h).copied().unwrap_or(0.0);
+    let paid = money_card_pays(lr, pool, &Kept::Weighted(&v), reach_now, money, Stay::shops(lr.run, true, Stay::Out), Start::board(board_rent(lr.run)), pays);
+    hold_at(&paid, pays.paid(money, 0.0)).map(|(at, [about, worth])| HeldMoney { pays, at, about, worth })
+}
+
+/// The shop ahead a money card is held to, from what it'd pay at each and what that's worth as
+/// money now (`money_card_pays`), and what it pays now: the first whose worth is within $0.50 of
+/// the most any is worth (money sooner buys sooner: The Hermit at its cap pays the same at every
+/// shop after), if that's a dollar more than now (both heuristic, in the register)
+fn hold_at(paid: &[[f64; 2]], now: f64) -> Option<(usize, [f64; 2])> {
+    let most = paid.iter().skip(1).map(|p| p[1]).fold(f64::NEG_INFINITY, f64::max);
+    (most >= now + 1.0).then(|| paid.iter().enumerate().skip(1).find(|&(_, p)| p[1] >= most - 0.5).map(|(at, &p)| (at, p))).flatten()
+}
+
+/// A held money card's note: what it's expected to pay where it's held to
+fn hold_note(run: &RunState, h: &HeldMoney) -> String {
+    format!("about +${:.0} {}", h.about, shop_after(run, h.at))
+}
+
+/// The shop after the `at`th blind played from here (`HeldMoney::at`, at least 1), named by that
+/// blind: "after the Big Blind", "after Ante 5's Small Blind"
+fn shop_after(run: &RunState, at: usize) -> String {
+    let before: Vec<&str> = run.blinds.iter().filter(|b| b.slot != "Boss" && matches!(b.state.as_str(), "Select" | "Upcoming" | "Current")).map(|b| b.slot.as_str()).collect();
+    let k = at.max(1) - 1;
+    let (ante, slot) = match before.get(k) {
+        Some(slot) => (run.ante, *slot),
+        // (past this ante's boss: the next ante's blinds, in order)
+        None => {
+            let r = k - before.len();
+            (run.ante + (r as i64 + 2) / 3, ["Boss", "Small", "Big"][r % 3])
+        }
+    };
+    if ante == run.ante { format!("after the {slot} Blind") } else { format!("after Ante {ante}'s {slot} Blind") }
+}
+
+/// `money_value_walks`, and into `paid` what `paid`'s money card would pay at each shop
+/// (`money_card_pays`)
+#[allow(clippy::too_many_arguments)]
+fn money_walks(lr: &value::LongRun, pool: &[Candidate], kept_as: &Kept, now: f64, money: f64, shops: Shops, from: Start, mut gains: Option<&mut Vec<f64>>, mut paid: Option<(Pays, &mut Vec<[f64; 2]>)>) -> f64 {
     let Shops { here: in_shop, after: future, forced, prepaid, dropped, left } = shops;
     // (a blind skipped comes before the shops after a blind, never with the shop you're in)
     debug_assert!(!(in_shop && dropped > 0), "a skipped blind with a shop here");
@@ -7026,6 +7239,10 @@ fn money_value_walks(lr: &value::LongRun, pool: &[Candidate], kept_as: &Kept, no
     // (a cap under the rerolls forced here would stop at them, not at the cap)
     let least = if in_shop { forced.saturating_sub(free_here) } else { 0 };
     let mut tried: Vec<f64> = vec![];
+    // (what `paid`'s card would pay at each shop, summed over the walks it's read on)
+    let mut tried_paid: Vec<[f64; 2]> = vec![];
+    // (what `paid`'s card pays used now)
+    let paid_now = paid.as_ref().map_or(0.0, |(p, _)| p.paid(money, 0.0));
     // The policy: first the bar, each tried at the fewest rerolls; then the rerolls, more of them
     // under the bar chosen while a walk stopped at the cap before (a budget: the bars and the
     // caps aren't tried together)
@@ -7043,10 +7260,16 @@ fn money_value_walks(lr: &value::LongRun, pool: &[Candidate], kept_as: &Kept, no
         let keep = if reserve { BOSS_REROLL_COST } else { 0.0 };
         let mut totals = [0.0; 2];
         tried.clear();
+        tried_paid.clear();
+        tried_paid.resize(1 + future, [0.0; 2]);
         let mut capped = false;
         for walk in 0..WALKS {
             let mut m = money;
             let mut rent = from.rent;
+            // (your jokers' sell values moved by the walk's buys and sales, for Temperance)
+            let mut sells = 0.0;
+            // (the money `paid`'s card used now would have grown to, through the same cash-outs)
+            let mut grown = paid_now;
             kept.clear();
             kept.extend_from_slice(&owned);
             kept_at.clear();
@@ -7058,9 +7281,24 @@ fn money_value_walks(lr: &value::LongRun, pool: &[Candidate], kept_as: &Kept, no
                     let after = s - in_shop as usize;
                     // (a blind already counted in the money has its rent counted there too)
                     if after >= prepaid {
+                        let before = m;
                         m = lr.cashed_out(m, rent, rewards[after] as f64);
+                        if paid.is_some() {
+                            grown = lr.cashed_out(before + grown, rent, rewards[after] as f64) - m;
+                        }
                     }
                     draw(&mut cards, walk, s + left as usize + dropped, 0);
+                }
+                // (a money card: what it would pay used here, and used here where it's held to;
+                // the shops counted by the blinds played before them, `HeldMoney::at`)
+                let played = s + !in_shop as usize;
+                if let Some((p, _)) = paid.as_ref().filter(|_| walk % 2 == 1) {
+                    let there = p.paid(m, sells);
+                    tried_paid[played][0] += there;
+                    tried_paid[played][1] += paid_now + there - grown;
+                }
+                if let Some(c) = from.card.filter(|c| c.at == played) {
+                    m += c.pays.paid(m, sells);
                 }
                 let (free, start) = if here { (free_here, if free_here > 0 { run.base_reroll_cost } else { here_cost }) } else { (chaos, run.base_reroll_cost) };
                 let mut done = 0;
@@ -7091,12 +7329,17 @@ fn money_value_walks(lr: &value::LongRun, pool: &[Candidate], kept_as: &Kept, no
                         // (worth its price: it adds at least the bar for each dollar it costs)
                         if let Some((i, _)) = pick.filter(|p| p.1 - have >= bar * per_dollar * cost) {
                             m -= cost;
+                            sells += sell_cost(cost);
                             if let Some(i) = i {
                                 kept.swap_remove(i);
+                                let gone = kept_at.swap_remove(i);
                                 // (a joker of yours sold for it: card.lua `Card:sell_card`)
-                                if let Some(o) = from.owned.get(usize::MAX - kept_at.swap_remove(i)) {
+                                if let Some(o) = from.owned.get(usize::MAX - gone) {
                                     m += o.1;
                                     rent -= o.2;
+                                    sells -= o.1;
+                                } else if let Some(c) = pool.get(gone) {
+                                    sells -= sell_cost(c.cost as f64);
                                 }
                             }
                             kept.push((gain, x, false));
@@ -7138,6 +7381,9 @@ fn money_value_walks(lr: &value::LongRun, pool: &[Candidate], kept_as: &Kept, no
             if let Some(g) = gains.as_deref_mut() {
                 std::mem::swap(g, &mut tried);
             }
+            if let Some((_, p)) = paid.as_mut() {
+                std::mem::swap(*p, &mut tried_paid);
+            }
         }
         if reserve {
             break;
@@ -7166,7 +7412,15 @@ fn money_value_walks(lr: &value::LongRun, pool: &[Candidate], kept_as: &Kept, no
             (reserve, rerolls, step) = (true, best_rerolls, BUY_BARS.len());
         }
     }
+    if let Some((_, p)) = paid {
+        p.iter_mut().flatten().for_each(|x| *x /= (WALKS / 2) as f64);
+    }
     now + best.map_or(0.0, |b| b.1) / (WALKS / 2) as f64
+}
+
+/// What a joker bought for `cost` sells for (card.lua `Card:set_cost`: half its price, at least $1)
+fn sell_cost(cost: f64) -> f64 {
+    (cost / 2.0).floor().max(1.0)
 }
 
 /// Play styles, grouped by what each joker's own effect rewards (from its definition in
@@ -8198,7 +8452,7 @@ mod tests {
 
     #[test]
     fn options_rank_by_surviving_times_the_long_run() {
-        let opt = |label: &str, p: f64, long: Option<f64>| ShopOption {
+        let opt = |label: &str, p: f64, long: Option<f64>| ShopOption { hold: None,
             tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None,
             reach: None, label: label.into(), kind: "tarot".into(), cost: 0, p_win: p, note: String::new(), money_after: 0.0,
             interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: long, key: None, desc: None,
@@ -8272,7 +8526,7 @@ mod tests {
     #[test]
     fn an_open_packs_skip_gives_way_in_its_tie_to_a_pick_worth_more() {
         // (gap 32) These carry no rounds, so within 3% (`SHOP_TIE`) is a tie
-        let opt = |label: &str, kind: &str, p: f64| ShopOption {
+        let opt = |label: &str, kind: &str, p: f64| ShopOption { hold: None,
             tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: None, survive_next: None, next_p: None, next_strength: None, flex: None,
             reach: None, label: label.into(), kind: kind.into(), cost: 0, p_win: p, note: String::new(), money_after: 0.0,
             interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: Some(1.0), key: None, desc: None,
@@ -9000,7 +9254,7 @@ mod tests {
     fn leaving_the_shop_wins_a_tie_with_a_sale() {
         // Within the ranking's noise, keeping the joker (leaving) goes first (D8: leaving keeps
         // the joker to sell at a later shop)
-        let opt = |label: &str, kind: &str, long: f64, reach: Option<f64>| ShopOption {
+        let opt = |label: &str, kind: &str, long: f64, reach: Option<f64>| ShopOption { hold: None,
             tied: false, rounds: Default::default(), noise: Default::default(), vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: Some(0.9), survive_next: None, next_p: None, next_strength: None, flex: None, reach,
             label: label.into(), kind: kind.into(), cost: 0, p_win: 0.9, note: String::new(), money_after: 0.0,
             interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: Some(long), key: None, desc: None,
@@ -9044,6 +9298,100 @@ mod tests {
             assert!(stay == leave, "{} {}", stay.0, leave.0);
             // and the same value without the walks handed back
             assert_eq!(money_value_with(lr, &pool, &kept, 1.0, r.dollars, Stay::shops(&r, true, Stay::In), Start::BOARD), stay.0);
+        });
+    }
+
+    #[test]
+    fn a_money_card_is_held_to_where_it_pays_more() {
+        // The Hermit pays the money it's used with, at most $20 (card.lua `Card:use_consumeable`).
+        // With $4 before the Big Blind and nothing in reach to buy (no pool, rerolls out of reach),
+        // the money grows by each cash-out, so held it pays more at a shop ahead; what that's
+        // worth as money now is less: the $4 it pays now would have earned interest by then. It's
+        // held to the first shop worth within $0.50 of the most. With $30 it pays its cap now, so
+        // it isn't held. Fails if a held card's pay is read off the money now, its pay there is
+        // counted without the interest using it now earns, or a later shop at the cap is chosen
+        let mut r = shop_run(&[("j_joker", None, None)], &[]);
+        r.dollars = 4.0;
+        r.base_reroll_cost = 99;
+        let blind = |slot: &str, state: &str, reward: i64| crate::save::BlindSlot { slot: slot.into(), key: String::new(), name: slot.into(), state: state.into(), target: 300.0, reward, skip_tag: None };
+        r.blinds = vec![blind("Small", "Defeated", 3), blind("Big", "Upcoming", 4), blind("Boss", "Upcoming", 5)];
+        let long = |c: &Candidate| c.long_mult.unwrap_or(1.0);
+        let kept = Kept::Weighted(&long);
+        let hermit = Pays::Doubles(20.0);
+        with_long_run(&r, |lr| {
+            let paid = |money: f64| money_card_pays(lr, &[], &kept, 1.0, money, Shops::after(4), Start::BOARD, hermit);
+            // (each shop's money: the one before it cashed out, `LongRun::cashed_out`; used now,
+            // its $4 more cashed out with it)
+            let (mut m, mut used) = (4.0, 8.0);
+            let low = paid(4.0);
+            assert_eq!(low.len(), 5);
+            for (k, reward) in [4.0, 5.0, 3.0, 4.0].into_iter().enumerate() {
+                m = lr.cashed_out(m, 0.0, reward);
+                used = lr.cashed_out(used, 0.0, reward);
+                let [there, worth] = low[k + 1];
+                assert!((there - m.min(20.0)).abs() < 1e-9, "shop {}: {there} against ${m}", k + 1);
+                assert!((worth - (4.0 + m.min(20.0) - (used - m))).abs() < 1e-9, "shop {}: {worth} against ${m}, ${used} used now", k + 1);
+            }
+            assert!(low[1][1] < low[1][0], "the interest counted: {low:?}");
+            let (at, [about, worth]) = hold_at(&low, hermit.paid(4.0, 0.0)).expect("held");
+            let most = low[1..].iter().map(|p| p[1]).fold(0.0, f64::max);
+            assert!(worth >= most - 0.5 && low[1..at].iter().all(|p| p[1] < most - 0.5), "{at} {worth} {low:?}");
+            assert!(worth >= 4.0 + 1.0 && about == low[at][0]);
+            // capped now: no shop pays more
+            let capped = paid(30.0);
+            assert!(capped[1..].iter().all(|p| p[0] == 20.0 && p[1] <= 20.0), "{capped:?}");
+            assert_eq!(hold_at(&capped, hermit.paid(30.0, 0.0)), None);
+        });
+        // Used at its shop in the walk, it pays there: a joker priced a dollar past the money the
+        // first shop has is bought there only with The Hermit used at that shop (one shop walked),
+        // not with it held past it, nor without it
+        let mut r2 = r.clone();
+        r2.joker_slots = 5;
+        with_long_run(&r2, |lr| {
+            let price = lr.cashed_out(4.0, 0.0, 4.0).floor() + 1.0;
+            let c = Candidate {
+                key: String::new(), name: String::new(), rarity: String::new(), cost: price as i64, edition: None, action: "add".into(),
+                p_win: vec![], p_win_delta: vec![], reach: vec![], reach_delta: vec![], score_gain: 0.0, missing_gold: false,
+                rarity_n: 1, precise: false, sims: 0, rounds: vec![], before: vec![], per_shop: None, roles: vec![], note: None, desc: None, growth: None, long_mult: Some(2.0), sell_index: None, sell_tied: vec![],
+            };
+            let walk = |card: Option<HeldMoney>| money_value_walks(lr, std::slice::from_ref(&c), &kept, 1.0, 4.0, Shops::after(1), Start { card, ..Start::BOARD }, None);
+            let held = |at: usize| Some(HeldMoney { pays: hermit, at, about: 0.0, worth: 0.0 });
+            assert_eq!(walk(None), 1.0, "nothing affordable without it");
+            assert_eq!(walk(held(2)), 1.0, "held past the walk's shops");
+            assert!(walk(held(1)) > 1.0, "bought where it's used");
+        });
+    }
+
+    #[test]
+    fn temperance_held_pays_the_jokers_the_walk_buys() {
+        // Temperance pays your jokers' sell values (card.lua `Card:use_consumeable`, each one's
+        // `sell_cost`: half its price, at least $1). A joker the walk buys in a shop adds its sell
+        // value at the shops after it, never before: fails if its pay stays the board's now, or
+        // reads a joker bought before it's bought
+        let mut r = shop_run(&[("j_joker", None, None)], &[]);
+        r.dollars = 20.0;
+        r.base_reroll_cost = 99;
+        r.joker_slots = 5;
+        let blind = |slot: &str, state: &str, reward: i64| crate::save::BlindSlot { slot: slot.into(), key: String::new(), name: slot.into(), state: state.into(), target: 300.0, reward, skip_tag: None };
+        r.blinds = vec![blind("Small", "Defeated", 3), blind("Big", "Upcoming", 4), blind("Boss", "Upcoming", 5)];
+        let c = |m: f64, cost: i64| Candidate {
+            key: String::new(), name: String::new(), rarity: String::new(), cost, edition: None, action: "add".into(),
+            p_win: vec![], p_win_delta: vec![], reach: vec![], reach_delta: vec![], score_gain: 0.0, missing_gold: false,
+            rarity_n: 1, precise: false, sims: 0, rounds: vec![], before: vec![], per_shop: None, roles: vec![], note: None, desc: None, growth: None, long_mult: Some(m), sell_index: None, sell_tied: vec![],
+        };
+        let pool = [c(2.0, 6), c(1.8, 5)];
+        let long = |c: &Candidate| c.long_mult.unwrap_or(1.0);
+        let kept = Kept::Weighted(&long);
+        let now = r.jokers.iter().map(|j| j.sell_value).sum::<i64>() as f64;
+        let temperance = Pays::SellValues { cap: 50.0, now };
+        with_long_run(&r, |lr| {
+            let paid = money_card_pays(lr, &pool, &kept, 1.0, 20.0, Shops::after(3), Start::BOARD, temperance);
+            // (the first shop's reading is before its buys)
+            let there: Vec<f64> = paid.iter().map(|p| p[0]).collect();
+            assert_eq!(there[1], now, "{paid:?}");
+            assert!(there[3] > there[1] + 0.5 && there[3] >= there[2], "{paid:?}");
+            // each joker found sells for $3 or $2: no more than three bought by then
+            assert!(there[3] <= now + 3.0 * 3.0, "{paid:?}");
         });
     }
 
@@ -9165,7 +9513,7 @@ mod tests {
     fn shop_options_are_told_apart_on_their_paired_rounds() {
         // Each option's rank with what it owes to its simulated rounds' luck (`compare::Noise`):
         // `luck` is each round's part as a share of the rank, the same rounds for every option
-        let opt = |label: &str, kind: &str, long: f64, luck: &[f64]| ShopOption {
+        let opt = |label: &str, kind: &str, long: f64, luck: &[f64]| ShopOption { hold: None,
             tied: false, rounds: Default::default(), noise: compare::Noise { parts: vec![(ROUNDS, luck.iter().map(|&x| [x, x]).collect())] }, vs_keep: None, beats_keep: None, rank: None, sell_index: None, sell_key: None, survive: Some(0.9), survive_next: None, next_p: None, next_strength: None, flex: None, reach: Some(0.6),
             label: label.into(), kind: kind.into(), cost: 0, p_win: 0.9, note: String::new(), money_after: 0.0,
             interest_now: 0, interest_after: 0, unaffordable: false, money_gain: 0.0, long_mult: Some(long), key: None, desc: None,

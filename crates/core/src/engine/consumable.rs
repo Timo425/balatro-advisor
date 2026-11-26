@@ -29,6 +29,27 @@ pub enum CardEffect {
     Rank(Rank),
 }
 
+/// What a consumable pays in money when it's used (card.lua `Card:use_consumeable`), its cap
+/// its `config.extra`
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MoneyEffect {
+    /// The money you hold, at most the cap (The Hermit: `ease_dollars(max(0, min(dollars, extra)))`)
+    Doubles(f64),
+    /// Your jokers' sell values added up, at most the cap (Temperance: `ability.money`, each
+    /// joker's `sell_cost` summed in `Card:update`)
+    SellValues(f64),
+}
+
+/// A consumable's money effect, if it has one
+pub fn money_effect(key: &str, config: &serde_json::Value) -> Option<MoneyEffect> {
+    let cap = config.get("extra").and_then(|v| v.as_f64())?;
+    match key {
+        "c_hermit" => Some(MoneyEffect::Doubles(cap)),
+        "c_temperance" => Some(MoneyEffect::SellValues(cap)),
+        _ => None,
+    }
+}
+
 /// The edition `poll_edition(key, nil, no_negative, guaranteed)` gives (common_events.lua: the
 /// poll's thresholds 1 − 0.006·25 for Polychrome and 1 − 0.02·25 for Holo, Foil below): Aura's
 /// edition, and The Wheel of Fortune's on a joker. Chances sum to 1.

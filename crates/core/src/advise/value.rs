@@ -373,6 +373,9 @@ pub(super) struct Gain {
     /// Consumable slots more by Ante 8 (a voucher's, Crystal Ball): the planets your Blue Seal
     /// cards make with them (`LongRun::seal_planets_for`)
     pub consumable_slots: i64,
+    /// Rounds a consumable slot is taken for (a money card held to a shop ahead): the planets
+    /// your Blue Seal cards make in those rounds with a slot fewer (`LongRun::slot_taken_planets`)
+    pub slot_rounds: f64,
     /// Hand size, hands and discards more every round by Ante 8 (a voucher's: Paint Brush,
     /// Grabber, Wasteful): part of the projected round (`LongRun::long_spec_for`), so it's
     /// played with them, and your Blue Seal cards are seen more (`LongRun::seal_planets_for`)
@@ -1529,14 +1532,15 @@ impl<'a> LongRun<'a> {
     /// hands and discards its jokers give), with the planets your Blue Seal cards make more (or
     /// fewer) in that round than in yours (`seal_planets_for`)
     pub fn long_score(&self, b: &Board) -> f64 {
-        self.long_score_more(b, (0, 0, 0), 0)
+        self.long_score_more(b, (0, 0, 0), 0, 0.0)
     }
 
     /// `long_score` with `more` hand size, hands and discards a round and `slots` consumable
     /// slots more (a `Gain`'s)
-    fn long_score_more(&self, b: &Board, more: (i64, i64, i64), slots: i64) -> f64 {
+    fn long_score_more(&self, b: &Board, more: (i64, i64, i64), slots: i64, lost: f64) -> f64 {
         let sp = self.long_spec_for(b, more);
-        let seal = self.seal_planets_in_round(slots, &sp, b);
+        // (less the planets lost to a slot taken for a while: `slot_taken_planets`)
+        let seal = self.seal_planets_in_round(slots, &sp, b) - lost;
         let score = |b: &Board| self.ctx.odds_one(b, &sp, 48).1.mean.max(1.0);
         if seal == 0.0 {
             return score(b);
@@ -1663,7 +1667,7 @@ impl<'a> LongRun<'a> {
     /// What one hand fewer a round leaves of board `b`'s projected score (a share): what a
     /// joker that spends your first hand costs (DNA); your Blue Seals seen in fewer cards too
     fn hand_cost(&self, b: &Board) -> f64 {
-        self.long_score_more(b, (0, -1, 0), 0) / self.long_score(b)
+        self.long_score_more(b, (0, -1, 0), 0, 0.0) / self.long_score(b)
     }
 
     /// A joker that changes a card each round (`round_decks`) on its projected board `b`: the
@@ -1735,7 +1739,7 @@ impl<'a> LongRun<'a> {
     /// What `g` makes your run worth by Ante 8, as a ratio of your board as it is
     pub fn value(&self, g: &Gain) -> f64 {
         let (b, past) = self.board_and_past(g);
-        self.long_score_more(&b, g.round(), g.consumable_slots) * past / self.l0
+        self.long_score_more(&b, g.round(), g.consumable_slots, self.slot_taken_planets(g.slot_rounds)) * past / self.l0
     }
 
     /// The money a projected board's jokers pay every ante past the planet-level cap
@@ -1989,6 +1993,14 @@ impl<'a> LongRun<'a> {
         let at = |held: f64| seal_planets_a_round(round, blue, d.len(), (slots as f64 - held).max(0.0) as usize);
         let w = HELD_AT_ROUND_END - lo;
         (1.0 - w) * at(lo) + if w > 0.0 { w * at(lo + 1.0) } else { 0.0 }
+    }
+
+    /// The planets your Blue Seal cards don't make in `rounds` rounds of yours with one consumable
+    /// slot taken (`seal_planets_in` at your slots by Ante 8 and one fewer)
+    fn slot_taken_planets(&self, rounds: f64) -> f64 {
+        let Some(&yours) = self.round.get().filter(|_| rounds > 0.0) else { return 0.0 };
+        let d = &self.ctx.fresh_deck;
+        (self.seal_planets_in(d, self.consumable_slots(0), yours) - self.seal_planets_in(d, self.consumable_slots(-1), yours)) * rounds
     }
 
     /// The planets your Blue Seal cards make by Ante 8 on board `b` with `more` hand size,
