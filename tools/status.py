@@ -144,8 +144,9 @@ def rules_size():
     skill, docs/rules.md), and cuts the rest: GEMINI.md includes CLAUDE.md, so past that the end
     of this file's rules never reaches it"""
     n = (REPO / "CLAUDE.md").stat().st_size
-    if n > 24000:
-        print(f"CLAUDE.md: {n} bytes, over the 24,000 Antigravity reads (GEMINI.md): its end is cut there")
+    if n > 23000:
+        print(f"CLAUDE.md: {n} bytes, {'over' if n > 24000 else 'near'} the 24,000 Antigravity reads (GEMINI.md): "
+              "past it the end of the file (steps 4-6) is cut")
 
 
 def run_state(path):

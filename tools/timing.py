@@ -22,8 +22,9 @@ failed or ran out of time on every run of a build; 2 a listed state isn't on thi
 `--new` was built before the code it is to judge changed. Over the limit isn't a failure by
 itself: the change says what the time buys (CLAUDE.md step 4). On a busy machine (load over 2
 when it starts) the limit is still judged, old against new, since both builds meet the same
-load, but the budget isn't: it is a total for a quiet machine, so the line says it wasn't
-judged and an over-budget total doesn't count; a run near the budget is checked when it's quiet.
+load. A total inside the budget is inside it (load only slows a run); one over it is printed as
+not judged and doesn't count, to be timed again when it's quiet. The load is read once, before
+the first state (a build just finished can still show in it).
 
 The states are the owner's saved history (`BAV_HISTORY`, else
 `~/.local/share/balatro-advisor/history`), which the live page prunes past 500 MB: each is
@@ -140,7 +141,7 @@ def main():
     busy = load > 2
     if busy:
         print(f"load {load:.1f}: something else is running: old against new is still judged (both meet the same "
-              "load), this machine's budget isn't (a quiet machine's total)")
+              "load), and a total inside this machine's budget (load only slows it); one over it isn't")
     builds = [("old", a.old), ("new", a.new)] if a.old else [("new", a.new)]
     rows, said = [], set()
     for g, p, s, f in states:
@@ -170,9 +171,10 @@ def main():
             continue
         new = sum(best(r["new"]) for r in mine)
         budget = budgets.get(g)
-        over = budget is not None and new > budget and not busy
-        bad |= over
-        against = ("" if budget is None else f"; this machine's budget {budget:.0f} s: not judged at load {load:.1f}" if busy
+        over = budget is not None and new > budget
+        unjudged = over and busy
+        bad |= over and not busy
+        against = ("" if budget is None else f"; this machine's budget {budget:.0f} s: over at load {load:.1f}, not judged: time it again when it's quiet" if unjudged
                    else f"; this machine's budget {budget:.0f} s{': OVER' if over else ''}")
         if not a.old:
             print(f"{label}: {len(mine)} states, {new:.1f} s in all, the slowest {max(best(r['new']) for r in mine):.1f} s{against}")
