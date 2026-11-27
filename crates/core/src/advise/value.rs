@@ -168,13 +168,19 @@ pub(super) struct LongRun<'a> {
     long_spec: Spec,
     mods_now: (i64, i64, i64),
     /// Your round by Ante 8: hand size, hands and discards on your projected board
-    /// (`long_spec_for`), what your Blue Seal cards are seen in (`seal_planets_in`); set once
-    /// your board is known (`new`), before then no board's own round adds planets
-    round: OnceLock<(i64, i64, i64)>,
+    /// (`long_spec_for`), what your Blue Seal cards are seen in (`seal_planets_in`); set on
+    /// your current projected board before each fate-selection pass so jokers that change the
+    /// round count their Blue Seal planets during keep-or-let-go too, and kept at the final
+    /// board's round once fates are set
+    round: Option<(i64, i64, i64)>,
     /// What the projection does with each of your jokers by Ante 8 (`Fate`): kept, or let go
-    /// where that leaves no less, replaced by a typical find in their place (their place or the
-    /// right end) or sold outright, their money (income, rent) gone with them
-    fates: OnceLock<Vec<Fate>>,
+    /// where that is clearly more than keeping it on the projection's paired rounds
+    /// (`compare::clearly_better`), decided in one ordered pass against the fates already set,
+    /// replaced by a typical find (their place or the right end) or sold outright, their money
+    /// (income, rent) gone with them
+    fates: Vec<Fate>,
+    /// Whether `fates` are final (`spare_to_events` caches only once they are)
+    fates_set: bool,
     /// Each of your sellable jokers' better way to let it go (`Fate::Replaced` or `Fate::Sold`,
     /// whichever leaves more; a Negative's only `Sold`): what selling it now leads to
     /// (`sold_now`); `None` for one that can't be sold or doesn't last
@@ -635,9 +641,10 @@ impl<'a> LongRun<'a> {
             fill_types,
             long_spec,
             mods_now,
-            round: OnceLock::new(),
-            fates: OnceLock::new(),
-            let_go: vec![],
+            round: None,
+            fates: vec![Fate::Kept; run.jokers.len()],
+            fates_set: false,
+            let_go: vec![None; run.jokers.len()],
             find_price: find_price(pool, data),
             left_base: (0.0, 0.0, 0.0, 0.0),
             l0: 0.0,
@@ -658,53 +665,119 @@ impl<'a> LongRun<'a> {
             past_base: 1.0,
             past_kept: false,
         };
-        {
-            let p = lr.project(&|_| true, run.dollars);
-            lr.left_base = lr.base_walk(&p);
-            // (every joker kept until the keep-or-let-go is decided)
-            lr.set_past_base(&p);
-            let before = lr.long_score(&lr.fill_long(p, None, 0.0));
-            // Each joker you could sell kept, or let go where that leaves no less, by the run's
-            // value: replaced by a typical find (not a Negative: its slot goes with it) or sold
-            // outright, whichever leaves more (`let_go_score`: the money recomputed on the board
-            // without it, its income and rent gone with it)
-            // (and whether the board without it holds a different amount past the cap every ante
-            // than yours, all kept: `past_kept`; one skipped here can't move it, or, a grower
-            // kept for `played_for`, isn't read there)
-            let choice: Vec<(Fate, Option<Fate>, bool)> = par_map(&(0..run.jokers.len()).collect::<Vec<_>>(), |&i| {
-                if run.jokers[i].eternal || !lr.lasts(i) || (keep_growers && crate::engine::grows_in_rounds(&ctx.base.jokers[i].key)) {
-                    return (Fate::Kept, None, false);
-                }
-                // (the board `let_go_score` measures for its sale)
-                let moved = lr.past_moved(&lr.project(&|k| k != i, run.dollars));
-                // (sold either way: its sale counted in both, a find's price on top for a find)
-                let sold = (lr.let_go_score(i, Fate::Sold, lr.let_go_money(i)), Fate::Sold);
-                let replaced = (!lr.negative(i)).then(|| {
-                    let money = lr.let_go_money(i);
-                    let here = (lr.let_go_score(i, Fate::Replaced { end: false }, money), Fate::Replaced { end: false });
-                    if !lr.end_differs(i) {
-                        return here;
-                    }
-                    let last = lr.let_go_score(i, Fate::Replaced { end: true }, money);
-                    if last > here.0 { (last, Fate::Replaced { end: true }) } else { here }
-                });
-                let (score, way) = match replaced {
-                    Some(r) if r.0 >= sold.0 => r,
-                    _ => sold,
-                };
-                (if score >= before { way } else { Fate::Kept }, Some(way), moved)
-            });
-            lr.past_kept = choice.iter().any(|c| c.2);
-            let _ = lr.fates.set(choice.iter().map(|c| c.0).collect());
-            lr.let_go = choice.into_iter().map(|c| c.1).collect();
+        // Each joker you could sell kept, or let go where that is clearly more than keeping it on
+        // the projection's paired rounds (`compare::clearly_better`): replaced by a typical find
+        // (not a Negative: its slot goes with it) or sold outright, whichever leaves more
+        // (`let_go_rounds`: the money recomputed on the board without it, its income and rent gone
+        // with it). Decided jointly in an ordered greedy pass: each step commits the single joker
+        // whose letting-go raises the projected score most (canonical joker facts break exact
+        // ties), then re-evaluates the remaining kept jokers against the board with the committed
+        // fates, with `round` set first so jokers changing hand size, hands or discards count
+        // their Blue Seal planets too. Once no remaining joker is clearly better let go, the last
+        // iteration's `left_base`, `past_base`, `round` and `before` are the final board's.
+        struct Eval {
+            i: usize,
+            way: Fate,
+            clear: Option<(Fate, f64)>,
+            moved: bool,
         }
-        let p = lr.project(&|_| true, run.dollars);
-        lr.left_base = lr.base_walk(&p);
-        lr.set_past_base(&p);
-        let yours = lr.fill_long(p, None, 0.0);
-        let (_, s) = yours.at_blind_set(&lr.long_spec_for(&yours, (0, 0, 0)).start);
-        let _ = lr.round.set((s.hand_size, s.hands, s.discards));
-        lr.l0 = lr.long_score(&yours);
+        let mut first_pass = true;
+        let mut l0;
+        let final_spare_check = loop {
+            let p = lr.project(&|_| true, run.dollars);
+            let p_dollars = p.dollars;
+            lr.left_base = lr.base_walk(&p);
+            lr.set_past_base(&p);
+            // (`yours` itself has no Blue Seal round delta against itself: keep `round` unset
+            // while `fill_long` runs `spare_to_events` on it, then set `round` to `yours`'s)
+            lr.round = None;
+            let yours = lr.fill_long(p, None, 0.0);
+            let (_, s) = yours.at_blind_set(&lr.long_spec_for(&yours, (0, 0, 0)).start);
+            lr.round = Some((s.hand_size, s.hands, s.discards));
+            let (before, before_rs) = Self::stats_rounds(&lr.long_stats_more(&yours, (0, 0, 0), 0, 0.0), 1.0);
+            l0 = before.max(1.0);
+            let candidates: Vec<usize> = (0..run.jokers.len())
+                .filter(|&i| !run.jokers[i].eternal && lr.lasts(i) && lr.fates[i] == Fate::Kept && !(keep_growers && crate::engine::grows_in_rounds(&ctx.base.jokers[i].key)))
+                .collect();
+            let evals: Vec<Eval> = par_map(&candidates, |&i| {
+                // (with every joker kept, whether removing `i` moves money past the cap: for
+                // `past_reached`, so a money joker this long run lets go still opens it)
+                let moved = first_pass && lr.past_moved(&lr.project(&|k| k != i, run.dollars));
+                let money = lr.let_go_money(i);
+                let mut ways = vec![Fate::Sold];
+                if !lr.negative(i) {
+                    ways.push(Fate::Replaced { end: false });
+                    if lr.end_differs(i) {
+                        ways.push(Fate::Replaced { end: true });
+                    }
+                }
+                let mut best_way = (f64::NEG_INFINITY, Fate::Sold);
+                let mut best_clear: Option<(Fate, f64)> = None;
+                for way in ways {
+                    let (score, rs) = lr.let_go_rounds(i, way, money);
+                    if score > best_way.0 {
+                        best_way = (score, way);
+                    }
+                    if super::compare::clearly_better(&rs, &before_rs) {
+                        let gain = if before > 0.0 { score / before } else { score };
+                        if best_clear.is_none_or(|(_, g)| gain > g) {
+                            best_clear = Some((way, gain));
+                        }
+                    }
+                }
+                Eval { i, way: best_way.1, clear: best_clear, moved }
+            });
+            if first_pass {
+                lr.past_kept = evals.iter().any(|e| e.moved);
+                first_pass = false;
+            }
+            for e in &evals {
+                lr.let_go[e.i] = Some(e.way);
+            }
+            let ed_ord = |e: Option<crate::model::Edition>| match e {
+                None => 0u8,
+                Some(crate::model::Edition::Foil) => 1,
+                Some(crate::model::Edition::Holo) => 2,
+                Some(crate::model::Edition::Polychrome) => 3,
+                Some(crate::model::Edition::Negative) => 4,
+            };
+            let cmp_tie = |a: usize, b: usize| {
+                let (sa, sb) = (&run.jokers[a], &run.jokers[b]);
+                let (la, lb) = (ctx.base.jokers[a].lasting(), ctx.base.jokers[b].lasting());
+                // Order-independent tie-break on exact equal gain: debuffed first, then canonical
+                // joker facts, then lower current stats let go first, before slot index
+                sa.debuff
+                    .cmp(&sb.debuff)
+                    .then_with(|| sa.key.cmp(&sb.key))
+                    .then_with(|| sa.sell_value.cmp(&sb.sell_value))
+                    .then_with(|| sa.rental.cmp(&sb.rental))
+                    .then_with(|| sa.perishable.cmp(&sb.perishable))
+                    .then_with(|| ed_ord(sa.edition).cmp(&ed_ord(sb.edition)))
+                    .then_with(|| lb[0].total_cmp(&la[0]))
+                    .then_with(|| lb[1].total_cmp(&la[1]))
+                    .then_with(|| lb[2].total_cmp(&la[2]))
+                    .then_with(|| b.cmp(&a))
+            };
+            let pick = evals
+                .iter()
+                .filter_map(|e| e.clear.map(|(way, gain)| (e.i, way, gain)))
+                .max_by(|a, b| a.2.total_cmp(&b.2).then_with(|| cmp_tie(a.0, b.0)));
+            match pick {
+                Some((i, way, _)) => {
+                    lr.fates[i] = way;
+                    lr.let_go[i] = Some(way);
+                }
+                None => break bought_event(&yours, run).is_some() && p_dollars > lr.line,
+            }
+        };
+        lr.fates_set = true;
+        lr.l0 = l0;
+        // Pre-populate `spare_choice` for your own board's grower key so a later `long_of` on a
+        // duplicate shop grower cannot seed it with two copies
+        if final_spare_check {
+            let p = lr.project(&|_| true, run.dollars);
+            let _ = lr.fill_long(p, None, 0.0);
+        }
         let lasting = (0..run.jokers.len()).filter(|&i| lr.lasts(i)).count() as i64;
         // (a Negative that doesn't last takes its slot with it: `project_as`)
         let gone_slots = (0..run.jokers.len()).filter(|&i| !lr.lasts(i) && lr.negative(i)).count() as i64;
@@ -725,7 +798,7 @@ impl<'a> LongRun<'a> {
 
     /// Whether this long run keeps or lets go each of your jokers as `other` does (`fates`)
     pub fn same_fates(&self, other: &LongRun) -> bool {
-        self.fates.get() == other.fates.get()
+        self.fates == other.fates
     }
 
     /// Whether your joker `i` is still on your board by Ante 8: not a perishable that runs out
@@ -736,7 +809,7 @@ impl<'a> LongRun<'a> {
 
     /// What the projection does with your joker `i` (`fates`; all kept until it's decided)
     fn fate(&self, i: usize) -> Fate {
-        self.fates.get().map_or(Fate::Kept, |f| f[i])
+        self.fates.get(i).copied().unwrap_or(Fate::Kept)
     }
 
     fn negative(&self, i: usize) -> bool {
@@ -760,11 +833,12 @@ impl<'a> LongRun<'a> {
         self.place_of(i) < rest
     }
 
-    /// The projected score with your joker `i` let go as `way` (`Sold`: no find, its slot left
-    /// empty; `Replaced`: a typical find in its place or at the right end), the other jokers as the
-    /// projection holds them, `money` one-off money with their sales (dollars, one split of the
-    /// sum by the interest line, `fill_long`: the sale against leaving is told exactly)
-    fn let_go_score(&self, i: usize, way: Fate, money: f64) -> f64 {
+    /// The projected board and `past_cap` factor with your joker `i` let go as `way` (`Sold`: no
+    /// find, its slot left empty; `Replaced`: a typical find in its place or at the right end),
+    /// the other jokers as the projection holds them, `money` one-off money with their sales
+    /// (dollars, one split of the sum by the interest line, `fill_long`: the sale against leaving
+    /// is told exactly)
+    fn let_go_board(&self, i: usize, way: Fate, money: f64) -> (Board, f64) {
         let run = self.run;
         let find = self.stand_in(1.25, 0.0, 0.0);
         let mut p = match way {
@@ -784,7 +858,20 @@ impl<'a> LongRun<'a> {
             _ => {}
         }
         let past = self.past_cap(&p);
-        self.long_score(&self.fill_long(p, None, 0.0)) * past
+        (self.fill_long(p, None, 0.0), past)
+    }
+
+    /// The projected score with your joker `i` let go as `way` (`let_go_board`)
+    fn let_go_score(&self, i: usize, way: Fate, money: f64) -> f64 {
+        let (b, past) = self.let_go_board(i, way, money);
+        self.long_score(&b) * past
+    }
+
+    /// `let_go_score` and its paired per-round scores scaled by `past_cap`, for comparing against
+    /// keeping on the projection's paired rounds (`compare::clearly_better`)
+    fn let_go_rounds(&self, i: usize, way: Fate, money: f64) -> (f64, Vec<f64>) {
+        let (b, past) = self.let_go_board(i, way, money);
+        Self::stats_rounds(&self.long_stats_more(&b, (0, 0, 0), 0, 0.0), past)
     }
 
     /// Your joker `i` sold now, as a ratio of your board's projected score (`l0`): let go its
@@ -1239,7 +1326,9 @@ impl<'a> LongRun<'a> {
             Some(r @ Fate::Replaced { .. }) => r,
             _ => Fate::Replaced { end: false },
         };
-        let gone = self.let_go_score(i, way, 0.0) / self.l0 - 1.0;
+        // (losing a kept joker never pays: a joker kept inside the projection's noise could
+        // still have a slightly positive mean without it, which must not reward destroying it)
+        let gone = (self.let_go_score(i, way, 0.0) / self.l0 - 1.0).min(0.0);
         ([per[0], per[1], per[2]], gone)
     }
 
@@ -1495,7 +1584,7 @@ impl<'a> LongRun<'a> {
     /// jokers it lets go, on `board`'s own two splits (`these`), not kept.
     fn spare_to_events(&self, board: &Board, option: Option<Joker>, these: &mut dyn FnMut() -> (Board, Board)) -> bool {
         let pick = |(levels, events): (Board, Board)| self.long_score(&events) > self.long_score(&levels) * (1.0 + super::compare::EQUAL);
-        if self.fates.get().is_none() {
+        if !self.fates_set {
             return pick(these());
         }
         let mut growers: Vec<String> = board
@@ -1535,15 +1624,14 @@ impl<'a> LongRun<'a> {
         self.long_score_more(b, (0, 0, 0), 0, 0.0)
     }
 
-    /// `long_score` with `more` hand size, hands and discards a round and `slots` consumable
-    /// slots more (a `Gain`'s)
-    fn long_score_more(&self, b: &Board, more: (i64, i64, i64), slots: i64, lost: f64) -> f64 {
+    /// `long_score_more`'s full round stats (48 paired rounds)
+    fn long_stats_more(&self, b: &Board, more: (i64, i64, i64), slots: i64, lost: f64) -> crate::sim::Stats {
         let sp = self.long_spec_for(b, more);
         // (less the planets lost to a slot taken for a while: `slot_taken_planets`)
         let seal = self.seal_planets_in_round(slots, &sp, b) - lost;
-        let score = |b: &Board| self.ctx.odds_one(b, &sp, 48).1.mean.max(1.0);
+        let stats = |b: &Board| self.ctx.odds_one(b, &sp, 48).1;
         if seal == 0.0 {
-            return score(b);
+            return stats(b);
         }
         // on the hand they go to (as a deck's are: `deck_round`)
         let mut b = b.clone();
@@ -1551,7 +1639,18 @@ impl<'a> LongRun<'a> {
             Some(top) => Self::add_planets(&mut b, &[(top, seal)], 0.0),
             None => Self::add_planets(&mut b, &[], seal),
         }
-        score(&b)
+        stats(&b)
+    }
+
+    fn stats_rounds(st: &crate::sim::Stats, scale: f64) -> (f64, Vec<f64>) {
+        let rounds = st.rounds.as_ref().map_or_else(Vec::new, |r| r.iter().map(|s| s.total * scale).collect());
+        (st.mean * scale, rounds)
+    }
+
+    /// `long_score` with `more` hand size, hands and discards a round and `slots` consumable
+    /// slots more (a `Gain`'s)
+    fn long_score_more(&self, b: &Board, more: (i64, i64, i64), slots: i64, lost: f64) -> f64 {
+        self.long_stats_more(b, more, slots, lost).mean.max(1.0)
     }
 
     /// Money is worth less the more you have: what limits a rich run is what the shops
@@ -1968,7 +2067,7 @@ impl<'a> LongRun<'a> {
     }
 
     fn seal_planets_round_more(&self, d: &[Card], more: (i64, i64, i64)) -> f64 {
-        let Some(&round) = self.round.get() else { return 0.0 };
+        let Some(round) = self.round else { return 0.0 };
         let slots = self.consumable_slots(0);
         let with = ((round.0 + more.0).max(1), (round.1 + more.1).max(1), (round.2 + more.2).max(0));
         // each deck at its own size: a deck change that removes cards draws your Blue Seals more
@@ -1998,7 +2097,7 @@ impl<'a> LongRun<'a> {
     /// The planets your Blue Seal cards don't make in `rounds` rounds of yours with one consumable
     /// slot taken (`seal_planets_in` at your slots by Ante 8 and one fewer)
     fn slot_taken_planets(&self, rounds: f64) -> f64 {
-        let Some(&yours) = self.round.get().filter(|_| rounds > 0.0) else { return 0.0 };
+        let Some(yours) = self.round.filter(|_| rounds > 0.0) else { return 0.0 };
         let d = &self.ctx.fresh_deck;
         (self.seal_planets_in(d, self.consumable_slots(0), yours) - self.seal_planets_in(d, self.consumable_slots(-1), yours)) * rounds
     }
@@ -2013,7 +2112,7 @@ impl<'a> LongRun<'a> {
 
     /// `seal_planets_for` on the round `sp` starts with, played on `b`
     fn seal_planets_in_round(&self, slots: i64, sp: &Spec, b: &Board) -> f64 {
-        let Some(&yours) = self.round.get() else { return 0.0 };
+        let Some(yours) = self.round else { return 0.0 };
         let (_, s) = b.at_blind_set(&sp.start);
         let round = (s.hand_size, s.hands, s.discards);
         if slots == 0 && round == yours {
