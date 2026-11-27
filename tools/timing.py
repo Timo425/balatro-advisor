@@ -14,13 +14,18 @@ budget the states file sets for this machine (the owner's numbers).
     tools/timing.py --new target/release/balatro-advisor      one build's times alone
     ... --slow                                 the states marked slow too (minutes each),
                                                totalled on their own
+    ... --busy                                 time on a busy machine anyway, for a rough
+                                               look: no verdict (exit 3)
 
 Exit status: 0 the set is no slower than the limit and inside the budget; 1 a group's total
 grew by more than `--limit` percent (default 10: one build's totals repeat within 0.4-2.3% on
 this set; a starting line, the owner's to move), or is over this machine's budget, or a state
 failed or ran out of time on every run of a build; 2 a listed state isn't on this machine, or
-`--new` was built before the code it is to judge changed. Over the limit isn't a failure by
-itself: the change says what the time buys (CLAUDE.md step 4).
+`--new` was built before the code it is to judge changed; 3 no verdict: the machine was busy
+(load over 2 when it started: another job's load shifts both builds' times unevenly, so neither
+the limit nor the budget can be told; not run, or with `--busy` timed with no verdict), and its
+times are not evidence for a commit. Over the limit isn't a failure by itself: the change says
+what the time buys (CLAUDE.md step 4).
 
 The states are the owner's saved history (`BAV_HISTORY`, else
 `~/.local/share/balatro-advisor/history`), which the live page prunes past 500 MB: each is
@@ -116,6 +121,7 @@ def main():
     ap.add_argument("--timeout", type=float, default=900, help="seconds one analysis may take (default 900)")
     ap.add_argument("--slow", action="store_true", help="the states marked slow too")
     ap.add_argument("--any-build", action="store_true", help="time --new though the code changed after it was built (an installed or older build, on purpose)")
+    ap.add_argument("--busy", action="store_true", help="time though the machine is busy: a rough look, no verdict (exit 3)")
     ap.add_argument("--out", help="write the times as JSON here")
     a = ap.parse_args()
     for b in (a.old, a.new):
@@ -133,9 +139,14 @@ def main():
     if missing:
         print(f"not on this machine (neither kept in {os.path.join(data_dir(), 'timing-states')} nor in the saved history): {', '.join(missing)}")
         return 2
-    if hasattr(os, "getloadavg") and os.getloadavg()[0] > 2:
-        print(f"load {os.getloadavg()[0]:.1f}: something else is running, the times will be noisy; the budget is "
-              "for a quiet machine, so run again when it is before calling a group over")
+    load = os.getloadavg()[0] if hasattr(os, "getloadavg") else 0.0
+    busy = load > 2
+    if busy:
+        print(f"load {load:.1f}: something else is running, the times would be noisy and say nothing of the limit "
+              "or the budget, which are for a quiet machine: run again when it is"
+              + (" (timing anyway for --busy: no verdict)" if a.busy else ""))
+        if not a.busy:
+            return 3
     builds = [("old", a.old), ("new", a.new)] if a.old else [("new", a.new)]
     rows, said = [], set()
     for g, p, s, f in states:
@@ -180,6 +191,9 @@ def main():
             olds, news = [t for t in r["old"] if t is not None], [t for t in r["new"] if t is not None]
             if max(olds) * (1 + a.limit / 100) < min(news):
                 print(f"   slower on every run: {r['state']}  {best(r['old']):.1f} -> {best(r['new']):.1f} s")
+    if busy:
+        print(f"NO VERDICT: timed at load {load:.1f}; these times are not evidence for a commit (exit 3)")
+        return 3
     return 1 if bad else 0
 
 
