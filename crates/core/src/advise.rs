@@ -3561,7 +3561,7 @@ const HEURISTICS: [&str; 8] = [
         "Outside a blind every board is valued with its jokers as you'd arrange them (yours, the one each option leaves, and every board projected to Ante 8); where a joker you buy goes is the order advice once you have it. The order: the one worth most on 64 fixed deals of this run's round (each deal's play chosen in the order as they sit, its rolls' floor and ceiling averaged), times the hands the blind's start gives it (a Blueprint copying Burglar); every order of the jokers whose place can change a score up to 6 of them, swaps of two past that; kept as they sit below a 0.5% gain; Ceremonial Dagger and the joker to its right held where they sit, its eat not modelled (heuristic: not the discards a copy takes or its money at the round's end). In a blind, your board and the options are scored as the jokers sit; the boards projected to Ante 8 are still arranged.",
         "Scaling jokers keep their current value in the blinds ahead. By Ante 8, the ones a round changes grow or fade as the simulated player's rounds at this ante's plain blind sizes leave them (yours by a player that plays to the round's goals, their worths from a projection that keeps them; a shop joker's by a player that plays only to win); the rest by a table.",
         "Blue Seal planets by Ante 8 assume a consumable held at round end in a measured share of rounds (one run).",
-        "The shop ranking counts what each option's money left buys in the shops ahead: the money spent shop by shop on 2000 simulated walks (rerolls and the jokers they show, a joker bought in the shop it shows in when the money pays for it and it adds enough for its price, into a free slot or in place of the joker whose loss costs least, yours sold for it; enough is a bar per dollar of its price, none, what a shop's joker adds per dollar on average or twice that, chosen on half the walks, then the most rerolls a shop under it, at most 8: budgets, heuristic), starting from the board the option leaves; several jokers' score gains added (most jokers' Chips and Mult add), read off your board's score spread in that round as a lognormal (heuristic); an option with no simulated chance at the next ante's boss read the same way from its score there. Rent comes off at each round's end: your rentals', one the option buys, a Buffoon pack's picks as often as the stake makes them rentals. Each round then pays its blind's reward, the interest and what a round pays on your board as it is (hands and discards left, the cards' and jokers' money, measured on this ante's plain blinds), the same for every option: a money joker bought or sold doesn't change it, nor does a boss's rule (not modelled). Planets, packs and tarots the money could buy aren't counted, nor the stickers of the jokers the walk finds (not modelled). The walk lifts this ante's hardest round only: its blinds before that one count each option's own chance there (simulated on the board a joker, a sale, a planet, a playing card or a voucher that changes one of those rounds leaves, a Celestial Pack's the planet each set of its cards picks; your board's for leaving, a reroll, a money card, a voucher that changes none of them or a boss reroll; another pack's or a tarot's read off its scores against yours on your board's scores at each blind, from its reach at the hardest round where it has one (a Buffoon Pack, Judgement), else its chance at the hardest round where yours there is 10% or more, else its strength at the next ante's boss: heuristic), each played from the board as it stands and the chances multiplied, not chained as Best play's blinds ahead are (heuristic), with nothing the shops before them find (heuristic: a Big Blind behind the Small isn't lifted by the shop after the Small).",
+        "The shop ranking counts what each option's money left buys in the shops ahead: the money spent shop by shop on 2000 simulated walks (rerolls and the jokers they show, a joker bought in the shop it shows in when the money pays for it and it adds enough for its price, into a free slot or in place of the joker whose loss costs least, yours sold for it; enough is a bar per dollar of its price, none, what a shop's joker adds per dollar on average or twice that, chosen on half the walks, then the most rerolls a shop after a blind under it, then the most in this shop under both, at most 8 each: budgets, heuristic), starting from the board the option leaves; several jokers' score gains added (most jokers' Chips and Mult add), read off your board's score spread in that round as a lognormal (heuristic); an option with no simulated chance at the next ante's boss read the same way from its score there. Rent comes off at each round's end: your rentals', one the option buys, a Buffoon pack's picks as often as the stake makes them rentals. Each round then pays its blind's reward, the interest and what a round pays on your board as it is (hands and discards left, the cards' and jokers' money, measured on this ante's plain blinds), the same for every option: a money joker bought or sold doesn't change it, nor does a boss's rule (not modelled). Planets, packs and tarots the money could buy aren't counted, nor the stickers of the jokers the walk finds (not modelled). The walk lifts this ante's hardest round only: its blinds before that one count each option's own chance there (simulated on the board a joker, a sale, a planet, a playing card or a voucher that changes one of those rounds leaves, a Celestial Pack's the planet each set of its cards picks; your board's for leaving, a reroll, a money card, a voucher that changes none of them or a boss reroll; another pack's or a tarot's read off its scores against yours on your board's scores at each blind, from its reach at the hardest round where it has one (a Buffoon Pack, Judgement), else its chance at the hardest round where yours there is 10% or more, else its strength at the next ante's boss: heuristic), each played from the board as it stands and the chances multiplied, not chained as Best play's blinds ahead are (heuristic), with nothing the shops before them find (heuristic: a Big Blind behind the Small isn't lifted by the shop after the Small).",
         "With your joker slots full, the joker a shop or pool joker replaces is chosen by the shop ranking's measure: the chance through this ante (for a joker on offer every blind still ahead before its hardest round, then that round; for one the shops ahead may show, that round alone) × the next ante's boss × the geometric mean of the long run with that sale (its income and growth by Ante 8) and the strength at the next ante, with Mr. Bones' save counted at the rounds it plays, a save spent on a blind before the hardest round gone for the rounds after it (the shop ranking counts it through every round ahead: on chained runs, the share of lost rounds a save rescues applied to each option's survival, a heuristic); the swaps (outside a blind each on the board it leaves as you'd arrange it; in a blind, the freed slot and the right end) raced on the same simulated rounds (to the full count), those it can't tell apart reported as ties; a round lost counts at the chance told from none (3 wins in its rounds, as in the shop ranking), so where no swap gets through, what each sale leaves you decides, its money included (heuristic budget: at most 6 swaps after 32 rounds, 4 after 64, 3 after 128; a sale's places that play the first 32 rounds the same count as one). A Negative joker is never the one sold to make room (its slot goes with it), nor a charged Invisible Joker (it copies another joker into the row as it's sold). What a sale does that isn't modelled is said on the option (a joker that acts when sold: Diet Cola, a charged Invisible Joker; Campfire's growth from it). A joker's money is the money a round won pays on the board with it against without it, on the same rounds of this ante's plain blinds (scoring, discards, the round's end, hands left); a joker whose money that doesn't reach (Gift Card, Credit Card, Matador's boss payout) is said \"not modelled\" on an option that sells it. The pool's quick screen tries only the joker whose removal leaves most by the same measure. A perished joker is the one sold.",
         "Shop options are told apart by the simulation's own noise: one is listed above another, or above keeping your money, only when it's ahead by more than 2 standard errors of their difference on the simulated rounds and shops both rest on, with 3% of the rank counted in for what no round shows (the By Ante 8 projection's own luck, a pack's or a reroll's cards, an estimate, an effect left out). Closer than that is a tie (≈), keeping your money first; skipping an open pack goes after the pack's picks worth more that leave no less money (its cards are gone once it closes). A round's chance under 3 wins in its rounds counts as that much for every option (it can't be told from none), so where a round is lost whatever you pick, what each option leaves you ranks them, the money it spends included.",
 ];
@@ -3599,7 +3599,7 @@ fn analysis_notes(ctx: &Ctx, run: &RunState, skips: bool, holds: bool, grows: bo
 const NEXT_ANTE_NOTE: &str = "The next ante's boss is one of the bosses the game can draw there (the least drawn so far of those allowed at that ante; when the next ante is the last, its five final bosses), each as likely: each simulated round meets one, with its own target and its rule where it's simulated; its reach is shown against a plain boss's target (2× the base). An option with no simulated chance there has it read off its scores as your board's against each boss (simulated on its own rounds, heuristic: a lognormal for each), moved together to your board's chance there. At the last ante nothing past its boss is counted.";
 
 /// Said where a money card is held to a shop ahead (`hold_plan`)
-const HOLD_NOTE: &str = "A money card (The Hermit, Temperance) is held to a shop ahead where the shop ranking's money walk (above) expects it to pay more: what it pays there is worth that pay as money now, less the interest the money it pays now would have earned by then through the same cash-outs and buys (heuristic, which reads holding high: a later pay counts as money now, its wait uncharged, so what money now would buy in the shops before it isn't taken off), and it's held to the first shop worth within $0.50 of the most, if that's $1 more than using it now. The slot it takes until then costs the planets your Blue Seal cards would make in it. An option buying one to hold rerolls no more in this shop (heuristic: the walk's rerolls here, one cap for every shop, would spend the money it's held for), while using one now may reroll here, at the cost of the rerolls the cap leaves the shops ahead (which reads using it now low against holding it: not modelled); the other options' walks use one you hold at its shop. Where it pays most is read on a walk keeping your jokers as they are and buying on your board's next-ante reach (heuristic: the options' walks, which use it there, may sell yours). Not modelled: a second money card held, a held Temperance's pay on the board an option leaves (it's read on yours), using one before a round's cash-out for its interest, The Fool copying one used now (the last tarot used).";
+const HOLD_NOTE: &str = "A money card (The Hermit, Temperance) is held to a shop ahead where the shop ranking's money walk (above) expects it to pay more: what it pays there is worth that pay as money now, less the interest the money it pays now would have earned by then through the same cash-outs and buys (heuristic, which reads holding high: a later pay counts as money now, its wait uncharged, so what money now would buy in the shops before it isn't taken off), and it's held to the first shop worth within $0.50 of the most, if that's $1 more than using it now. The slot it takes until then costs the planets your Blue Seal cards would make in it. The other options' walks use one you hold at its shop. Where it pays most is read on a walk that stays in this shop, keeps your jokers as they are and buys on your board's next-ante reach (heuristic: the options' walks, which use it there, may leave the shop or sell yours). Not modelled: a second money card held, a held Temperance's pay on the board an option leaves (it's read on yours), using one before a round's cash-out for its interest, The Fool copying one used now (the last tarot used).";
 
 /// Said where a Standard pack is on offer (`standard_pack_kinds`)
 const STANDARD_NOTE: &str = "A Standard pack is valued by its best card added to your deck, projected to Ante 8, or skipping it: the expected best of as many cards as the pack holds, at the game's odds (Enhanced 40%, a seal 20%, an edition 8%, more with Hone or Glow Up, each its own roll; a plain card by its rank, its suit as an average; an enhanced, sealed or edition card as an average over the 52 it can be, not the card you'd pick; one with two or three of them by the best of them, not all together: heuristic, reads low unless one of them costs your deck, as a Stone card's lost rank and suit can); the blinds ahead are played as on your board (one card more in your deck: heuristic), a consumable you hold that could go on the card isn't counted, nor a Mega pack's second pick (not modelled).";
@@ -6624,10 +6624,9 @@ impl Stay {
 
     fn of(o: &ShopOption) -> Stay {
         match o.kind.as_str() {
-            // (a money card bought to hold leaves the shop: its walk's rerolls, one cap for every
-            // shop, would spend here the money it's held for, `HeldMoney`; a reroll here after
-            // buying it isn't counted, heuristic)
-            _ if o.hold.is_some() => Stay::Out,
+            // (a money card bought to hold stays too: the shop's own reroll cap, at none past its
+            // free rerolls its walk taking only those (with none free, leaving's), spends here only
+            // where that pays more than the money held to a shop ahead, `money_walks`)
             "leave" => Stay::Out,
             "reroll" => Stay::Reroll,
             _ => Stay::In,
@@ -7196,10 +7195,14 @@ const RARITY_ODDS: [f64; 4] = [0.0, 0.7, 0.25, 0.05];
 /// holds a swap to more than its outlay): in a free slot, else in place of
 /// the one whose loss costs least, a joker of yours the start lets go (`Start::owned`: sold for
 /// it) or one found before (at least one slot); never one from a shop already left. The bar
-/// and the rerolls a shop are the policy: the bar first, then the most rerolls under it (up to
-/// `WALK_REROLLS`, while the money pays), each chosen on half the walks and valued on the other
-/// half, so nothing is chosen with hindsight of a walk's own cards; `forced` rerolls in the shop
-/// you're in are taken whatever the policy. Each shop's cards are drawn by the walk, the shop
+/// and the rerolls a shop are the policy: the bar first, then the most rerolls a shop after a
+/// blind under it, then the most in the shop you're in under both (each up to `WALK_REROLLS`,
+/// while the money pays: the shop you're in has its own cap, so a walk that stays in it is never
+/// held to the rerolls the shops ahead want, and at none past its free rerolls it takes only
+/// those, with none free walking as leaving does; a reroll's own one is the shop you're in's, its shops after a blind at none
+/// while the bar is chosen, as every walk's), each chosen on half the walks and valued on the
+/// other half, so nothing is chosen with hindsight of a walk's own cards; `forced` rerolls in the
+/// shop you're in are taken whatever the policy. Each shop's cards are drawn by the walk, the shop
 /// and the reroll, the same for every amount, bar and cap, so two are compared on the same shops.
 fn money_value_with(lr: &value::LongRun, pool: &[Candidate], kept_as: &Kept, now: f64, money: f64, shops: Shops, from: Start) -> f64 {
     money_value_walks(lr, pool, kept_as, now, money, shops, from, None)
@@ -7245,14 +7248,14 @@ fn shop_hold_plans(lr: &value::LongRun, run: &RunState, data: &GameData, pool: &
 
 /// Where a money consumable held to a shop ahead pays more than used now with `money` (after its
 /// price, where it's bought): the shop the money's walk expects it to pay most, and what it pays
-/// there on the walks' mean (`HeldMoney::about`; `money_card_pays`, out of the shop you're in (`Stay::of`) through the next ante's boss, the walk spending on
+/// there on the walks' mean (`HeldMoney::about`; `money_card_pays`, from the shop you're in, as the option bought to hold walks it (`Stay::of`), through the next ante's boss, the walk spending on
 /// the next ante's reach as `tarot_values` values money, from `reach_now`: your board's, the same
 /// for a card held and one on offer, `shop_hold_plans`); none where no shop
 /// ahead pays a dollar more than now, or with no next ante simulated
 fn hold_plan(lr: &value::LongRun, pool: &[Candidate], reach_now: f64, pays: Pays, money: f64) -> Option<HeldMoney> {
     let h = lr.ctx.specs.iter().position(|x| x.horizon)?;
     let v = |c: &Candidate| c.reach.get(h).copied().unwrap_or(0.0);
-    let paid = money_card_pays(lr, pool, &Kept::Weighted(&v), reach_now, money, Stay::shops(lr.run, true, Stay::Out), Start::board(board_rent(lr.run)), pays);
+    let paid = money_card_pays(lr, pool, &Kept::Weighted(&v), reach_now, money, Stay::shops(lr.run, true, Stay::In), Start::board(board_rent(lr.run)), pays);
     hold_at(&paid, pays.paid(money, 0.0)).map(|(at, [about, worth])| HeldMoney { pays, at, about, worth })
 }
 
@@ -7379,26 +7382,37 @@ fn money_walks(lr: &value::LongRun, pool: &[Candidate], kept_as: &Kept, now: f64
     let mut tried_paid: Vec<[f64; 2]> = vec![];
     // (what `paid`'s card pays used now)
     let paid_now = paid.as_ref().map_or(0.0, |(p, _)| p.paid(money, 0.0));
-    // The policy: first the bar, each tried at the fewest rerolls; then the rerolls, more of them
-    // under the bar chosen while a walk stopped at the cap before (a budget: the bars and the
-    // caps aren't tried together)
-    let (mut step, mut bar_at, mut rerolls) = (0, 0, least);
-    // (whether a walk stopped at the fewest rerolls, under each bar)
-    let mut capped_at = [false; BUY_BARS.len()];
+    // The policy: first the bar, each tried at the fewest rerolls; then the rerolls a shop after a
+    // blind, more of them under the bar chosen while a walk stopped at that cap before; then the
+    // shop you're in's own, the same way, under the bar and cap chosen (a budget: the bars and the
+    // caps aren't tried together, nor the two caps)
+    #[derive(Clone, Copy, PartialEq)]
+    enum Phase {
+        Bars,
+        Ahead,
+        Here,
+        Reserve,
+    }
+    let (mut phase, mut step, mut bar_at) = (Phase::Bars, 0, 0);
+    let (mut here_cap, mut ahead_cap) = (least, 0);
+    // (whether a walk stopped at the fewest rerolls, under each bar: in the shop you're in, in
+    // one after a blind; the first doesn't depend on the second's cap, its shop comes first)
+    let mut capped_at = [[false; 2]; BUY_BARS.len()];
     // With a boss reroll in hand (`Scores::with_reroll`): it's used at the boss's blind select
     // where the money left pays its $10, and once the policy is chosen, that policy is tried
     // once more keeping the $10 (`reserve`: every buy and reroll leaves it, and each buy is
     // judged with the reroll used), the better of the two kept (a budget: one more policy)
     let can_reroll = matches!(kept_as, Kept::Chances(s) if s.rerolls());
-    let (mut reserve, mut best_rerolls) = (false, least);
+    let (mut best_here, mut best_ahead) = (least, 0);
     'policies: loop {
-        let bar = BUY_BARS[if step < BUY_BARS.len() { step } else { bar_at }];
+        let reserve = phase == Phase::Reserve;
+        let bar = BUY_BARS[if phase == Phase::Bars { step } else { bar_at }];
         let keep = if reserve { BOSS_REROLL_COST } else { 0.0 };
         let mut totals = [0.0; 2];
         tried.clear();
         tried_paid.clear();
         tried_paid.resize(1 + future, [0.0; 2]);
-        let mut capped = false;
+        let (mut capped_here, mut capped_ahead) = (false, false);
         for walk in 0..WALKS {
             let mut m = money;
             let mut rent = from.rent;
@@ -7437,6 +7451,7 @@ fn money_walks(lr: &value::LongRun, pool: &[Candidate], kept_as: &Kept, now: f64
                     m += c.pays.paid(m, sells);
                 }
                 let (free, start) = if here { (free_here, if free_here > 0 { run.base_reroll_cost } else { here_cost }) } else { (chaos, run.base_reroll_cost) };
+                let cap = if here { here_cap } else { ahead_cap };
                 let mut done = 0;
                 loop {
                     // the best card first (on equal gains, the one that scores more), bought while
@@ -7489,10 +7504,16 @@ fn money_walks(lr: &value::LongRun, pool: &[Candidate], kept_as: &Kept, now: f64
                     if cost > m - if done < must { 0.0 } else { keep } {
                         break;
                     }
-                    if done >= (rerolls + free).max(must) {
+                    if done >= (cap + free).max(must) {
                         // (read on the walks the policy is chosen on: a higher cap can't change
                         // their total once none of them stopped here)
-                        capped |= walk % 2 == 0 && rerolls + free >= must;
+                        if walk % 2 == 0 {
+                            if here {
+                                capped_here |= cap + free >= must;
+                            } else {
+                                capped_ahead = true;
+                            }
+                        }
                         break;
                     }
                     m -= cost;
@@ -7509,11 +7530,11 @@ fn money_walks(lr: &value::LongRun, pool: &[Candidate], kept_as: &Kept, now: f64
             }
         }
         if best.is_none_or(|b| totals[0] > b.0) {
-            if step < BUY_BARS.len() {
+            if phase == Phase::Bars {
                 bar_at = step;
             }
             best = Some((totals[0], totals[1]));
-            best_rerolls = rerolls;
+            (best_here, best_ahead) = (here_cap, ahead_cap);
             if let Some(g) = gains.as_deref_mut() {
                 std::mem::swap(g, &mut tried);
             }
@@ -7521,32 +7542,44 @@ fn money_walks(lr: &value::LongRun, pool: &[Candidate], kept_as: &Kept, now: f64
                 std::mem::swap(*p, &mut tried_paid);
             }
         }
-        if reserve {
-            break;
-        }
         // a higher cap changes nothing once no walk stopped at this one
-        let chosen = 'next: {
-            if step < BUY_BARS.len() {
-                capped_at[step] = capped;
+        match phase {
+            Phase::Reserve => break,
+            Phase::Bars => {
+                capped_at[step] = [capped_here, capped_ahead];
                 step += 1;
                 if step < BUY_BARS.len() {
                     continue 'policies;
                 }
-                if !capped_at[bar_at] {
-                    break 'next true;
+                phase = Phase::Ahead;
+                if capped_at[bar_at][1] {
+                    ahead_cap += 1;
+                    continue 'policies;
                 }
-            } else if !capped {
-                break 'next true;
             }
-            rerolls += 1;
-            rerolls > WALK_REROLLS.max(least)
-        };
-        if chosen {
-            if !can_reroll {
-                break;
+            Phase::Ahead if capped_ahead && ahead_cap < WALK_REROLLS => {
+                ahead_cap += 1;
+                continue 'policies;
             }
-            (reserve, rerolls, step) = (true, best_rerolls, BUY_BARS.len());
+            Phase::Here if capped_here && here_cap < WALK_REROLLS.max(least) => {
+                here_cap += 1;
+                continue 'policies;
+            }
+            Phase::Ahead | Phase::Here => {}
         }
+        // (the shop you're in's cap, once the shops ahead have theirs)
+        if phase == Phase::Ahead {
+            ahead_cap = best_ahead;
+            phase = Phase::Here;
+            if capped_at[bar_at][0] {
+                here_cap += 1;
+                continue 'policies;
+            }
+        }
+        if !can_reroll {
+            break;
+        }
+        (phase, here_cap, ahead_cap) = (Phase::Reserve, best_here, best_ahead);
     }
     if let Some((_, p)) = paid {
         p.iter_mut().flatten().for_each(|x| *x /= (WALKS / 2) as f64);
@@ -9434,6 +9467,52 @@ mod tests {
             assert!(stay == leave, "{} {}", stay.0, leave.0);
             // and the same value without the walks handed back
             assert_eq!(money_value_with(lr, &pool, &kept, 1.0, r.dollars, Stay::shops(&r, true, Stay::In), Start::BOARD), stay.0);
+        });
+    }
+
+
+    #[test]
+    fn a_stay_rerolls_the_shop_its_in_only_where_that_pays() {
+        // The shop you're in has its own reroll cap, apart from the shops ahead. With $12 and a
+        // reroll $5, a reroll here leaves $7, under every joker's $8: it finds nothing here and
+        // takes $5 from the shops ahead, where rerolls do pay (a joker in fewer of a shop's
+        // cards). So staying walks as leaving does, walk by walk. Fails with one cap for every
+        // shop: staying, held to the rerolls the shops ahead want, spends the $5 here and reads
+        // below leaving (1.85 against 1.92). With $30 and no interest, staying rerolls here and
+        // reads above leaving (fails with no cap of the shop's own)
+        let mut r = shop_run(&[("j_joker", None, None)], &[]);
+        r.dollars = 12.0;
+        r.shop_rates.joker = 6.0;
+        let c = |r: u8, m: f64| Candidate {
+            key: String::new(), name: String::new(), rarity: String::new(), cost: 8, edition: None, action: "add".into(),
+            p_win: vec![], p_win_delta: vec![], reach: vec![], reach_delta: vec![], score_gain: 0.0, missing_gold: false,
+            rarity_n: r, precise: false, sims: 0, rounds: vec![], before: vec![], per_shop: None, roles: vec![], note: None, desc: None, growth: None, long_mult: Some(m), sell_index: None, sell_tied: vec![],
+        };
+        let pool = [c(1, 1.2), c(1, 1.5), c(2, 1.8), c(3, 2.5)];
+        let long = |c: &Candidate| c.long_mult.unwrap_or(1.0);
+        let kept = Kept::Weighted(&long);
+        with_long_run(&r, |lr| {
+            assert_eq!(r.shop.as_ref().map(|s| s.reroll_cost), Some(5));
+            let walk = |stay: Stay| {
+                let mut gains = vec![];
+                (money_value_walks(lr, &pool, &kept, 1.0, r.dollars, Stay::shops(&r, true, stay), Start::BOARD, Some(&mut gains)), gains)
+            };
+            let (stay, leave) = (walk(Stay::In), walk(Stay::Out));
+            assert!(leave.1.iter().any(|&g| g > 0.0), "{}", leave.0);
+            assert!(stay == leave, "{} {}", stay.0, leave.0);
+        });
+        // with $30 and no interest to lose (a reroll here spends before the cash-outs, one ahead
+        // after them), staying rerolls here and that pays
+        r.dollars = 30.0;
+        r.interest_cap = 0;
+        with_long_run(&r, |lr| {
+            let walk = |stay: Stay| {
+                let mut gains = vec![];
+                (money_value_walks(lr, &pool, &kept, 1.0, r.dollars, Stay::shops(&r, true, stay), Start::BOARD, Some(&mut gains)), gains)
+            };
+            let (stay, leave) = (walk(Stay::In), walk(Stay::Out));
+            assert!(stay.1 != leave.1, "{} {}", stay.0, leave.0);
+            assert!(stay.0 > leave.0, "{} {}", stay.0, leave.0);
         });
     }
 
