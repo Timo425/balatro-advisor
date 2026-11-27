@@ -39,3 +39,15 @@ pub enum Error {
     #[error("Balatro save directory not found; set --save-dir or BALATRO_DIR. Tried: {0:?}")]
     SaveDirNotFound(Vec<PathBuf>),
 }
+
+#[cfg(test)]
+mod tests {
+    /// Step 4's test run is `cargo test`, not `cargo test --release` (docs/decisions.md D13): only
+    /// the test profile panics on an integer overflow, where release wraps it silently
+    #[test]
+    fn tests_run_with_overflow_checks() {
+        let max = std::hint::black_box(u8::MAX);
+        let wrapped = std::panic::catch_unwind(|| max + 1).is_ok();
+        assert!(!wrapped, "integer overflow wrapped: run `cargo test`, not `cargo test --release` (D13); `--release` is for the slower checks given with `--test <name> -- --ignored`");
+    }
+}
