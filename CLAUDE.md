@@ -203,6 +203,11 @@ decides or values things follows these steps, in order:
      Skipped, saying why, when the change can't reach Best play's quick pass in a blind (it counts
      no shops: tell by what the quick pass runs, not by the file), unless the snapshot moves a Best
      play pick (D12).
+   - Shop check, for a change that can move a shop's top pick (the history check counts no
+     shops): `shop_picks` on each side, then `shop_judge` on the moved picks (commands in gap 17),
+     every WORSE or unclear pick explained or fixed. The commit message names it in a line of its
+     own, `Shop-check: 144 shops, 3 moved (0 worse)` or `Shop-check: skipped (why)`;
+     `tools/status.py` lists the stage commits since the last one that name none.
    - Each check refuses to start on a test program older than the code (run it through `cargo
      test`). Before comparing results or committing, `tools/checks.py <after folders>` tells
      whether every run in them finished on the code you commit; one on older code names what

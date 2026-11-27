@@ -7,7 +7,9 @@ Run it, and read docs/owner-view.md, before brainstorming, judging a gap or pick
     tools/status.py --stale-days 7 --stale-commits 20
 
 Four parts:
-- code: HEAD and the recent commits, counted by their stage prefix.
+- code: HEAD and the recent commits, counted by their stage prefix; the history and shop checks
+  their messages name (CLAUDE.md step 4); CLAUDE.md's size against what Antigravity reads of it
+  (GEMINI.md includes it).
 - the owner's play, from ~/.local/share/balatro-advisor/history/<seed>/ (the live page's saved
   states). The game deletes its save on a game over, so no state shows the loss: a run is
   "won" when its last state has `won` set, "lost" (most likely) when its last state is a blind's
@@ -89,6 +91,8 @@ def code(args):
     for line in git("log", "-8", "--format=%h %as %s").splitlines():
         print("  " + line[:150])
     history_checks()
+    shop_checks()
+    rules_size()
 
 
 def history_checks():
@@ -108,6 +112,40 @@ def history_checks():
     due = ": the next one runs in full, its before at that commit" if full >= 3 else ""
     filtered = "; ".join(f"{c.split()[0]} {v}" for c, v in ran[:full])
     print(f"history check: the last full one at {ran[full][0]}; {full} filtered since{f' ({filtered})' if filtered else ''}{due}")
+
+
+# the stages whose commits change the advice (CLAUDE.md step 6), so may move a shop's top pick
+ADVICE = ("valuation", "simulated player", "simulated game", "moves tried", "noise", "engine")
+
+
+def shop_checks():
+    """The last shop check, by the commits' `Shop-check:` lines (CLAUDE.md step 4), and the
+    advice commits since that name none (skipped ones name theirs); from the rule's first commit"""
+    since = git("log", "--reverse", "--format=%h", "-S", "Shop-check", "--", "CLAUDE.md").split()
+    if not since:
+        return
+    bare = []
+    for rec in git("log", f"{since[0]}~1..HEAD", "--format=%h %as %s%x00%B%x1e").split("\x1e"):
+        head, _, body = rec.strip().partition("\0")
+        if not head:
+            continue
+        found = re.findall(r"^Shop-check:[ \t]*(.*\S)", body, re.M | re.I)
+        if found:
+            print(f"shop check: the last at {head.split()[0]} ({found[-1]}){'; none named since by ' + ', '.join(bare) if bare else ''}")
+            return
+        prefix = head.split(" ", 2)[2].partition(":")[0]
+        if any(p.strip() in ADVICE for p in prefix.split(",")):
+            bare.append(head.split()[0])
+    print(f"shop check: none recorded (`Shop-check:`){'; advice commits without one: ' + ', '.join(bare) if bare else ''}")
+
+
+def rules_size():
+    """Antigravity reads a rule file up to 24,000 bytes, includes expanded (its agy-customizations
+    skill, docs/rules.md), and cuts the rest: GEMINI.md includes CLAUDE.md, so past that the end
+    of this file's rules never reaches it"""
+    n = (REPO / "CLAUDE.md").stat().st_size
+    if n > 24000:
+        print(f"CLAUDE.md: {n} bytes, over the 24,000 Antigravity reads (GEMINI.md): its end is cut there")
 
 
 def run_state(path):
