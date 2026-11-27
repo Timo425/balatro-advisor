@@ -185,7 +185,7 @@ def bot(args):
     runs = []
     for p in paths:
         machine = "this machine" if p.parent.name == "bot" else p.parent.name.removeprefix("bot-")
-        runs += [{**json.loads(l), "_machine": machine} for l in p.read_text().splitlines() if l.strip()]
+        runs += [{**json.loads(l), "_machine": machine} for l in p.read_text(encoding="utf-8").splitlines() if l.strip()]
     several = len(paths) > 1
     valid = [r for r in runs if not r.get("void")]
     print(f"{len(runs)} runs logged, {len(runs) - len(valid)} void (not evidence: tools/botrun.py's docstring)")
@@ -220,14 +220,14 @@ def ratings():
     p = REPO / "docs/owner-view.md"
     out = {}
     if p.is_file():
-        for m in re.finditer(r"^\|\s*(\d+)\s*\|[^|]*\|\s*([^|]*?)\s*\|", p.read_text(), re.M):
+        for m in re.finditer(r"^\|\s*(\d+)\s*\|[^|]*\|\s*([^|]*?)\s*\|", p.read_text(encoding="utf-8"), re.M):
             out[int(m.group(1))] = m.group(2) or "?"
     return out
 
 
 def gaps(args):
     print("\n## Known gaps (docs/design.md)")
-    text = (REPO / "docs/design.md").read_text()
+    text = (REPO / "docs/design.md").read_text(encoding="utf-8")
     known = text[text.find("\n## Known gaps"):]
     found = [(n, " ".join(t.split())) for n, t in re.findall(r"^(\d+)\. \*\*(.+?)\*\*", known, re.M | re.S)]  # titles wrap
     pending = collections.defaultdict(list)
@@ -235,7 +235,7 @@ def gaps(args):
     have_fixtures = fixtures.is_dir()
     for f in sorted(fixtures.rglob("*.json")) if have_fixtures else []:
         try:
-            g = json.loads(f.read_text()).get("pending_gap", "")
+            g = json.loads(f.read_text(encoding="utf-8")).get("pending_gap", "")
         except (ValueError, AttributeError):
             continue
         m = re.match(r"gap (\d+)", g or "")
@@ -259,7 +259,7 @@ def view(args):
     if not p.is_file():
         print("missing")
         return
-    dated = re.findall(r"^- \*\*(\d{4}-\d{2}-\d{2})\*\*", p.read_text(), re.M)
+    dated = re.findall(r"^- \*\*(\d{4}-\d{2}-\d{2})\*\*", p.read_text(encoding="utf-8"), re.M)
     if dated:
         newest = max(dated)
         ts = datetime.datetime.fromisoformat(newest).timestamp()
