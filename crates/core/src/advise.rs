@@ -2081,7 +2081,7 @@ fn analyze_as_given(run: &RunState, data: &GameData, gold: Option<&GoldReport>, 
         )
     };
     // Whether money past the planet-level cap moves anything here: in a shop or an open pack, a
-    // board the long run projects (yours without a joker you could sell, with every joker kept or
+    // board the long run projects (yours without a joker you could sell, during keep-or-let-go or
     // as it keeps or lets them go; with a joker on offer, with a voucher's round) holds a
     // different amount past it every ante than yours, in whole dollars
     // (`LongRun::past_reached`); then the long run is built again counting what it buys, below
@@ -9481,14 +9481,50 @@ mod tests {
     #[test]
     fn projection_fates_keep_ties_and_judge_interacting_jokers_jointly() {
         let mix = [HandShare { hand: "Pair".into(), share: 1.0, played: 1.0, mean: 1.0 }];
-        // In deep debt, selling a Negative joker changes nothing on the walk (exact tie on every
-        // round): must stay kept, not flipped by `>=`
+        // In deep debt at Ante 7, selling a Negative joker leaves both walks in debt (`saved == 0`,
+        // exact tie on every round): must stay kept, not flipped by `>=`
         let mut debt = shop_run(&[("j_superposition", Some(Edition::Negative), None), ("j_joker", None, None)], &[]);
-        debt.dollars = -15.0;
+        debt.ante = 7;
+        debt.dollars = -50.0;
         debt.jokers[1].rental = true;
         debt.jokers[1].eternal = true;
         with_long_run_mix(&debt, &mix, |lr| {
             assert!(!lr.is_let_go(0), "exact tie in debt must be kept");
+        });
+        // On a poor/in-debt board where a dead rental is clearly better let go (saving rent buys
+        // part of the benchmark find: `0 < finds < 1`) but leaves 0 finds for the replacement slot
+        // (`part == 0`), an exact tie between `Replaced` and `Sold` must prefer `Replaced` so the
+        // slot isn't locked permanently empty
+        let mut poor_rental = shop_run(&[("j_8_ball", None, None), ("j_joker", None, None), ("j_joker", None, None), ("j_joker", None, None)], &[]);
+        poor_rental.ante = 7;
+        poor_rental.dollars = -22.0;
+        poor_rental.joker_slots = 4;
+        poor_rental.hand_levels.insert(
+            "Pair".into(),
+            crate::save::HandLevel { level: 20, chips: 295.0, mult: 21.0, s_chips: 10.0, s_mult: 2.0, l_chips: 15.0, l_mult: 1.0, played: 0, played_this_round: 0, visible: true },
+        );
+        poor_rental.jokers[0].rental = true;
+        for j in &mut poor_rental.jokers[1..] {
+            j.eternal = true;
+        }
+        with_long_run_mix(&poor_rental, &mix, |lr| {
+            assert!(
+                lr.is_let_go(0) && !lr.is_sold(0),
+                "tie between Replaced and Sold must keep slot fillable: let_go={} sold={}",
+                lr.is_let_go(0),
+                lr.is_sold(0)
+            );
+        });
+        // A kept joker whose replacement scores higher (e.g. an eternal dead joker) still has its
+        // `joker_worth` destruction loss clamped at <= 0.0
+        let mut clamped = shop_run(&[("j_8_ball", None, None), ("j_joker", None, None)], &[]);
+        clamped.ante = 4;
+        clamped.dollars = 25.0;
+        clamped.joker_slots = 2;
+        clamped.jokers[0].eternal = true;
+        with_long_run_mix(&clamped, &mix, |lr| {
+            assert!(!lr.is_let_go(0));
+            assert!(lr.joker_worth(0).1 <= 0.0, "kept joker loss must never be positive: {}", lr.joker_worth(0).1);
         });
         // With Joker Stencil beside sellable jokers, each other joker sold boosts Stencil while
         // replacing Stencil alone can beat keeping it: judged jointly, it must never drop both
@@ -9557,6 +9593,27 @@ mod tests {
         let f_ba = with_long_run_mix(&ba, &mix, |lr| (lr.is_let_go(0), lr.is_let_go(1)));
         assert_eq!(f_ab, (false, true), "permanent Joker first: {f_ab:?}");
         assert_eq!(f_ba, (true, false), "perishable Joker first: {f_ba:?}");
+        // Between two lasting perishables at Ante 8 (0.5 antes left, both last), fewer rounds
+        // remaining is let go first regardless of slot order
+        let mut per_ab = make(Some(5), Some(2));
+        per_ab.ante = 8;
+        let mut per_ba = make(Some(2), Some(5));
+        per_ba.ante = 8;
+        assert_eq!(with_long_run_mix(&per_ab, &mix, |lr| (lr.is_let_go(0), lr.is_let_go(1))), (false, true));
+        assert_eq!(with_long_run_mix(&per_ba, &mix, |lr| (lr.is_let_go(0), lr.is_let_go(1))), (true, false));
+        // Multi-pass rental drops pushing a remaining eternal money joker past the planet-level
+        // cap ($55) must still mark `past_reached` true (making `past_reached` depend strictly on
+        // `past_kept`, not freezing it after pass 1)
+        let mut past_multi = shop_run(&[("j_8_ball", None, None), ("j_superposition", None, None), ("j_golden", None, None)], &[]);
+        past_multi.ante = 2;
+        past_multi.dollars = 48.0;
+        past_multi.joker_slots = 3;
+        past_multi.jokers[0].rental = true;
+        past_multi.jokers[1].rental = true;
+        past_multi.jokers[2].eternal = true;
+        with_long_run_mix(&past_multi, &mix, |lr| {
+            assert!(lr.past_reached(&[], &[]), "multi-pass rental drop crossing cap must open past_reached");
+        });
         // Multi-let-go mixing Sold (Negative) and Replaced: `sold_now` on each non-rental
         // zero-flow let-go joker matches `l0` (×1.00) in a shop (`arrange: true`, as `analyze`
         // runs every shop)

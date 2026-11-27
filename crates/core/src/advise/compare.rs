@@ -70,6 +70,24 @@ pub(super) fn clearly_better(a: &[f64], b: &[f64]) -> bool {
     k > 1 && paired(&a[..k], &b[..k], 1.0, false).0 > 0.0
 }
 
+/// Whether `a` is clearly better than `b` on multiplicative round scores (paired, 95%): the mean
+/// is higher and the paired log-ratios (`ln(a/b)`) are clearly above 0, so a heavy-tailed board's
+/// score spread doesn't hide a steady multiplicative gain
+pub(super) fn clearly_better_ratio(a: &[f64], b: &[f64]) -> bool {
+    let k = a.len().min(b.len());
+    if k <= 1 {
+        return false;
+    }
+    let ma = a[..k].iter().sum::<f64>() / k as f64;
+    let mb = b[..k].iter().sum::<f64>() / k as f64;
+    if !ma.is_finite() || !mb.is_finite() || ma <= mb {
+        return false;
+    }
+    let la: Vec<f64> = a[..k].iter().map(|x| x.max(1.0).ln()).collect();
+    let lb: Vec<f64> = b[..k].iter().map(|x| x.max(1.0).ln()).collect();
+    clearly_better(&la, &lb)
+}
+
 /// The mean of `d` and its standard error
 fn mean_se(d: &[f64]) -> (f64, f64) {
     let k = d.len() as f64;
@@ -640,5 +658,29 @@ mod tests {
         let by_range = race(3, 16, MAX, |_| 3, |o: usize, r: std::ops::Range<usize>| r.map(|i| round(o, i)).collect(), |x| *x, |x| *x, |x, y| y.cmp(&x), false);
         assert_eq!(by_range.timed_out, Some(16));
         assert!(by_range.samples.iter().all(|v| v.len() == 16));
+    }
+
+    #[test]
+    fn clearly_better_ratio_handles_heavy_tailed_multiplicative_and_additive_gains() {
+        // One 50× outlier round in 48 gives CV >= sqrt(48)/2: linear `clearly_better` rejects
+        // even a deterministic ×1.25 gain on every round, while `clearly_better_ratio` catches it
+        let mut base = vec![1_000.0; 48];
+        base[47] = 50_000.0;
+        let mult: Vec<f64> = base.iter().map(|x| x * 1.25).collect();
+        assert!(!clearly_better(&mult, &base), "linear test is fooled by heavy-tailed CV");
+        assert!(clearly_better_ratio(&mult, &base), "ratio test must catch deterministic ×1.25");
+        // Steady additive gain across all 48 rounds also passes
+        let add: Vec<f64> = base.iter().map(|x| x + 100.0).collect();
+        assert!(clearly_better_ratio(&add, &base));
+        // Exact tie, single-outlier jump, and mean-lowering flip must all stay false
+        assert!(!clearly_better_ratio(&base, &base));
+        let mut one_jump = base.clone();
+        one_jump[47] *= 2.0;
+        assert!(!clearly_better_ratio(&one_jump, &base));
+        // Arithmetic mean drops (97_000 -> 94_050) while paired log-ratios are strongly positive
+        // (+0.132, m - 2*SE > 0): must stay false because of the `ma <= mb` mean guard
+        let mut mean_drop: Vec<f64> = base.iter().map(|x| x * 1.15).collect();
+        mean_drop[47] = base[47] * 0.8;
+        assert!(!clearly_better_ratio(&mean_drop, &base));
     }
 }

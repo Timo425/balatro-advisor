@@ -175,7 +175,7 @@ pub(super) struct LongRun<'a> {
     round: Option<(i64, i64, i64)>,
     /// What the projection does with each of your jokers by Ante 8 (`Fate`): kept, or let go
     /// where that is clearly more than keeping it on the projection's paired rounds
-    /// (`compare::clearly_better`), decided in one ordered pass against the fates already set,
+    /// (`compare::clearly_better_ratio`), decided in one ordered pass against the fates already set,
     /// replaced by a typical find (their place or the right end) or sold outright, their money
     /// (income, rent) gone with them
     fates: Vec<Fate>,
@@ -194,9 +194,9 @@ pub(super) struct LongRun<'a> {
     /// `LEVEL_ONCE` a level), and the finds it wants (the benchmark find, the empty slots, the
     /// let-go jokers' replacements) and its one-off money below the line (the projection's
     /// sales): what another board's one-off money and finds are measured against, so a find it
-    /// buys or doesn't costs what it costs on the walk. Read on your board after the
-    /// projection's let-go choices (before them, for those), so the leftover lifts no board's
-    /// levels by itself and tops up none to the cap
+    /// buys or doesn't costs what it costs on the walk. Read on your board on each keep-or-let-go
+    /// pass and after the final let-go choices, so the leftover lifts no board's levels by itself
+    /// and tops up none to the cap
     left_base: (f64, f64, f64, f64),
     /// Your board's projected score: the baseline every value is a ratio of
     pub l0: f64,
@@ -235,10 +235,9 @@ pub(super) struct LongRun<'a> {
     past_cap: Option<Spending>,
     past_flow: f64,
     past_base: f64,
-    /// Whether, with every joker kept (as the keep-or-let-go weighs them), your board without
-    /// some joker you could sell holds a different amount past the cap every ante (`past_of`,
-    /// in whole dollars): set before the fates, for `past_reached`, so a money joker this long
-    /// run lets go still opens it
+    /// Whether, during any keep-or-let-go pass (before or after earlier let-go choices), letting
+    /// go a sellable joker moves money past the cap every ante (`past_of`, in whole dollars): for
+    /// `past_reached`, so a money joker this long run lets go still opens it
     past_kept: bool,
 }
 
@@ -666,10 +665,10 @@ impl<'a> LongRun<'a> {
             past_kept: false,
         };
         // Each joker you could sell kept, or let go where that is clearly more than keeping it on
-        // the projection's paired rounds (`compare::clearly_better`): replaced by a typical find
+        // the projection's paired rounds (`compare::clearly_better_ratio`): replaced by a typical find
         // (not a Negative: its slot goes with it) or sold outright, whichever leaves more
-        // (`let_go_rounds`: the money recomputed on the board without it, its income and rent gone
-        // with it). Decided jointly in an ordered greedy pass: each step commits the single joker
+        // (`let_go_projected`: the money recomputed on the board without it, its income and rent
+        // gone with it). Decided jointly in an ordered greedy pass: each step commits the single joker
         // whose letting-go raises the projected score most (canonical joker facts break exact
         // ties), then re-evaluates the remaining kept jokers against the board with the committed
         // fates, with `round` set first so jokers changing hand size, hands or discards count
@@ -681,17 +680,24 @@ impl<'a> LongRun<'a> {
             clear: Option<(Fate, f64)>,
             moved: bool,
         }
-        let mut first_pass = true;
+        let mut past_kept = false;
+        let mut first_past_flow: Option<f64> = None;
         let mut l0;
-        let final_spare_check = loop {
+        let final_spare = loop {
             let p = lr.project(&|_| true, run.dollars);
-            let p_dollars = p.dollars;
             lr.left_base = lr.base_walk(&p);
             lr.set_past_base(&p);
+            if let Some(first) = first_past_flow {
+                if (lr.past_flow - first).round() != 0.0 {
+                    past_kept = true;
+                }
+            } else {
+                first_past_flow = Some(lr.past_flow);
+            }
             // (`yours` itself has no Blue Seal round delta against itself: keep `round` unset
-            // while `fill_long` runs `spare_to_events` on it, then set `round` to `yours`'s)
+            // while `fill_split_with` runs `spare_to_events` on it, then set `round` to `yours`'s)
             lr.round = None;
-            let yours = lr.fill_long(p, None, 0.0);
+            let (yours, yours_spare) = lr.fill_split_with(p, None, 0.0, None);
             let (_, s) = yours.at_blind_set(&lr.long_spec_for(&yours, (0, 0, 0)).start);
             lr.round = Some((s.hand_size, s.hands, s.discards));
             let (before, before_rs) = Self::stats_rounds(&lr.long_stats_more(&yours, (0, 0, 0), 0, 0.0), 1.0);
@@ -700,25 +706,41 @@ impl<'a> LongRun<'a> {
                 .filter(|&i| !run.jokers[i].eternal && lr.lasts(i) && lr.fates[i] == Fate::Kept && !(keep_growers && crate::engine::grows_in_rounds(&ctx.base.jokers[i].key)))
                 .collect();
             let evals: Vec<Eval> = par_map(&candidates, |&i| {
-                // (with every joker kept, whether removing `i` moves money past the cap: for
-                // `past_reached`, so a money joker this long run lets go still opens it)
-                let moved = first_pass && lr.past_moved(&lr.project(&|k| k != i, run.dollars));
                 let money = lr.let_go_money(i);
-                let mut ways = vec![Fate::Sold];
+                // Put `Replaced { end: false }` before `Sold` so exact ties (e.g. when the walk
+                // can't afford a replacement find) prefer `Replaced` rather than locking the slot
+                // permanently empty (`Projected::empty`), matching `sell_base` and downstream money
+                let mut ways = Vec::with_capacity(3);
                 if !lr.negative(i) {
                     ways.push(Fate::Replaced { end: false });
                     if lr.end_differs(i) {
                         ways.push(Fate::Replaced { end: true });
                     }
                 }
-                let mut best_way = (f64::NEG_INFINITY, Fate::Sold);
+                ways.push(Fate::Sold);
+                let mut best_way = (f64::NEG_INFINITY, ways[0]);
                 let mut best_clear: Option<(Fate, f64)> = None;
+                let mut moved = false;
+                let mut seen: Vec<(Option<String>, u64, f64, Vec<f64>)> = Vec::with_capacity(3);
                 for way in ways {
-                    let (score, rs) = lr.let_go_rounds(i, way, money);
+                    let p_way = lr.let_go_projected(i, way, money);
+                    if way == Fate::Sold {
+                        moved = lr.past_moved(&p_way);
+                    }
+                    let past = lr.past_cap(&p_way);
+                    let b = lr.fill_long(p_way, None, 0.0);
+                    let key = (serde_json::to_string(&b).ok(), past.to_bits());
+                    let (score, rs) = if let Some((_, _, s, r)) = seen.iter().find(|(k, pb, _, _)| key.0.is_some() && *k == key.0 && *pb == key.1) {
+                        (*s, r.clone())
+                    } else {
+                        let (s, r) = Self::stats_rounds(&lr.long_stats_more(&b, (0, 0, 0), 0, 0.0), past);
+                        seen.push((key.0, key.1, s, r.clone()));
+                        (s, r)
+                    };
                     if score > best_way.0 {
                         best_way = (score, way);
                     }
-                    if super::compare::clearly_better(&rs, &before_rs) {
+                    if super::compare::clearly_better_ratio(&rs, &before_rs) {
                         let gain = if before > 0.0 { score / before } else { score };
                         if best_clear.is_none_or(|(_, g)| gain > g) {
                             best_clear = Some((way, gain));
@@ -727,10 +749,7 @@ impl<'a> LongRun<'a> {
                 }
                 Eval { i, way: best_way.1, clear: best_clear, moved }
             });
-            if first_pass {
-                lr.past_kept = evals.iter().any(|e| e.moved);
-                first_pass = false;
-            }
+            past_kept |= evals.iter().any(|e| e.moved);
             for e in &evals {
                 lr.let_go[e.i] = Some(e.way);
             }
@@ -741,18 +760,20 @@ impl<'a> LongRun<'a> {
                 Some(crate::model::Edition::Polychrome) => 3,
                 Some(crate::model::Edition::Negative) => 4,
             };
+            let per_ord = |p: Option<i64>| (p.is_some(), p.map(std::cmp::Reverse));
             let cmp_tie = |a: usize, b: usize| {
                 let (sa, sb) = (&run.jokers[a], &run.jokers[b]);
                 let (la, lb) = (ctx.base.jokers[a].lasting(), ctx.base.jokers[b].lasting());
-                // Order-independent tie-break on exact equal gain: debuffed first, then canonical
-                // joker facts, then lower current stats let go first, before slot index
+                // Order-independent tie-break on exact equal gain (under `max_by`, Greater = let
+                // go first): debuffed first, canonical joker facts (perishable with fewer rounds
+                // left first, lower edition first), lower current stats first, then slot index
                 sa.debuff
                     .cmp(&sb.debuff)
                     .then_with(|| sa.key.cmp(&sb.key))
                     .then_with(|| sa.sell_value.cmp(&sb.sell_value))
                     .then_with(|| sa.rental.cmp(&sb.rental))
-                    .then_with(|| sa.perishable.cmp(&sb.perishable))
-                    .then_with(|| ed_ord(sa.edition).cmp(&ed_ord(sb.edition)))
+                    .then_with(|| per_ord(sa.perishable).cmp(&per_ord(sb.perishable)))
+                    .then_with(|| ed_ord(sb.edition).cmp(&ed_ord(sa.edition)))
                     .then_with(|| lb[0].total_cmp(&la[0]))
                     .then_with(|| lb[1].total_cmp(&la[1]))
                     .then_with(|| lb[2].total_cmp(&la[2]))
@@ -767,16 +788,16 @@ impl<'a> LongRun<'a> {
                     lr.fates[i] = way;
                     lr.let_go[i] = Some(way);
                 }
-                None => break bought_event(&yours, run).is_some() && p_dollars > lr.line,
+                None => break yours_spare,
             }
         };
+        lr.past_kept = past_kept;
         lr.fates_set = true;
         lr.l0 = l0;
-        // Pre-populate `spare_choice` for your own board's grower key so a later `long_of` on a
-        // duplicate shop grower cannot seed it with two copies
-        if final_spare_check {
-            let p = lr.project(&|_| true, run.dollars);
-            let _ = lr.fill_long(p, None, 0.0);
+        // Reuse the split `yours` already chose on the final pass (with `round = None`) so a
+        // later `long_of` on a duplicate shop grower cannot seed `spare_choice` with two copies
+        if let Some((key, choice)) = final_spare {
+            lr.spare_choice.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(key, choice);
         }
         let lasting = (0..run.jokers.len()).filter(|&i| lr.lasts(i)).count() as i64;
         // (a Negative that doesn't last takes its slot with it: `project_as`)
@@ -833,12 +854,8 @@ impl<'a> LongRun<'a> {
         self.place_of(i) < rest
     }
 
-    /// The projected board and `past_cap` factor with your joker `i` let go as `way` (`Sold`: no
-    /// find, its slot left empty; `Replaced`: a typical find in its place or at the right end),
-    /// the other jokers as the projection holds them, `money` one-off money with their sales
-    /// (dollars, one split of the sum by the interest line, `fill_long`: the sale against leaving
-    /// is told exactly)
-    fn let_go_board(&self, i: usize, way: Fate, money: f64) -> (Board, f64) {
+    /// The `Projected` state with your joker `i` let go as `way` and `money` one-off sale money
+    fn let_go_projected(&self, i: usize, way: Fate, money: f64) -> Projected {
         let run = self.run;
         let find = self.stand_in(1.25, 0.0, 0.0);
         let mut p = match way {
@@ -857,6 +874,16 @@ impl<'a> LongRun<'a> {
             _ if !self.negative(i) => p.empty += 1,
             _ => {}
         }
+        p
+    }
+
+    /// The projected board and `past_cap` factor with your joker `i` let go as `way` (`Sold`: no
+    /// find, its slot left empty; `Replaced`: a typical find in its place or at the right end),
+    /// the other jokers as the projection holds them, `money` one-off money with their sales
+    /// (dollars, one split of the sum by the interest line, `fill_long`: the sale against leaving
+    /// is told exactly)
+    fn let_go_board(&self, i: usize, way: Fate, money: f64) -> (Board, f64) {
+        let p = self.let_go_projected(i, way, money);
         let past = self.past_cap(&p);
         (self.fill_long(p, None, 0.0), past)
     }
@@ -865,13 +892,6 @@ impl<'a> LongRun<'a> {
     fn let_go_score(&self, i: usize, way: Fate, money: f64) -> f64 {
         let (b, past) = self.let_go_board(i, way, money);
         self.long_score(&b) * past
-    }
-
-    /// `let_go_score` and its paired per-round scores scaled by `past_cap`, for comparing against
-    /// keeping on the projection's paired rounds (`compare::clearly_better`)
-    fn let_go_rounds(&self, i: usize, way: Fate, money: f64) -> (f64, Vec<f64>) {
-        let (b, past) = self.let_go_board(i, way, money);
-        Self::stats_rounds(&self.long_stats_more(&b, (0, 0, 0), 0, 0.0), past)
     }
 
     /// Your joker `i` sold now, as a ratio of your board's projected score (`l0`): let go its
@@ -1298,9 +1318,10 @@ impl<'a> LongRun<'a> {
     /// nothing) is worth by Ante 8 (`value`, less 1), each measured on a
     /// step of its own (`GROWTH_STEPS`) and never below nothing (more never scores less), and
     /// what losing it is worth: its place to a typical find, the benchmark it's kept against
-    /// (`fates`; a Negative's slot goes with it: no find), so less than nothing for every joker
-    /// the projection keeps. Nothing for a joker the projection drops (a perishable that runs
-    /// out) or lets go (replaced or sold, not eternal).
+    /// (`fates`; a Negative's slot goes with it: no find), clamped at most nothing (≤ 0) so a
+    /// joker kept inside the projection's noise never rewards destroying it. Nothing for a joker
+    /// the projection drops (a perishable that runs out) or lets go (replaced or sold, not
+    /// eternal).
     pub fn joker_worth(&self, i: usize) -> ([f64; 3], f64) {
         if !self.lasts(i) || self.fate(i) != Fate::Kept {
             return ([0.0; 3], 0.0);
@@ -1452,6 +1473,12 @@ impl<'a> LongRun<'a> {
 
     /// `fill_long` with the split forced (`Some(true)`: events first) or chosen (`None`)
     fn fill_split(&self, p: Projected, option: Option<Joker>, once: f64, events_first: Option<bool>) -> Board {
+        self.fill_split_with(p, option, once, events_first).0
+    }
+
+    /// `fill_split`, also returning the `(grower_key, events_first)` split chosen when
+    /// `events_first` is `None` and a bought-event grower is on the board
+    fn fill_split_with(&self, p: Projected, option: Option<Joker>, once: f64, events_first: Option<bool>) -> (Board, Option<(String, bool)>) {
         let grower_option = option.as_ref().filter(|j| RunEvent::ALL.iter().any(|&ev| j.mult_from(ev) != 0.0 || j.xmult_from(ev) != 0.0)).cloned();
         let Projected { board: mut b, dollars, flow, held, top_base, sales, empty, replaced } = p;
         // (a Negative option brings its slot: card.lua `Card:add_to_deck`, the joker limit +1)
@@ -1521,6 +1548,7 @@ impl<'a> LongRun<'a> {
         if event_price(self.run, RunEvent::Reroll).is_some() && b.changes_with(RunEvent::Reroll) {
             b.after(RunEvent::Reroll, self.antes_left);
         }
+        let mut chosen = None;
         match bought_event(&b, self.run) {
             None => self.spend_once(&mut b, once, once),
             Some((ev, price)) => {
@@ -1546,12 +1574,16 @@ impl<'a> LongRun<'a> {
                 };
                 let first = match events_first {
                     Some(c) => c,
-                    None => self.spare_to_events(&b, grower_option, &mut || (finish(levels_first()), finish(events_first_board()))),
+                    None => {
+                        let c = self.spare_to_events(&b, grower_option, &mut || (finish(levels_first()), finish(events_first_board())));
+                        chosen = Some((Self::grower_key(&b), c));
+                        c
+                    }
                 };
                 b = if first { events_first_board() } else { levels_first() };
             }
         }
-        finish(b)
+        (finish(b), chosen)
     }
 
     /// Empty slots filled with stand-ins (the jokers you'd find over the run), but `empty` of
@@ -1576,6 +1608,17 @@ impl<'a> LongRun<'a> {
         self.ctx.arranged(b)
     }
 
+    fn grower_key(board: &Board) -> String {
+        let mut growers: Vec<String> = board
+            .jokers
+            .iter()
+            .filter(|j| RunEvent::ALL.iter().any(|&ev| j.mult_from(ev) != 0.0 || j.xmult_from(ev) != 0.0))
+            .map(|j| format!("{}:{}", j.key, RunEvent::ALL.iter().map(|&ev| j.mult_from(ev)).sum::<f64>()))
+            .collect();
+        growers.sort();
+        growers.join(",")
+    }
+
     /// Whether the spare money goes events first rather than levels first, whichever the
     /// projection scores higher (events only when clearly higher: within `compare::EQUAL` it's
     /// levels, as on a board nothing grows on). Decided once for each set of jokers that grow
@@ -1587,14 +1630,7 @@ impl<'a> LongRun<'a> {
         if !self.fates_set {
             return pick(these());
         }
-        let mut growers: Vec<String> = board
-            .jokers
-            .iter()
-            .filter(|j| RunEvent::ALL.iter().any(|&ev| j.mult_from(ev) != 0.0 || j.xmult_from(ev) != 0.0))
-            .map(|j| format!("{}:{}", j.key, RunEvent::ALL.iter().map(|&ev| j.mult_from(ev)).sum::<f64>()))
-            .collect();
-        growers.sort();
-        let key = growers.join(",");
+        let key = Self::grower_key(board);
         let mut cache = self.spare_choice.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(&c) = cache.get(&key) {
             return c;
@@ -1881,8 +1917,8 @@ impl<'a> LongRun<'a> {
 
     /// Whether money past the planet-level cap moves anything here (`past_cap`): some board this
     /// long run projects holds a different amount past it every ante than your board does
-    /// (`past_of`, in whole dollars): yours without each joker you could sell, with every joker
-    /// kept (`past_kept`) or as this long run keeps or lets them go, yours with each of `offers` (a joker,
+    /// (`past_of`, in whole dollars): yours without each joker you could sell, during
+    /// keep-or-let-go (`past_kept`) or as this long run keeps or lets them go, yours with each of `offers` (a joker,
     /// the joker of yours it replaces, whether it's a rental) or each round of `rounds` (a
     /// voucher's hands, discards and hand size). Where none does, every option's factor is 1.
     pub fn past_reached(&self, offers: &[(Joker, Option<usize>, bool)], rounds: &[(i64, i64, i64)]) -> bool {
