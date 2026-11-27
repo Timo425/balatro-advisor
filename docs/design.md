@@ -1221,6 +1221,16 @@ the same retriggered ×Mult.
   an option's walk does reroll here (13 of 38 staying walks on P4NKP4S7 a3-r7) it can't see that
   (the queue's "What's left of gap 17"). The
   advice's time: +0% on the timing states, +1% on three rich shops.
+- **Done 2026-11-27:** a round in progress at The Pillar played again from its start (the hand
+  mix, a tarot that changes the deck's size, the outlook) has this round's cards unplayed (gap 15,
+  `fresh_deck_of`; the "not simulated" label only where a hand has scored and a discarded card is
+  marked and debuffed, before on every Pillar round in progress). Best play's quick pass plays on
+  from the screen, so the history check on The Pillar's 175 states moved no pick; on the new
+  fixture of this round's plays the hand mix, six tarots' chances (Familiar 0.92 → 0.95) and the
+  outlook move, Best play doesn't; on the one of the blind set again nothing moves.
+  Worth: about 29 of the 2,347 saved in-blind states hold cards this round played at The Pillar,
+  its cost one pass over the deck (not timed). The Pillar's cost in Best play's round tried and not kept: the judge can't
+  see it (gap 15, "Tried 2026-11-27"; the queue's judge card first).
 - **Next:** a free hand banked before the
   hand that wins (gap 34); Ceremonial Dagger's value (gap 8); the blind odds shown and the
   outlook chained as Best play's blinds ahead are (gap 28).
@@ -2283,7 +2293,19 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    blinds ahead (`sim::chained_runs`, `value::Ahead`) meet The Pillar with what the Big Blind
    played debuffed; a boss beaten ends the ante (`Board::won_round`: the board's cards cleared,
    and a fresh round's start read with none played, `Board::ante_over`). A round in progress at
-   The Pillar plays the save's debuffs.
+   The Pillar plays the save's debuffs; played again from its start (`fresh_round`, from
+   `fresh_deck_of`; since 2026-11-27), a card marked played this ante but not debuffed is
+   unplayed, as this round played it: the game debuffs the cards played this ante when the
+   blind is set (blind.lua `Blind:set_blind`), and playing a card only marks it (state_events.lua
+   `G.FUNCS.play_cards_from_highlighted`). A joker or consumable added or removed during the blind
+   (sold, used, made by a Purple Seal or 8 Ball), or a playing card destroyed (Glass, Sixth
+   Sense), sets the blind again (card.lua `Card:add_to_deck`, which returns first for a playing
+   card, and `Card:remove_from_deck`) and debuffs this round's played cards too: those still read
+   as played before it (the save can't tell them from a debuffed card played as a filler), and the
+   blind says so
+   wherever a hand has scored and a discarded card is marked and debuffed (before 2026-11-27,
+   every card this round played read so; fixtures `pillar_blind_set_again_by_purple_seal`,
+   `pillar_this_rounds_cards_replayed_unplayed`).
    Verdant Leaf: while a sale would lift the blind (`Board::sale_lifts_blind`), the simulated
    player weighs one before each hand (`sim` `leaf_sale`), and Best play's first move is played
    on the board that sale leaves, as the rest of its round is (`outcomes_after`: else a discard
@@ -2334,17 +2356,44 @@ Ranked by how likely each is to cause the next round of patch-on-patch.
    Pillar (`value::Ahead` measures the blinds ahead from your board as it is, not from the cards
    a line leaves played), so fixture `ride_the_bus_queens_dig` (Small Blind before the Big Blind
    and The Pillar; the owner's line keeps the Queens out) still waits in `pending_expect` on this
-   gap; selling isn't a move of Best play's at Verdant Leaf: its moves are played after the
-   simulated player's sale and the blind names it ("not simulated: … assume selling X first"),
-   but Best play neither races the sale nor shows its moves on the board it leaves; a round in
-   progress at The Pillar replayed from its start (`advise.rs` `fresh_round`) counts the cards
-   this round played as played before it (said on the blind). A replay from the start keeps a
+   gap (recaptured 2026-11-27 with the cards the save marks played; still pending); selling isn't
+   a move of Best play's at Verdant Leaf: its moves are played after the simulated player's sale
+   and the blind names it ("not simulated: … assume selling X first"), but Best play neither
+   races the sale nor shows its moves on the board it leaves. A replay from the start keeps a
    blind its round disabled (`fresh_round`: Chicot, Luchador's or the Leaf's sale; before, a Leaf
    already lifted was replayed active and another joker sold). The
    simulated player plays the Small and Big Blind without keeping cards for The Pillar. The
    boss's own row ahead (and the shop ranking's, and the shops' find `value::Ahead` sizes on the
    boss alone) counts only the cards the save shows played, not those the blinds before it will
    still play (said on the blind: "not simulated"); only `Ahead`'s chain carries the Big Blind's.
+   Tried 2026-11-27 and not kept: The Pillar's cost in Best play's round, each card a line plays
+   costing its debuff's shift of the log-odds through the blinds ahead (`value::Ahead`'s runs
+   with the cards marked played, the rounds before The Pillar played once for every set; added
+   to `Grown::ahead` as each card is played, a goal of the round like the jokers' numbers). What
+   was learned, on 8 saved Small and Big Blind states before The Pillar: alone, a card moves the
+   chain too little for the paired runs (300) where the chain is above about 80% (Q84UC3NR's
+   Small Blind at 83%: 2 cards of 44 passed the test, by chance, the hand together nothing); on
+   hard boards single cards show clearly (QBJCMCRM's Big Blind, a clubs Flush board at 30%: 10
+   clubs at −0.22 to −0.46 log-odds each; I6XKKH65's Stone and Steel deck at 64-79%: a Steel
+   Queen −0.82, Steel cards −0.5 to −0.66); added up they overstate the hand's (−0.94 for three
+   clubs against −0.61 for the hand's seven unplayed cards together); measuring every kind of
+   card in the deck cost 0.3-10.7 s a state (with the rounds before The Pillar shared, about
+   half that). Counting only the hand's cards made Best play throw a club (0.81 → 0.71 this
+   round) to draw another the round played at no cost; with the pile's counted it played an
+   off-suit Pair to keep every club out (0.79). Card by card, two cards alike read apart (a Flush
+   with 2♣ for 3♣ judged 69% better); by the game's groups (suit, rank, extras) shared per card,
+   an off-suit 3 pays for a club's share of its rank. On the history (`BAV_HOLDS=bl_pillar`,
+   175 states) the group version moved 34 picks, judged 23 better, 2 worse, 1 tie, 8 unclear,
+   but the judge plays only the rest of this round and values it by the same measure, so it
+   can't see whether the cost is right (the largest: I6XKKH65's Steel Ace and two Stone cards
+   kept out, +57%); both worse picks throw a card the simulated player would play later at a
+   cost, which it's charged and never avoids (it weighs the cost only in its finish). Not kept
+   until a judge plays a line on through the Big Blind and The Pillar (the queue's "A judge that
+   plays a blind's line on through The Pillar"); what a measure then needs: a card's own share
+   (an additive fit over suit, rank and extras, Stone and Wild by the game's `Card:is_suit` and
+   `Card:get_id`), the cost read at a play's size (a Flush board's isn't linear in the cards
+   lost), and the simulated player's own plays steered by it (rule 3); the queue's card says where
+   the patch is.
    A card a tarot or spectral enhances loses `played_this_ante`, as in the game (card.lua
    `Card:set_ability` rebuilds `ability`; `consumable::apply`), and with it The Pillar's debuff
    (`sim::debuff_after`). Also not yet: the same for a card Midas Mask or Vampire changes;

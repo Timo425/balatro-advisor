@@ -1430,12 +1430,29 @@ pub fn face_down_drawn(run: &RunState, board: &Board, hand: &[Card], order: &[us
 /// order your hand and piles never changes the advice
 fn fresh_deck_of(run: &RunState) -> Vec<Card> {
     let mut fresh_deck = run.full_deck();
+    // At The Pillar in play, a card marked played this ante but not debuffed was played this
+    // round, so the round played again from its start (`fresh_round`) has it unplayed: the game
+    // debuffs the cards played this ante when the blind is set (blind.lua `Blind:set_blind`),
+    // and playing a card only marks it (state_events.lua `G.FUNCS.play_cards_from_highlighted`).
+    // A joker or consumable added or removed during the blind (sold, used, made by a Purple Seal or
+    // 8 Ball), or a playing card destroyed (Glass, Sixth Sense), sets the blind again (card.lua
+    // `Card:add_to_deck`, which returns first for a playing card, and `Card:remove_from_deck`) and
+    // debuffs this round's played cards too: those still read as played before it. (A card
+    // enhanced loses its mark: `Card:set_ability`.)
+    let pillar = run.blind_in_play().is_some_and(|b| b.key == "bl_pillar" && !b.disabled);
     for c in &mut fresh_deck {
+        c.played_this_ante &= !(pillar && !c.debuff);
         c.face_down = false;
         c.debuff = false;
     }
     fresh_deck.sort_by_key(Card::order_key);
     fresh_deck
+}
+
+/// Whether `fresh_deck_of` can't tell which of the discarded cards marked played this ante were
+/// played this round: a hand was played (it scored) and some are debuffed
+fn pillar_replay_unsure(run: &RunState) -> bool {
+    run.blind_in_play().is_some_and(|b| b.scored > 0.0) && run.discard_pile.iter().any(|c| c.played_this_ante && c.debuff)
 }
 
 /// The full analysis. Outside a blind every option is valued on your jokers as you'd arrange
@@ -3687,7 +3704,10 @@ fn round_unmodelled(ctx: &Ctx, s: &Spec) -> Option<String> {
         return None;
     }
     match s.blind_key.as_str() {
-        "bl_pillar" if s.in_progress() => Some("not simulated: where this round is played again from its start (hand mix, packs, tarots), the cards it played count as played before it".into()),
+        // (exact unless a hand was played this round and a discarded card is marked and debuffed:
+        // played before this blind, or this round with the blind set again since, `fresh_deck_of`;
+        // a hand always scores some chips, so none scored means none played)
+        "bl_pillar" if s.in_progress() && pillar_replay_unsure(ctx.run) =>Some("not simulated: the hand mix, tarots and style outlook replay this round from its first hand and may treat a card you played this round as debuffed from the start (a joker or consumable sold, used or made mid-round re-applies The Pillar to it); Best play now plays your cards as they are".into()),
         "bl_final_leaf" if s.in_progress() => {
             let (b, st) = ctx.base.at_blind_set(&s.start);
             let sold = sim::leaf_choice(&b, &st.hand, &st.deck, st.hand_size.max(1) as usize, st.hands).map(|j| ctx.data.name(&b.jokers[j].key).to_string());
@@ -8140,6 +8160,45 @@ mod tests {
         let spec = Spec { start: RoundStart { hand_size: m.round_hand_size(), disabled: true, ..spec.start.clone() }, ..spec };
         let again = fresh_round(&spec, &m, &fresh_deck).start;
         assert_eq!(ctx.base.at_blind_set(&again).1.hand_size, m.hand_size + 3);
+    }
+
+    #[test]
+    fn the_pillar_played_again_from_its_start_has_this_rounds_cards_unplayed() {
+        // blind.lua `Blind:set_blind` debuffs a card played this ante as The Pillar is set; a
+        // card played in its round is marked (state_events.lua
+        // `G.FUNCS.play_cards_from_highlighted`) but not debuffed
+        let mut r = shop_run(&[("j_joker", None, None)], &[]);
+        let mut cards = Card::parse_list("AS KS QH 2C").unwrap();
+        (cards[0].played_this_ante, cards[0].debuff) = (true, true);
+        cards[1].played_this_ante = true;
+        cards[3].played_this_ante = true;
+        r.draw_pile = vec![cards[0], cards[2]];
+        r.discard_pile = vec![cards[1], cards[3]];
+        r.screen = crate::save::Screen::SelectingHand;
+        r.shop = None;
+        r.current_blind = Some(crate::save::CurrentBlind { key: "bl_pillar".into(), name: "The Pillar".into(), target: 800.0, scored: 0.0, disabled: false, hands_seen: vec![], only_hand: None });
+        let marked = |r: &RunState| fresh_deck_of(r).iter().filter(|c| c.played_this_ante).map(Card::label).collect::<Vec<_>>();
+        assert_eq!(marked(&r), vec!["A♠".to_string()]);
+        // the replay is exact (no label) unless a hand scored and a discarded card is marked and
+        // debuffed: one played before this blind and discarded, or one played this round and
+        // debuffed by the blind set again
+        assert!(!pillar_replay_unsure(&r));
+        r.current_blind.as_mut().unwrap().scored = 300.0;
+        assert!(!pillar_replay_unsure(&r), "the marked and debuffed card is in the draw pile");
+        r.discard_pile[0].debuff = true;
+        assert!(pillar_replay_unsure(&r));
+        r.current_blind.as_mut().unwrap().scored = 0.0;
+        assert!(!pillar_replay_unsure(&r), "no hand played this round: every debuffed mark is from before it");
+        r.discard_pile[0].debuff = false;
+        // before The Pillar is set (no debuffs yet), disabled, or another blind: as the save marks them
+        r.screen = crate::save::Screen::BlindSelect;
+        assert_eq!(marked(&r).len(), 3);
+        r.screen = crate::save::Screen::SelectingHand;
+        r.current_blind.as_mut().unwrap().disabled = true;
+        assert_eq!(marked(&r).len(), 3);
+        r.current_blind.as_mut().unwrap().key = "bl_hook".into();
+        r.current_blind.as_mut().unwrap().disabled = false;
+        assert_eq!(marked(&r).len(), 3);
     }
 
     #[test]
