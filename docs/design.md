@@ -1248,12 +1248,12 @@ the same retriggered ×Mult.
   instead of dropping all four jokers, `shop_golden_kept_by_name` keeps Superposition and Droll,
   and `ride_the_bus_queens_dig` keeps Hanging Chad). Full history check against `2ce0cde` (134
   blind states): 1 pick moved (`8I93CDBG` a4-r10, judged a tie at +0.26% ± 0.01%, judge shares the
-  valuation). Shop judge on the 19 shops from those three fate-changed runs (measured earlier on
-  `127309c` before `4799be9` and the follow-up fixes; the other 125 of 144 not run through
-  `shop_picks`): 1 top pick moved (`I6XKKH65` a5-r11, Jumbo Arcana Pack → Arcana Pack, +0.032 ±
-  0.024, within two standard errors). `timing.py` against `2ce0cde` (under background game load
-  35.6; quiet-machine pre-dedup run against `4799be9` was quick 28.6 → 30.3 s +6%, full 126.9 →
-  129.6 s +2.1%): quick +3% (46.3 → 47.9 s), full +1% (178.4 → 180.0 s).
+  valuation). Shop check on all 144 judge shops, `2ce0cde` against `479d2ca`'s code (run
+  2026-11-28): 0 top picks moved, so nothing for `shop_judge` to play; 3 shops' second or third
+  option moved (`I6XKKH65` a3-r4 and a3-r6: selling Marble Joker now second; `8I93CDBG` a2-r4: a
+  Flush planet and a reroll swap places). `timing.py` on `479d2ca`'s code at load 4.5 (new
+  build only): quick 31.2 s (budget 33), full 127.8 s (budget 130); not measured quietly against
+  `2ce0cde` (the chat's own run against it was at load 35.6: quick +3%, full +1%).
 - **Next:** a free hand banked before the
   hand that wins (gap 34); Ceremonial Dagger's value (gap 8); the blind odds shown and the
   outlook chained as Best play's blinds ahead are (gap 28).
