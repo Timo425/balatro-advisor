@@ -58,6 +58,10 @@ pub struct Money {
     /// Rocket's later raises not counted)
     pub per_round: f64,
     pub per_round_after: f64,
+    /// The rent taken off each of those ($3 a rental: card.lua `Card:calculate_rental`), now
+    /// and with the plan
+    pub rent: f64,
+    pub rent_after: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -334,7 +338,8 @@ pub fn run(run: &RunState, data: &GameData, plan: &Plan, sims: usize, seed: u64)
         (crate::advise::plain_round_cash(&b, &starts, n, seed, (run.money_per_hand, run.money_per_discard)), besides - rentals as f64 * 3.0)
     };
     let full_now = run.full_deck();
-    let (now, now_besides) = rounds(&base.jokers, &full_now, &[], &[], run.jokers.iter().filter(|j| j.rental).count());
+    let rentals_now = run.jokers.iter().filter(|j| j.rental).count();
+    let (now, now_besides) = rounds(&base.jokers, &full_now, &[], &[], rentals_now);
     let (after, after_besides) = rounds(&jokers, &full_after, &added, &removed, rentals);
     // now: the mean over the rounds won; with the plan: that, and the difference on the rounds
     // both win (`value::money_difference`, the advice's own measure)
@@ -344,6 +349,8 @@ pub fn run(run: &RunState, data: &GameData, plan: &Plan, sims: usize, seed: u64)
         dollars_after: run.dollars + (sold - bought) as f64,
         per_round: now_money + now_besides,
         per_round_after: now_money + crate::advise::money_difference(&after, &now) + after_besides,
+        rent: rentals_now as f64 * 3.0,
+        rent_after: rentals as f64 * 3.0,
     };
     if money.dollars_after < 0.0 {
         notes.push(format!("the plan costs ${:.0} more than the ${:.0} you have", -money.dollars_after, run.dollars));

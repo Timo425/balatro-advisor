@@ -11,9 +11,19 @@
 //! the boss's chance ahead (this ante's × the next ante's, at least 3 wins in its rounds, before this boss), in a free slot or
 //! for the joker whose sale leaves the most, rerolling up to 3 times; "spend" buys and rerolls
 //! while it can pay, "cap" keeps the interest cap (buys below it only for 5 points or more,
-//! rerolls only above it). Not counted: editions, packs, planets and tarots in later shops,
-//! vouchers but Seed Money's and Money Tree's cap, skips, rent, the hands' money beyond $1 a
-//! round, anything after the next ante's boss (the money left there is printed).
+//! rerolls only above it). Each round pays its blind's reward, the interest on the money held
+//! before it, and what a round won pays on the board the branch holds then, as the advice
+//! measures a board's round money (`whatif`'s `Money::per_round_after` with its rent added back:
+//! the mean over this ante's three plain blinds' rounds won of scoring, discards, the round's end
+//! with the jokers' money, hands and discards left, plus Egg's sell value and To the Moon's
+//! interest; on the rounds the policy picks by, memoised with their chances; a board's money
+//! within the noise of yours is yours, `money_difference`). To the Moon's interest comes once,
+//! in the interest rate of the board held (card.lua `Card:add_to_deck` raises
+//! `G.GAME.interest_amount`, which the save's `interest_amount` holds), not in the round's money.
+//! Not counted:
+//! editions, packs, planets and tarots in later shops, vouchers but Seed Money's and Money
+//! Tree's cap, skips, rent, a boss's rule in a round's money (each round paid at this ante's
+//! plain blinds' rate), anything after the next ante's boss (the money left there is printed).
 //!
 //! A tarot or spectral (bought, picked from a pack, made by The Emperor or copied by The Fool) is
 //! used at once, as the advice uses it (`advise::TarotValue`, the shop's own analysis): a card
@@ -123,8 +133,9 @@ struct Rest {
     size: i64,
 }
 
-/// Chances memoised by (the jokers, the hands levelled up, the deck changed, the hand size)
-type Memo = Mutex<HashMap<(Vec<String>, Vec<String>, u64, i64), (f64, f64)>>;
+/// (this ante's boss, the next ante's plain boss, a round's money before rent) memoised by (the
+/// jokers, the hands levelled up, the deck changed, the hand size)
+type Memo = Mutex<HashMap<(Vec<String>, Vec<String>, u64, i64), (f64, f64, f64)>>;
 
 struct Judge<'a> {
     run: &'a save::RunState,
@@ -153,15 +164,23 @@ impl Judge<'_> {
     /// (this ante's boss, the next ante's plain boss) on a board of these jokers, as the
     /// policy sees them
     fn chances(&self, js: &[Held], r: &Rest) -> (f64, f64) {
-        self.on(&self.memo, js, r, self.sims, 42)
+        let (b, n, _) = self.on(&self.memo, js, r, self.sims, 42);
+        (b, n)
     }
 
     /// The same, on rounds of their own: what a branch's board is scored on
     fn score(&self, js: &[Held], r: &Rest) -> (f64, f64) {
-        self.on(&self.scored, js, r, SCORE_SIMS, 0x5c0e)
+        let (b, n, _) = self.on(&self.scored, js, r, SCORE_SIMS, 0x5c0e);
+        (b, n)
     }
 
-    fn on(&self, memo: &Memo, js: &[Held], r: &Rest, sims: usize, seed: u64) -> (f64, f64) {
+    /// What a round won pays on a board of these jokers besides its reward and interest, before
+    /// rent (the module's doc), on the policy's rounds
+    fn round_money(&self, js: &[Held], r: &Rest) -> f64 {
+        self.on(&self.memo, js, r, self.sims, 42).2
+    }
+
+    fn on(&self, memo: &Memo, js: &[Held], r: &Rest, sims: usize, seed: u64) -> (f64, f64, f64) {
         let keys: Vec<String> = js.iter().map(Held::spec).collect();
         let mut levels = r.lv.clone();
         levels.sort();
@@ -192,7 +211,7 @@ impl Judge<'_> {
         run.hand_size = (run.hand_size + r.size).max(1);
         let plan = whatif::Plan { jokers: Some(key.0.clone()), ..Default::default() };
         let o = whatif::run(&run, self.data, &plan, sims, seed).expect("whatif");
-        let v = (o.plan.iter().find(|b| b.label == self.boss).map_or(1.0, |b| b.p_win), o.plan.last().map_or(0.0, |b| b.p_win));
+        let v = (o.plan.iter().find(|b| b.label == self.boss).map_or(1.0, |b| b.p_win), o.plan.last().map_or(0.0, |b| b.p_win), o.money.per_round_after + o.money.rent_after);
         memo.lock().unwrap().insert(key, v);
         v
     }
@@ -517,7 +536,18 @@ fn judge_trials(path: &str, option: &str, trials: usize, sims: usize) -> (String
     // you're in, the ones the save says are left
     let chaos = run.jokers.iter().filter(|j| j.key == "j_chaos").count();
     let free_now = run.shop.as_ref().map_or(0, |s| s.free_rerolls.max(0) as usize);
-    let cash = |b: &mut Branch, reward: i64| b.money += reward as f64 + run.money_per_hand + advise::interest(b.money, run.interest_amount, b.cap) as f64;
+    // a round's reward, the interest on the money before it, and what the round pays on the
+    // board that played it (the module's doc)
+    // To the Moon's raise of the interest: the save's rate holds yours (card.lua
+    // `Card:add_to_deck`), a board's is the rate without them plus its own; the round's money
+    // counts it at the money you hold now (`payout_besides`), so it's taken out of that
+    let moon_n = data.center("j_to_the_moon").and_then(|c| c.config.get("extra")?.as_i64()).unwrap_or(1);
+    let moons = |js: &[Held]| js.iter().filter(|h| h.key == "j_to_the_moon").count() as i64 * moon_n;
+    let base_interest = run.interest_amount - moons(&held0);
+    let cash = |b: &mut Branch, reward: i64| {
+        let besides = advise::interest(run.dollars, moons(&b.js), run.interest_cap) as f64;
+        b.money += reward as f64 + j.round_money(&b.js, &b.rest) - besides + advise::interest(b.money, base_interest + moons(&b.js), b.cap) as f64;
+    };
     // `here`: the shop you're in, its cards left (they're the options), rerolls from its price
     let shop = |b: &mut Branch, pol: Policy, boss_done: bool, seed: u64, here: bool| {
         let mut s = Stream::new(seed);
