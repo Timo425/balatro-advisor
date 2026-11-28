@@ -102,10 +102,11 @@ task serves that; judge its effort by it, and its cost in the advice's time by w
   a time per PC across all chats, under `nice -n 19`. When load is high, check your own jobs first
   (a launcher in `ps` doesn't mean the owner is playing).
 - **Split runs over ~50 minutes** into parts (`BAV_ONLY`, `BAV_SEEDS`): the prompt cache lasts an
-  hour by the clock, so on a busy PC size a part by how long the last one took. **Before a run over
-  an hour**, say in one line how long it takes and why a shorter check (above: "Test a card by what
-  it changes") won't answer the card, then start it: the owner doesn't play Balatro while chats work
-  here (D19).
+  hour by the clock, so on a busy PC size a part by how long the last one took (`tools/checks.py
+  --times`: each check's last run on this machine; with a check named, the fixtures that grew).
+  **Before a run over an hour**, say in one line how long it takes and why a shorter check (above:
+  "Test a card by what it changes") won't answer the card, then start it: the owner doesn't play
+  Balatro while chats work here (D19).
 - **After code changes**, your own or pulled, `cargo install --path crates/cli` (the owner restarts
   `ui`): the installed `balatro-advisor` is whatever was last installed on this machine. The bot plays
   only on Profile 3, never the owner's Profile 1.

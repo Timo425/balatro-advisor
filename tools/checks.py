@@ -21,6 +21,18 @@ saved history) isn't stamped: a fixture changed since shows nowhere here.
 
     tools/checks.py                      the last day's runs
     tools/checks.py --hours 3
+    tools/checks.py --times              how long each check took here: its last finished run
+                                         for each scope (the settings that pick what it runs,
+                                         SCOPE below), the one before, and the date and commit
+    tools/checks.py --times snapshot     and the items (fixtures, states) of that check's last
+                                         finished run that grew most against the one before,
+                                         for the checks that log them (the replay fixtures,
+                                         which `cargo test` runs, and the snapshot)
+
+The times are this machine's (the log is per machine, in its temp folder: a temp clean-up
+empties it). How long a check will take is its last run's time, not a figure written down:
+the fixtures and the code change it run by run. `cargo test`'s unit tests aren't logged; its
+replay fixtures are (`replay_fixtures`), most of its time.
     tools/checks.py /tmp/after ...       every run logged into these folders; exits 1 unless
                                          each has one from this checkout and, for each check that
                                          wrote there, every run since its last full one (without
@@ -37,6 +49,8 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CRATE = os.path.join(REPO, "crates", "core")
 INPUTS = ["src", "../../data/game.json"]  # crates/core/tests/common/source_hash.rs INPUTS
 FILTERS = ("BAV_ONLY=", "BAV_HOLDS=", "BAV_SEEDS=", "BAV_WHICH=")
+# the settings that pick what a check runs, so its time is compared only with runs of the same
+SCOPE = FILTERS + ("BAV_SAMPLE=", "BAV_FINDS=", "BAV_FINDS_QUICK=", "BAV_PLAYON=", "BAV_PLAYON_TRIALS=", "BAV_PLAYON_SIMS=", "BAV_SNAPSHOT_DEADLINE=", "BAV_SEED=")
 
 
 def temp_dir():
@@ -88,7 +102,7 @@ def git(*args):
 
 
 def read_log(path):
-    starts, ends = [], {}
+    starts, ends, items = [], {}, {}
     try:
         lines = open(path, encoding="utf-8", errors="replace").read().splitlines()
     except FileNotFoundError:
@@ -96,13 +110,69 @@ def read_log(path):
     for line in lines:
         f = line.split("\t")
         if len(f) >= 4 and f[1] == "end":
-            ends[f[2]] = f[3]
+            ends[f[2]] = (f[3], int(f[0]))
+        elif len(f) >= 5 and f[1] == "item":
+            try:
+                items.setdefault(f[2], {})[f[3]] = float(f[4])
+            except ValueError:
+                pass
         elif len(f) >= 10 and f[1] == "start":
             sources = [x for x in (f[10] if len(f) > 10 else "").split(";") if x]
             starts.append(dict(when=int(f[0]), id=f[2], check=f[3], out=f[4], hash=f[5], crate=f[6], commit=f[7], state=f[8], settings=f[9], sources=sources))
     for s in starts:
-        s["end"] = ends.get(s["id"], "no end logged")
+        s["end"], s["ended"] = ends.get(s["id"], ("no end logged", None))
+        s["items"] = items.get(s["id"], {})
     return starts
+
+
+def scope(run):
+    """The settings that pick what the run ran (SCOPE), files by name: its runs of the same
+    scope are the ones its time compares with"""
+    out = []
+    for st in run["settings"].split():
+        if st.startswith(SCOPE):
+            k, v = st.split("=", 1)
+            out.append(f"{k}={os.path.basename(v) if os.sep in v or '/' in v else v}")
+    return " ".join(out) or "(all)"
+
+
+def took(seconds):
+    return f"{seconds / 3600:.1f} h" if seconds >= 5400 else f"{seconds / 60:.0f} min" if seconds >= 90 else f"{seconds:.0f} s"
+
+
+def times(runs, check):
+    """Each check's last finished run here for each scope, against the one before; with `check`,
+    that check's items that grew most"""
+    done = [r for r in runs if r["end"] == "done" and r["ended"]]
+    if check:
+        done = [r for r in done if r["check"] == check]
+        if not done:
+            print(f"no finished run of {check} logged here")
+            return 1
+    groups = {}
+    for r in done:
+        groups.setdefault((r["check"], scope(r)), []).append(r)
+    print(f"{'check':<24} {'scope':<34} {'last':>8} {'before':>8}  when, on")
+    for (name, sc), rs in sorted(groups.items()):
+        last, prev = rs[-1], rs[-2] if len(rs) > 1 else None
+        n = f", {len(last['items'])} items" if last["items"] else ""
+        print(f"{name:<24} {sc[:34]:<34} {took(last['ended'] - last['when']):>8} {took(prev['ended'] - prev['when']) if prev else '-':>8}  "
+              f"{time.strftime('%m-%d %H:%M', time.localtime(last['when']))}, {last['commit']}{' with changes' if last['state'] == 'changed' else ''}{n}")
+    if check:
+        for (name, sc), rs in sorted(groups.items()):
+            with_items = [r for r in rs if r["items"]]
+            if not with_items:
+                continue
+            last = with_items[-1]
+            prev = with_items[-2] if len(with_items) > 1 else None
+            print(f"\n{name} {sc}: its items on {time.strftime('%m-%d %H:%M', time.localtime(last['when']))}"
+                  + (f", against {time.strftime('%m-%d %H:%M', time.localtime(prev['when']))} ({prev['commit']})" if prev else ""))
+            rows = sorted(last["items"].items(), key=lambda kv: -(kv[1] - (prev["items"].get(kv[0], 0) if prev else 0)))
+            for item, secs in rows[:12]:
+                before = prev["items"].get(item) if prev else None
+                print(f"  {took(secs):>8} {took(before) if before is not None else 'new':>8}  {item}")
+            print(f"  total {took(sum(last['items'].values()))}" + (f", before {took(sum(prev['items'].values()))}" if prev else ""))
+    return 0
 
 
 def verdict(run, now_hash, head):
@@ -130,8 +200,11 @@ def main():
     ap.add_argument("dirs", nargs="*", help="output folders (BAV_SNAPSHOT_DIR, BAV_PICKS, ...) to check")
     ap.add_argument("--hours", type=float, default=24, help="how far back to list without folders (default 24)")
     ap.add_argument("--log", default=os.path.join(temp_dir(), "balatro-advisor-checks.tsv"))
+    ap.add_argument("--times", nargs="?", const="", metavar="CHECK", help="how long each check took here (with CHECK: its items that grew most)")
     a = ap.parse_args()
     runs = read_log(a.log)
+    if a.times is not None:
+        return times(runs, a.times) if runs else (print(f"no check runs logged in {a.log}") or 1)
     if not runs:
         print(f"no check runs logged in {a.log}")
         return 1 if a.dirs else 0

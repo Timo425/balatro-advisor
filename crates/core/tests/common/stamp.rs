@@ -41,6 +41,14 @@ pub struct Run {
     id: String,
 }
 
+impl Run {
+    /// Logs how long one of the run's items (a fixture, a state) took, so `tools/checks.py
+    /// --times` can name the items that grew between two runs of a check
+    pub fn item(&self, name: &str, took: std::time::Duration) {
+        log(&format!("{}\titem\t{}\t{name}\t{:.1}\n", now(), self.id, took.as_secs_f64()));
+    }
+}
+
 impl Drop for Run {
     fn drop(&mut self) {
         let how = if std::thread::panicking() { "failed" } else { "done" };

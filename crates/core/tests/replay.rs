@@ -39,6 +39,8 @@ fn replayed_states_give_the_expected_advice() {
     let Ok(entries) = std::fs::read_dir(&dir) else { return };
     let mut files: Vec<_> = entries.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")).collect();
     files.sort();
+    // (logged with each fixture's time, for `tools/checks.py --times`)
+    let stamped = stamp::start("replay_fixtures", None);
     let data = GameData::bundled();
     let opts = advise::Options { sims: 300, seed: 42, ..Default::default() };
     let mut failures = vec![];
@@ -48,8 +50,10 @@ fn replayed_states_give_the_expected_advice() {
         let run: RunState = serde_json::from_value(v["state"].clone()).unwrap_or_else(|e| panic!("{name}: {e}"));
         // (with a shop's first ranking asked for: each option in it must have the numbers the
         // finished analysis gives it, `advise::FirstSink`)
-        let (with_first, caught) = first::catching(&opts, std::time::Instant::now());
+        let started = std::time::Instant::now();
+        let (with_first, caught) = first::catching(&opts, started);
         let analysis = advise::analyze(&run, data, None, &with_first);
+        stamped.item(&name, started.elapsed());
         if let Some((_, early)) = caught.lock().unwrap().as_ref() {
             failures.extend(first::differences(early, &analysis).into_iter().map(|d| format!("{name}: first ranking: {d}")));
         }
@@ -205,9 +209,10 @@ fn snapshot() {
     let Some(out) = std::env::var_os("BAV_SNAPSHOT_DIR") else { panic!("set BAV_SNAPSHOT_DIR") };
     let out = std::path::PathBuf::from(out);
     std::fs::create_dir_all(&out).unwrap();
-    let _run = stamp::start("snapshot", Some(&out));
+    let stamped = stamp::start("snapshot", Some(&out));
     let seed: u64 = std::env::var("BAV_SEED").ok().and_then(|s| s.trim().parse().ok()).unwrap_or(42);
-    for (f, _, v) in &fixtures() {
+    for (f, name, v) in &fixtures() {
+        let started = std::time::Instant::now();
         let run: RunState = serde_json::from_value(v["state"].clone()).unwrap();
         // `BAV_SNAPSHOT_FIRST=1`: with a shop's first ranking asked for (discarded), so the
         // snapshot shows the finished analysis is the same either way (`advise::FirstSink`)
@@ -219,6 +224,7 @@ fn snapshot() {
         let deadline: Option<f64> = std::env::var("BAV_SNAPSHOT_DEADLINE").ok().and_then(|s| s.trim().parse().ok());
         let opts = advise::Options { progress: deadline.map(|d| balatro_advisor::progress::Progress::with_deadline(Some(std::time::Duration::from_secs_f64(d)))), ..opts };
         let mut a = serde_json::to_value(advise::analyze(&run, GameData::bundled(), None, &opts)).unwrap();
+        stamped.item(name, started.elapsed());
         for k in ["elapsed_ms", "steps_ms", "save_age_secs", "live"] {
             a.as_object_mut().unwrap().remove(k);
         }
